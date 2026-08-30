@@ -1,0 +1,1947 @@
+// One live conversation with the `claude` CLI.
+//
+// A Session owns a child process and the protocol state around it. The CLI is
+// the whole agent -- it owns the model loop, every built-in tool, MCP clients,
+// settings, permissions, hooks, compaction, transcripts and authentication.
+// This side is a *client*: it spawns the process, writes newline-delimited
+// JSON to its stdin, reads newline-delimited JSON from its stdout, and answers
+// the questions the CLI asks back.
+//
+// === Driving it ============================================================
+//
+//     let session = claude.Session({ binaryPath: path, cwd: dir });
+//     assert(session);
+//     session.onResult = (result: claude.TurnResult) => { ... };
+//     session.sendText("hello");
+//
+//     // every frame / tick:
+//     session.poll();
+//     for request in session.pendingPermissions { ...render, then request.allow(); }
+//     for message in session.conversation.messages { ...render... }
+//
+// `poll()` is non-blocking and does all the work: it drains the child's pipes,
+// decodes frames, updates `conversation`, resolves control responses, and
+// enqueues anything that needs a human answer. Nothing here blocks, spawns a
+// thread, or calls back into itself, so it is safe to call from a render loop.
+//
+// === What the caller must answer ===========================================
+//
+// The CLI asks the client four kinds of question, and a client that ignores
+// them will simply hang:
+//
+//   * `pendingPermissions` -- "may I run this tool?" Also how AskUserQuestion
+//     and ExitPlanMode are delivered.
+//   * `pendingDialogs`     -- host-specific dialogs the client opted into.
+//   * hooks                -- only those the caller registered.
+//   * MCP tool calls       -- only for servers the caller declared.
+//
+// Everything else is informational and flows into `conversation`.
+
+// ── Configuration ───────────────────────────────────────────────────────────
+
+export ref struct SpawnOptions {
+    // Absolute path to the `claude` executable. Use `findBinary()` or the
+    // `Installer` in binary.hz to obtain one.
+    binaryPath: str;
+
+    // Working directory of the conversation. Determines which project the
+    // transcript belongs to and which settings files apply. Must exist.
+    cwd: str;
+
+    // Extra roots the agent may read and write outside `cwd`.
+    additionalDirectories: []str = [];
+
+    // Resume an existing transcript, appending to the same session file.
+    resume: str | none = none;
+    // Resume the most recent session in `cwd` instead of naming one.
+    continueConversation: bool = false;
+    // With `resume`, write to a NEW session id rather than appending.
+    forkSession: bool = false;
+    // With `resume`, cut the history at this message uuid.
+    resumeSessionAt: str | none = none;
+    // Pre-assign the id of a fresh session (a v4 uuid).
+    sessionId: str | none = none;
+    // Set false to run without writing a transcript at all.
+    persistSession: bool = true;
+
+    model: str | none = none;
+    fallbackModel: str | none = none;
+    // Leave as none to let the CLI choose the starting mode, which is what the
+    // VS Code client does -- it respects the user's own settings that way.
+    permissionMode: PermissionMode | none = none;
+    allowDangerouslySkipPermissions: bool = false;
+
+    thinking: ThinkingConfig = {};
+    // "low" | "medium" | "high" | "xhigh"; empty leaves the CLI's default.
+    effort: str = "";
+
+    // Emit `stream_event` frames so text and thinking can be rendered as they
+    // arrive. Turning this off still produces complete `assistant` messages.
+    includePartialMessages: bool = true;
+
+    // Which settings layers the CLI should load.
+    settingSources: []str = ["user", "project", "local"];
+
+    // Restrict the tool set. Empty means the CLI's default set.
+    allowedTools: []str = [];
+    disallowedTools: []str = [];
+
+    // Extra MCP servers, as the `{"mcpServers":{...}}` object's inner map.
+    // In-process servers declared via `mcpServers` below are NOT put here.
+    mcpConfig: json.Node | none = none;
+
+    // Appended to the built-in system prompt. Use it to explain host-specific
+    // context blocks (see `ideSelectionBlock`).
+    appendSystemPrompt: str = "";
+
+    // Dialog kinds this client is willing to render. Anything not listed is
+    // never sent.
+    supportedDialogKinds: []str = [];
+
+    // Hooks the CLI should call back on.
+    hooks: []HookRegistration = [];
+
+    // In-process MCP servers this client exposes to the agent.
+    mcpServers: []McpServer = [];
+
+    // Reported to the CLI as `CLAUDE_CODE_ENTRYPOINT`. Purely a telemetry tag;
+    // pick a name for your app.
+    entrypoint: str = "haze-claude";
+
+    // Enables the file snapshots that `rewindFiles()` restores from.
+    enableFileCheckpointing: bool = true;
+
+    // `CLAUDE_CONFIG_DIR` for the child. This is what selects which signed-in
+    // account the conversation runs as -- see auth.hz.
+    configDir: str | none = none;
+
+    // Additional `NAME=value` entries for the child's environment.
+    extraEnv: []str = [];
+
+    // Ask the CLI to log to stderr. Verbose; useful when something is wrong.
+    debug: bool = false;
+
+    // Ask the CLI to echo the user messages it ingests (and, when resuming,
+    // the history) back on stdout. Keep this on: it is what makes a resumed
+    // conversation show its own history, and what confirms a turn was
+    // received.
+    replayUserMessages: bool = true;
+
+    // Additional bare flags, without the leading dashes.
+    extraFlags: []str = [];
+
+    // Environment variable NAMES to withhold from the child, on top of the
+    // ones this module always strips. Use it to hide an inherited
+    // ANTHROPIC_API_KEY when the session should authenticate as a specific
+    // stored account instead.
+    removeEnv: []str = [];
+}
+
+// ── In-process MCP servers ──────────────────────────────────────────────────
+
+// The answer a client-hosted tool gives back to the agent.
+export ref struct McpToolResult {
+    // Plain-text output. Ignored when `content` is set.
+    text: str = "";
+    // A full MCP content array, for tools that return images or several
+    // blocks. Overrides `text`.
+    content: json.Node | none = none;
+    isError: bool = false;
+}
+
+export type McpToolHandler = (input: json.Node) => McpToolResult;
+
+// One tool the editor exposes to the agent. `inputSchema` is a JSON Schema
+// object; the model sees it verbatim, so its `description` fields matter.
+export ref struct McpTool {
+    name: str;
+    description: str = "";
+    inputSchema: json.Node;
+    handler: McpToolHandler;
+}
+
+export type McpNotificationHandler = (method: str, params: json.Node) => none;
+
+// An MCP server that lives inside this process. Its messages travel over the
+// same stdio control channel as everything else -- no socket, no subprocess.
+export ref struct McpServer {
+    name: str;
+    version: str = "1.0.0";
+    tools: []McpTool = [];
+    // Instructions shown to the model alongside the tool list.
+    instructions: str = "";
+    // Called for notifications the CLI sends to this server (the VS Code
+    // client uses this for `experiment_gates`).
+    onNotification: McpNotificationHandler | none = none;
+}
+
+// ── Requests the CLI makes of the client ────────────────────────────────────
+
+// A one-shot latch shared with the closure that answers a request, so the
+// session can tell an answered request from an outstanding one without the
+// request needing a back-pointer to the session.
+export ref struct AnswerGate {
+    answered: bool = false;
+}
+
+export type RespondFn = (payload: json.Node) => none;
+
+// "May I run this tool?" -- and, because the CLI routes them the same way,
+// also every AskUserQuestion and ExitPlanMode.
+//
+// Exactly one of allow / allowWith / allowAlways / deny must be called. Until
+// one is, the agent is blocked.
+export ref struct PermissionRequest {
+    requestId: str = "";
+    toolName: str = "";
+    toolUseId: str = "";
+    // Set when the tool call comes from a subagent rather than the main loop.
+    agentId: str = "";
+    // The tool's arguments, exactly as the model produced them.
+    input: json.Node;
+    // "Don't ask again" options the CLI is willing to persist.
+    suggestions: []PermissionSuggestion = [];
+    // Human-facing strings the CLI computed for this call, when it has them.
+    title: str = "";
+    displayName: str = "";
+    description: str = "";
+    // Why permission is being asked: the path that fell outside the allowed
+    // roots, or the ask-rule that matched.
+    blockedPath: str = "";
+    decisionReason: str = "";
+    raw: json.Node;
+
+    gate: AnswerGate;
+    respond: RespondFn;
+
+    fn isAnswered(): bool {
+        return this.gate.answered;
+    }
+
+    // Approve, running the tool exactly as the model asked.
+    fn allow() {
+        this.allowWith(this.input);
+    }
+
+    // Approve with edited arguments. This is how an editor implements
+    // "review the diff, tweak it, then accept": hand back the corrected
+    // `input` and the agent runs that instead.
+    fn allowWith(updatedInput: json.Node) {
+        let empty: []PermissionSuggestion = [];
+        this.respondAllow(updatedInput, empty, SuggestionDestination.LocalSettings);
+    }
+
+    // Approve and ask the CLI to remember the choice. `chosen` are the
+    // suggestions the user accepted (normally all of `suggestions`), written
+    // to `destination`.
+    fn allowAlways(chosen: []PermissionSuggestion, destination: SuggestionDestination) {
+        this.respondAllow(this.input, chosen, destination);
+    }
+
+    fn respondAllow(updatedInput: json.Node, chosen: []PermissionSuggestion, destination: SuggestionDestination) {
+        if this.gate.answered {
+            return;
+        }
+        let payload = newObject();
+        setStr(payload, "behavior", "allow");
+        set(payload, "updatedInput", clone(updatedInput));
+
+        let permissions = newArray();
+        for suggestion in chosen {
+            push(permissions, permissionSuggestionToJson(suggestion, destination));
+        }
+        set(payload, "updatedPermissions", permissions);
+        setStr(payload, "toolUseID", this.toolUseId);
+        this.respond(payload);
+    }
+
+    // Refuse. With `interrupt` the agent stops and waits; without it, the
+    // agent carries on and treats `message` as feedback about what to do
+    // instead. Passing a reason and interrupt=false is the "no, do it this
+    // other way" path.
+    fn deny(message: str, interrupt: bool) {
+        if this.gate.answered {
+            return;
+        }
+        let payload = newObject();
+        setStr(payload, "behavior", "deny");
+        setStr(payload, "message", message);
+        setBool(payload, "interrupt", interrupt);
+        setStr(payload, "toolUseID", this.toolUseId);
+        this.respond(payload);
+    }
+
+    // ── AskUserQuestion ────────────────────────────────────────────────
+    //
+    // The agent's multiple-choice question arrives as an ordinary permission
+    // request for a tool named `AskUserQuestion`. There is no "no" answer:
+    // the UI collects the choices and approves the call with them filled in.
+
+    fn isQuestion(): bool {
+        return this.toolName == "AskUserQuestion";
+    }
+
+    // The questions to put to the user. Empty for anything that is not one.
+    fn questions(): []QuestionSpec {
+        if !this.isQuestion() {
+            let empty: []QuestionSpec = [];
+            return empty;
+        }
+        return parseAskUserQuestionInput(this.input).questions;
+    }
+
+    // Approves the question with the user's answers folded in.
+    fn answerQuestions(answers: []QuestionAnswer) {
+        this.allowWith(answeredQuestionInput(this.input, answers));
+    }
+
+    // ── ExitPlanMode ───────────────────────────────────────────────────
+    //
+    // Also delivered as a permission request. Approving it is what lets the
+    // agent leave plan mode and start making changes.
+
+    fn isPlan(): bool {
+        return this.toolName == "ExitPlanMode";
+    }
+
+    // The plan text to show for review.
+    fn plan(): str {
+        if !this.isPlan() {
+            return "";
+        }
+        return parseExitPlanModeInput(this.input).plan;
+    }
+
+    // Accepts the plan, optionally passing back comments the user made while
+    // reviewing it. The agent reads them as part of the approval.
+    fn acceptPlan(feedback: str) {
+        this.allowWith(acceptedPlanInput(this.input, feedback));
+    }
+
+    // Rejects the plan and keeps the agent in plan mode. Not a hard refusal:
+    // the agent carries on planning with this as feedback.
+    fn keepPlanning(comments: str) {
+        let message = "User chose to stay in plan mode and continue planning.";
+        if comments.length > 0 {
+            message = message + " Comments on the plan: " + comments;
+        }
+        this.deny(message, false);
+    }
+
+    // The canned refusal the CLI understands as "stop and wait for me".
+    fn denyDefault() {
+        this.deny("The user doesn't want to proceed with this tool use. The tool use was rejected"
+            + " (eg. if it was a file edit, the new_string was NOT written to the file). STOP what"
+            + " you are doing and wait for the user to tell you how to proceed.", true);
+    }
+}
+
+// A host-specific dialog. Only kinds named in `supportedDialogKinds` arrive.
+export ref struct DialogRequest {
+    requestId: str = "";
+    dialogKind: str = "";
+    toolUseId: str = "";
+    payload: json.Node;
+    gate: AnswerGate;
+    respond: RespondFn;
+
+    fn isAnswered(): bool {
+        return this.gate.answered;
+    }
+
+    fn complete(result: json.Node) {
+        if this.gate.answered {
+            return;
+        }
+        let payload = newObject();
+        setStr(payload, "behavior", "completed");
+        set(payload, "result", clone(result));
+        this.respond(payload);
+    }
+
+    fn cancel() {
+        if this.gate.answered {
+            return;
+        }
+        let payload = newObject();
+        setStr(payload, "behavior", "cancelled");
+        this.respond(payload);
+    }
+}
+
+// An MCP server asking the user for structured input.
+export ref struct ElicitationRequest {
+    requestId: str = "";
+    serverName: str = "";
+    message: str = "";
+    url: str = "";
+    elicitationId: str = "";
+    requestedSchema: json.Node;
+    gate: AnswerGate;
+    respond: RespondFn;
+
+    fn isAnswered(): bool {
+        return this.gate.answered;
+    }
+
+    fn accept(content: json.Node) {
+        if this.gate.answered {
+            return;
+        }
+        let payload = newObject();
+        setStr(payload, "action", "accept");
+        set(payload, "content", clone(content));
+        this.respond(payload);
+    }
+
+    fn decline() {
+        if this.gate.answered {
+            return;
+        }
+        let payload = newObject();
+        setStr(payload, "action", "decline");
+        this.respond(payload);
+    }
+}
+
+// ── Callback types ──────────────────────────────────────────────────────────
+//
+// Named types rather than inline function types: a closure that happens to be
+// inferred `pure` will not convert into an inline `(...) => none | none`
+// union, and every one of these is optional.
+
+export type FrameCallback = (frame: Frame) => none;
+export type InitCallback = (info: InitInfo) => none;
+export type InitializeCallback = (result: InitializeResult) => none;
+export type ResultCallback = (result: TurnResult) => none;
+export type TextCallback = (text: str) => none;
+export type ErrorCallback = (message: str) => none;
+export type AuthStatusCallback = (status: AuthStatusFrame) => none;
+export type RateLimitCallback = (info: RateLimitInfo) => none;
+export type ExitCallback = (exitCode: int) => none;
+export type PermissionCallback = (request: PermissionRequest) => none;
+export type DialogCallback = (request: DialogRequest) => none;
+export type ElicitationCallback = (request: ElicitationRequest) => none;
+export type ControlResultCallback = (response: json.Node) => none;
+export type ControlErrorCallback = (message: str) => none;
+
+export enum SessionState {
+    // Spawned; the `initialize` handshake has not come back yet.
+    Starting,
+    // Handshake complete, no turn in flight.
+    Ready,
+    // A turn is running.
+    Busy,
+    // The child exited.
+    Exited,
+    // The child could not be spawned, or the handshake failed.
+    Failed,
+}
+
+export ref struct SessionError {
+    message: str;
+}
+
+// One outstanding control request the client sent to the CLI.
+export ref struct PendingControl {
+    requestId: str;
+    onSuccess: ControlResultCallback | none;
+    onError: ControlErrorCallback | none;
+}
+
+// Bundles what the answering closures need: the pipe, and whether it is still
+// usable. Separated from Session so those closures do not capture the whole
+// session (which would make every field they touch part of a cycle).
+export ref struct Transport {
+    proc: process.Process;
+    open: bool = true;
+    // Every line written, when tracing is on. Set by Session.
+    trace: TextCallback | none = none;
+
+    fn writeFrame(node: json.Node): bool {
+        if !this.open {
+            return false;
+        }
+        let line = stringify(node);
+        let trace = this.trace;
+        if trace {
+            trace(line);
+        }
+        // Two writes rather than `line + "\n"`: the frame can be large (an
+        // image attachment, a long file), and concatenating would copy the
+        // whole thing a second time just to append one byte.
+        if !this.proc.writeStdin(line) {
+            return false;
+        }
+        return this.proc.writeStdin("\n");
+    }
+
+    // The double-nested success envelope: {control_response:{subtype,request_id,response}}.
+    fn writeControlResponse(requestId: str, payload: json.Node) {
+        let response = newObject();
+        setStr(response, "subtype", "success");
+        setStr(response, "request_id", requestId);
+        set(response, "response", payload);
+
+        let frame = newObject();
+        setStr(frame, "type", "control_response");
+        set(frame, "response", response);
+        this.writeFrame(frame);
+    }
+
+    fn writeControlError(requestId: str, message: str) {
+        let response = newObject();
+        setStr(response, "subtype", "error");
+        setStr(response, "request_id", requestId);
+        setStr(response, "error", message);
+
+        let frame = newObject();
+        setStr(frame, "type", "control_response");
+        set(frame, "response", response);
+        this.writeFrame(frame);
+    }
+}
+
+// ── Session ─────────────────────────────────────────────────────────────────
+
+export ref struct Session {
+    options: SpawnOptions;
+    transport: Transport;
+    conversation: mut Conversation;
+
+    state: SessionState = SessionState.Starting;
+    // Assigned by the CLI, not by the client. Empty until the first frame.
+    sessionId: str = "";
+    // The CLI's own pid, from the initialize response; 0 until then.
+    childPid: int = 0;
+    exitCode: int = 0;
+
+    // The answer to `initialize`: slash commands, models, account, ...
+    initializeResult: InitializeResult | none = none;
+
+    // Questions waiting for the caller. Answered entries are pruned by poll().
+    pendingPermissions: []PermissionRequest = [];
+    pendingDialogs: []DialogRequest = [];
+    pendingElicitations: []ElicitationRequest = [];
+
+    // The last error text the CLI or the transport produced.
+    lastError: str = "";
+    // Tail of the child's stderr, capped, for diagnosing a failed launch.
+    stderrTail: str = "";
+
+    _stdoutBuffer: str = "";
+    _pending: []PendingControl = [];
+    _hooks: []HookRegistration = [];
+    _hookIds: []str = [];
+    _handledRequestIds: []str = [];
+    _initializeRequestId: str = "";
+    // Shutdown ladder. 0.0 means no shutdown has been asked for; poll() only
+    // reads the clock once one has.
+    _shutdownAt: real = 0.0;
+    _termSentAt: real = 0.0;
+    _killSent: bool = false;
+
+    // ── Callbacks (all optional) ───────────────────────────────────────
+    // Every decoded frame, before the conversation model sees it. The escape
+    // hatch for anything this module does not model.
+    onFrame: FrameCallback | none = none;
+    // `system`/`init`: a session started or was resumed.
+    onInit: InitCallback | none = none;
+    // The `initialize` handshake completed.
+    onInitialize: InitializeCallback | none = none;
+    // End of a turn, with cost and usage.
+    onResult: ResultCallback | none = none;
+    // A permission request was enqueued (also visible in pendingPermissions).
+    onPermission: PermissionCallback | none = none;
+    onDialog: DialogCallback | none = none;
+    onElicitation: ElicitationCallback | none = none;
+    onAuthStatus: AuthStatusCallback | none = none;
+    onRateLimit: RateLimitCallback | none = none;
+    // Transport/protocol failures, not model errors.
+    onError: ErrorCallback | none = none;
+    // Raw stderr chunks from the child.
+    onStderr: TextCallback | none = none;
+    // The child exited.
+    onExit: ExitCallback | none = none;
+    // Every line in both directions, for protocol debugging.
+    onTrace: TextCallback | none = none;
+
+    // ── Construction ───────────────────────────────────────────────────
+
+    fn constructor(options: SpawnOptions): Result<mut Session, SessionError> {
+        if options.binaryPath.length == 0 {
+            return SessionError { message: "claude: binaryPath is empty" };
+        }
+        if options.cwd.length == 0 {
+            return SessionError { message: "claude: cwd is empty" };
+        }
+
+        let args = buildArgv(options);
+        let env = buildEnv(options);
+
+        let spawned = process.spawn(options.binaryPath, args, {
+            cwd: options.cwd,
+            env: env,
+        });
+        if !spawned {
+            return SessionError {
+                message: f"claude: failed to spawn '{options.binaryPath}' (error {spawned})",
+            };
+        }
+
+        let session = Session {
+            options: options,
+            transport: Transport { proc: spawned },
+            conversation: Conversation(),
+            _hooks: options.hooks,
+        };
+
+        session.sendInitialize();
+        return session;
+    }
+
+    // Writes the handshake. Must be the first frame on the wire: it declares
+    // the hooks, in-process MCP servers and dialog kinds the CLI is allowed to
+    // use for the rest of the session.
+    mut fn sendInitialize() {
+        let request = newObject();
+        setStr(request, "subtype", "initialize");
+
+        if this._hooks.length > 0 {
+            let hooks = newObject();
+            // Group registrations by event, since the CLI's schema is
+            // {Event: [{matcher, hookCallbackIds}]}.
+            let seenEvents: []str = [];
+            for registration in this._hooks {
+                let eventName = hookEventName(registration.event);
+                let known = false;
+                for name in seenEvents {
+                    if name == eventName {
+                        known = true;
+                        break;
+                    }
+                }
+                if known {
+                    continue;
+                }
+                seenEvents.push(eventName);
+
+                let entries = newArray();
+                for (let i = 0; i < this._hooks.length; i++) {
+                    if hookEventName(this._hooks[i].event) != eventName {
+                        continue;
+                    }
+                    let callbackId = "hook_" + f"{i}";
+                    while this._hookIds.length <= i {
+                        this._hookIds.push("");
+                    }
+                    this._hookIds[i] = callbackId;
+
+                    let entry = newObject();
+                    if this._hooks[i].matcher.length > 0 {
+                        setStr(entry, "matcher", this._hooks[i].matcher);
+                    }
+                    let ids = newArray();
+                    pushStr(ids, callbackId);
+                    set(entry, "hookCallbackIds", ids);
+                    push(entries, entry);
+                }
+                set(hooks, eventName, entries);
+            }
+            set(request, "hooks", hooks);
+        }
+
+        if this.options.mcpServers.length > 0 {
+            let names = newArray();
+            for server in this.options.mcpServers {
+                pushStr(names, server.name);
+            }
+            set(request, "sdkMcpServers", names);
+        }
+
+        if this.options.appendSystemPrompt.length > 0 {
+            setStr(request, "appendSystemPrompt", this.options.appendSystemPrompt);
+        }
+
+        if this.options.supportedDialogKinds.length > 0 {
+            set(request, "supportedDialogKinds", stringArrayNode(this.options.supportedDialogKinds));
+        }
+
+        this._initializeRequestId = this.sendControl(request,
+            (response: json.Node) => {
+                let result = parseInitializeResult(response);
+                this.initializeResult = result;
+                this.childPid = result.pid;
+                this.conversation.permissionMode = result.currentPermissionMode;
+                if this.state == SessionState.Starting {
+                    this.state = SessionState.Ready;
+                }
+                // A resumed session may have had prompts outstanding when it
+                // was closed; the CLI hands them back here rather than
+                // re-asking, so they must be re-presented or the agent stalls.
+                for pending in result.pendingPermissionRequests {
+                    this.handleControlRequest(pending);
+                }
+                for pending in result.pendingUserDialogRequests {
+                    this.handleControlRequest(pending);
+                }
+                let callback = this.onInitialize;
+                if callback {
+                    callback(result);
+                }
+            },
+            (message: str) => {
+                this.state = SessionState.Failed;
+                this.fail("initialize failed: " + message);
+            });
+    }
+
+    // ── Sending ────────────────────────────────────────────────────────
+
+    // Sends a user turn built from raw content blocks. Use this when the turn
+    // carries images, documents or editor context; `sendText` is the shorthand
+    // for the common case.
+    //
+    // The content order matters: context blocks first, attachments next, the
+    // user's own prompt LAST. The model reads the prompt as the instruction
+    // and everything before it as background.
+    mut fn send(blocks: []json.Node): str {
+        let content = newArray();
+        for block in blocks {
+            push(content, block);
+        }
+
+        let message = newObject();
+        setStr(message, "role", "user");
+        set(message, "content", content);
+
+        let id = uuid();
+        let frame = newObject();
+        setStr(frame, "type", "user");
+        setStr(frame, "uuid", id);
+        // Always empty on input: the CLI owns the session id and would
+        // ignore anything written here anyway.
+        setStr(frame, "session_id", "");
+        setNull(frame, "parent_tool_use_id");
+        set(frame, "message", message);
+
+        if !this.transport.writeFrame(frame) {
+            this.fail("failed to write user message: the CLI's stdin is closed");
+            return "";
+        }
+        this.state = SessionState.Busy;
+        this.conversation.busy = true;
+        return id;
+    }
+
+    mut fn sendText(text: str): str {
+        let blocks: []json.Node = [textBlock(text)];
+        return this.send(blocks);
+    }
+
+    // Queues another turn while one is running. The CLI has its own queue, so
+    // this is the same wire message as `send` -- there is no client-side
+    // queue to keep in sync.
+    mut fn queueText(text: str): str {
+        return this.sendText(text);
+    }
+
+    // ── Control requests ───────────────────────────────────────────────
+
+    // Sends a control request and registers callbacks for its reply. Returns
+    // the request id, which `cancelControl` takes.
+    mut fn sendControl(request: json.Node, onSuccess: ControlResultCallback | none,
+                       onError: ControlErrorCallback | none): str {
+        let id = requestId();
+
+        let frame = newObject();
+        setStr(frame, "type", "control_request");
+        setStr(frame, "request_id", id);
+        set(frame, "request", request);
+
+        this._pending.push(PendingControl {
+            requestId: id,
+            onSuccess: onSuccess,
+            onError: onError,
+        });
+
+        if !this.transport.writeFrame(frame) {
+            this.resolveControl(id, none, "the CLI's stdin is closed");
+        }
+        return id;
+    }
+
+    // A control request whose reply the caller does not care about.
+    mut fn sendControlSimple(subtype: str): str {
+        let request = newObject();
+        setStr(request, "subtype", subtype);
+        return this.sendControl(request, none, none);
+    }
+
+    mut fn cancelControl(id: str) {
+        let frame = newObject();
+        setStr(frame, "type", "control_cancel_request");
+        setStr(frame, "request_id", id);
+        this.transport.writeFrame(frame);
+        this.resolveControl(id, none, "cancelled");
+    }
+
+    // Stops the turn in flight. The CLI finishes what it is doing, reports
+    // which messages are still queued, and returns to idle.
+    mut fn interrupt() {
+        this.sendControlSimple("interrupt");
+    }
+
+    // Runs a slash command. There is no separate wire message for one: the CLI
+    // recognises a leading `/` in an ordinary user turn. The available commands
+    // are in `initializeResult.commands`.
+    mut fn sendSlashCommand(name: str, args: str): str {
+        let command = name;
+        if !command.startsWith("/") {
+            command = "/" + command;
+        }
+        if args.length > 0 {
+            command = command + " " + args;
+        }
+        return this.sendText(command);
+    }
+
+    // Interrupts, and reports which queued messages survived.
+    mut fn interruptWith(onSuccess: ControlResultCallback) {
+        let request = newObject();
+        setStr(request, "subtype", "interrupt");
+        this.sendControl(request, onSuccess, none);
+    }
+
+    mut fn setPermissionMode(mode: PermissionMode) {
+        let request = newObject();
+        setStr(request, "subtype", "set_permission_mode");
+        setStr(request, "mode", permissionModeName(mode));
+        this.sendControl(request, none, none);
+        // Optimistic: the CLI confirms with a `system/status` frame, but a
+        // mode switcher should not lag a round trip behind the click.
+        this.conversation.permissionMode = mode;
+    }
+
+    mut fn setModel(model: str) {
+        let request = newObject();
+        setStr(request, "subtype", "set_model");
+        setStr(request, "model", model);
+        this.sendControl(request, none, none);
+    }
+
+    // 0 disables extended thinking. `display` may be "summarized" or "".
+    mut fn setThinking(maxThinkingTokens: int, display: str) {
+        let request = newObject();
+        setStr(request, "subtype", "set_max_thinking_tokens");
+        setInt(request, "max_thinking_tokens", maxThinkingTokens);
+        if display.length > 0 {
+            setStr(request, "thinking_display", display);
+        }
+        else {
+            setNull(request, "thinking_display");
+        }
+        this.sendControl(request, none, none);
+    }
+
+    // Flag-style runtime settings, e.g. `{"effortLevel":"high"}`.
+    mut fn applySettings(settings: json.Node) {
+        let request = newObject();
+        setStr(request, "subtype", "apply_flag_settings");
+        set(request, "settings", settings);
+        this.sendControl(request, none, none);
+    }
+
+    mut fn getSettings(onSuccess: ControlResultCallback) {
+        let request = newObject();
+        setStr(request, "subtype", "get_settings");
+        this.sendControl(request, onSuccess, none);
+    }
+
+    // How much of the context window is in use. Answers a `{...}` object the
+    // caller can render as a meter.
+    mut fn getContextUsage(onSuccess: ControlResultCallback) {
+        let request = newObject();
+        setStr(request, "subtype", "get_context_usage");
+        this.sendControl(request, onSuccess, none);
+    }
+
+    mut fn getUsage(onSuccess: ControlResultCallback) {
+        let request = newObject();
+        setStr(request, "subtype", "get_usage");
+        this.sendControl(request, onSuccess, none);
+    }
+
+    // Asks the CLI to name this conversation. With `persist`, the title is
+    // appended to the transcript so a session list will show it later.
+    mut fn generateTitle(description: str, persist: bool, onSuccess: ControlResultCallback) {
+        let request = newObject();
+        setStr(request, "subtype", "generate_session_title");
+        setStr(request, "description", description);
+        setBool(request, "persist", persist);
+        this.sendControl(request, onSuccess, none);
+    }
+
+    // Restores every file the agent changed since `userMessageId`, using the
+    // snapshots taken when `enableFileCheckpointing` is on. Run it with
+    // `dryRun` first: the reply reports how many files, insertions and
+    // deletions would be undone, which is what a confirmation dialog needs.
+    mut fn rewindFiles(userMessageId: str, dryRun: bool, onSuccess: ControlResultCallback) {
+        let request = newObject();
+        setStr(request, "subtype", "rewind_files");
+        setStr(request, "user_message_id", userMessageId);
+        setBool(request, "dry_run", dryRun);
+        this.sendControl(request, onSuccess, none);
+    }
+
+    // Moves the conversation to a different working directory.
+    mut fn setCwd(path: str, trustAccepted: bool) {
+        let request = newObject();
+        setStr(request, "subtype", "set_cwd");
+        setStr(request, "path", path);
+        setBool(request, "trust_accepted", trustAccepted);
+        this.sendControl(request, none, none);
+    }
+
+    mut fn mcpStatus(onSuccess: ControlResultCallback) {
+        let request = newObject();
+        setStr(request, "subtype", "mcp_status");
+        this.sendControl(request, onSuccess, none);
+    }
+
+    mut fn mcpReconnect(serverName: str) {
+        let request = newObject();
+        setStr(request, "subtype", "mcp_reconnect");
+        setStr(request, "serverName", serverName);
+        this.sendControl(request, none, none);
+    }
+
+    mut fn mcpToggle(serverName: str, enabled: bool) {
+        let request = newObject();
+        setStr(request, "subtype", "mcp_toggle");
+        setStr(request, "serverName", serverName);
+        setBool(request, "enabled", enabled);
+        this.sendControl(request, none, none);
+    }
+
+    mut fn reloadSkills() {
+        this.sendControlSimple("reload_skills");
+    }
+
+    mut fn reloadPlugins() {
+        this.sendControlSimple("reload_plugins");
+    }
+
+    // Cancels a message that is still queued.
+    mut fn cancelQueuedMessage(messageUuid: str, onSuccess: ControlResultCallback) {
+        let request = newObject();
+        setStr(request, "subtype", "cancel_async_message");
+        setStr(request, "message_uuid", messageUuid);
+        this.sendControl(request, onSuccess, none);
+    }
+
+    // A one-off question answered outside the conversation -- it does not
+    // become part of the transcript. Backs a "/btw" style command.
+    mut fn sideQuestion(question: str, onSuccess: ControlResultCallback) {
+        let request = newObject();
+        setStr(request, "subtype", "side_question");
+        setStr(request, "question", question);
+        this.sendControl(request, onSuccess, none);
+    }
+
+    mut fn stopTask(taskId: str) {
+        let request = newObject();
+        setStr(request, "subtype", "stop_task");
+        setStr(request, "task_id", taskId);
+        this.sendControl(request, none, none);
+    }
+
+    // Moves a running tool into the background so the turn can continue.
+    mut fn backgroundTask(toolUseId: str, onSuccess: ControlResultCallback) {
+        let request = newObject();
+        setStr(request, "subtype", "background_tasks");
+        setStr(request, "tool_use_id", toolUseId);
+        this.sendControl(request, onSuccess, none);
+    }
+
+    mut fn rateMessage(messageUuid: str, sentiment: str) {
+        let request = newObject();
+        setStr(request, "subtype", "message_rated");
+        setStr(request, "messageUuid", messageUuid);
+        setStr(request, "sentiment", sentiment);
+        setStr(request, "surface", this.options.entrypoint);
+        setBool(request, "cleared", false);
+        this.sendControl(request, none, none);
+    }
+
+    // Pushes a notification from an in-process MCP server up to the CLI.
+    mut fn sendMcpNotification(serverName: str, method: str, params: json.Node) {
+        let message = newObject();
+        setStr(message, "jsonrpc", "2.0");
+        setStr(message, "method", method);
+        set(message, "params", params);
+
+        let request = newObject();
+        setStr(request, "subtype", "mcp_message");
+        setStr(request, "server_name", serverName);
+        set(request, "message", message);
+        this.sendControl(request, none, none);
+    }
+
+    // ── Polling ────────────────────────────────────────────────────────
+
+    // Drains both pipes, decodes whatever arrived, and updates everything.
+    // Non-blocking; call it once per frame.
+    mut fn poll() {
+        if this.state == SessionState.Exited || this.state == SessionState.Failed {
+            if !this.transport.open {
+                return;
+            }
+        }
+
+        let stderrChunk = this.transport.proc.readStderr();
+        if stderrChunk.length > 0 {
+            this.appendStderr(stderrChunk);
+        }
+
+        let stdoutChunk = this.transport.proc.readStdout();
+        if stdoutChunk.length > 0 {
+            // The common case is that the last read ended on a frame boundary,
+            // and the chunk can be adopted whole instead of concatenated --
+            // which for a chunk holding a large tool result is the difference
+            // between one copy and none.
+            if this._stdoutBuffer.length == 0 {
+                this._stdoutBuffer = stdoutChunk;
+            }
+            else {
+                this._stdoutBuffer = this._stdoutBuffer + stdoutChunk;
+            }
+            this.drainLines();
+            // Merge this poll's streaming deltas into their blocks, so the
+            // caller sees complete text and never a block mid-merge.
+            this.conversation.flushStreaming();
+        }
+
+        this.prunePending();
+        this.advanceShutdown();
+
+        if this.transport.open {
+            if !this.transport.proc.isAlive() {
+                // isAlive() reaps, so join() returns immediately now.
+                this.exitCode = this.transport.proc.join();
+                this.transport.open = false;
+                if this.state != SessionState.Failed {
+                    this.state = SessionState.Exited;
+                }
+                this.conversation.busy = false;
+                this.failAllPending("the CLI exited");
+                let callback = this.onExit;
+                if callback {
+                    callback(this.exitCode);
+                }
+            }
+        }
+    }
+
+    // Splits the accumulated stdout on newlines and dispatches every complete
+    // line, keeping the incomplete tail for the next poll. A single read can
+    // deliver several frames, or half of one.
+    mut fn drainLines() {
+        while true {
+            let cut = indexOf(this._stdoutBuffer, "\n");
+            if cut < 0 {
+                return;
+            }
+            let line = this._stdoutBuffer.slice(0, cut);
+            this._stdoutBuffer = this._stdoutBuffer.slice(cut + 1, this._stdoutBuffer.length);
+            if line.length == 0 {
+                continue;
+            }
+            this.handleLine(line);
+        }
+    }
+
+    mut fn handleLine(line: str) {
+        let trace = this.onTrace;
+        if trace {
+            trace(" <- " + line);
+        }
+
+        let node = parseJson(line);
+        if !node {
+            // Non-JSON on stdout is not fatal: some CLI builds print
+            // incidental text. The SDK's own transport drops these too.
+            return;
+        }
+
+        let frame = parseFrame(node);
+
+        if frame.sessionId.length > 0 {
+            this.sessionId = frame.sessionId;
+        }
+
+        let callback = this.onFrame;
+        if callback {
+            callback(frame);
+        }
+
+        if frame.kind == FrameKind.ControlResponse {
+            this.handleControlResponse(node);
+            return;
+        }
+        if frame.kind == FrameKind.ControlRequest {
+            this.handleControlRequest(node);
+            return;
+        }
+        if frame.kind == FrameKind.ControlCancelRequest {
+            this.handleCancel(getStringOr(node, "request_id", ""));
+            return;
+        }
+        if frame.kind == FrameKind.KeepAlive {
+            return;
+        }
+        if frame.kind == FrameKind.AuthStatus {
+            let status = parseAuthStatusFrame(node);
+            let authCallback = this.onAuthStatus;
+            if authCallback {
+                authCallback(status);
+            }
+            return;
+        }
+        if frame.kind == FrameKind.RateLimitEvent {
+            let info = get(node, "rate_limit_info");
+            if info {
+                let parsed = parseRateLimitInfo(info);
+                this.conversation.rateLimit = parsed;
+                let rateCallback = this.onRateLimit;
+                if rateCallback {
+                    rateCallback(parsed);
+                }
+            }
+            return;
+        }
+
+        if frame.kind == FrameKind.System && frame.subtype == "init" {
+            let info = parseInitInfo(node);
+            let initCallback = this.onInit;
+            if initCallback {
+                initCallback(info);
+            }
+        }
+
+        if frame.kind == FrameKind.Result {
+            let result = parseTurnResult(node);
+            this.state = SessionState.Ready;
+            if result.isError {
+                this.lastError = result.text;
+            }
+            let resultCallback = this.onResult;
+            if resultCallback {
+                resultCallback(result);
+            }
+        }
+
+        this.conversation.ingest(frame);
+    }
+
+    // ── Control responses (CLI answering us) ───────────────────────────
+
+    mut fn handleControlResponse(node: json.Node) {
+        let response = get(node, "response");
+        if !response {
+            return;
+        }
+        let id = getStringOr(response, "request_id", "");
+        if id.length == 0 {
+            return;
+        }
+        if getStringOr(response, "subtype", "") == "error" {
+            this.resolveControl(id, none, getStringOr(response, "error", "unknown error"));
+            return;
+        }
+        let payload = get(response, "response");
+        if payload {
+            this.resolveControl(id, payload, "");
+        }
+        else {
+            this.resolveControl(id, newObject(), "");
+        }
+    }
+
+    mut fn resolveControl(id: str, payload: json.Node | none, errorMessage: str) {
+        let remaining: []PendingControl = [];
+        let matched = false;
+        for entry in this._pending {
+            if entry.requestId == id && !matched {
+                matched = true;
+                if payload {
+                    let onSuccess = entry.onSuccess;
+                    if onSuccess {
+                        onSuccess(payload);
+                    }
+                }
+                else {
+                    let onError = entry.onError;
+                    if onError {
+                        onError(errorMessage);
+                    }
+                }
+            }
+            else {
+                remaining.push(entry);
+            }
+        }
+        if matched {
+            this._pending = remaining;
+        }
+    }
+
+    mut fn failAllPending(reason: str) {
+        let pending = this._pending;
+        let empty: []PendingControl = [];
+        this._pending = empty;
+        for entry in pending {
+            let onError = entry.onError;
+            if onError {
+                onError(reason);
+            }
+        }
+    }
+
+    // ── Control requests (CLI asking us) ───────────────────────────────
+
+    mut fn handleControlRequest(node: json.Node) {
+        let id = getStringOr(node, "request_id", "");
+        let request = get(node, "request");
+        if !request {
+            return;
+        }
+
+        // The CLI can redeliver a request that is already in flight (a resume
+        // replays pending prompts). Answering twice would confuse it.
+        for seen in this._handledRequestIds {
+            if seen == id {
+                return;
+            }
+        }
+        // Bounded: only a redelivery of a *recent* request is plausible, and an
+        // unbounded list would grow for the life of a long conversation.
+        if this._handledRequestIds.length >= 256 {
+            let recent: []str = [];
+            for (let i = this._handledRequestIds.length - 128; i < this._handledRequestIds.length; i++) {
+                recent.push(this._handledRequestIds[i]);
+            }
+            this._handledRequestIds = recent;
+        }
+        this._handledRequestIds.push(id);
+
+        let subtype = getStringOr(request, "subtype", "");
+
+        if subtype == "can_use_tool" {
+            this.handleCanUseTool(id, request);
+        }
+        else if subtype == "hook_callback" {
+            this.handleHookCallback(id, request);
+        }
+        else if subtype == "mcp_message" {
+            this.handleMcpMessage(id, request);
+        }
+        else if subtype == "request_user_dialog" {
+            this.handleUserDialog(id, request);
+        }
+        else if subtype == "elicitation" {
+            this.handleElicitation(id, request);
+        }
+        else if subtype == "oauth_token_refresh" || subtype == "host_auth_token_refresh" {
+            // This client does not manage tokens on the CLI's behalf; the CLI
+            // falls back to its own stored credentials when told so.
+            this.transport.writeControlError(id, "not supported by this client");
+        }
+        else {
+            this.transport.writeControlError(id, "unsupported control request: " + subtype);
+        }
+    }
+
+    mut fn handleCanUseTool(id: str, request: json.Node) {
+        let input = get(request, "input");
+        let inputNode = newObject();
+        if input {
+            inputNode = input;
+        }
+
+        let suggestions: []PermissionSuggestion = [];
+        for suggestion in getArray(request, "permission_suggestions") {
+            suggestions.push(parsePermissionSuggestion(suggestion));
+        }
+
+        let gate = AnswerGate {};
+        let transport = this.transport;
+        let respond: RespondFn = (payload: json.Node) => {
+            gate.answered = true;
+            transport.writeControlResponse(id, payload);
+        };
+
+        let permissionRequest = PermissionRequest {
+            requestId: id,
+            toolName: getStringOr(request, "tool_name", ""),
+            toolUseId: getStringOr(request, "tool_use_id", ""),
+            agentId: getStringOr(request, "agent_id", ""),
+            input: inputNode,
+            suggestions: suggestions,
+            title: getStringOr(request, "title", ""),
+            displayName: getStringOr(request, "display_name", ""),
+            description: getStringOr(request, "description", ""),
+            blockedPath: getStringOr(request, "blocked_path", ""),
+            decisionReason: getStringOr(request, "decision_reason", ""),
+            raw: request,
+            gate: gate,
+            respond: respond,
+        };
+
+        this.pendingPermissions.push(permissionRequest);
+        let callback = this.onPermission;
+        if callback {
+            callback(permissionRequest);
+        }
+    }
+
+    mut fn handleHookCallback(id: str, request: json.Node) {
+        let callbackId = getStringOr(request, "callback_id", "");
+        let input = get(request, "input");
+        let inputNode = newObject();
+        if input {
+            inputNode = input;
+        }
+
+        let index = -1;
+        for (let i = 0; i < this._hookIds.length; i++) {
+            if this._hookIds[i] == callbackId {
+                index = i;
+                break;
+            }
+        }
+        if index < 0 || index >= this._hooks.length {
+            this.transport.writeControlResponse(id, hookContinue());
+            return;
+        }
+
+        let registration = this._hooks[index];
+        let toolInput = get(inputNode, "tool_input");
+        let hookInput = HookInput {
+            event: registration.event,
+            eventName: getStringOr(inputNode, "hook_event_name", hookEventName(registration.event)),
+            toolName: getStringOr(inputNode, "tool_name", ""),
+            toolUseId: getStringOr(request, "tool_use_id", ""),
+            toolInput: toolInput,
+            raw: inputNode,
+        };
+
+        let output = registration.handler(hookInput);
+        if output {
+            this.transport.writeControlResponse(id, output);
+        }
+        else {
+            this.transport.writeControlResponse(id, newObject());
+        }
+    }
+
+    mut fn handleUserDialog(id: str, request: json.Node) {
+        let payload = get(request, "payload");
+        let payloadNode = newObject();
+        if payload {
+            payloadNode = payload;
+        }
+
+        let gate = AnswerGate {};
+        let transport = this.transport;
+        let respond: RespondFn = (response: json.Node) => {
+            gate.answered = true;
+            transport.writeControlResponse(id, response);
+        };
+
+        let dialog = DialogRequest {
+            requestId: id,
+            dialogKind: getStringOr(request, "dialog_kind", ""),
+            toolUseId: getStringOr(request, "tool_use_id", ""),
+            payload: payloadNode,
+            gate: gate,
+            respond: respond,
+        };
+
+        this.pendingDialogs.push(dialog);
+        let callback = this.onDialog;
+        if callback {
+            callback(dialog);
+        }
+    }
+
+    mut fn handleElicitation(id: str, request: json.Node) {
+        let schema = get(request, "requested_schema");
+        let schemaNode = newObject();
+        if schema {
+            schemaNode = schema;
+        }
+
+        let gate = AnswerGate {};
+        let transport = this.transport;
+        let respond: RespondFn = (response: json.Node) => {
+            gate.answered = true;
+            transport.writeControlResponse(id, response);
+        };
+
+        let elicitation = ElicitationRequest {
+            requestId: id,
+            serverName: getStringOr(request, "mcp_server_name", ""),
+            message: getStringOr(request, "message", ""),
+            url: getStringOr(request, "url", ""),
+            elicitationId: getStringOr(request, "elicitation_id", ""),
+            requestedSchema: schemaNode,
+            gate: gate,
+            respond: respond,
+        };
+
+        // With no handler the correct answer is a decline, not silence: an
+        // unanswered elicitation blocks the MCP server that asked.
+        let callback = this.onElicitation;
+        if !callback {
+            elicitation.decline();
+            return;
+        }
+        this.pendingElicitations.push(elicitation);
+        callback(elicitation);
+    }
+
+    // ── In-process MCP ─────────────────────────────────────────────────
+
+    mut fn handleMcpMessage(id: str, request: json.Node) {
+        let serverName = getStringOr(request, "server_name", "");
+        let message = get(request, "message");
+        if !message {
+            this.transport.writeControlError(id, "mcp_message without a message");
+            return;
+        }
+
+        let server: McpServer | none = none;
+        for candidate in this.options.mcpServers {
+            if candidate.name == serverName {
+                server = candidate;
+                break;
+            }
+        }
+        if !server {
+            this.transport.writeControlError(id, "SDK MCP server not found: " + serverName);
+            return;
+        }
+
+        let method = getString(message, "method");
+        let messageId = get(message, "id");
+
+        if !messageId {
+            // A notification. It still needs an acknowledgement frame, or the
+            // CLI waits for one that never comes.
+            if method {
+                let handler = server.onNotification;
+                if handler {
+                    let params = get(message, "params");
+                    let paramsNode = newObject();
+                    if params {
+                        paramsNode = params;
+                    }
+                    handler(method, paramsNode);
+                }
+            }
+            let ack = newObject();
+            let inner = newObject();
+            setStr(inner, "jsonrpc", "2.0");
+            setInt(inner, "id", 0);
+            set(inner, "result", newObject());
+            set(ack, "mcp_response", inner);
+            this.transport.writeControlResponse(id, ack);
+            return;
+        }
+
+        if !method {
+            this.transport.writeControlError(id, "mcp_message without a method");
+            return;
+        }
+
+        let result = this.dispatchMcpMethod(server, method, message);
+        let envelope = newObject();
+        let response = newObject();
+        setStr(response, "jsonrpc", "2.0");
+        set(response, "id", clone(messageId));
+        set(response, "result", result);
+        set(envelope, "mcp_response", response);
+        this.transport.writeControlResponse(id, envelope);
+    }
+
+    fn dispatchMcpMethod(server: McpServer, method: str, message: json.Node): json.Node {
+        if method == "initialize" {
+            let capabilities = newObject();
+            set(capabilities, "tools", newObject());
+
+            let info = newObject();
+            setStr(info, "name", server.name);
+            setStr(info, "version", server.version);
+
+            let result = newObject();
+            setStr(result, "protocolVersion", "2024-11-05");
+            set(result, "capabilities", capabilities);
+            set(result, "serverInfo", info);
+            if server.instructions.length > 0 {
+                setStr(result, "instructions", server.instructions);
+            }
+            return result;
+        }
+
+        if method == "tools/list" {
+            let tools = newArray();
+            for tool in server.tools {
+                let entry = newObject();
+                setStr(entry, "name", tool.name);
+                setStr(entry, "description", tool.description);
+                set(entry, "inputSchema", clone(tool.inputSchema));
+                push(tools, entry);
+            }
+            let result = newObject();
+            set(result, "tools", tools);
+            return result;
+        }
+
+        if method == "tools/call" {
+            let params = get(message, "params");
+            let name = "";
+            let arguments = newObject();
+            if params {
+                name = getStringOr(params, "name", "");
+                let given = get(params, "arguments");
+                if given {
+                    arguments = given;
+                }
+            }
+
+            for tool in server.tools {
+                if tool.name != name {
+                    continue;
+                }
+                let called = tool.handler(arguments);
+                let result = newObject();
+                let content = called.content;
+                if content {
+                    set(result, "content", clone(content));
+                }
+                else {
+                    let blocks = newArray();
+                    let block = newObject();
+                    setStr(block, "type", "text");
+                    setStr(block, "text", called.text);
+                    push(blocks, block);
+                    set(result, "content", blocks);
+                }
+                if called.isError {
+                    setBool(result, "isError", true);
+                }
+                return result;
+            }
+
+            let blocks = newArray();
+            let block = newObject();
+            setStr(block, "type", "text");
+            setStr(block, "text", "Unknown tool: " + name);
+            push(blocks, block);
+            let result = newObject();
+            set(result, "content", blocks);
+            setBool(result, "isError", true);
+            return result;
+        }
+
+        return newObject();
+    }
+
+    // ── Cancellation and pruning ───────────────────────────────────────
+
+    // The CLI withdrew a question it had asked. The client must stop showing
+    // it and must NOT answer.
+    mut fn handleCancel(id: str) {
+        for request in this.pendingPermissions {
+            if request.requestId == id {
+                request.gate.answered = true;
+            }
+        }
+        for dialog in this.pendingDialogs {
+            if dialog.requestId == id {
+                dialog.gate.answered = true;
+            }
+        }
+        for elicitation in this.pendingElicitations {
+            if elicitation.requestId == id {
+                elicitation.gate.answered = true;
+            }
+        }
+        this.prunePending();
+    }
+
+    mut fn prunePending() {
+        let anyAnswered = false;
+        for request in this.pendingPermissions {
+            if request.gate.answered {
+                anyAnswered = true;
+                break;
+            }
+        }
+        if anyAnswered {
+            let remaining: []PermissionRequest = [];
+            for request in this.pendingPermissions {
+                if !request.gate.answered {
+                    remaining.push(request);
+                }
+            }
+            this.pendingPermissions = remaining;
+        }
+
+        let anyDialog = false;
+        for dialog in this.pendingDialogs {
+            if dialog.gate.answered {
+                anyDialog = true;
+                break;
+            }
+        }
+        if anyDialog {
+            let remaining: []DialogRequest = [];
+            for dialog in this.pendingDialogs {
+                if !dialog.gate.answered {
+                    remaining.push(dialog);
+                }
+            }
+            this.pendingDialogs = remaining;
+        }
+
+        let anyElicitation = false;
+        for elicitation in this.pendingElicitations {
+            if elicitation.gate.answered {
+                anyElicitation = true;
+                break;
+            }
+        }
+        if anyElicitation {
+            let remaining: []ElicitationRequest = [];
+            for elicitation in this.pendingElicitations {
+                if !elicitation.gate.answered {
+                    remaining.push(elicitation);
+                }
+            }
+            this.pendingElicitations = remaining;
+        }
+    }
+
+    // ── Diagnostics and teardown ───────────────────────────────────────
+
+    mut fn appendStderr(chunk: str) {
+        let callback = this.onStderr;
+        if callback {
+            callback(chunk);
+        }
+        const limit = 8192;
+        // A chunk that already fills the window replaces the tail outright,
+        // and an empty tail adopts the chunk: neither needs a concatenation.
+        if chunk.length >= limit {
+            this.stderrTail = chunk.slice(chunk.length - limit, chunk.length);
+            return;
+        }
+        if this.stderrTail.length == 0 {
+            this.stderrTail = chunk;
+            return;
+        }
+        let combined = this.stderrTail + chunk;
+        if combined.length > limit {
+            combined = combined.slice(combined.length - limit, combined.length);
+        }
+        this.stderrTail = combined;
+    }
+
+    mut fn fail(message: str) {
+        this.lastError = message;
+        let callback = this.onError;
+        if callback {
+            callback(message);
+        }
+    }
+
+    fn isBusy(): bool {
+        return this.conversation.busy;
+    }
+
+    fn isRunning(): bool {
+        return this.transport.open;
+    }
+
+    // Asks the CLI to finish and exit, without blocking.
+    //
+    // Closing stdin is the protocol's own end-of-input signal, and a CLI that
+    // is idle acts on it immediately. One that is midway through a turn
+    // finishes first -- so `poll()` must keep being called until `state`
+    // becomes Exited, and it escalates on its own if the child does not go:
+    // SIGTERM two seconds after the request, SIGKILL five seconds after that.
+    // That is the same ladder the VS Code client uses, run from the caller's
+    // own loop instead of from a timer.
+    mut fn requestShutdown() {
+        if !this.transport.open || this._shutdownAt > 0.0 {
+            return;
+        }
+        this._shutdownAt = time.now();
+        this.transport.proc.closeStdin();
+    }
+
+    // One step of the shutdown ladder. Does nothing -- and does not even read
+    // the clock -- unless a shutdown is in progress.
+    mut fn advanceShutdown() {
+        if this._shutdownAt <= 0.0 || !this.transport.open || this._killSent {
+            return;
+        }
+        if this.childPid <= 0 {
+            return;
+        }
+        let now = time.now();
+        if this._termSentAt <= 0.0 {
+            if now - this._shutdownAt >= 2.0 {
+                this._termSentAt = now;
+                signalProcess(this.childPid, false);
+            }
+            return;
+        }
+        if now - this._termSentAt >= 5.0 {
+            this._killSent = true;
+            signalProcess(this.childPid, true);
+        }
+    }
+
+    // Ends the session, blocking until the child is gone.
+    //
+    // For an application that is exiting. A UI should prefer `requestShutdown`
+    // plus its normal `poll()` loop, which reaches the same place without
+    // stalling a frame. `force` skips straight to SIGKILL rather than giving
+    // the CLI its usual few seconds to finish and flush its transcript.
+    mut fn terminate(force: bool) {
+        if !this.transport.open {
+            return;
+        }
+        this.requestShutdown();
+
+        if force && this.childPid > 0 {
+            this._killSent = true;
+            signalProcess(this.childPid, true);
+        }
+
+        // Bounded: a child that survives SIGKILL is unreapable anyway, and
+        // blocking forever would be worse than leaking the handle.
+        let deadline = time.now() + 10.0;
+        while time.now() < deadline {
+            if !this.transport.proc.isAlive() {
+                break;
+            }
+            this.advanceShutdown();
+            time.sleep(0.01);
+        }
+
+        this.transport.open = false;
+        if this.transport.proc.isAlive() {
+            // Still running after the full ladder. Leave the handle alone
+            // rather than blocking in join().
+            this.state = SessionState.Failed;
+            this.fail("the CLI did not exit");
+        }
+        else {
+            this.exitCode = this.transport.proc.join();
+            this.state = SessionState.Exited;
+        }
+        this.conversation.busy = false;
+        this.failAllPending("the session was terminated");
+    }
+}
+
+// ── argv / env construction ─────────────────────────────────────────────────
+
+// Builds the command line. The first three flags are what make the CLI speak
+// this protocol at all; everything after is optional.
+export fn buildArgv(options: SpawnOptions): []str {
+    let args: []str = [];
+
+    args.push("--output-format");
+    args.push("stream-json");
+    args.push("--input-format");
+    args.push("stream-json");
+    args.push("--verbose");
+
+    // Routes permission prompts to us over stdout instead of the CLI trying to
+    // ask on a terminal it does not have.
+    args.push("--permission-prompt-tool");
+    args.push("stdio");
+
+    if options.thinking.mode == ThinkingMode.Disabled {
+        args.push("--thinking");
+        args.push("disabled");
+    }
+    else if options.thinking.mode == ThinkingMode.Adaptive {
+        args.push("--thinking");
+        args.push("adaptive");
+    }
+    else {
+        args.push("--max-thinking-tokens");
+        args.push(f"{options.thinking.budgetTokens}");
+    }
+    if options.thinking.mode != ThinkingMode.Disabled && options.thinking.display.length > 0 {
+        args.push("--thinking-display");
+        args.push(options.thinking.display);
+    }
+
+    if options.effort.length > 0 {
+        args.push("--effort");
+        args.push(options.effort);
+    }
+
+    let model = options.model;
+    if model {
+        args.push("--model");
+        args.push(model);
+    }
+    let fallbackModel = options.fallbackModel;
+    if fallbackModel {
+        // The CLI rejects a fallback identical to the primary model.
+        let differs = true;
+        if model {
+            if model == fallbackModel {
+                differs = false;
+            }
+        }
+        if differs {
+            args.push("--fallback-model");
+            args.push(fallbackModel);
+        }
+    }
+
+    if options.continueConversation {
+        args.push("--continue");
+    }
+    let resume = options.resume;
+    if resume {
+        args.push("--resume=" + resume);
+    }
+    if options.forkSession {
+        args.push("--fork-session");
+    }
+    let resumeAt = options.resumeSessionAt;
+    if resumeAt {
+        args.push("--resume-session-at=" + resumeAt);
+    }
+    let sessionId = options.sessionId;
+    if sessionId {
+        args.push("--session-id=" + sessionId);
+    }
+    if !options.persistSession {
+        args.push("--no-session-persistence");
+    }
+
+    if options.allowedTools.length > 0 {
+        args.push("--allowedTools");
+        args.push(joinStrings(options.allowedTools, ","));
+    }
+    if options.disallowedTools.length > 0 {
+        args.push("--disallowedTools");
+        args.push(joinStrings(options.disallowedTools, ","));
+    }
+
+    let mcpConfig = options.mcpConfig;
+    if mcpConfig {
+        let wrapper = newObject();
+        set(wrapper, "mcpServers", clone(mcpConfig));
+        args.push("--mcp-config");
+        args.push(stringify(wrapper));
+    }
+
+    if options.settingSources.length > 0 {
+        args.push("--setting-sources=" + joinStrings(options.settingSources, ","));
+    }
+
+    let mode = options.permissionMode;
+    if mode {
+        args.push("--permission-mode");
+        args.push(permissionModeName(mode));
+    }
+    if options.allowDangerouslySkipPermissions {
+        args.push("--allow-dangerously-skip-permissions");
+    }
+
+    if options.includePartialMessages {
+        args.push("--include-partial-messages");
+    }
+
+    for directory in options.additionalDirectories {
+        args.push("--add-dir");
+        args.push(directory);
+    }
+
+    if options.debug {
+        args.push("--debug");
+        args.push("--debug-to-stderr");
+    }
+
+    // Reports authentication state as `auth_status` frames instead of exiting
+    // when there is no usable credential -- which is what lets a client show a
+    // sign-in screen rather than a crash.
+    args.push("--enable-auth-status");
+    // Do not auto-start the Claude-in-Chrome browser integration.
+    args.push("--no-chrome");
+    if options.replayUserMessages {
+        args.push("--replay-user-messages");
+    }
+
+    for flag in options.extraFlags {
+        args.push("--" + flag);
+    }
+
+    return args;
+}
+
+// The child's environment.
+//
+// This is the FULL set, not a delta: `process.spawn` replaces a child's
+// environment with whatever it is handed, so overriding one variable means
+// rebuilding all of them. `spawnEnvironment` merges this process's own
+// environment with the overrides below and drops the names in `remove`.
+export fn buildEnv(options: SpawnOptions): []str {
+    let overrides: []str = [];
+
+    overrides.push("CLAUDE_CODE_ENTRYPOINT=" + options.entrypoint);
+
+    if options.enableFileCheckpointing {
+        overrides.push("CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING=true");
+    }
+
+    // Selects which signed-in account this conversation runs as.
+    let configDir = options.configDir;
+    if configDir {
+        overrides.push("CLAUDE_CONFIG_DIR=" + configDir);
+    }
+
+    for entry in options.extraEnv {
+        overrides.push(entry);
+    }
+
+    // A CLI that sees CLAUDECODE or CLAUDE_CODE_CHILD_SESSION believes it was
+    // launched by another Claude Code instance and behaves as a nested child
+    // session -- which it is not. TRACEPARENT/TRACESTATE would make it join a
+    // tracing context that belongs to the host. NODE_OPTIONS is inherited from
+    // whatever launched the host and has broken CLI startup before.
+    let remove: []str = [
+        "CLAUDECODE",
+        "CLAUDE_CODE_CHILD_SESSION",
+        "TRACEPARENT",
+        "TRACESTATE",
+        "NODE_OPTIONS",
+    ];
+    for name in options.removeEnv {
+        remove.push(name);
+    }
+
+    return spawnEnvironment(overrides, remove);
+}

@@ -1,0 +1,683 @@
+// Finding, installing and updating the `claude` executable.
+//
+// The CLI is a single self-contained ~340 MB file. A client has three ways to
+// get one, and `findBinary` tries them in the order that respects the user's
+// existing setup:
+//
+//   1. a path the user configured explicitly -- always wins;
+//   2. an existing install: `claude` on PATH, then the two standard locations
+//      the official installer writes to;
+//   3. a copy this application downloaded and manages itself.
+//
+// Downloading is the last resort, and `Installer` implements exactly what
+// Anthropic's own `install.sh` does: resolve a version, read the manifest,
+// fetch the platform's file, verify its published SHA-256, mark it
+// executable. The checksum step is not optional -- it is the only thing
+// standing between a corrupted or intercepted download and an executable this
+// application then runs.
+//
+// This module never extracts the copy bundled inside the VS Code extension:
+// the Marketplace terms do not permit using it outside VS Code-family
+// products, and it carries no checksum anyway.
+
+const comptime RELEASE_BASE_URL = "https://downloads.claude.ai/claude-code-releases";
+
+export enum BinarySource {
+    // A path the host application was told to use.
+    Configured,
+    // Found on PATH.
+    Path,
+    // `~/.local/bin/claude`, where the official installer puts its launcher.
+    LocalBin,
+    // `~/.claude/local/claude`, the older install location.
+    ClaudeLocal,
+    // A copy this application downloaded into its own directory.
+    Managed,
+}
+
+export ref struct BinaryLocation {
+    path: str;
+    source: BinarySource = BinarySource.Path;
+    // Filled in only when `queryVersion` was requested: running the binary
+    // costs a process spawn.
+    version: str = "";
+
+    fn sourceName(): str {
+        if this.source == BinarySource.Configured { return "configured"; }
+        if this.source == BinarySource.Path { return "PATH"; }
+        if this.source == BinarySource.LocalBin { return "~/.local/bin"; }
+        if this.source == BinarySource.ClaudeLocal { return "~/.claude/local"; }
+        return "managed";
+    }
+}
+
+export ref struct FindOptions {
+    // An explicit path. Takes precedence over everything.
+    configuredPath: str = "";
+    // Where this application keeps its own downloaded copy, if it has one.
+    managedDir: str = "";
+    // Also run `--version` on whatever is found.
+    queryVersion: bool = false;
+}
+
+export fn executableName(): str {
+    if sys.isWin32() {
+        return "claude.exe";
+    }
+    return "claude";
+}
+
+// Searches PATH for an executable, the way a shell would.
+export fn whichExecutable(name: str): str | none {
+    let path = env.get("PATH");
+    if !path {
+        return none;
+    }
+    let separator = ":";
+    if sys.isWin32() {
+        separator = ";";
+    }
+    for directory in path.split(separator) {
+        if directory.length == 0 {
+            continue;
+        }
+        let candidate = joinPath(directory, name);
+        if isExecutable(candidate) {
+            return candidate;
+        }
+    }
+    return none;
+}
+
+// The first usable `claude` binary, or none.
+export fn findBinary(options: FindOptions): BinaryLocation | none {
+    let found: BinaryLocation | none = none;
+
+    if options.configuredPath.length > 0 {
+        if isExecutable(options.configuredPath) {
+            found = BinaryLocation { path: options.configuredPath, source: BinarySource.Configured };
+        }
+    }
+
+    if !found {
+        let onPath = whichExecutable(executableName());
+        if onPath {
+            found = BinaryLocation { path: onPath, source: BinarySource.Path };
+        }
+    }
+
+    if !found {
+        let localBin = joinPath(joinPath(homeDirectory(), ".local/bin"), executableName());
+        if isExecutable(localBin) {
+            found = BinaryLocation { path: localBin, source: BinarySource.LocalBin };
+        }
+    }
+
+    if !found {
+        let claudeLocal = joinPath(joinPath(homeDirectory(), ".claude/local"), executableName());
+        if isExecutable(claudeLocal) {
+            found = BinaryLocation { path: claudeLocal, source: BinarySource.ClaudeLocal };
+        }
+    }
+
+    if !found && options.managedDir.length > 0 {
+        let managed = joinPath(options.managedDir, executableName());
+        if isExecutable(managed) {
+            found = BinaryLocation { path: managed, source: BinarySource.Managed };
+        }
+    }
+
+    if !found {
+        return none;
+    }
+
+    if options.queryVersion {
+        let version = binaryVersion(found.path);
+        if version {
+            found.version = version;
+        }
+    }
+    return found;
+}
+
+// Runs `<path> --version` and returns just the version number. The CLI prints
+// "2.1.241 (Claude Code)".
+export fn binaryVersion(path: str): str | none {
+    let result = process.runCaptured(path, ["--version"], { inherit_stdio: false });
+    if result.exitCode != 0 {
+        return none;
+    }
+    let text = result.stdoutResult.trim();
+    if text.length == 0 {
+        return none;
+    }
+    let cut = indexOf(text, " ");
+    if cut > 0 {
+        return text.slice(0, cut);
+    }
+    return text;
+}
+
+// ── The release channel ─────────────────────────────────────────────────────
+
+// The platform key the release channel uses: `<os>-<arch>[-musl]`.
+export fn platformKey(): str {
+    let arch = machineArch();
+    let normalized = "x64";
+    if arch == "aarch64" || arch == "arm64" {
+        normalized = "arm64";
+    }
+
+    if sys.isWin32() {
+        return "win32-" + normalized;
+    }
+
+    // No uname(3) field distinguishes glibc from musl, and the official
+    // installer shells out to `ldd --version` for this. The dynamic loader's
+    // filename is a cheaper and equally reliable tell.
+    if isMuslSystem() {
+        return "linux-" + normalized + "-musl";
+    }
+
+    // Darwin has no musl variant, so the only question is which libc family a
+    // Linux host uses; anything that is not Linux and not Windows here is
+    // macOS.
+    if isDarwin() {
+        return "darwin-" + normalized;
+    }
+    return "linux-" + normalized;
+}
+
+fn isDarwin(): bool {
+    // sys.platform() only distinguishes Linux from Win32, so the presence of
+    // the macOS-only system frameworks directory is what identifies Darwin.
+    let exists = fs.exists("/System/Library/Frameworks");
+    if !exists {
+        return false;
+    }
+    return exists;
+}
+
+fn isMuslSystem(): bool {
+    let candidates: []str = [
+        "/lib/ld-musl-x86_64.so.1",
+        "/lib/ld-musl-aarch64.so.1",
+        "/lib/ld-musl-armhf.so.1",
+    ];
+    for candidate in candidates {
+        let exists = fs.exists(candidate);
+        if exists {
+            if exists {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+// A failure while talking to the release channel. A distinct type rather than
+// a bare string so `Result<str, ...>` stays unambiguous.
+export ref struct BinaryError {
+    message: str;
+}
+
+export ref struct PlatformRelease {
+    key: str = "";
+    // The file name under `<version>/<platform>/`.
+    binary: str = "claude";
+    // Lowercase hex SHA-256, 64 characters.
+    checksum: str = "";
+    size: int = 0;
+}
+
+export ref struct ReleaseManifest {
+    version: str = "";
+    commit: str = "";
+    buildDate: str = "";
+    platforms: []PlatformRelease = [];
+
+    fn forPlatform(key: str): PlatformRelease | none {
+        for platform in this.platforms {
+            if platform.key == key {
+                return platform;
+            }
+        }
+        return none;
+    }
+}
+
+// Parses a `manifest.json`. Split out from fetching so a host with its own
+// HTTP client can supply the text itself.
+export fn parseManifest(text: str): Result<ReleaseManifest, BinaryError> {
+    let node = parseJson(text);
+    if !node {
+        return BinaryError { message: "the release manifest is not valid JSON" };
+    }
+
+    let manifest = ReleaseManifest {
+        version: getStringOr(node, "version", ""),
+        commit: getStringOr(node, "commit", ""),
+        buildDate: getStringOr(node, "buildDate", ""),
+    };
+
+    let platforms = get(node, "platforms");
+    if !platforms {
+        return BinaryError { message: "the release manifest has no platforms" };
+    }
+    for entry in entries(platforms) {
+        manifest.platforms.push(PlatformRelease {
+            key: entry.key,
+            binary: getStringOr(entry.value, "binary", "claude"),
+            checksum: getStringOr(entry.value, "checksum", ""),
+            size: getIntOr(entry.value, "size", 0),
+        });
+    }
+
+    if manifest.version.length == 0 {
+        return BinaryError { message: "the release manifest has no version" };
+    }
+    return manifest;
+}
+
+// True for a plain `x.y.z`. The channel endpoints serve HTML on error, and
+// running an HTML page as a version number produces a nonsense URL, so this is
+// checked before every use.
+export fn isVersionNumber(text: str): bool {
+    if text.length == 0 || text.length > 32 {
+        return false;
+    }
+    let dots = 0;
+    let digitsInGroup = 0;
+    for (let i = 0; i < text.length; i++) {
+        let byte = text.slice(i, i + 1);
+        if byte == "." {
+            if digitsInGroup == 0 {
+                return false;
+            }
+            dots = dots + 1;
+            digitsInGroup = 0;
+            continue;
+        }
+        // `str` supports only == and != , so digit-ness is a lookup.
+        if indexOf("0123456789", byte) < 0 {
+            return false;
+        }
+        digitsInGroup = digitsInGroup + 1;
+    }
+    return dots == 2 && digitsInGroup > 0;
+}
+
+// Resolves a channel ("latest" or "stable") to a concrete version. An explicit
+// `x.y.z` is returned unchanged without a network call, which is how a client
+// pins a version it has tested against.
+export fn resolveVersion(channel: str): Result<str, BinaryError> {
+    if isVersionNumber(channel) {
+        return channel;
+    }
+    let response = httpGet(RELEASE_BASE_URL + "/" + channel, 30);
+    if !response.ok {
+        return BinaryError { message: response.error };
+    }
+    let version = response.body.trim();
+    if !isVersionNumber(version) {
+        return BinaryError { message: "the release channel returned '" + truncate(version, 60) + "' instead of a version" };
+    }
+    return version;
+}
+
+export fn manifestUrl(version: str): str {
+    return RELEASE_BASE_URL + "/" + version + "/manifest.json";
+}
+
+export fn binaryUrl(version: str, platform: str, fileName: str): str {
+    return RELEASE_BASE_URL + "/" + version + "/" + platform + "/" + fileName;
+}
+
+export fn fetchManifest(version: str): Result<ReleaseManifest, BinaryError> {
+    let response = httpGet(manifestUrl(version), 30);
+    if !response.ok {
+        return BinaryError { message: response.error };
+    }
+    return parseManifest(response.body);
+}
+
+// ── Installer ───────────────────────────────────────────────────────────────
+
+export enum InstallStage {
+    Idle,
+    ResolvingVersion,
+    FetchingManifest,
+    Downloading,
+    Verifying,
+    Installing,
+    Done,
+    Failed,
+    Cancelled,
+}
+
+export fn installStageLabel(stage: InstallStage): str {
+    if stage == InstallStage.Idle { return "Waiting"; }
+    if stage == InstallStage.ResolvingVersion { return "Checking for the latest version"; }
+    if stage == InstallStage.FetchingManifest { return "Reading the release manifest"; }
+    if stage == InstallStage.Downloading { return "Downloading Claude Code"; }
+    if stage == InstallStage.Verifying { return "Verifying the download"; }
+    if stage == InstallStage.Installing { return "Installing"; }
+    if stage == InstallStage.Done { return "Ready"; }
+    if stage == InstallStage.Cancelled { return "Cancelled"; }
+    return "Failed";
+}
+
+// A value type carrying numbers, not sentences: `poll()` returns one on every
+// tick of a ~340 MB download, so building a progress string here would allocate
+// once per frame for minutes. `describe()` composes one on demand.
+export struct InstallProgress {
+    stage: InstallStage = InstallStage.Idle;
+    bytesReceived: int = 0;
+    bytesTotal: int = 0;
+    // 0.0 .. 1.0 across the WHOLE install, not just the download, so a
+    // progress bar driven by it never jumps backwards.
+    fraction: real = 0.0;
+    error: str = "";
+    // Set once stage is Done.
+    installedPath: str = "";
+    version: str = "";
+
+    fn isFinished(): bool {
+        return this.stage == InstallStage.Done || this.stage == InstallStage.Failed
+            || this.stage == InstallStage.Cancelled;
+    }
+
+    // A sentence for under a progress bar. Allocates; call it when you render,
+    // not on every poll.
+    fn describe(): str {
+        if this.stage == InstallStage.Downloading {
+            return "Downloading Claude Code " + this.version + " ("
+                + formatBytes(this.bytesReceived) + " of " + formatBytes(this.bytesTotal) + ")";
+        }
+        if this.stage == InstallStage.Done {
+            return "Claude Code " + this.version + " is ready";
+        }
+        if this.stage == InstallStage.Failed {
+            return this.error;
+        }
+        return installStageLabel(this.stage);
+    }
+}
+
+export ref struct InstallOptions {
+    // Where the binary should end up. The file is written as
+    // `<targetDir>/claude`.
+    targetDir: str;
+    // "latest", "stable", or an explicit `x.y.z` to pin.
+    channel: str = "latest";
+    // Override the platform key. Leave empty to detect it.
+    platform: str = "";
+    // Accept a download whose checksum is missing from the manifest. Off by
+    // default and there is no good reason to turn it on.
+    allowMissingChecksum: bool = false;
+}
+
+// A poll-driven installer.
+//
+// Every stage is non-blocking except the two short manifest requests and the
+// checksum, which is why `poll()` returns after each step rather than looping:
+// a caller driving this from a render loop sees the progress bar move.
+export ref struct Installer {
+    options: InstallOptions;
+    tool: HttpTool = HttpTool.None;
+    stage: InstallStage = InstallStage.Idle;
+    version: str = "";
+    platform: str = "";
+    release: PlatformRelease | none = none;
+    downloads: []mut Download = [];
+    error: str = "";
+    bytesReceived: int = 0;
+    bytesTotal: int = 0;
+    installedPath: str = "";
+    // Where the file is written before it has been verified. Never runnable:
+    // an unverified binary must not be reachable under the real name.
+    stagingPath: str = "";
+
+    fn constructor(options: InstallOptions): mut Installer {
+        let platform = options.platform;
+        if platform.length == 0 {
+            platform = platformKey();
+        }
+        return Installer {
+            options: options,
+            platform: platform,
+            stagingPath: joinPath(options.targetDir, executableName() + ".download"),
+        };
+    }
+
+    // Advances the install by one step and reports where it is. Call until
+    // `progress.isFinished()`.
+    mut fn poll(): InstallProgress {
+        if this.stage == InstallStage.Done || this.stage == InstallStage.Failed
+            || this.stage == InstallStage.Cancelled {
+            return this.progress();
+        }
+
+        if this.stage == InstallStage.Idle {
+            this.tool = detectHttpTool();
+            if this.tool == HttpTool.None {
+                return this.fail("neither curl nor wget is available, so Claude Code cannot be"
+                    + " downloaded. Install one, or install Claude Code yourself from"
+                    + " https://claude.ai/install.sh");
+            }
+            this.stage = InstallStage.ResolvingVersion;
+            return this.progress();
+        }
+
+        if this.stage == InstallStage.ResolvingVersion {
+            let resolved = resolveVersion(this.options.channel);
+            if !resolved {
+                return this.fail(resolved.message);
+            }
+            this.version = resolved;
+            this.stage = InstallStage.FetchingManifest;
+            return this.progress();
+        }
+
+        if this.stage == InstallStage.FetchingManifest {
+            let manifest = fetchManifest(this.version);
+            if !manifest {
+                return this.fail(manifest.message);
+            }
+            // The manifest is authoritative about its own version; a channel
+            // can move between the two requests.
+            this.version = manifest.version;
+
+            let release = manifest.forPlatform(this.platform);
+            if !release {
+                return this.fail("Claude Code is not published for this platform ("
+                    + this.platform + ")");
+            }
+            if release.checksum.length != 64 && !this.options.allowMissingChecksum {
+                return this.fail("the release manifest has no usable checksum for " + this.platform);
+            }
+            this.release = release;
+            this.bytesTotal = release.size;
+
+            let created = fs.createDirectory(this.options.targetDir);
+            if !created {
+                return this.fail("cannot create " + this.options.targetDir);
+            }
+
+            let started = Download(this.tool,
+                binaryUrl(this.version, this.platform, release.binary),
+                this.stagingPath, release.size);
+            if !started {
+                return this.fail(started);
+            }
+            // Held in a one-element array rather than an optional field: a
+            // `mut T | none` field cannot be narrowed back to a mutable
+            // receiver, and poll() has to call a mutating method on it.
+            this.downloads.push(started);
+            this.stage = InstallStage.Downloading;
+            return this.progress();
+        }
+
+        if this.stage == InstallStage.Downloading {
+            if this.downloads.length == 0 {
+                return this.fail("internal error: no download in progress");
+            }
+            let progress = this.downloads[0].poll();
+            this.bytesReceived = progress.bytesReceived;
+            if progress.state == DownloadState.Running {
+                return this.progress();
+            }
+            if progress.state == DownloadState.Cancelled {
+                this.stage = InstallStage.Cancelled;
+                return this.progress();
+            }
+            if progress.state == DownloadState.Failed {
+                return this.fail(progress.error);
+            }
+            this.stage = InstallStage.Verifying;
+            return this.progress();
+        }
+
+        if this.stage == InstallStage.Verifying {
+            let release = this.release;
+            if !release {
+                return this.fail("internal error: no release to verify");
+            }
+            if release.checksum.length == 64 {
+                let digest = sha256File(this.stagingPath);
+                if !digest {
+                    removeFile(this.stagingPath);
+                    return this.fail("the downloaded file could not be read back for verification");
+                }
+                if digest != release.checksum {
+                    // A mismatch means the bytes are not the published release.
+                    // Deleting is the only safe response.
+                    removeFile(this.stagingPath);
+                    return this.fail("checksum mismatch: the download does not match the"
+                        + " published release and has been deleted");
+                }
+            }
+            this.stage = InstallStage.Installing;
+            return this.progress();
+        }
+
+        if this.stage == InstallStage.Installing {
+            let target = joinPath(this.options.targetDir, executableName());
+            removeFile(target);
+            let moved = fs.move(this.stagingPath, target, { overwrite: true });
+            if !moved {
+                removeFile(this.stagingPath);
+                return this.fail("could not move the downloaded binary into place");
+            }
+            if !makeExecutable(target) {
+                return this.fail("could not mark " + target + " as executable");
+            }
+            this.installedPath = target;
+            this.stage = InstallStage.Done;
+            return this.progress();
+        }
+
+        return this.progress();
+    }
+
+    mut fn cancel() {
+        for download in this.downloads {
+            download.cancel();
+        }
+        removeFile(this.stagingPath);
+        this.stage = InstallStage.Cancelled;
+    }
+
+    mut fn fail(message: str): InstallProgress {
+        this.error = message;
+        this.stage = InstallStage.Failed;
+        return this.progress();
+    }
+
+    fn progress(): InstallProgress {
+        // Stage weights, so the bar advances steadily instead of sitting at
+        // zero and then jumping: the download is by far the longest step.
+        let fraction = 0.0;
+
+        if this.stage == InstallStage.ResolvingVersion {
+            fraction = 0.02;
+        }
+        else if this.stage == InstallStage.FetchingManifest {
+            fraction = 0.05;
+        }
+        else if this.stage == InstallStage.Downloading {
+            let downloaded = 0.0;
+            if this.bytesTotal > 0 {
+                downloaded = (this.bytesReceived as real) / (this.bytesTotal as real);
+            }
+            fraction = 0.05 + downloaded * 0.85;
+        }
+        else if this.stage == InstallStage.Verifying {
+            fraction = 0.92;
+        }
+        else if this.stage == InstallStage.Installing {
+            fraction = 0.98;
+        }
+        else if this.stage == InstallStage.Done {
+            fraction = 1.0;
+        }
+
+        return InstallProgress {
+            stage: this.stage,
+            bytesReceived: this.bytesReceived,
+            bytesTotal: this.bytesTotal,
+            fraction: fraction,
+            error: this.error,
+            installedPath: this.installedPath,
+            version: this.version,
+        };
+    }
+}
+
+// "324.6 MB" -- for a progress line.
+export fn formatBytes(bytes: int): str {
+    if bytes < 1024 {
+        return f"{bytes}" + " B";
+    }
+    if bytes < 1048576 {
+        let kb = bytes * 10 / 1024;
+        return f"{kb / 10}" + "." + f"{kb % 10}" + " KB";
+    }
+    if bytes < 1073741824 {
+        let mb = bytes * 10 / 1048576;
+        return f"{mb / 10}" + "." + f"{mb % 10}" + " MB";
+    }
+    let gb = bytes * 10 / 1073741824;
+    return f"{gb / 10}" + "." + f"{gb % 10}" + " GB";
+}
+
+// ── Update checks ───────────────────────────────────────────────────────────
+
+export ref struct UpdateCheck {
+    // The version currently installed, or empty when nothing is installed.
+    installedVersion: str = "";
+    latestVersion: str = "";
+    updateAvailable: bool = false;
+    error: str = "";
+}
+
+// Compares the installed binary against a channel. Prompt rather than upgrade
+// silently: a newer CLI can add control-request subtypes a given client build
+// has never seen, and the user should decide when to take that.
+export fn checkForUpdate(binaryPath: str, channel: str): UpdateCheck {
+    let check = UpdateCheck {};
+
+    let installed = binaryVersion(binaryPath);
+    if installed {
+        check.installedVersion = installed;
+    }
+
+    let latest = resolveVersion(channel);
+    if !latest {
+        check.error = latest.message;
+        return check;
+    }
+    check.latestVersion = latest;
+    check.updateAvailable = check.installedVersion != latest;
+    return check;
+}

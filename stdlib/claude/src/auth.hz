@@ -1,0 +1,1012 @@
+// Authentication: signing in, staying signed in, and keeping several accounts
+// side by side.
+//
+// === The idea ==============================================================
+//
+// The CLI keeps everything about "who am I" inside one directory -- its config
+// dir, `$CLAUDE_CONFIG_DIR`, which defaults to `~/.claude`. The OAuth tokens
+// live in `<dir>/.credentials.json`, the account identity in
+// `<dir>/.claude.json`, the settings in `<dir>/settings.json`.
+//
+// That single fact is what makes multiple accounts easy: give each account its
+// own directory and point the child at one of them. Switching accounts is then
+// just spawning with a different `CLAUDE_CONFIG_DIR` -- no logout, no
+// re-authentication, no token juggling, and every account stays signed in
+// indefinitely because nothing ever overwrites another's credentials. An
+// account signed in once is signed in until its refresh token is revoked.
+//
+// === Storage, and who owns it ==============================================
+//
+// This module holds no state. `ProfileStore` is a plain value the caller
+// creates, mutates and writes back; nothing here caches it, and two callers
+// with two stores do not interfere. The on-disk layout under a root the caller
+// chooses:
+//
+//     <root>/profiles.json          the index (labels, kinds, extra env)
+//     <root>/profiles/<id>/         one CLAUDE_CONFIG_DIR per account
+//     <root>/backups/<id>-<n>.json  credential backups
+//
+// === Not losing tokens =====================================================
+//
+// Credentials are the one thing here that cannot be regenerated without the
+// user going through a browser again, so several operations exist purely to
+// avoid ever needing that: `adoptSystemLogin` turns an existing `~/.claude`
+// login into a profile without a new sign-in, `cloneProfile` duplicates a
+// signed-in account, and `backupCredentials` / `restoreCredentials` snapshot
+// the token file. `deleteProfile` refuses to remove credentials unless it is
+// told explicitly to.
+
+export ref struct AuthError {
+    message: str;
+}
+
+// How a profile authenticates.
+export enum AuthKind {
+    // OAuth against claude.ai -- a Pro/Max subscription.
+    ClaudeAccount,
+    // OAuth against the Anthropic Console -- pay-as-you-go API billing.
+    Console,
+    // A long-lived API key supplied through the environment.
+    ApiKey,
+    AmazonBedrock,
+    GoogleVertex,
+    // Whatever the machine is already set up with. No dedicated config
+    // directory; the CLI's own default is used.
+    System,
+}
+
+export fn authKindName(kind: AuthKind): str {
+    if kind == AuthKind.ClaudeAccount { return "claudeai"; }
+    if kind == AuthKind.Console { return "console"; }
+    if kind == AuthKind.ApiKey { return "apiKey"; }
+    if kind == AuthKind.AmazonBedrock { return "bedrock"; }
+    if kind == AuthKind.GoogleVertex { return "vertex"; }
+    return "system";
+}
+
+export fn authKindFromName(name: str): AuthKind {
+    if name == "claudeai" { return AuthKind.ClaudeAccount; }
+    if name == "console" { return AuthKind.Console; }
+    if name == "apiKey" { return AuthKind.ApiKey; }
+    if name == "bedrock" { return AuthKind.AmazonBedrock; }
+    if name == "vertex" { return AuthKind.GoogleVertex; }
+    return AuthKind.System;
+}
+
+export fn authKindLabel(kind: AuthKind): str {
+    if kind == AuthKind.ClaudeAccount { return "Claude account"; }
+    if kind == AuthKind.Console { return "Anthropic Console"; }
+    if kind == AuthKind.ApiKey { return "API key"; }
+    if kind == AuthKind.AmazonBedrock { return "Amazon Bedrock"; }
+    if kind == AuthKind.GoogleVertex { return "Google Vertex AI"; }
+    return "System default";
+}
+
+// One signed-in account.
+export ref struct Profile {
+    // Stable, filesystem-safe. Also the directory name.
+    id: str = "";
+    // What the user calls it: "Work", "Personal", "Client X".
+    label: str = "";
+    kind: AuthKind = AuthKind.ClaudeAccount;
+    // The `CLAUDE_CONFIG_DIR` for this account. Empty for AuthKind.System,
+    // which deliberately uses the CLI's own default.
+    configDir: str = "";
+    // Extra `NAME=value` entries -- the API key for AuthKind.ApiKey, the
+    // region and model ids for Bedrock/Vertex.
+    env: []str = [];
+    createdAt: int = 0;
+    lastUsedAt: int = 0;
+
+    // Cached from the last `refreshIdentity`, so a profile picker can show who
+    // an account belongs to without spawning anything.
+    email: str = "";
+    organizationName: str = "";
+    subscriptionType: str = "";
+
+    // What to show in a switcher.
+    fn displayName(): str {
+        if this.label.length > 0 {
+            return this.label;
+        }
+        if this.email.length > 0 {
+            return this.email;
+        }
+        return this.id;
+    }
+
+    fn subtitle(): str {
+        let parts: []str = [];
+        if this.email.length > 0 {
+            parts.push(this.email);
+        }
+        if this.organizationName.length > 0 {
+            parts.push(this.organizationName);
+        }
+        if this.subscriptionType.length > 0 {
+            parts.push(this.subscriptionType);
+        }
+        if parts.length == 0 {
+            parts.push(authKindLabel(this.kind));
+        }
+        return joinStrings(parts, " · ");
+    }
+}
+
+// The caller's copy of the profile list. Mutate it, then `saveProfiles`.
+export ref struct ProfileStore {
+    // Where this store lives on disk.
+    root: str = "";
+    profiles: []Profile = [];
+    // Which profile new sessions should use. Empty means none chosen yet.
+    activeId: str = "";
+
+    fn byId(id: str): Profile | none {
+        for profile in this.profiles {
+            if profile.id == id {
+                return profile;
+            }
+        }
+        return none;
+    }
+
+    fn active(): Profile | none {
+        if this.activeId.length == 0 {
+            return none;
+        }
+        return this.byId(this.activeId);
+    }
+
+    fn indexPath(): str {
+        return joinPath(this.root, "profiles.json");
+    }
+
+    fn profilesDir(): str {
+        return joinPath(this.root, "profiles");
+    }
+
+    fn backupsDir(): str {
+        return joinPath(this.root, "backups");
+    }
+}
+
+// ── Reading and writing the index ───────────────────────────────────────────
+
+// Loads the profile index from `<root>/profiles.json`. A missing or unreadable
+// index yields an empty store rather than an error: a first run and a corrupt
+// file both mean "no profiles yet", and refusing to start would strand the
+// user with no way to sign in again.
+export fn loadProfiles(root: str): ProfileStore {
+    let store = ProfileStore { root: root };
+
+    let text = fs.readText(store.indexPath());
+    if !text {
+        return store;
+    }
+    let node = parseJson(text);
+    if !node {
+        return store;
+    }
+
+    store.activeId = getStringOr(node, "activeId", "");
+    for entry in getArray(node, "profiles") {
+        let profile = Profile {
+            id: getStringOr(entry, "id", ""),
+            label: getStringOr(entry, "label", ""),
+            kind: authKindFromName(getStringOr(entry, "kind", "claudeai")),
+            configDir: getStringOr(entry, "configDir", ""),
+            env: getStringArray(entry, "env"),
+            createdAt: getIntOr(entry, "createdAt", 0),
+            lastUsedAt: getIntOr(entry, "lastUsedAt", 0),
+            email: getStringOr(entry, "email", ""),
+            organizationName: getStringOr(entry, "organizationName", ""),
+            subscriptionType: getStringOr(entry, "subscriptionType", ""),
+        };
+        if profile.id.length > 0 {
+            store.profiles.push(profile);
+        }
+    }
+
+    return store;
+}
+
+// Writes the index back. Only metadata is stored here -- never a token, which
+// stays in the CLI's own credential file inside the profile directory.
+export fn saveProfiles(store: ProfileStore): Result<none, AuthError> {
+    let created = fs.createDirectory(store.root);
+    if !created {
+        return AuthError { message: "cannot create " + store.root };
+    }
+
+    let node = newObject();
+    setStr(node, "activeId", store.activeId);
+    let list = newArray();
+    for profile in store.profiles {
+        let entry = newObject();
+        setStr(entry, "id", profile.id);
+        setStr(entry, "label", profile.label);
+        setStr(entry, "kind", authKindName(profile.kind));
+        setStr(entry, "configDir", profile.configDir);
+        set(entry, "env", stringArrayNode(profile.env));
+        setInt(entry, "createdAt", profile.createdAt);
+        setInt(entry, "lastUsedAt", profile.lastUsedAt);
+        setStr(entry, "email", profile.email);
+        setStr(entry, "organizationName", profile.organizationName);
+        setStr(entry, "subscriptionType", profile.subscriptionType);
+        push(list, entry);
+    }
+    set(node, "profiles", list);
+
+    let written = fs.writeText(store.indexPath(), stringifyPretty(node));
+    if !written {
+        return AuthError { message: "cannot write " + store.indexPath() };
+    }
+    // The index carries account emails and organisation names. Not secrets,
+    // but not other users' business either.
+    makePrivate(store.indexPath());
+    return none;
+}
+
+// A filesystem-safe id derived from a label, made unique against the store.
+export fn profileIdFor(store: ProfileStore, label: str): str {
+    let base = "";
+    for (let i = 0; i < label.length; i++) {
+        let byte = label.slice(i, i + 1);
+        if indexOf("abcdefghijklmnopqrstuvwxyz0123456789", byte) >= 0 {
+            base = base + byte;
+        }
+        else if indexOf("ABCDEFGHIJKLMNOPQRSTUVWXYZ", byte) >= 0 {
+            base = base + lowercaseByte(byte);
+        }
+        else if base.length > 0 && !base.endsWith("-") {
+            base = base + "-";
+        }
+    }
+    base = base.trim();
+    while base.endsWith("-") {
+        base = base.slice(0, base.length - 1);
+    }
+    if base.length == 0 {
+        base = "account";
+    }
+    if base.length > 40 {
+        base = base.slice(0, 40);
+    }
+
+    if !store.byId(base) {
+        return base;
+    }
+    for (let n = 2; n < 1000; n++) {
+        let candidate = base + "-" + f"{n}";
+        if !store.byId(candidate) {
+            return candidate;
+        }
+    }
+    return base + "-" + randomHex(4);
+}
+
+fn lowercaseByte(byte: str): str {
+    const upper = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    const lower = "abcdefghijklmnopqrstuvwxyz";
+    let at = indexOf(upper, byte);
+    if at < 0 {
+        return byte;
+    }
+    return lower.slice(at, at + 1);
+}
+
+// Adds a profile with its own empty config directory. The account is not
+// signed in yet -- run a `LoginFlow` against a session using this profile.
+export fn createProfile(store: ProfileStore, label: str, kind: AuthKind): Result<Profile, AuthError> {
+    let id = profileIdFor(store, label);
+    let configDir = joinPath(store.profilesDir(), id);
+
+    if kind != AuthKind.System {
+        let created = fs.createDirectory(configDir);
+        if !created {
+            return AuthError { message: "cannot create " + configDir };
+        }
+    }
+    else {
+        configDir = "";
+    }
+
+    let profile = Profile {
+        id: id,
+        label: label,
+        kind: kind,
+        configDir: configDir,
+        createdAt: nowMillis(),
+    };
+    store.profiles.push(profile);
+    if store.activeId.length == 0 {
+        store.activeId = id;
+    }
+    return profile;
+}
+
+// Removes a profile from the index.
+//
+// `deleteCredentials` must be set explicitly to erase the token file. Without
+// it the directory is left alone, so a profile removed by accident can be
+// recovered by re-adding it -- and the account does not have to sign in again.
+export fn deleteProfile(store: ProfileStore, id: str, deleteCredentials: bool): bool {
+    let target = store.byId(id);
+    if !target {
+        return false;
+    }
+
+    if deleteCredentials && target.configDir.length > 0 {
+        removeFile(credentialsPath(target.configDir));
+    }
+
+    let remaining: []Profile = [];
+    for profile in store.profiles {
+        if profile.id != id {
+            remaining.push(profile);
+        }
+    }
+    store.profiles = remaining;
+
+    if store.activeId == id {
+        store.activeId = "";
+        if store.profiles.length > 0 {
+            store.activeId = store.profiles[0].id;
+        }
+    }
+    return true;
+}
+
+// Duplicates a signed-in profile, credentials included, so both keep working.
+// Useful for splitting one login across two working contexts with different
+// settings, without a second sign-in.
+export fn cloneProfile(store: ProfileStore, sourceId: str, label: str): Result<Profile, AuthError> {
+    let source = store.byId(sourceId);
+    if !source {
+        return AuthError { message: "no profile with id " + sourceId };
+    }
+    if source.configDir.length == 0 {
+        return AuthError { message: "the system profile has no directory to clone" };
+    }
+
+    let created = createProfile(store, label, source.kind);
+    if !created {
+        return created;
+    }
+
+    let copied = fs.copyDirectory(source.configDir, created.configDir, { overwrite: true });
+    if !copied {
+        deleteProfile(store, created.id, false);
+        return AuthError { message: "could not copy " + source.configDir };
+    }
+    makePrivate(credentialsPath(created.configDir));
+
+    created.env = source.env;
+    created.email = source.email;
+    created.organizationName = source.organizationName;
+    created.subscriptionType = source.subscriptionType;
+    return created;
+}
+
+// Turns the machine's existing `~/.claude` login into a managed profile by
+// copying its credentials in. The original is untouched, so the CLI keeps
+// working outside this application, and no browser round trip is needed.
+export fn adoptSystemLogin(store: ProfileStore, label: str): Result<Profile, AuthError> {
+    let systemDir = defaultConfigDir();
+    let systemCredentials = credentialsPath(systemDir);
+    let exists = fs.exists(systemCredentials);
+    if !exists {
+        return AuthError { message: "no signed-in account was found in " + systemDir };
+    }
+    if !exists {
+        return AuthError { message: "no signed-in account was found in " + systemDir };
+    }
+
+    let created = createProfile(store, label, AuthKind.ClaudeAccount);
+    if !created {
+        return created;
+    }
+
+    let copied = importCredentials(created, systemDir);
+    if !copied {
+        deleteProfile(store, created.id, false);
+        return copied;
+    }
+    return created;
+}
+
+// Copies the credentials (and, when present, the account identity) of another
+// config directory into this profile.
+export fn importCredentials(profile: Profile, sourceConfigDir: str): Result<none, AuthError> {
+    if profile.configDir.length == 0 {
+        return AuthError { message: "this profile has no config directory" };
+    }
+    let created = fs.createDirectory(profile.configDir);
+    if !created {
+        return AuthError { message: "cannot create " + profile.configDir };
+    }
+
+    let copied = fs.copyFile(credentialsPath(sourceConfigDir), credentialsPath(profile.configDir),
+        { overwrite: true });
+    if !copied {
+        return AuthError { message: "could not copy credentials from " + sourceConfigDir };
+    }
+    makePrivate(credentialsPath(profile.configDir));
+
+    // Best effort: identity is convenience, not authentication, and a missing
+    // one only costs the display name.
+    fs.copyFile(accountPath(sourceConfigDir), accountPath(profile.configDir), { overwrite: true });
+    return none;
+}
+
+// Snapshots this profile's credential file. Returns the backup's path.
+export fn backupCredentials(store: ProfileStore, profile: Profile): Result<str, AuthError> {
+    if profile.configDir.length == 0 {
+        return AuthError { message: "this profile has no config directory" };
+    }
+    let source = credentialsPath(profile.configDir);
+    let exists = fs.exists(source);
+    if !exists {
+        return AuthError { message: "this profile is not signed in" };
+    }
+
+    let created = fs.createDirectory(store.backupsDir());
+    if !created {
+        return AuthError { message: "cannot create " + store.backupsDir() };
+    }
+
+    let destination = joinPath(store.backupsDir(), profile.id + "-" + f"{nowMillis()}" + ".json");
+    let copied = fs.copyFile(source, destination, { overwrite: true });
+    if !copied {
+        return AuthError { message: "could not write the backup" };
+    }
+    makePrivate(destination);
+    return destination;
+}
+
+export fn restoreCredentials(profile: Profile, backupPath: str): Result<none, AuthError> {
+    if profile.configDir.length == 0 {
+        return AuthError { message: "this profile has no config directory" };
+    }
+    let created = fs.createDirectory(profile.configDir);
+    if !created {
+        return AuthError { message: "cannot create " + profile.configDir };
+    }
+    let copied = fs.copyFile(backupPath, credentialsPath(profile.configDir), { overwrite: true });
+    if !copied {
+        return AuthError { message: "could not restore from " + backupPath };
+    }
+    makePrivate(credentialsPath(profile.configDir));
+    return none;
+}
+
+// Every backup this store holds for a profile, newest first.
+export fn listBackups(store: ProfileStore, profileId: str): []str {
+    let paths: []str = [];
+    let listed = fs.listDir(store.backupsDir());
+    if !listed {
+        return paths;
+    }
+    for entry in listed {
+        if entry.isFile && entry.name.startsWith(profileId + "-") && entry.name.endsWith(".json") {
+            paths.push(entry.path);
+        }
+    }
+    // Names embed a millisecond timestamp of equal width for any plausible
+    // date, so a reverse lexical order is a reverse chronological one.
+    let sorted: []str = [];
+    for (let i = paths.length - 1; i >= 0; i--) {
+        sorted.push(paths[i]);
+    }
+    return sorted;
+}
+
+export fn credentialsPath(configDir: str): str {
+    return joinPath(configDir, ".credentials.json");
+}
+
+export fn accountPath(configDir: str): str {
+    return joinPath(configDir, ".claude.json");
+}
+
+export fn settingsPath(configDir: str): str {
+    return joinPath(configDir, "settings.json");
+}
+
+// ── Reading who a profile belongs to ────────────────────────────────────────
+
+export ref struct AccountIdentity {
+    // A credential file exists. Not the same as usable: it may have expired.
+    hasCredentials: bool = false;
+    emailAddress: str = "";
+    displayName: str = "";
+    organizationName: str = "";
+    accountUuid: str = "";
+    // "max" / "pro" / "team" / ...
+    subscriptionType: str = "";
+    // Unix milliseconds; 0 when unknown.
+    expiresAt: int = 0;
+    scopes: []str = [];
+
+    fn isExpired(): bool {
+        if this.expiresAt <= 0 {
+            return false;
+        }
+        return nowMillis() >= this.expiresAt;
+    }
+
+    // Whether the token is close enough to expiry that a refresh is due. The
+    // CLI refreshes on its own; this only exists so a UI can say "reconnecting"
+    // rather than looking frozen.
+    fn expiresSoon(): bool {
+        if this.expiresAt <= 0 {
+            return false;
+        }
+        return nowMillis() + 300000 >= this.expiresAt;
+    }
+}
+
+// Reads a profile's identity straight off disk -- no process spawn, safe to
+// call while drawing a profile switcher.
+//
+// The access and refresh tokens are deliberately NOT read or returned. Nothing
+// in this module needs them: the CLI reads its own credential file, and a
+// token that never enters this process cannot be logged or leaked by it.
+export fn readAccountIdentity(configDir: str): AccountIdentity {
+    let identity = AccountIdentity {};
+    if configDir.length == 0 {
+        return identity;
+    }
+
+    let credentials = fs.readText(credentialsPath(configDir));
+    if credentials {
+        let node = parseJson(credentials);
+        if node {
+            let oauth = get(node, "claudeAiOauth");
+            if oauth {
+                identity.hasCredentials = true;
+                identity.expiresAt = getIntOr(oauth, "expiresAt", 0);
+                identity.subscriptionType = getStringOr(oauth, "subscriptionType", "");
+                identity.scopes = getStringArray(oauth, "scopes");
+            }
+            else if entries(node).length > 0 {
+                // Another credential shape (a console token, say). Still a
+                // sign that this profile is signed in.
+                identity.hasCredentials = true;
+            }
+        }
+    }
+
+    let account = fs.readText(accountPath(configDir));
+    if account {
+        let node = parseJson(account);
+        if node {
+            let oauthAccount = get(node, "oauthAccount");
+            if oauthAccount {
+                identity.emailAddress = getStringOr(oauthAccount, "emailAddress", "");
+                identity.displayName = getStringOr(oauthAccount, "displayName", "");
+                identity.organizationName = getStringOr(oauthAccount, "organizationName", "");
+                identity.accountUuid = getStringOr(oauthAccount, "accountUuid", "");
+                if identity.subscriptionType.length == 0 {
+                    identity.subscriptionType = getStringOr(oauthAccount, "subscriptionType", "");
+                }
+            }
+        }
+    }
+
+    return identity;
+}
+
+// Refreshes the cached display fields of a profile from its config directory.
+export fn refreshIdentity(profile: Profile): AccountIdentity {
+    let identity = readAccountIdentity(profile.configDir);
+    if identity.emailAddress.length > 0 {
+        profile.email = identity.emailAddress;
+    }
+    if identity.organizationName.length > 0 {
+        profile.organizationName = identity.organizationName;
+    }
+    if identity.subscriptionType.length > 0 {
+        profile.subscriptionType = identity.subscriptionType;
+    }
+    return identity;
+}
+
+// ── The CLI's own view of authentication ────────────────────────────────────
+
+export ref struct AuthStatus {
+    loggedIn: bool = false;
+    // "claude.ai" | "api_key" | "third_party" | "oauth_token" | ...
+    authMethod: str = "";
+    // "anthropic" | "bedrock" | "vertex" | ...
+    apiProvider: str = "";
+    email: str = "";
+    organizationId: str = "";
+    organizationName: str = "";
+    subscriptionType: str = "";
+    error: str = "";
+
+    fn kind(): AuthKind {
+        if this.apiProvider == "bedrock" { return AuthKind.AmazonBedrock; }
+        if this.apiProvider == "vertex" { return AuthKind.GoogleVertex; }
+        if this.authMethod == "claude.ai" { return AuthKind.ClaudeAccount; }
+        if this.authMethod == "oauth_token" { return AuthKind.Console; }
+        if this.authMethod == "api_key" || this.authMethod == "api_key_helper" { return AuthKind.ApiKey; }
+        return AuthKind.System;
+    }
+
+    fn describe(): str {
+        if !this.loggedIn {
+            return "Not signed in";
+        }
+        let parts: []str = [];
+        if this.email.length > 0 {
+            parts.push(this.email);
+        }
+        if this.organizationName.length > 0 {
+            parts.push(this.organizationName);
+        }
+        if this.subscriptionType.length > 0 {
+            parts.push(this.subscriptionType);
+        }
+        if parts.length == 0 {
+            return authKindLabel(this.kind());
+        }
+        return joinStrings(parts, " · ");
+    }
+}
+
+// Asks the CLI itself who it thinks it is, for a given config directory.
+//
+// Authoritative in a way that reading the credential file is not: it accounts
+// for environment variables (`ANTHROPIC_API_KEY`, the Bedrock/Vertex switches)
+// and for a token that has been revoked server-side. Costs a process spawn, so
+// call it on a profile switch, not per frame.
+export fn queryAuthStatus(binaryPath: str, configDir: str, extraEnv: []str): AuthStatus {
+    let overrides: []str = [];
+    if configDir.length > 0 {
+        overrides.push("CLAUDE_CONFIG_DIR=" + configDir);
+    }
+    for entry in extraEnv {
+        overrides.push(entry);
+    }
+    let remove: []str = ["CLAUDECODE", "CLAUDE_CODE_CHILD_SESSION"];
+
+    let result = process.runCaptured(binaryPath, ["auth", "status", "--json"], {
+        env: spawnEnvironment(overrides, remove),
+        inherit_stdio: false,
+    });
+
+    let status = AuthStatus {};
+    if result.exitCode != 0 {
+        status.error = result.stderrResult.trim();
+        if status.error.length == 0 {
+            status.error = "`claude auth status` exited with " + f"{result.exitCode}";
+        }
+        return status;
+    }
+
+    let node = parseJson(result.stdoutResult);
+    if !node {
+        status.error = "`claude auth status` did not return JSON";
+        return status;
+    }
+
+    status.loggedIn = getBoolOr(node, "loggedIn", false);
+    status.authMethod = getStringOr(node, "authMethod", "");
+    status.apiProvider = getStringOr(node, "apiProvider", "");
+    status.email = getStringOr(node, "email", "");
+    status.organizationId = getStringOr(node, "orgId", "");
+    status.organizationName = getStringOr(node, "orgName", "");
+    status.subscriptionType = getStringOr(node, "subscriptionType", "");
+    return status;
+}
+
+// Signs a profile out through the CLI, which revokes the token server-side as
+// well as deleting it. Prefer this to deleting the file: a deleted file leaves
+// a live refresh token in existence.
+export fn logout(binaryPath: str, profile: Profile): Result<none, AuthError> {
+    let overrides: []str = [];
+    if profile.configDir.length > 0 {
+        overrides.push("CLAUDE_CONFIG_DIR=" + profile.configDir);
+    }
+    let remove: []str = ["CLAUDECODE", "CLAUDE_CODE_CHILD_SESSION"];
+
+    let result = process.runCaptured(binaryPath, ["auth", "logout"], {
+        env: spawnEnvironment(overrides, remove),
+        inherit_stdio: false,
+    });
+    if result.exitCode != 0 {
+        // Fall back to removing the file, so the local state at least matches
+        // what the user asked for.
+        if profile.configDir.length > 0 {
+            removeFile(credentialsPath(profile.configDir));
+        }
+        return AuthError { message: result.stderrResult.trim() };
+    }
+    return none;
+}
+
+// ── Applying a profile to a session ─────────────────────────────────────────
+
+// Points spawn options at this profile, IN PLACE.
+//
+// `SpawnOptions` is a reference type, so this mutates the options it is given
+// rather than returning a modified copy -- and the name says so, because a
+// function that looked like it returned a copy while aliasing the original
+// would be a trap for anyone applying two profiles to one template.
+//
+// The profile's config directory selects the account, and its extra
+// environment carries an API key or cloud settings. For an OAuth profile, any
+// inherited `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` is also withheld:
+// without that, a key in the user's shell would silently win over the account
+// they picked, and the session would bill somewhere they did not choose.
+export fn applyProfileTo(options: mut SpawnOptions, profile: Profile) {
+    if profile.configDir.length > 0 {
+        options.configDir = profile.configDir;
+    }
+
+    for entry in profile.env {
+        options.extraEnv.push(entry);
+    }
+
+    if profile.kind == AuthKind.ClaudeAccount || profile.kind == AuthKind.Console {
+        options.removeEnv.push("ANTHROPIC_API_KEY");
+        options.removeEnv.push("ANTHROPIC_AUTH_TOKEN");
+        options.removeEnv.push("CLAUDE_CODE_USE_BEDROCK");
+        options.removeEnv.push("CLAUDE_CODE_USE_VERTEX");
+    }
+}
+
+// The environment entries an API-key profile needs. Store the key in the
+// profile rather than in the process environment so switching accounts does
+// not depend on how the application was launched.
+export fn apiKeyEnv(apiKey: str): []str {
+    let env: []str = ["ANTHROPIC_API_KEY=" + apiKey];
+    return env;
+}
+
+export fn bedrockEnv(region: str): []str {
+    let env: []str = ["CLAUDE_CODE_USE_BEDROCK=1"];
+    if region.length > 0 {
+        env.push("AWS_REGION=" + region);
+    }
+    return env;
+}
+
+export fn vertexEnv(project: str, region: str): []str {
+    let env: []str = ["CLAUDE_CODE_USE_VERTEX=1"];
+    if project.length > 0 {
+        env.push("ANTHROPIC_VERTEX_PROJECT_ID=" + project);
+    }
+    if region.length > 0 {
+        env.push("CLOUD_ML_REGION=" + region);
+    }
+    return env;
+}
+
+// ── The sign-in flow ────────────────────────────────────────────────────────
+
+export enum LoginStage {
+    // Nothing sent yet.
+    Idle,
+    // The `claude_authenticate` request is in flight.
+    Requesting,
+    // The URLs are known. The user must approve in a browser -- either the one
+    // this flow opened, or by visiting `manualUrl` themselves.
+    Awaiting,
+    // A pasted code is being exchanged.
+    Completing,
+    Success,
+    Failed,
+    Cancelled,
+}
+
+// A value type: `poll()` returns one on every frame of a sign-in screen.
+export struct LoginProgress {
+    stage: LoginStage = LoginStage.Idle;
+    // Open this in a browser. It completes without further interaction.
+    automaticUrl: str = "";
+    // Show this for the user to open themselves; it ends with a code to paste
+    // back through `submitCode`.
+    manualUrl: str = "";
+    // True once the flow tried to open a browser and failed -- the signal to
+    // fall back to showing `manualUrl` prominently.
+    browserFailed: bool = false;
+    error: str = "";
+
+    fn isFinished(): bool {
+        return this.stage == LoginStage.Success || this.stage == LoginStage.Failed
+            || this.stage == LoginStage.Cancelled;
+    }
+
+    // What to show the user. Every branch returns a literal or a stored
+    // string, so this allocates nothing.
+    fn describe(): str {
+        if this.stage == LoginStage.Requesting {
+            return "Contacting Claude…";
+        }
+        if this.stage == LoginStage.Awaiting {
+            if this.browserFailed {
+                return "Open the sign-in link in a browser, then paste the code back here";
+            }
+            return "Finish signing in in your browser";
+        }
+        if this.stage == LoginStage.Completing {
+            return "Completing sign-in…";
+        }
+        if this.stage == LoginStage.Success {
+            return "Signed in";
+        }
+        if this.stage == LoginStage.Failed {
+            return this.error;
+        }
+        if this.stage == LoginStage.Cancelled {
+            return "Sign-in cancelled";
+        }
+        return "";
+    }
+}
+
+// Drives an OAuth sign-in over a running session's control channel.
+//
+// Two paths, because the automatic one cannot always work -- a remote host, a
+// browser-less machine, a locked-down desktop:
+//
+//   automatic: open `automaticUrl`; the CLI's local callback receives the
+//              grant and `claude_oauth_wait_for_completion` resolves.
+//   manual:    the user opens `manualUrl`, approves, and pastes the code back
+//              through `submitCode`. Both paths end in the same place.
+//
+// The flow needs a session because `claude_authenticate` is a control request:
+// the CLI owns the OAuth client and the token store. That session can be a
+// throwaway spawned only to sign in.
+export ref struct LoginFlow {
+    session: mut Session;
+    // Sign in to a Claude subscription (true) or the Anthropic Console (false).
+    withClaudeAccount: bool = true;
+
+    stage: LoginStage = LoginStage.Idle;
+    automaticUrl: str = "";
+    manualUrl: str = "";
+    error: str = "";
+    browserFailed: bool = false;
+    waiting: bool = false;
+
+    fn constructor(session: mut Session, withClaudeAccount: bool): mut LoginFlow {
+        return LoginFlow { session: session, withClaudeAccount: withClaudeAccount };
+    }
+
+    // Sends `claude_authenticate`. Call once, then poll.
+    mut fn start() {
+        if this.stage != LoginStage.Idle {
+            return;
+        }
+        this.stage = LoginStage.Requesting;
+
+        let request = newObject();
+        setStr(request, "subtype", "claude_authenticate");
+        setBool(request, "loginWithClaudeAi", this.withClaudeAccount);
+
+        this.session.sendControl(request,
+            (response: json.Node) => {
+                this.automaticUrl = getStringOr(response, "automaticUrl", "");
+                this.manualUrl = getStringOr(response, "manualUrl", "");
+                this.stage = LoginStage.Awaiting;
+            },
+            (message: str) => {
+                this.error = message;
+                this.stage = LoginStage.Failed;
+            });
+    }
+
+    // Advances the flow. Also pumps the session, so a caller driving only this
+    // (a dedicated sign-in screen) does not need its own poll loop.
+    mut fn poll(): LoginProgress {
+        this.session.poll();
+
+        // Once the URLs are known, wait for the CLI to report completion. The
+        // request resolves when the browser round trip finishes, whichever
+        // path the user took, so it is issued exactly once.
+        if this.stage == LoginStage.Awaiting && !this.waiting {
+            this.waiting = true;
+            let request = newObject();
+            setStr(request, "subtype", "claude_oauth_wait_for_completion");
+            this.session.sendControl(request,
+                (response: json.Node) => {
+                    this.stage = LoginStage.Success;
+                },
+                (message: str) => {
+                    // Only a real failure; a cancelled flow has already moved on.
+                    if this.stage != LoginStage.Cancelled && this.stage != LoginStage.Success {
+                        this.error = message;
+                        this.stage = LoginStage.Failed;
+                    }
+                });
+        }
+
+        return this.progress();
+    }
+
+    // Opens the automatic URL in the user's browser. Returns false when no
+    // browser could be launched, which is not fatal: `manualUrl` still works.
+    mut fn openBrowser(): bool {
+        if this.automaticUrl.length == 0 {
+            return false;
+        }
+        let opened = openInBrowser(this.automaticUrl);
+        if !opened {
+            this.browserFailed = true;
+        }
+        return opened;
+    }
+
+    // Completes the flow with a code the user pasted. Anthropic's manual page
+    // shows it as `<code>#<state>`; either form is accepted.
+    mut fn submitCode(code: str) {
+        let trimmed = code.trim();
+        if trimmed.length == 0 {
+            this.error = "no code was entered";
+            return;
+        }
+
+        let authorizationCode = trimmed;
+        let state = "";
+        let cut = indexOf(trimmed, "#");
+        if cut >= 0 {
+            authorizationCode = trimmed.slice(0, cut);
+            state = trimmed.slice(cut + 1, trimmed.length);
+        }
+
+        this.stage = LoginStage.Completing;
+
+        let request = newObject();
+        setStr(request, "subtype", "claude_oauth_callback");
+        setStr(request, "authorizationCode", authorizationCode);
+        setStr(request, "state", state);
+
+        this.session.sendControl(request,
+            (response: json.Node) => {
+                this.stage = LoginStage.Success;
+            },
+            (message: str) => {
+                this.error = message;
+                this.stage = LoginStage.Failed;
+            });
+    }
+
+    mut fn cancel() {
+        if this.stage == LoginStage.Success {
+            return;
+        }
+        this.stage = LoginStage.Cancelled;
+    }
+
+    fn progress(): LoginProgress {
+        return LoginProgress {
+            stage: this.stage,
+            automaticUrl: this.automaticUrl,
+            manualUrl: this.manualUrl,
+            browserFailed: this.browserFailed,
+            error: this.error,
+        };
+    }
+}
+
+// Spawn options for a session that exists only to sign in: no transcript, no
+// tools, no editor context. `LoginFlow` needs a live CLI, and this is the
+// cheapest one that will do.
+export fn loginSessionOptions(binaryPath: str, cwd: str, configDir: str): SpawnOptions {
+    return SpawnOptions {
+        binaryPath: binaryPath,
+        cwd: cwd,
+        configDir: configDir,
+        persistSession: false,
+        includePartialMessages: false,
+        replayUserMessages: false,
+        thinking: { mode: ThinkingMode.Disabled },
+        // The account being signed in is the one whose directory was given;
+        // an inherited key must not decide it instead.
+        removeEnv: ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"],
+    };
+}

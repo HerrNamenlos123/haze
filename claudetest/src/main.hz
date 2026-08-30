@@ -1,0 +1,1539 @@
+import claude
+
+// Test driver for the `claude` module. Which suite runs is chosen with
+// CLAUDE_TEST:
+//
+//   unit      pure logic: json helpers, argv, protocol parsing, diffs   (default)
+//   handshake spawns the real CLI and completes the initialize handshake
+//   fake      drives the full protocol against a scripted fake CLI
+//   alloc     asserts that an idle poll() allocates nothing
+//   history   scans this machine's real transcripts
+//   store     profiles and transcript forking, in a temporary directory
+//   live      a real one-turn conversation (costs quota)
+//
+// Everything except `live` is free and offline.
+
+let failures = 0;
+let checks = 0;
+
+fn check(condition: bool, label: str) {
+    checks = checks + 1;
+    if !condition {
+        failures = failures + 1;
+        fmt.println(f"  FAIL  {label}");
+    }
+}
+
+fn checkEq(actual: str, expected: str, label: str) {
+    checks = checks + 1;
+    if actual != expected {
+        failures = failures + 1;
+        fmt.println(f"  FAIL  {label}");
+        fmt.println(f"        expected: {expected}");
+        fmt.println(f"        actual:   {actual}");
+    }
+}
+
+fn checkEqInt(actual: int, expected: int, label: str) {
+    checks = checks + 1;
+    if actual != expected {
+        failures = failures + 1;
+        fmt.println(f"  FAIL  {label}: expected {expected}, got {actual}");
+    }
+}
+
+fn section(name: str) {
+    fmt.println(f"— {name}");
+}
+
+fn main(): int {
+    let mode = env.get("CLAUDE_TEST");
+    let selected = "unit";
+    if mode {
+        selected = mode;
+    }
+
+    if selected == "unit" {
+        runUnitTests();
+    }
+    else if selected == "handshake" {
+        return runHandshake();
+    }
+    else if selected == "fake" {
+        runFakeCli();
+    }
+    else if selected == "alloc" {
+        runAllocationTest();
+    }
+    else if selected == "history" {
+        runHistoryTest();
+    }
+    else if selected == "store" {
+        runStoreTests();
+    }
+    else if selected == "live" {
+        return runLive();
+    }
+    else {
+        fmt.println(f"unknown CLAUDE_TEST mode: {selected}");
+        return 2;
+    }
+
+    fmt.println("");
+    if failures == 0 {
+        fmt.println(f"{checks} checks passed");
+        return 0;
+    }
+    fmt.println(f"{failures} of {checks} checks FAILED");
+    return 1;
+}
+
+// ── Unit tests ──────────────────────────────────────────────────────────────
+
+fn runUnitTests() {
+    testJson();
+    testIdentifiers();
+    testArgv();
+    testProtocol();
+    testTools();
+    testDiff();
+}
+
+fn testTools() {
+    section("tool inputs");
+
+    check(claude.toolKind("Bash") == claude.ToolKind.Bash, "Bash kind");
+    check(claude.toolKind("Task") == claude.ToolKind.Task, "Task kind");
+    check(claude.toolKind("Agent") == claude.ToolKind.Task, "Agent aliases Task");
+    check(claude.toolKind("mcp__github__create_issue") == claude.ToolKind.Mcp, "mcp kind");
+    check(claude.toolKind("Nonesuch") == claude.ToolKind.Unknown, "unknown kind");
+    checkEq(claude.mcpServerOf("mcp__github__create_issue"), "github", "mcp server name");
+    checkEq(claude.mcpToolOf("mcp__github__create_issue"), "create_issue", "mcp tool name");
+    check(claude.isReadOnlyTool("Read"), "Read is read-only");
+    check(!claude.isReadOnlyTool("Write"), "Write is not read-only");
+    check(claude.isReadOnlyTool("mcp__x__list_things"), "an mcp list tool reads as read-only");
+    check(claude.isMutatingTool("Edit"), "Edit mutates");
+    check(claude.isHiddenTool("ToolSearch"), "ToolSearch is hidden");
+
+    let bashNode = claude.parseJson("{\"command\":\"ls -la\",\"description\":\"List files\"}");
+    if bashNode {
+        let parsed = claude.parseBashInput(bashNode);
+        checkEq(parsed.command, "ls -la", "bash command");
+        let summary = claude.describeTool("Bash", bashNode);
+        checkEq(summary.verb, "Bash", "bash summary verb");
+        checkEq(summary.subject, "List files", "bash summary subject");
+        checkEq(summary.detail, "ls -la", "bash summary detail");
+        checkEq(summary.title(), "Bash List files", "bash composed title");
+    }
+
+    let readNode = claude.parseJson("{\"file_path\":\"/a/b/main.hz\",\"offset\":10,\"limit\":20}");
+    if readNode {
+        let summary = claude.describeTool("Read", readNode);
+        checkEq(summary.verb, "Read", "read summary verb");
+        checkEq(summary.subject, "main.hz", "read summary subject");
+        checkEqInt(summary.lineStart, 10, "read line start");
+        checkEqInt(summary.lineEnd, 29, "read line end");
+        checkEq(summary.filePath, "/a/b/main.hz", "read file path");
+    }
+
+    // A malformed input must not panic.
+    let junk = claude.parseJson("{\"file_path\":42}");
+    if junk {
+        let parsed = claude.parseEditInput(junk);
+        checkEq(parsed.filePath, "", "a wrongly typed field reads as empty");
+    }
+
+    // AskUserQuestion round trip.
+    let questionNode = claude.parseJson("{\"questions\":[{\"question\":\"Which?\",\"header\":\"Pick\","
+        + "\"multiSelect\":false,\"options\":[{\"label\":\"A\",\"description\":\"first\"},{\"label\":\"B\"}]}]}");
+    if questionNode {
+        let parsed = claude.parseAskUserQuestionInput(questionNode);
+        checkEqInt(parsed.questions.length, 1, "one question");
+        checkEqInt(parsed.questions[0].options.length, 2, "two options");
+        checkEq(parsed.questions[0].header, "Pick", "question header");
+
+        let answers: []claude.QuestionAnswer = [
+            claude.QuestionAnswer { question: "Which?", labels: ["A", "B"] },
+        ];
+        let answered = claude.answeredQuestionInput(questionNode, answers);
+        let map = claude.get(answered, "answers");
+        check(map as bool, "answers map added");
+        if map {
+            checkEq(claude.getStringOr(map, "Which?", ""), "A, B", "answers joined by label");
+        }
+    }
+
+    let denial = "The user doesn't want to proceed with this tool use. The tool use was rejected"
+        + " (eg. if it was a file edit, the new_string was NOT written to the file)."
+        + " The user provided the following reason for the rejection: use ripgrep instead";
+    checkEq(claude.strippedDenialReason(denial), "use ripgrep instead", "denial boilerplate stripped");
+    checkEq(claude.strippedDenialReason("something else"), "something else", "unrelated text untouched");
+}
+
+fn testDiff() {
+    section("diffs");
+
+    let base = "one\ntwo\nthree\nfour\nfive";
+
+    // A plain substring edit.
+    let edit = claude.EditInput {
+        filePath: "/tmp/x.txt",
+        oldString: "three",
+        newString: "THREE",
+    };
+    let diff = claude.editDiff(edit, base, {});
+    checkEqInt(diff.added, 1, "one line added");
+    checkEqInt(diff.removed, 1, "one line removed");
+    check(!diff.isUnanchored, "edit anchored in the file");
+    checkEq(diff.summary(), "+1 −1", "diff summary");
+    checkEqInt(diff.hunks.length, 1, "one hunk");
+    if diff.hunks.length == 1 {
+        let hunk = diff.hunks[0];
+        checkEqInt(hunk.oldStart, 1, "hunk starts at the first context line");
+        // 2 context before, the change, 2 context after.
+        checkEqInt(hunk.lines.length, 6, "hunk line count");
+    }
+
+    // An edit whose anchor is gone: the diff still renders, flagged.
+    let stale = claude.EditInput {
+        filePath: "/tmp/x.txt",
+        oldString: "nowhere",
+        newString: "somewhere",
+    };
+    let staleDiff = claude.editDiff(stale, base, {});
+    check(staleDiff.isUnanchored, "a stale edit is flagged");
+
+    // applyEdit.
+    let applied = claude.applyEdit(base, "two", "2", false);
+    check(applied as bool, "applyEdit found the anchor");
+    if applied {
+        checkEq(applied, "one\n2\nthree\nfour\nfive", "applyEdit result");
+    }
+    check(!claude.applyEdit(base, "zzz", "x", false), "applyEdit reports a missing anchor");
+
+    let repeated = claude.applyEdit("a a a", "a", "b", true);
+    if repeated {
+        checkEq(repeated, "b b b", "applyEdit replaceAll");
+    }
+    let once = claude.applyEdit("a a a", "a", "b", false);
+    if once {
+        checkEq(once, "b a a", "applyEdit single replacement");
+    }
+
+    // Write to a new file.
+    let write = claude.WriteInput { filePath: "/tmp/new.txt", content: "alpha\nbeta" };
+    let newDiff = claude.writeDiff(write, none, {});
+    check(newDiff.isNewFile, "write to a missing file is a creation");
+    checkEqInt(newDiff.added, 2, "both lines added");
+    checkEq(newDiff.summary(), "2 lines", "new-file summary");
+
+    // Rewriting an existing file.
+    let rewrite = claude.writeDiff(claude.WriteInput { filePath: "/tmp/x.txt", content: "one\nTWO\nthree\nfour\nfive" },
+        base, {});
+    check(rewrite.isFullRewrite, "write over an existing file is a rewrite");
+    checkEqInt(rewrite.added, 1, "rewrite added");
+    checkEqInt(rewrite.removed, 1, "rewrite removed");
+
+    // Identical content produces nothing.
+    let identical = claude.diffLines(base, base);
+    let changes = 0;
+    for line in identical {
+        if line.kind != claude.DiffLineKind.Context {
+            changes = changes + 1;
+        }
+    }
+    checkEqInt(changes, 0, "identical texts have no changed lines");
+    checkEqInt(claude.buildHunks(identical, 3).length, 0, "identical texts have no hunks");
+
+    // Pure insertion and pure deletion.
+    let inserted = claude.diffLines("a\nc", "a\nb\nc");
+    let insertedAdds = 0;
+    let insertedRemoves = 0;
+    for line in inserted {
+        if line.kind == claude.DiffLineKind.Added { insertedAdds = insertedAdds + 1; }
+        if line.kind == claude.DiffLineKind.Removed { insertedRemoves = insertedRemoves + 1; }
+    }
+    checkEqInt(insertedAdds, 1, "one insertion");
+    checkEqInt(insertedRemoves, 0, "no deletions");
+
+    // Line numbers survive the prefix/suffix trimming.
+    let numbered = claude.diffLines("a\nb\nc\nd", "a\nB\nc\nd");
+    for line in numbered {
+        if line.kind == claude.DiffLineKind.Removed {
+            checkEqInt(line.oldLine, 2, "removed line keeps its old number");
+        }
+        if line.kind == claude.DiffLineKind.Added {
+            checkEqInt(line.newLine, 2, "added line keeps its new number");
+        }
+    }
+
+    // MultiEdit applies its edits in sequence.
+    let multi = claude.MultiEditInput {
+        filePath: "/tmp/x.txt",
+        edits: [
+            claude.EditInput { oldString: "one", newString: "1" },
+            claude.EditInput { oldString: "five", newString: "5" },
+        ],
+    };
+    let multiDiff = claude.multiEditDiff(multi, base, {});
+    check(!multiDiff.isUnanchored, "multi-edit anchored");
+    checkEqInt(multiDiff.added, 2, "two lines changed by the multi-edit");
+
+    let unified = claude.unifiedDiff(diff);
+    check(claude.indexOf(unified, "-three") >= 0, "unified diff shows the removal");
+    check(claude.indexOf(unified, "+THREE") >= 0, "unified diff shows the addition");
+    check(claude.indexOf(unified, "@@ -") >= 0, "unified diff has a hunk header");
+}
+
+fn testJson() {
+    section("json helpers");
+
+    let parsed = claude.parseJson("{\"a\":1,\"b\":\"two\",\"c\":[1,2,3],\"d\":null,\"e\":true,\"f\":{\"g\":\"h\"}}");
+    check(parsed as bool, "parses an object");
+    if !parsed {
+        return;
+    }
+
+    checkEqInt(claude.getIntOr(parsed, "a", -1), 1, "int field");
+    checkEq(claude.getStringOr(parsed, "b", ""), "two", "string field");
+    check(claude.getBoolOr(parsed, "e", false), "bool field");
+    check(!claude.get(parsed, "d"), "explicit null reads as absent");
+    check(claude.getRaw(parsed, "d") as bool, "getRaw keeps an explicit null");
+    check(!claude.get(parsed, "missing"), "missing key is none");
+    check(claude.has(parsed, "d"), "has() sees a null key");
+
+    let c = claude.get(parsed, "c");
+    check(c as bool, "array field present");
+    if c {
+        checkEqInt(claude.arrayLength(c), 3, "array length");
+        let second = claude.at(c, 1);
+        check(second as bool, "array index in range");
+        if second {
+            let value = claude.asInt(second);
+            check(value as bool, "array element is a number");
+            if value {
+                checkEqInt(value, 2, "array element value");
+            }
+        }
+        check(!claude.at(c, 3), "array index out of range is none");
+        check(!claude.at(c, -1), "negative array index is none");
+    }
+
+    // Type mismatches must yield none rather than panicking.
+    check(!claude.getString(parsed, "a"), "int read as string is none");
+    check(!claude.getInt(parsed, "b"), "string read as int is none");
+    check(claude.arrayLength(parsed) == 0, "arrayLength of an object is 0");
+
+    let entries = claude.entries(parsed);
+    checkEqInt(entries.length, 6, "entries() walks every key");
+    checkEq(entries[0].key, "a", "entries() preserves order");
+
+    // Round trip.
+    let built = claude.newObject();
+    claude.setStr(built, "type", "user");
+    let arr = claude.newArray();
+    claude.pushStr(arr, "x");
+    claude.pushStr(arr, "y");
+    claude.set(built, "items", arr);
+    checkEq(claude.stringify(built), "{\"type\":\"user\",\"items\":[\"x\",\"y\"]}", "build and stringify");
+
+    let cloned = claude.clone(built);
+    claude.setStr(cloned, "type", "assistant");
+    checkEq(claude.getStringOr(built, "type", ""), "user", "clone is independent");
+
+    check(!claude.parseJson("{not json"), "malformed input is none, not a panic");
+
+    // Overwriting an existing key must REPLACE it. The underlying cJSON `add`
+    // appends and lookups take the first match, so a naive set leaves the old
+    // value silently in force -- which broke transcript forking until it was
+    // caught here.
+    let overwritten = claude.parseJson("{\"a\":1,\"b\":2}");
+    check(overwritten as bool, "parsed for overwrite");
+    if overwritten {
+        claude.setInt(overwritten, "a", 99);
+        checkEqInt(claude.getIntOr(overwritten, "a", -1), 99, "an overwritten key reads back new");
+        checkEqInt(claude.entries(overwritten).length, 2, "overwriting does not duplicate the key");
+        checkEq(claude.stringify(overwritten), "{\"b\":2,\"a\":99}", "the old entry is gone");
+
+        claude.setStr(overwritten, "c", "new");
+        checkEqInt(claude.entries(overwritten).length, 3, "a fresh key is added");
+
+        claude.remove(overwritten, "b");
+        check(!claude.get(overwritten, "b"), "remove() drops a key");
+        checkEqInt(claude.entries(overwritten).length, 2, "and shrinks the object");
+        claude.remove(overwritten, "nonexistent");
+        checkEqInt(claude.entries(overwritten).length, 2, "removing a missing key is a no-op");
+    }
+
+    // Wall-clock time, not monotonic-since-start: a token expiry or a message
+    // timestamp is compared against the world outside this process.
+    let now = claude.nowMillis();
+    check(now > 1780000000000, "nowMillis is a Unix epoch timestamp, not an uptime");
+    check(now < 4102444800000, "nowMillis is not absurdly far in the future");
+}
+
+fn testIdentifiers() {
+    section("identifiers and hashing");
+
+    let id = claude.uuid();
+    checkEqInt(id.length, 36, "uuid length");
+    checkEq(id.slice(14, 15), "4", "uuid version nibble");
+    let variant = id.slice(19, 20);
+    check(variant == "8" || variant == "9" || variant == "a" || variant == "b", "uuid variant nibble");
+    check(claude.uuid() != claude.uuid(), "uuids differ");
+
+    // NIST vectors.
+    checkEq(claude.sha256(""),
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "sha256 of empty");
+    checkEq(claude.sha256("abc"),
+        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", "sha256 of abc");
+    checkEq(claude.sha256("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"),
+        "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1", "sha256 multi-block");
+
+    // A 1 MiB message exercises the chunked update path.
+    let block = "0123456789abcdef";
+    let big = "";
+    for (let i = 0; i < 16; i++) {
+        block = block + block;
+    }
+    checkEqInt(block.length, 1048576, "built a 1 MiB string");
+    check(claude.sha256(block).length == 64, "sha256 of 1 MiB");
+
+    checkEqInt(claude.indexOf("hello world", "world"), 6, "indexOf");
+    checkEqInt(claude.indexOf("hello", "z"), -1, "indexOf miss");
+    checkEqInt(claude.lastIndexOf("a/b/c", "/"), 3, "lastIndexOf");
+    checkEq(claude.baseName("/a/b/c.txt"), "c.txt", "baseName");
+    checkEq(claude.dirName("/a/b/c.txt"), "/a/b", "dirName");
+    checkEq(claude.joinPath("/a/", "b"), "/a/b", "joinPath collapses separators");
+    checkEq(claude.joinPath("/a", "b"), "/a/b", "joinPath adds a separator");
+
+    let lines = claude.splitLines("a\r\nb\nc\n");
+    checkEqInt(lines.length, 3, "splitLines count");
+    checkEq(lines[0], "a", "splitLines strips CR");
+    checkEq(claude.joinStrings(lines, "|"), "a|b|c", "joinStrings");
+}
+
+fn testArgv() {
+    section("argv construction");
+
+    let base = claude.buildArgv(claude.SpawnOptions {
+        binaryPath: "/bin/claude",
+        cwd: "/tmp",
+    });
+    let joined = claude.joinStrings(base, " ");
+
+    check(claude.indexOf(joined, "--output-format stream-json") >= 0, "output format");
+    check(claude.indexOf(joined, "--input-format stream-json") >= 0, "input format");
+    check(claude.indexOf(joined, "--permission-prompt-tool stdio") >= 0, "permission prompts over stdio");
+    check(claude.indexOf(joined, "--include-partial-messages") >= 0, "streaming on by default");
+    check(claude.indexOf(joined, "--enable-auth-status") >= 0, "auth status frames");
+    check(claude.indexOf(joined, "--no-chrome") >= 0, "no chrome");
+    check(claude.indexOf(joined, "--replay-user-messages") >= 0, "replay user messages");
+    check(claude.indexOf(joined, "--setting-sources=user,project,local") >= 0, "setting sources");
+    check(claude.indexOf(joined, "--max-thinking-tokens 31999") >= 0, "thinking budget");
+    check(claude.indexOf(joined, "--permission-mode") < 0, "no permission mode unless asked");
+    check(claude.indexOf(joined, "--resume") < 0, "no resume unless asked");
+
+    let resumed = claude.buildArgv(claude.SpawnOptions {
+        binaryPath: "/bin/claude",
+        cwd: "/tmp",
+        resume: "11112222-3333-4444-5555-666677778888",
+        forkSession: true,
+        resumeSessionAt: "aaaa",
+        permissionMode: claude.PermissionMode.AcceptEdits,
+        model: "claude-opus-5",
+        fallbackModel: "claude-sonnet-5",
+        additionalDirectories: ["/one", "/two"],
+        includePartialMessages: false,
+        persistSession: false,
+    });
+    let resumedJoined = claude.joinStrings(resumed, " ");
+    check(claude.indexOf(resumedJoined, "--resume=11112222-3333-4444-5555-666677778888") >= 0, "resume flag");
+    check(claude.indexOf(resumedJoined, "--fork-session") >= 0, "fork flag");
+    check(claude.indexOf(resumedJoined, "--resume-session-at=aaaa") >= 0, "resume-at flag");
+    check(claude.indexOf(resumedJoined, "--permission-mode acceptEdits") >= 0, "permission mode");
+    check(claude.indexOf(resumedJoined, "--model claude-opus-5") >= 0, "model");
+    check(claude.indexOf(resumedJoined, "--fallback-model claude-sonnet-5") >= 0, "fallback model");
+    check(claude.indexOf(resumedJoined, "--add-dir /one --add-dir /two") >= 0, "additional directories");
+    check(claude.indexOf(resumedJoined, "--include-partial-messages") < 0, "streaming can be off");
+    check(claude.indexOf(resumedJoined, "--no-session-persistence") >= 0, "no session persistence");
+
+    // A fallback identical to the model is dropped: the CLI rejects it.
+    let same = claude.buildArgv(claude.SpawnOptions {
+        binaryPath: "/bin/claude",
+        cwd: "/tmp",
+        model: "m",
+        fallbackModel: "m",
+    });
+    check(claude.indexOf(claude.joinStrings(same, " "), "--fallback-model") < 0, "identical fallback dropped");
+
+    let disabled = claude.buildArgv(claude.SpawnOptions {
+        binaryPath: "/bin/claude",
+        cwd: "/tmp",
+        thinking: { mode: claude.ThinkingMode.Disabled },
+    });
+    let disabledJoined = claude.joinStrings(disabled, " ");
+    check(claude.indexOf(disabledJoined, "--thinking disabled") >= 0, "thinking disabled");
+    check(claude.indexOf(disabledJoined, "--thinking-display") < 0, "no display flag when disabled");
+
+    let env = claude.buildEnv(claude.SpawnOptions {
+        binaryPath: "/bin/claude",
+        cwd: "/tmp",
+        entrypoint: "my-editor",
+        configDir: "/home/u/.claude-work",
+    });
+    let envJoined = claude.joinStrings(env, " ");
+    check(claude.indexOf(envJoined, "CLAUDE_CODE_ENTRYPOINT=my-editor") >= 0, "entrypoint tag");
+    check(claude.indexOf(envJoined, "CLAUDE_CONFIG_DIR=/home/u/.claude-work") >= 0, "config dir selects the account");
+    check(claude.indexOf(envJoined, "CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING=true") >= 0, "checkpointing");
+    check(claude.indexOf(envJoined, "CLAUDECODE=") < 0, "nested-session markers removed");
+    check(claude.indexOf(envJoined, "PATH=") >= 0, "the child inherits PATH");
+    check(claude.indexOf(envJoined, "HOME=") >= 0, "the child inherits HOME");
+}
+
+fn testProtocol() {
+    section("protocol parsing");
+
+    checkEq(claude.permissionModeName(claude.PermissionMode.AcceptEdits), "acceptEdits", "mode name");
+    let mode = claude.permissionModeFromName("bypassPermissions");
+    check(mode as bool, "mode parsed");
+    if mode {
+        check(mode == claude.PermissionMode.BypassPermissions, "mode round trip");
+    }
+    check(!claude.permissionModeFromName("nonsense"), "unknown mode is none");
+
+    // Content blocks.
+    let assistantJson = "{\"type\":\"assistant\",\"uuid\":\"u1\",\"session_id\":\"s1\","
+        + "\"parent_tool_use_id\":null,\"message\":{\"id\":\"msg_1\",\"role\":\"assistant\","
+        + "\"model\":\"claude-opus-5\",\"content\":["
+        + "{\"type\":\"text\",\"text\":\"Hello\"},"
+        + "{\"type\":\"thinking\",\"thinking\":\"hmm\",\"signature\":\"sig\"},"
+        + "{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"Bash\",\"input\":{\"command\":\"ls\"}},"
+        + "{\"type\":\"fallback\"}],"
+        + "\"usage\":{\"input_tokens\":10,\"cache_read_input_tokens\":5,\"output_tokens\":2}}}";
+    let assistantNode = claude.parseJson(assistantJson);
+    check(assistantNode as bool, "assistant frame parses");
+    if !assistantNode {
+        return;
+    }
+
+    let frame = claude.parseFrame(assistantNode);
+    check(frame.kind == claude.FrameKind.Assistant, "frame kind");
+    checkEq(frame.uuid, "u1", "frame uuid");
+    checkEq(frame.sessionId, "s1", "frame session id");
+    checkEq(frame.parentToolUseId, "", "null parent id reads as empty");
+
+    let message = claude.get(assistantNode, "message");
+    check(message as bool, "message present");
+    if !message {
+        return;
+    }
+    let content = claude.get(message, "content");
+    check(content as bool, "content present");
+    if !content {
+        return;
+    }
+
+    let blocks = claude.parseContentBlocks(content);
+    checkEqInt(blocks.length, 3, "fallback block dropped");
+    check(blocks[0].kind == claude.BlockKind.Text, "text block");
+    checkEq(blocks[0].text, "Hello", "text body");
+    check(blocks[1].kind == claude.BlockKind.Thinking, "thinking block");
+    checkEq(blocks[1].text, "hmm", "thinking body");
+    checkEq(blocks[1].signature, "sig", "thinking signature");
+    check(blocks[2].kind == claude.BlockKind.ToolUse, "tool_use block");
+    checkEq(blocks[2].name, "Bash", "tool name");
+    checkEq(blocks[2].id, "toolu_1", "tool use id");
+
+    let usage = claude.get(message, "usage");
+    check(usage as bool, "usage present");
+    if usage {
+        let parsed = claude.parseUsage(usage);
+        checkEqInt(parsed.totalTokens(), 17, "usage total includes cache");
+    }
+
+    // tool_result content given as an array of blocks.
+    let resultNode = claude.parseJson("{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_1\","
+        + "\"content\":[{\"type\":\"text\",\"text\":\"one\"},{\"type\":\"image\"},{\"type\":\"text\",\"text\":\"two\"}]}");
+    check(resultNode as bool, "tool_result parses");
+    if resultNode {
+        let block = claude.parseContentBlock(resultNode);
+        check(block.kind == claude.BlockKind.ToolResult, "tool_result kind");
+        checkEq(block.text, "one\n[image]\ntwo", "tool_result flattening keeps non-text placeholders");
+    }
+
+    // tool_result content given as a plain string.
+    let stringResult = claude.parseJson("{\"type\":\"tool_result\",\"tool_use_id\":\"t\",\"content\":\"plain\",\"is_error\":true}");
+    if stringResult {
+        let block = claude.parseContentBlock(stringResult);
+        checkEq(block.text, "plain", "string tool_result");
+        check(block.isError, "tool_result error flag");
+    }
+
+    // Permission suggestions.
+    let suggestionNode = claude.parseJson("{\"type\":\"addRules\",\"behavior\":\"allow\","
+        + "\"rules\":[{\"toolName\":\"Bash\",\"ruleContent\":\"npm test:*\"}],\"destination\":\"localSettings\"}");
+    check(suggestionNode as bool, "suggestion parses");
+    if suggestionNode {
+        let suggestion = claude.parsePermissionSuggestion(suggestionNode);
+        check(suggestion.kind == claude.SuggestionKind.AddRules, "addRules kind");
+        checkEqInt(suggestion.rules.length, 1, "one rule");
+        checkEq(suggestion.rules[0].text(), "Bash(npm test:*)", "rule string form");
+        check(suggestion.destination == claude.SuggestionDestination.LocalSettings, "destination");
+
+        let encoded = claude.permissionSuggestionToJson(suggestion, claude.SuggestionDestination.UserSettings);
+        checkEq(claude.getStringOr(encoded, "destination", ""), "userSettings", "destination override");
+        checkEq(claude.getStringOr(encoded, "type", ""), "addRules", "encoded type");
+    }
+
+    // initialize response.
+    let initNode = claude.parseJson("{\"pid\":4242,\"current_permission_mode\":\"plan\","
+        + "\"commands\":[{\"name\":\"compact\",\"description\":\"Compact\"},{\"name\":\"cost\"}],"
+        + "\"models\":[{\"value\":\"claude-opus-5\",\"displayName\":\"Opus 5\",\"supportsEffort\":true}],"
+        + "\"account\":{\"subscriptionType\":\"max\",\"emailAddress\":\"a@b.c\"},"
+        + "\"unavailable_models\":[\"old\"]}");
+    check(initNode as bool, "initialize response parses");
+    if initNode {
+        let result = claude.parseInitializeResult(initNode);
+        checkEqInt(result.pid, 4242, "pid");
+        check(result.currentPermissionMode == claude.PermissionMode.Plan, "current mode");
+        checkEqInt(result.commands.length, 2, "commands");
+        checkEq(result.commands[0].name, "compact", "command name");
+        checkEqInt(result.models.length, 1, "models");
+        check(result.models[0].supportsEffort, "model effort support");
+        checkEqInt(result.unavailableModels.length, 1, "unavailable models");
+        let account = result.account;
+        check(account as bool, "account present");
+        if account {
+            checkEq(account.subscriptionType, "max", "subscription type");
+        }
+    }
+
+    // result frame.
+    let turnNode = claude.parseJson("{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,"
+        + "\"result\":\"done\",\"total_cost_usd\":0.25,\"duration_ms\":1200,\"num_turns\":3,"
+        + "\"usage\":{\"input_tokens\":1,\"output_tokens\":2},"
+        + "\"modelUsage\":{\"claude-opus-5\":{\"contextWindow\":200000,\"maxOutputTokens\":32000}}}");
+    if turnNode {
+        let result = claude.parseTurnResult(turnNode);
+        checkEq(result.text, "done", "result text");
+        checkEqInt(result.numTurns, 3, "turn count");
+        checkEqInt(result.modelUsage.length, 1, "model usage entries");
+        checkEqInt(result.modelUsage[0].contextWindow, 200000, "context window");
+        checkEq(result.modelUsage[0].model, "claude-opus-5", "model usage key becomes the model name");
+    }
+
+    let errorNode = claude.parseJson("{\"type\":\"result\",\"subtype\":\"error_during_execution\","
+        + "\"is_error\":true,\"errors\":[\"boom\",\"bang\"]}");
+    if errorNode {
+        let result = claude.parseTurnResult(errorNode);
+        check(result.isError, "error result flagged");
+        checkEq(result.text, "boom; bang", "errors joined");
+    }
+
+    // Hook helpers.
+    let context = claude.hookAdditionalContext(claude.HookEvent.PostToolUse, "<ide_diagnostics>[]</ide_diagnostics>");
+    checkEq(claude.stringify(context),
+        "{\"continue\":true,\"hookSpecificOutput\":{\"hookEventName\":\"PostToolUse\","
+        + "\"additionalContext\":\"<ide_diagnostics>[]</ide_diagnostics>\"}}",
+        "hook additional context shape");
+
+    // Outgoing content blocks.
+    checkEq(claude.stringify(claude.textBlock("hi")), "{\"type\":\"text\",\"text\":\"hi\"}", "text block");
+    checkEq(claude.stringify(claude.imageBlock("image/png", "AAAA")),
+        "{\"type\":\"image\",\"source\":{\"type\":\"base64\",\"media_type\":\"image/png\",\"data\":\"AAAA\"}}",
+        "image block");
+}
+
+// ── Live handshake against the real CLI ─────────────────────────────────────
+
+fn runHandshake(): int {
+    section("initialize handshake against the real CLI");
+
+    let binary = claude.findBinary({});
+    if !binary {
+        fmt.println("  SKIP  no claude binary found on this machine");
+        return 0;
+    }
+    fmt.println(f"  binary: {binary.path} (source {binary.sourceName()})");
+
+    let session = claude.Session({
+        binaryPath: binary.path,
+        cwd: claude.realpath("."),
+        entrypoint: "haze-claude-test",
+        // Nothing is written to ~/.claude/projects by a handshake-only run.
+        persistSession: false,
+    });
+    if !session {
+        fmt.println(f"  FAIL  {session.message}");
+        return 1;
+    }
+
+    session.onError = (message: str) => {
+        fmt.println(f"  error: {message}");
+    };
+
+    let deadline = time.now() + 60.0;
+    while time.now() < deadline {
+        session.poll();
+        if session.initializeResult {
+            break;
+        }
+        if session.state == claude.SessionState.Exited {
+            break;
+        }
+        time.sleep(0.02);
+    }
+
+    let result = session.initializeResult;
+    if !result {
+        fmt.println("  FAIL  no initialize response within 60s");
+        fmt.println(f"  stderr tail: {session.stderrTail}");
+        session.terminate(true);
+        return 1;
+    }
+
+    fmt.println(f"  pid                {result.pid}");
+    fmt.println(f"  permission mode    {claude.permissionModeName(result.currentPermissionMode)}");
+    fmt.println(f"  slash commands     {result.commands.length}");
+    fmt.println(f"  models             {result.models.length}");
+    for model in result.models {
+        fmt.println(f"    {model.value}  ({model.displayName})");
+    }
+    let account = result.account;
+    if account {
+        fmt.println(f"  subscription       {account.subscriptionType}");
+    }
+
+    check(result.pid > 0, "the CLI reported its pid");
+    check(result.commands.length > 0, "the CLI listed slash commands");
+
+    session.terminate(false);
+    fmt.println("");
+    if failures == 0 {
+        fmt.println(f"{checks} checks passed");
+        return 0;
+    }
+    return 1;
+}
+
+// ── Scripted fake CLI ───────────────────────────────────────────────────────
+
+ref struct FakeState {
+    permissions: int = 0;
+    results: int = 0;
+    lastTool: str = "";
+    questions: int = 0;
+    questionHeader: str = "";
+    questionOptions: int = 0;
+    planLength: int = 0;
+}
+
+fn runFakeCli() {
+    section("full protocol against a scripted CLI");
+
+    let script = env.get("CLAUDE_FAKE_CLI");
+    if !script {
+        fmt.println("  SKIP  CLAUDE_FAKE_CLI is not set");
+        return;
+    }
+
+    let session = claude.Session({
+        binaryPath: script,
+        cwd: claude.realpath("."),
+    });
+    if !session {
+        fmt.println(f"  FAIL  {session.message}");
+        failures = failures + 1;
+        return;
+    }
+
+    // Closures capture by value, so counters live in a struct the closure and
+    // the assertions both hold a reference to.
+    let state = FakeState {};
+
+    session.onPermission = (request: claude.PermissionRequest) => {
+        state.permissions = state.permissions + 1;
+        state.lastTool = request.toolName;
+
+        if request.isQuestion() {
+            state.questions = request.questions().length;
+            if state.questions > 0 {
+                state.questionHeader = request.questions()[0].header;
+                state.questionOptions = request.questions()[0].options.length;
+            }
+            let answers: []claude.QuestionAnswer = [
+                claude.QuestionAnswer { question: "Which database?", labels: ["SQLite"] },
+            ];
+            request.answerQuestions(answers);
+            return;
+        }
+
+        if request.isPlan() {
+            state.planLength = request.plan().length;
+            request.acceptPlan("watch out for the migration");
+            return;
+        }
+
+        if request.toolName == "Bash" {
+            request.allow();
+            return;
+        }
+        request.deny("no thanks", false);
+    };
+
+    session.onResult = (result: claude.TurnResult) => {
+        state.results = state.results + 1;
+    };
+
+    session.sendText("hello");
+
+    let deadline = time.now() + 20.0;
+    while time.now() < deadline {
+        session.poll();
+        if session.state == claude.SessionState.Exited {
+            break;
+        }
+        time.sleep(0.01);
+    }
+
+    let conversation = session.conversation;
+    fmt.println(f"  messages       {conversation.messages.length}");
+    fmt.println(f"  permissions    {state.permissions}");
+    fmt.println(f"  busy           {conversation.busy}");
+
+    check(session.initializeResult as bool, "handshake completed");
+    checkEq(conversation.sessionId, "fake-session-1", "session id adopted");
+    checkEqInt(state.permissions, 3, "three requests handled: a tool, a question and a plan");
+    check(state.results > 0, "result frame delivered");
+    checkEqInt(state.questions, 1, "the question was parsed");
+    checkEq(state.questionHeader, "DB", "the question header came through");
+    checkEqInt(state.questionOptions, 2, "both options came through");
+    check(state.planLength > 0, "the plan text came through");
+    check(!conversation.busy, "idle after the result");
+
+    // Streaming assembled into one message, then replaced by the final frame.
+    let assistantText = "";
+    for message in conversation.messages {
+        if message.role == claude.MessageRole.Assistant {
+            assistantText = assistantText + message.text();
+        }
+    }
+    check(claude.indexOf(assistantText, "Hello there") >= 0, "streamed text assembled");
+
+    // The tool call found its result.
+    let call = conversation.findToolUse("toolu_fake_1");
+    check(call as bool, "tool call present");
+    if call {
+        check(call.isResolved(), "tool call resolved");
+        let result = call.result;
+        if result {
+            checkEq(result.text, "file1\nfile2", "tool result attached");
+        }
+        check(!call.partial, "tool call completed");
+        let input = call.input;
+        check(input as bool, "tool input parsed from streamed json");
+        if input {
+            checkEq(claude.getStringOr(input, "command", ""), "ls", "streamed tool input");
+        }
+    }
+
+    checkEqInt(conversation.todos.length, 2, "todos captured");
+    if conversation.todos.length == 2 {
+        checkEq(conversation.todos[1].status, "in_progress", "todo status");
+    }
+}
+
+// ── Profiles and transcripts, in a scratch directory ────────────────────────
+
+fn scratchRoot(): str {
+    let base = env.get("CLAUDE_TEST_DIR");
+    if base {
+        return base;
+    }
+    return "/tmp/haze-claude-test";
+}
+
+fn runStoreTests() {
+    testProfiles();
+    testFork();
+}
+
+fn testProfiles() {
+    section("auth profiles");
+
+    let root = claude.joinPath(scratchRoot(), "profiles-" + claude.randomHex(4));
+    let store = claude.loadProfiles(root);
+    checkEqInt(store.profiles.length, 0, "a fresh root has no profiles");
+    checkEq(store.activeId, "", "no active profile yet");
+
+    let work = claude.createProfile(store, "Work account", claude.AuthKind.ClaudeAccount);
+    check(work as bool, "created a profile");
+    if !work {
+        fmt.println(f"  FAIL  {work.message}");
+        return;
+    }
+    checkEq(work.id, "work-account", "id derived from the label");
+    check(work.configDir.endsWith("/profiles/work-account"), "each profile gets its own config dir");
+    checkEq(store.activeId, "work-account", "the first profile becomes active");
+    let dirExists = fs.exists(work.configDir);
+    check(dirExists as bool, "the config directory was created");
+
+    // A colliding label must not collide on disk.
+    let second = claude.createProfile(store, "Work account", claude.AuthKind.ApiKey);
+    check(second as bool, "created a second profile");
+    if second {
+        checkEq(second.id, "work-account-2", "ids are made unique");
+        second.env = claude.apiKeyEnv("sk-ant-test-not-a-real-key");
+        checkEqInt(second.env.length, 1, "api key profile carries its key in env");
+    }
+
+    // Persist and reload.
+    let saved = claude.saveProfiles(store);
+    check(saved as bool, "profiles saved");
+    let reloaded = claude.loadProfiles(root);
+    checkEqInt(reloaded.profiles.length, 2, "both profiles round-tripped");
+    checkEq(reloaded.activeId, "work-account", "the active id round-tripped");
+    let reloadedSecond = reloaded.byId("work-account-2");
+    check(reloadedSecond as bool, "lookup by id");
+    if reloadedSecond {
+        check(reloadedSecond.kind == claude.AuthKind.ApiKey, "the auth kind round-tripped");
+        checkEqInt(reloadedSecond.env.length, 1, "the env round-tripped");
+    }
+
+    // Applying a profile to spawn options.
+    let options: mut claude.SpawnOptions = claude.SpawnOptions { binaryPath: "/bin/claude", cwd: "/tmp" };
+    claude.applyProfileTo(options, work);
+    let appliedDir = options.configDir;
+    check(appliedDir as bool, "applyProfileTo set a config dir");
+    if appliedDir {
+        checkEq(appliedDir, work.configDir, "applyProfileTo selects the account directory");
+    }
+    let env = claude.buildEnv(options);
+    check(claude.indexOf(claude.joinStrings(env, " "), "CLAUDE_CONFIG_DIR=" + work.configDir) >= 0,
+        "the child is pointed at the profile");
+
+    // An OAuth profile must not be overridden by an inherited API key.
+    let hasRemoval = false;
+    for name in options.removeEnv {
+        if name == "ANTHROPIC_API_KEY" {
+            hasRemoval = true;
+        }
+    }
+    check(hasRemoval, "an inherited API key is withheld from an OAuth profile");
+
+    // An API-key profile carries its key through to the child.
+    if reloadedSecond {
+        let keyOptions: mut claude.SpawnOptions = claude.SpawnOptions { binaryPath: "/bin/claude", cwd: "/tmp" };
+        claude.applyProfileTo(keyOptions, reloadedSecond);
+        let keyEnv = claude.joinStrings(keyOptions.extraEnv, " ");
+        check(claude.indexOf(keyEnv, "ANTHROPIC_API_KEY=") >= 0, "the api key reaches the child");
+    }
+
+    // Credentials: import, back up, restore.
+    let sourceDir = claude.joinPath(root, "source-config");
+    fs.createDirectory(sourceDir);
+    fs.writeText(claude.credentialsPath(sourceDir),
+        "{\"claudeAiOauth\":{\"accessToken\":\"redacted\",\"refreshToken\":\"redacted\","
+        + "\"expiresAt\":4102444800000,\"scopes\":[\"user:inference\"],\"subscriptionType\":\"max\"}}");
+    fs.writeText(claude.accountPath(sourceDir),
+        "{\"oauthAccount\":{\"emailAddress\":\"tester@example.com\","
+        + "\"organizationName\":\"Example Org\",\"accountUuid\":\"abc\"}}");
+
+    let imported = claude.importCredentials(work, sourceDir);
+    check(imported as bool, "credentials imported");
+
+    let identity = claude.refreshIdentity(work);
+    check(identity.hasCredentials, "the profile is signed in");
+    checkEq(identity.emailAddress, "tester@example.com", "identity email");
+    checkEq(identity.organizationName, "Example Org", "identity organisation");
+    checkEq(identity.subscriptionType, "max", "identity subscription");
+    check(!identity.isExpired(), "a far-future token is not expired");
+    checkEq(work.email, "tester@example.com", "refreshIdentity caches on the profile");
+    check(claude.indexOf(work.subtitle(), "tester@example.com") >= 0, "subtitle shows the account");
+
+    let backup = claude.backupCredentials(store, work);
+    check(backup as bool, "credentials backed up");
+    if backup {
+        let backups = claude.listBackups(store, work.id);
+        check(backups.length >= 1, "the backup is listed");
+
+        // Simulate losing the token, then restore it.
+        claude.removeFile(claude.credentialsPath(work.configDir));
+        check(!claude.readAccountIdentity(work.configDir).hasCredentials, "credentials gone");
+        let restored = claude.restoreCredentials(work, backup);
+        check(restored as bool, "credentials restored");
+        check(claude.readAccountIdentity(work.configDir).hasCredentials, "signed in again after restore");
+    }
+
+    // Cloning keeps both accounts signed in.
+    let clone = claude.cloneProfile(store, work.id, "Work copy");
+    check(clone as bool, "profile cloned");
+    if clone {
+        check(claude.readAccountIdentity(clone.configDir).hasCredentials, "the clone is signed in too");
+        check(claude.readAccountIdentity(work.configDir).hasCredentials, "the original is untouched");
+        check(clone.configDir != work.configDir, "the clone has its own directory");
+    }
+
+    // Deleting without the explicit flag must leave the credentials alone, so
+    // a mistake does not cost a sign-in.
+    let deleted = claude.deleteProfile(store, "work-account-2", false);
+    check(deleted, "profile removed from the index");
+    check(!store.byId("work-account-2"), "and is gone from the store");
+
+    let expiredIdentity = claude.AccountIdentity { expiresAt: 1000 };
+    check(expiredIdentity.isExpired(), "a past expiry reads as expired");
+    let noExpiry = claude.AccountIdentity {};
+    check(!noExpiry.isExpired(), "an unknown expiry is not treated as expired");
+}
+
+fn testFork() {
+    section("transcript forking");
+
+    let configDir = claude.joinPath(scratchRoot(), "config-" + claude.randomHex(4));
+    let cwd = claude.realpath(".");
+    let directory = claude.projectDirectory(configDir, cwd);
+    fs.createDirectory(directory);
+
+    // A synthetic transcript: a linear chain of five messages.
+    let sessionId = claude.uuid();
+    let path = claude.joinPath(directory, sessionId + ".jsonl");
+    let uuids: []str = [];
+    for (let i = 0; i < 5; i++) {
+        uuids.push(claude.uuid());
+    }
+
+    let text = "";
+    for (let i = 0; i < 5; i++) {
+        let record = claude.newObject();
+        claude.setStr(record, "type", "user");
+        if i % 2 == 1 {
+            claude.setStr(record, "type", "assistant");
+        }
+        claude.setStr(record, "uuid", uuids[i]);
+        if i == 0 {
+            claude.setNull(record, "parentUuid");
+        }
+        else {
+            claude.setStr(record, "parentUuid", uuids[i - 1]);
+        }
+        claude.setStr(record, "sessionId", sessionId);
+        claude.setStr(record, "cwd", cwd);
+        claude.setStr(record, "timestamp", "2026-08-30T12:0" + f"{i}" + ":00.000Z");
+        claude.setStr(record, "gitBranch", "main");
+        claude.setBool(record, "isSidechain", false);
+        let message = claude.newObject();
+        claude.setStr(message, "role", "user");
+        claude.setStr(message, "content", "message " + f"{i}");
+        claude.set(record, "message", message);
+        text = text + claude.stringify(record) + "\n";
+    }
+    fs.writeText(path, text);
+
+    let summary = claude.readSessionSummary(path);
+    check(summary as bool, "the synthetic transcript is readable");
+    if summary {
+        checkEq(summary.id, sessionId, "session id from the file name");
+        checkEq(summary.title, "message 0", "title falls back to the first prompt");
+        checkEq(summary.titleSource, "first", "title source");
+        checkEq(summary.gitBranch, "main", "git branch");
+        checkEq(summary.cwd, cwd, "recorded cwd");
+    }
+
+    // Renaming appends rather than rewriting, and the last title wins.
+    let renamed = claude.renameSession(path, sessionId, "A better name");
+    check(renamed as bool, "renamed");
+    let afterRename = claude.readSessionSummary(path);
+    if afterRename {
+        checkEq(afterRename.title, "A better name", "the custom title wins");
+        checkEq(afterRename.titleSource, "custom", "title source is custom");
+    }
+    let records = claude.readRecords(path);
+    check(records as bool, "records readable");
+    if records {
+        checkEqInt(records.length, 6, "renaming appended one record");
+    }
+
+    // Forking at the middle message copies the chain up to it.
+    let forked = claude.forkSession(configDir, cwd, sessionId, uuids[2]);
+    check(forked as bool, "forked");
+    if !forked {
+        fmt.println(f"  FAIL  {forked.message}");
+        return;
+    }
+    checkEqInt(forked.recordCount, 3, "the fork holds the chain up to the cut");
+    check(forked.sessionId != sessionId, "the fork has a new session id");
+
+    let forkedRecords = claude.readRecords(forked.path);
+    check(forkedRecords as bool, "the fork is readable");
+    if forkedRecords {
+        checkEqInt(forkedRecords.length, 3, "three records written");
+
+        // Fresh uuids, and parent links remapped to them.
+        let firstUuid = claude.getStringOr(forkedRecords[0], "uuid", "");
+        let secondParent = claude.getStringOr(forkedRecords[1], "parentUuid", "");
+        checkEq(secondParent, firstUuid, "parent links point at the new uuids");
+        check(firstUuid != uuids[0], "uuids were regenerated");
+        check(!claude.get(forkedRecords[0], "parentUuid"), "the root has no parent");
+        checkEq(claude.getStringOr(forkedRecords[2], "sessionId", ""), forked.sessionId,
+            "records carry the new session id");
+        checkEq(claude.getStringOr(forkedRecords[0], "cwd", ""), cwd, "other fields are preserved");
+    }
+
+    // The original is untouched.
+    let original = claude.readRecords(path);
+    if original {
+        checkEqInt(original.length, 6, "the original transcript is unchanged");
+    }
+
+    // Forking at an unknown uuid must fail rather than produce nonsense.
+    let bad = claude.forkSession(configDir, cwd, sessionId, "not-a-uuid");
+    check(!bad, "forking at an unknown uuid fails");
+
+    // A sidechain transcript is not a conversation.
+    let sidechainPath = claude.joinPath(directory, claude.uuid() + ".jsonl");
+    fs.writeText(sidechainPath,
+        "{\"type\":\"user\",\"isSidechain\":true,\"uuid\":\"x\",\"parentUuid\":null,"
+        + "\"message\":{\"role\":\"user\",\"content\":\"subagent work\"}}\n");
+    let sidechain = claude.readSessionSummary(sidechainPath);
+    check(sidechain as bool, "sidechain transcript read");
+    if sidechain {
+        check(sidechain.isSidechain, "a sidechain transcript is flagged");
+    }
+
+    let listed = claude.listSessions(configDir, cwd, {});
+    checkEqInt(listed.length, 2, "the fork and the original are both listed, the sidechain is not");
+}
+
+// ── Session history against real transcripts ────────────────────────────────
+
+fn runHistoryTest() {
+    section("session history");
+
+    let configDir = claude.defaultConfigDir();
+    fmt.println(f"  config dir     {configDir}");
+
+    let key = claude.projectKeyFor("/home/user/Projects/my app");
+    checkEq(key, "-home-user-Projects-my-app", "project key replaces every non-alphanumeric byte");
+    checkEq(claude.projectKeyFor("/"), "-", "root project key");
+
+    let cwd = claude.realpath(".");
+    let directory = claude.projectDirectory(configDir, cwd);
+    fmt.println(f"  project dir    {directory}");
+
+    let started = time.now();
+    let sessions = claude.listSessions(configDir, cwd, {});
+    let elapsed = time.now() - started;
+    fmt.println(f"  sessions       {sessions.length} in {elapsed}s");
+
+    if sessions.length == 0 {
+        fmt.println("  SKIP  no transcripts for this directory on this machine");
+        return;
+    }
+
+    let bytes = 0;
+    let withTitles = 0;
+    for session in sessions {
+        bytes = bytes + session.fileSize;
+        if session.title.length > 0 {
+            withTitles = withTitles + 1;
+        }
+    }
+    fmt.println(f"  total on disk  {claude.formatBytes(bytes)}");
+    fmt.println(f"  titled         {withTitles}");
+
+    check(withTitles == sessions.length, "every listed session has a title");
+
+    let newest = sessions[0];
+    fmt.println(f"  newest         {claude.truncate(newest.title, 48)}");
+    fmt.println(f"  title source   {newest.titleSource}");
+    fmt.println(f"  branch         {newest.gitBranch}");
+    fmt.println(f"  created        {newest.createdAt}");
+    check(newest.id.length == 36, "the session id is a uuid");
+    check(newest.filePath.endsWith(".jsonl"), "the path is a transcript");
+    check(newest.cwd.length > 0, "the recorded cwd was found");
+    checkEq(claude.realpath(newest.cwd), cwd, "the session belongs to this directory");
+
+    // Newest first.
+    let ordered = true;
+    for (let i = 1; i < sessions.length; i++) {
+        if sessions[i - 1].lastModified < sessions[i].lastModified {
+            ordered = false;
+        }
+    }
+    check(ordered, "sessions are newest first");
+
+    // No subagent transcripts leaked in.
+    let anySidechain = false;
+    for session in sessions {
+        if session.isSidechain {
+            anySidechain = true;
+        }
+    }
+    check(!anySidechain, "subagent transcripts are excluded");
+
+    // The head/tail scan must read far less than the files hold.
+    let windows = claude.readHeadTail(newest.filePath, 65536);
+    check(windows as bool, "head/tail read succeeded");
+    if windows {
+        checkEqInt(windows.size, newest.fileSize, "the scan reports the true file size");
+        check(windows.head.length <= 65536, "the head window is bounded");
+        check(windows.tail.length <= 65536, "the tail window is bounded");
+        if newest.fileSize > 131072 {
+            check(windows.head.length + windows.tail.length < newest.fileSize,
+                "a large transcript is not read whole");
+        }
+    }
+
+    let limited = claude.listSessions(configDir, cwd, { limit: 3 });
+    check(limited.length <= 3, "the limit is honoured");
+
+    let running = claude.listRunningSessions(configDir);
+    fmt.println(f"  running CLIs   {running.length}");
+}
+
+// ── Idle allocation ─────────────────────────────────────────────────────────
+//
+// The guarantee under test: a UI polling a live session at frame rate, while
+// the agent is idle and nothing is arriving, must produce no garbage at all.
+// A single allocation per poll would be ~200 KB/minute of collector pressure
+// behind a chat window that is doing nothing.
+
+fn runAllocationTest() {
+    section("idle allocations");
+
+    let binary = claude.findBinary({});
+    if !binary {
+        fmt.println("  SKIP  no claude binary found");
+        return;
+    }
+
+    let session = claude.Session({
+        binaryPath: binary.path,
+        cwd: claude.realpath("."),
+        entrypoint: "haze-claude-test",
+        persistSession: false,
+    });
+    if !session {
+        fmt.println(f"  FAIL  {session.message}");
+        failures = failures + 1;
+        return;
+    }
+
+    // Let the handshake finish, so the measured polls are the steady state
+    // rather than the setup.
+    let deadline = time.now() + 60.0;
+    while time.now() < deadline {
+        session.poll();
+        if session.initializeResult {
+            break;
+        }
+        time.sleep(0.02);
+    }
+    if !session.initializeResult {
+        fmt.println("  SKIP  the CLI did not complete the handshake");
+        session.terminate(true);
+        return;
+    }
+
+    // Drain anything still in flight, then take the baseline.
+    for (let i = 0; i < 200; i++) {
+        session.poll();
+    }
+
+    let before = claude.totalAllocatedBytes();
+    for (let i = 0; i < 20000; i++) {
+        session.poll();
+    }
+    let after = claude.totalAllocatedBytes();
+    let grew = after - before;
+
+    fmt.println(f"  20000 idle polls allocated {grew} bytes");
+    checkEqInt(grew, 0, "an idle poll allocates nothing");
+
+    // The read-side queries a renderer runs every frame must be free too.
+    let conversation = session.conversation;
+    let beforeReads = claude.totalAllocatedBytes();
+    let seen = 0;
+    for (let i = 0; i < 20000; i++) {
+        for message in conversation.messages {
+            if conversation.isVisible(message) {
+                seen = seen + 1;
+            }
+            if message.isUserPrompt() {
+                seen = seen + 1;
+            }
+        }
+        if conversation.hasRunningToolCalls() {
+            seen = seen + 1;
+        }
+        if conversation.usage.fraction() > 0.5 {
+            seen = seen + 1;
+        }
+    }
+    let readsGrew = claude.totalAllocatedBytes() - beforeReads;
+    fmt.println(f"  20000 render-side scans allocated {readsGrew} bytes");
+    checkEqInt(readsGrew, 0, "the render-side queries allocate nothing");
+
+    session.terminate(false);
+}
+
+// ── A real conversation, including a tool call ──────────────────────────────
+//
+// The one suite that spends quota. It covers what no scripted CLI can: that
+// the argv this module builds is one the real binary accepts, that a real
+// permission request round-trips, and that a real tool result lands on the
+// call that produced it.
+
+ref struct LiveState {
+    turns: int = 0;
+    permissions: int = 0;
+    writePermissions: int = 0;
+    lastTool: str = "";
+    errors: int = 0;
+    lastError: str = "";
+    diffWasNewFile: bool = false;
+    diffAdded: int = 0;
+    diffPath: str = "";
+}
+
+fn runLive(): int {
+    section("live conversation");
+
+    let binary = claude.findBinary({ queryVersion: true });
+    if !binary {
+        fmt.println("  SKIP  no claude binary found");
+        return 0;
+    }
+    fmt.println(f"  binary         {binary.path} ({binary.version})");
+
+    let session = claude.Session({
+        binaryPath: binary.path,
+        cwd: claude.realpath("."),
+        entrypoint: "haze-claude-test",
+        // Nothing this test does should end up in the user's session history.
+        persistSession: false,
+        // Ask about every tool, so the permission path is actually exercised.
+        permissionMode: claude.PermissionMode.Default,
+        thinking: { mode: claude.ThinkingMode.Disabled },
+        // Pinned, and with an explicit effort: the user's own settings.json is
+        // still loaded (settingSources defaults to user,project,local, as a
+        // real client wants), and an `effortLevel` there that the default model
+        // does not accept would fail the turn with a 400. A test must not
+        // depend on how the machine happens to be configured.
+        model: "sonnet",
+        effort: "medium",
+    });
+    if !session {
+        fmt.println(f"  FAIL  {session.message}");
+        return 1;
+    }
+
+    let state = LiveState {};
+
+    session.onPermission = (request: claude.PermissionRequest) => {
+        state.permissions = state.permissions + 1;
+        state.lastTool = request.toolName;
+        let summary = claude.describeTool(request.toolName, request.input);
+        fmt.println(f"  permission     {request.toolName} {summary.subject}"
+            + f" — {claude.truncate(summary.detail, 50)}");
+        fmt.println(f"  question       {claude.permissionQuestion(request.toolName, request.input)}");
+        fmt.println(f"  suggestions    {request.suggestions.length}");
+
+        // A Write is what phase 3 asks for, and it is refused on purpose: the
+        // denial path has to be exercised, and this test must not create files.
+        if request.toolName == "Write" {
+            state.writePermissions = state.writePermissions + 1;
+
+            // The diff a UI would render in the prompt.
+            let diff = claude.toolDiff(request.toolName, request.input, {});
+            if diff {
+                state.diffWasNewFile = diff.isNewFile;
+                state.diffAdded = diff.added;
+                state.diffPath = diff.path;
+            }
+            // interrupt:false is the "no -- do this instead" path: the agent
+            // keeps going and the reason comes back to it as the tool's
+            // result. interrupt:true would abort the turn outright, and there
+            // would be no tool result to check.
+            request.deny("Do not write any files. Reply with the word declined and stop.", false);
+            return;
+        }
+
+        // Anything else this test asks for is harmless, but be explicit.
+        if request.toolName == "Bash" {
+            let bash = claude.parseBashInput(request.input);
+            if claude.indexOf(bash.command, "echo") >= 0 {
+                request.allow();
+                return;
+            }
+        }
+        request.denyDefault();
+    };
+
+    session.onError = (message: str) => {
+        state.errors = state.errors + 1;
+        state.lastError = message;
+    };
+
+    session.onResult = (result: claude.TurnResult) => {
+        state.turns = state.turns + 1;
+        fmt.println(f"  turn {state.turns} result  {result.subtype} in {result.durationMillis}ms");
+    };
+
+    // Turn 1: plain text, no tools.
+    session.sendText("Reply with exactly the word: pong. Do not use any tools.");
+    if !pumpUntilTurn(session, state, 1, 120.0) {
+        fmt.println("  FAIL  the first turn did not complete");
+        session.terminate(true);
+        return 1;
+    }
+
+    let reply = "";
+    for message in session.conversation.messages {
+        if message.role == claude.MessageRole.Assistant {
+            reply = message.text();
+        }
+    }
+    fmt.println(f"  assistant      {claude.truncate(reply, 60)}");
+    if session.conversation.lastError.length > 0 {
+        fmt.println(f"  model error    {session.conversation.lastError}");
+    }
+    check(claude.indexOf(reply, "pong") >= 0, "the model answered the first turn");
+    checkEqInt(state.permissions, 0, "a text-only turn asked for no permissions");
+
+    // Turn 2: a tool call, which must come through as a permission request and
+    // come back as a tool result attached to the call.
+    session.sendText("Run exactly this command with the Bash tool and nothing else:"
+        + " echo haze-claude-ok");
+    if !pumpUntilTurn(session, state, 2, 180.0) {
+        fmt.println("  FAIL  the tool turn did not complete");
+        session.terminate(true);
+        return 1;
+    }
+
+    // Whether the CLI asks before running Bash depends on the user's own
+    // permission rules, so the count is not asserted here -- phase 3 uses a
+    // tool no sane rule pre-approves. What must hold either way is that the
+    // call ran and its result came back.
+
+    // Find the Bash call and check it resolved.
+    let found = false;
+    for message in session.conversation.messages {
+        for block in message.blocks {
+            if block.kind != claude.BlockKind.ToolUse || block.name != "Bash" {
+                continue;
+            }
+            found = true;
+            check(!block.partial, "the streamed tool call completed");
+            check(block.isResolved(), "the tool call has a result");
+            let input = block.input;
+            check(input as bool, "the tool input parsed");
+            if input {
+                let bash = claude.parseBashInput(input);
+                check(claude.indexOf(bash.command, "echo") >= 0, "the command came through intact");
+            }
+            let result = block.result;
+            if result {
+                fmt.println(f"  tool output    {claude.truncate(result.text, 60)}");
+                check(claude.indexOf(result.text, "haze-claude-ok") >= 0,
+                    "the tool result reached the call that produced it");
+                check(!result.isError, "the tool succeeded");
+            }
+            check(block.durationMillis() >= 0, "the call was timed");
+        }
+    }
+    check(found, "the Bash call is in the conversation");
+
+    // Turn 3: a Write, which is never blanket-approved, so the permission
+    // prompt is guaranteed -- and it is denied, which must reach the model.
+    let target = "/tmp/haze-claude-must-not-exist-" + claude.randomHex(6) + ".txt";
+    session.sendText("Use the Write tool to create the file " + target
+        + " containing exactly the single line: hello");
+    if !pumpUntilTurn(session, state, 3, 180.0) {
+        fmt.println("  FAIL  the write turn did not complete");
+        session.terminate(true);
+        return 1;
+    }
+
+    check(state.writePermissions >= 1, "the write raised a permission request");
+    checkEq(state.lastTool, "Write", "the permission request named the Write tool");
+    check(state.diffWasNewFile, "the prompt diff recognised a file creation");
+    checkEqInt(state.diffAdded, 1, "the prompt diff counted the added line");
+    checkEq(state.diffPath, target, "the prompt diff names the target file");
+
+    let created = fs.exists(target);
+    check(created as bool, "the file existence check ran");
+    if created {
+        check(!created, "a denied Write did not touch the disk");
+    }
+
+    // The denial reached the model as a tool result, with the boilerplate the
+    // CLI prepends.
+    let sawDenial = false;
+    for message in session.conversation.messages {
+        for block in message.blocks {
+            if block.kind != claude.BlockKind.ToolUse || block.name != "Write" {
+                continue;
+            }
+            let result = block.result;
+            check(result as bool, "the denied Write still produced a tool result");
+            if !result {
+                continue;
+            }
+            check(result.isError, "a denied tool reports as an error");
+            let reason = claude.strippedDenialReason(result.text);
+            if claude.indexOf(result.text, "Do not write any files") >= 0 {
+                sawDenial = true;
+                fmt.println(f"  denial reason  {claude.truncate(reason, 70)}");
+            }
+        }
+    }
+    check(sawDenial, "the denial reason reached the tool result");
+
+    let usage = session.conversation.usage;
+    fmt.println(f"  context        {usage.totalTokens} of {usage.usableWindow()} tokens");
+    fmt.println(f"  cost           ${usage.totalCostUsd}");
+    check(usage.totalTokens > 0, "token usage was recorded");
+    check(usage.contextWindow > 0, "the context window was reported");
+    check(session.conversation.servedModel.length > 0, "the serving model was recorded");
+    fmt.println(f"  model          {session.conversation.servedModel}");
+    checkEqInt(state.errors, 0, "no transport errors");
+
+    check(session.sessionId.length > 0, "the CLI assigned a session id");
+    check(!session.conversation.busy, "idle after the last turn");
+
+    // Graceful, non-blocking shutdown.
+    session.requestShutdown();
+    let deadline = time.now() + 15.0;
+    while time.now() < deadline && session.state != claude.SessionState.Exited {
+        session.poll();
+        time.sleep(0.02);
+    }
+    check(session.state == claude.SessionState.Exited, "the CLI exited on stdin close");
+    fmt.println(f"  exit code      {session.exitCode}");
+
+    fmt.println("");
+    if failures == 0 {
+        fmt.println(f"{checks} checks passed");
+        return 0;
+    }
+    fmt.println(f"{failures} of {checks} checks FAILED");
+    return 1;
+}
+
+// Pumps the session until `turn` results have arrived, or the deadline passes.
+fn pumpUntilTurn(session: mut claude.Session, state: LiveState, turn: int, timeout: real): bool {
+    let deadline = time.now() + timeout;
+    while time.now() < deadline {
+        session.poll();
+        if state.turns >= turn {
+            return true;
+        }
+        if session.state == claude.SessionState.Exited {
+            return false;
+        }
+        time.sleep(0.02);
+    }
+    return false;
+}

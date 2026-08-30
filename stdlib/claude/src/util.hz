@@ -1,0 +1,855 @@
+// Foundations shared by the rest of the module: a safe reader/builder layer
+// over `json.Node`, identifier generation, and a handful of path helpers.
+//
+// Why a JSON layer at all -- core's `json.parse<T>()` is excellent when the
+// shape is known, and protocol.hz uses it wherever it can. But large parts of
+// this protocol are deliberately open: a tool's `input` is whatever that tool
+// declares, `permission_suggestions` grow new variants, MCP payloads are
+// arbitrary JSON-RPC, and an unknown `system` subtype must survive a round
+// trip so the caller can still see it. Those parts stay as `json.Node`, and
+// core's `Node` API is not usable for reading them -- `operator[]` CREATES a
+// missing key rather than reporting it, `to<T>()` panics on a type mismatch,
+// and arrays have no accessor at all. Everything below is total: a missing
+// key, a null, or a value of the wrong type yields `none`, never a panic.
+
+__c__("#include \"ffi/haze_claude.c\"");
+export __c__("#include \"ffi/public/haze_claude.h\"");
+
+namespace ccffi {
+    export extern C noemit struct haze_claude_str_result_t {
+        ok: bool;
+        value: str;
+    }
+
+    export extern C fn haze_claude_sha256_str(allocator: Allocator, data: str): str :: final;
+    export extern C fn haze_claude_sha256_file(allocator: Allocator, path: str): haze_claude_str_result_t :: final;
+    export extern C fn haze_claude_random_hex(allocator: Allocator, count: int): str :: final;
+    export extern C fn haze_claude_make_executable(path: str): bool :: final;
+    export extern C fn haze_claude_is_executable(path: str): bool :: final;
+    export extern C fn haze_claude_remove_file(path: str): bool :: final;
+    export extern C fn haze_claude_realpath(allocator: Allocator, path: str): haze_claude_str_result_t :: final;
+    export extern C fn haze_claude_make_private(path: str): bool :: final;
+    export extern C fn haze_claude_arch(allocator: Allocator): str :: final;
+    export extern C fn haze_claude_pid(): int :: final;
+    export extern C fn haze_claude_signal_process(pid: int, force: bool): bool :: final;
+    export extern C fn haze_claude_environ_count(): int :: final;
+    export extern C fn haze_claude_environ_at(allocator: Allocator, index: int): str :: final;
+
+    export extern C noemit struct haze_claude_head_tail_t {
+        ok: bool;
+        head: str;
+        tail: str;
+        size: int;
+    }
+
+    export extern C fn haze_claude_read_head_tail(allocator: Allocator, path: str, limit: int): haze_claude_head_tail_t :: final;
+    export extern C fn haze_claude_append_text(path: str, text: str): bool :: final;
+    export extern C fn haze_claude_total_allocated_bytes(): int :: final;
+    export extern C fn haze_claude_json_delete_key(object: cptr, name: str) :: final;
+    export extern C fn haze_claude_unix_millis(): int :: final;
+}
+
+// A non-negative int as a usize. The cJSON accessors are indexed by usize and
+// the compiler will not narrow an int without seeing the bound tested, so the
+// conversion lives here once instead of at every call site.
+fn toUsize(value: int): usize {
+    if value >= 0 {
+        return value as usize;
+    }
+    let zero: usize = 0;
+    return zero;
+}
+
+// ── JSON: reading ───────────────────────────────────────────────────────────
+
+// The field `key` of an object, or none if `node` is not an object, the key is
+// absent, or its value is JSON null. Collapsing null into none is deliberate:
+// the CLI writes `"parent_tool_use_id": null` and `"stop_reason": null`
+// constantly, and every caller wants those to read the same as absent.
+export fn get(node: json.Node, key: str): json.Node | none {
+    if !ffi.hzstd_json_is_object(node.data) {
+        return none;
+    }
+    let item = ffi.hzstd_json_get_object_item(node.allocator, node.data, key);
+    if !item {
+        return none;
+    }
+    if ffi.hzstd_json_is_null(item) {
+        return none;
+    }
+    let result = json.Node { allocator: node.allocator, data: item };
+    return result;
+}
+
+// Like get(), but keeps an explicit JSON null instead of collapsing it. Needed
+// where null is meaningful rather than absent -- `updatedInput` may legitimately
+// contain nulls that have to survive being echoed back to the CLI.
+export fn getRaw(node: json.Node, key: str): json.Node | none {
+    if !ffi.hzstd_json_is_object(node.data) {
+        return none;
+    }
+    let item = ffi.hzstd_json_get_object_item(node.allocator, node.data, key);
+    if !item {
+        return none;
+    }
+    let result = json.Node { allocator: node.allocator, data: item };
+    return result;
+}
+
+export fn has(node: json.Node, key: str): bool {
+    if !ffi.hzstd_json_is_object(node.data) {
+        return false;
+    }
+    return ffi.hzstd_json_object_has_attribute(node.data, key);
+}
+
+export fn isObject(node: json.Node): bool {
+    return ffi.hzstd_json_is_object(node.data);
+}
+
+export fn isArray(node: json.Node): bool {
+    return ffi.hzstd_json_is_array(node.data);
+}
+
+export fn isString(node: json.Node): bool {
+    return ffi.hzstd_json_is_string(node.data);
+}
+
+export fn isNumber(node: json.Node): bool {
+    return ffi.hzstd_json_is_number(node.data);
+}
+
+export fn isBool(node: json.Node): bool {
+    return ffi.hzstd_json_is_bool(node.data);
+}
+
+export fn isNull(node: json.Node): bool {
+    return ffi.hzstd_json_is_null(node.data);
+}
+
+// This node as a string, or none if it is not a JSON string.
+export fn asStr(node: json.Node): str | none {
+    if !ffi.hzstd_json_is_string(node.data) {
+        return none;
+    }
+    let value = ffi.hzstd_json_get_string_value(node.allocator, node.data);
+    if !value.found {
+        return none;
+    }
+    return value.value;
+}
+
+export fn asReal(node: json.Node): real | none {
+    if !ffi.hzstd_json_is_number(node.data) {
+        return none;
+    }
+    return ffi.hzstd_json_get_number_value(node.allocator, node.data);
+}
+
+export fn asInt(node: json.Node): int | none {
+    if !ffi.hzstd_json_is_number(node.data) {
+        return none;
+    }
+    return ffi.hzstd_json_get_number_value(node.allocator, node.data) as int;
+}
+
+export fn asBool(node: json.Node): bool | none {
+    if !ffi.hzstd_json_is_bool(node.data) {
+        return none;
+    }
+    return ffi.hzstd_json_is_true(node.data);
+}
+
+// `node[key]` as a string. The single most-used accessor in the module:
+// almost every dispatch decision is `str(frame, "type")`.
+export fn getString(node: json.Node, key: str): str | none {
+    let field = get(node, key);
+    if !field {
+        return none;
+    }
+    return asStr(field);
+}
+
+export fn getStringOr(node: json.Node, key: str, fallback: str): str {
+    let value = getString(node, key);
+    if !value {
+        return fallback;
+    }
+    return value;
+}
+
+export fn getInt(node: json.Node, key: str): int | none {
+    let field = get(node, key);
+    if !field {
+        return none;
+    }
+    return asInt(field);
+}
+
+export fn getIntOr(node: json.Node, key: str, fallback: int): int {
+    let value = getInt(node, key);
+    if !value {
+        return fallback;
+    }
+    return value;
+}
+
+export fn getReal(node: json.Node, key: str): real | none {
+    let field = get(node, key);
+    if !field {
+        return none;
+    }
+    return asReal(field);
+}
+
+export fn getRealOr(node: json.Node, key: str, fallback: real): real {
+    let value = getReal(node, key);
+    if !value {
+        return fallback;
+    }
+    return value;
+}
+
+export fn getBool(node: json.Node, key: str): bool | none {
+    let field = get(node, key);
+    if !field {
+        return none;
+    }
+    return asBool(field);
+}
+
+export fn getBoolOr(node: json.Node, key: str, fallback: bool): bool {
+    let value = getBool(node, key);
+    if !value {
+        return fallback;
+    }
+    return value;
+}
+
+// Number of elements, or 0 for anything that is not an array. Pairs with at().
+export fn arrayLength(node: json.Node): int {
+    if !ffi.hzstd_json_is_array(node.data) {
+        return 0;
+    }
+    let size = ffi.hzstd_json_get_array_size(node.allocator, node.data);
+    if size <= int.max as usize {
+        return size as int;
+    }
+    return 0;
+}
+
+// Element `index` of an array, or none when out of range. Bounds are checked
+// here rather than by the caller because cJSON's own accessor is not total.
+export fn at(node: json.Node, index: int): json.Node | none {
+    if !ffi.hzstd_json_is_array(node.data) {
+        return none;
+    }
+    if index < 0 || index >= arrayLength(node) {
+        return none;
+    }
+    let result = json.Node {
+        allocator: node.allocator,
+        data: ffi.hzstd_json_get_array_item(node.allocator, node.data, toUsize(index)),
+    };
+    return result;
+}
+
+// The array at `node[key]`, flattened into a Haze array so callers can use a
+// plain `for` loop. Returns an empty array for a missing key or a non-array,
+// which is what every call site wants -- "no suggestions" and "suggestions: []"
+// are the same thing.
+export fn getArray(node: json.Node, key: str): []json.Node {
+    let items: []json.Node = [];
+    let field = get(node, key);
+    if !field {
+        return items;
+    }
+    let count = arrayLength(field);
+    for (let i = 0; i < count; i++) {
+        let element = at(field, i);
+        if element {
+            items.push(element);
+        }
+    }
+    return items;
+}
+
+// The elements of an array node itself (not a field of it).
+export fn elements(node: json.Node): []json.Node {
+    let items: []json.Node = [];
+    let count = arrayLength(node);
+    for (let i = 0; i < count; i++) {
+        let element = at(node, i);
+        if element {
+            items.push(element);
+        }
+    }
+    return items;
+}
+
+// `node[key]` as an array of strings, skipping any element that is not a
+// string. Used for `slash_commands`, `scopes`, `directories`, ...
+export fn getStringArray(node: json.Node, key: str): []str {
+    let items: []str = [];
+    for element in getArray(node, key) {
+        let value = asStr(element);
+        if value {
+            items.push(value);
+        }
+    }
+    return items;
+}
+
+export ref struct ObjectEntry {
+    key: str;
+    value: json.Node;
+}
+
+// Every key/value pair of an object, in document order. The protocol has
+// several maps whose keys are not known ahead of time (`modelUsage` by model
+// name, `mcpServers` by server name, hook outputs).
+export fn entries(node: json.Node): []ObjectEntry {
+    let result: []ObjectEntry = [];
+    if !ffi.hzstd_json_is_object(node.data) {
+        return result;
+    }
+    let size = ffi.hzstd_json_get_object_size(node.allocator, node.data);
+    let count = 0;
+    if size <= int.max as usize {
+        count = size as int;
+    }
+    for (let i = 0; i < count; i++) {
+        let key = ffi.hzstd_json_get_object_key_at(node.allocator, node.data, toUsize(i));
+        if !key.found {
+            continue;
+        }
+        result.push(ObjectEntry {
+            key: key.value,
+            value: json.Node {
+                allocator: node.allocator,
+                data: ffi.hzstd_json_get_object_value_at(node.allocator, node.data, toUsize(i)),
+            },
+        });
+    }
+    return result;
+}
+
+// ── JSON: building ──────────────────────────────────────────────────────────
+
+export fn newObject(): json.Node {
+    let result = json.Node {
+        allocator: Alloc.heap(),
+        data: ffi.hzstd_json_create_object(Alloc.heap()),
+    };
+    return result;
+}
+
+export fn newArray(): json.Node {
+    let result = json.Node {
+        allocator: Alloc.heap(),
+        data: ffi.hzstd_json_create_array(Alloc.heap()),
+    };
+    return result;
+}
+
+export fn fromStr(value: str): json.Node {
+    let result = json.Node {
+        allocator: Alloc.heap(),
+        data: ffi.hzstd_json_create_string(Alloc.heap(), value),
+    };
+    return result;
+}
+
+export fn fromInt(value: int): json.Node {
+    let result = json.Node {
+        allocator: Alloc.heap(),
+        data: ffi.hzstd_json_create_number(Alloc.heap(), value as real),
+    };
+    return result;
+}
+
+export fn fromReal(value: real): json.Node {
+    let result = json.Node {
+        allocator: Alloc.heap(),
+        data: ffi.hzstd_json_create_number(Alloc.heap(), value),
+    };
+    return result;
+}
+
+export fn fromBool(value: bool): json.Node {
+    let result = json.Node {
+        allocator: Alloc.heap(),
+        data: ffi.hzstd_json_create_bool(Alloc.heap(), value),
+    };
+    return result;
+}
+
+export fn nullNode(): json.Node {
+    let result = json.Node {
+        allocator: Alloc.heap(),
+        data: ffi.hzstd_json_create_null(Alloc.heap()),
+    };
+    return result;
+}
+
+// Removes a key from an object, if it has one.
+export fn remove(node: json.Node, key: str) {
+    if !ffi.hzstd_json_is_object(node.data) {
+        return;
+    }
+    let pointer = none as cptr;
+    let data = node.data;
+    __c__("pointer = data;");
+    ccffi.haze_claude_json_delete_key(pointer, key);
+}
+
+// Sets `node[key]`, replacing any existing value.
+//
+// The replacement is not incidental: the underlying cJSON `add` APPENDS
+// unconditionally and lookups return the FIRST match, so writing a key that is
+// already present would leave the old value in force behind a duplicate entry
+// -- which is exactly the kind of bug that only shows up when rewriting a
+// record that came from disk (see transcript.hz's fork).
+//
+// Attaching a node transfers it into the parent's tree; the same handle must
+// not then be attached somewhere else, or the two parents share one child.
+// `clone()` is the way to attach a node twice.
+export fn set(node: json.Node, key: str, value: json.Node) {
+    if ffi.hzstd_json_object_has_attribute(node.data, key) {
+        remove(node, key);
+    }
+    ffi.hzstd_json_add_item_to_object(node.allocator, node.data, key, value.data);
+}
+
+export fn setStr(node: json.Node, key: str, value: str) {
+    set(node, key, fromStr(value));
+}
+
+export fn setInt(node: json.Node, key: str, value: int) {
+    set(node, key, fromInt(value));
+}
+
+export fn setReal(node: json.Node, key: str, value: real) {
+    set(node, key, fromReal(value));
+}
+
+export fn setBool(node: json.Node, key: str, value: bool) {
+    set(node, key, fromBool(value));
+}
+
+export fn setNull(node: json.Node, key: str) {
+    set(node, key, nullNode());
+}
+
+export fn push(node: json.Node, value: json.Node) {
+    ffi.hzstd_json_add_item_to_array(node.allocator, node.data, value.data);
+}
+
+export fn pushStr(node: json.Node, value: str) {
+    push(node, fromStr(value));
+}
+
+export fn stringArrayNode(values: []str): json.Node {
+    let result = newArray();
+    for value in values {
+        pushStr(result, value);
+    }
+    return result;
+}
+
+// A deep copy, built by re-parsing the serialized form. Used when a node has
+// to be attached to two different trees (see set()) -- for example echoing a
+// tool's `input` back as `updatedInput` while also keeping it in the
+// conversation model.
+export fn clone(node: json.Node): json.Node {
+    let text = stringify(node);
+    let parsed = parseJson(text);
+    if !parsed {
+        return newObject();
+    }
+    return parsed;
+}
+
+export fn stringify(node: json.Node): str {
+    return ffi.hzstd_json_print_unformatted(node.allocator, node.data);
+}
+
+export fn stringifyPretty(node: json.Node): str {
+    return ffi.hzstd_json_print(node.allocator, node.data);
+}
+
+// Parses one JSON document. Returns none rather than an error object: every
+// call site here treats a malformed document the same way (skip the line, log
+// it), and the CLI's own transport does exactly that too.
+export fn parseJson(data: str): json.Node | none {
+    let result = ffi.hzstd_json_parse(Alloc.arena(), data);
+    let node = result.node;
+    if !node {
+        return none;
+    }
+    let parsed = json.Node { allocator: Alloc.arena(), data: node };
+    return parsed;
+}
+
+// ── Identifiers ─────────────────────────────────────────────────────────────
+
+// A random RFC 4122 version 4 UUID. The client chooses these for the `uuid` on
+// outgoing user messages (the CLI preserves them, which is what makes replay
+// dedup work) and for `--session-id`.
+export fn uuid(): str {
+    let hex = ccffi.haze_claude_random_hex(Alloc.heap(), 16);
+    if hex.length != 32 {
+        sys.panic("claude: the operating system random source is unavailable");
+    }
+    // Byte 6 high nibble = version 4, byte 8 high two bits = variant 0b10.
+    let version = "4";
+    let variantSource = hex.slice(16, 17);
+    let variant = "8";
+    if variantSource == "1" || variantSource == "5" || variantSource == "9" || variantSource == "d" {
+        variant = "9";
+    }
+    else if variantSource == "2" || variantSource == "6" || variantSource == "a" || variantSource == "e" {
+        variant = "a";
+    }
+    else if variantSource == "3" || variantSource == "7" || variantSource == "b" || variantSource == "f" {
+        variant = "b";
+    }
+    return hex.slice(0, 8) + "-" + hex.slice(8, 12) + "-" + version + hex.slice(13, 16)
+        + "-" + variant + hex.slice(17, 20) + "-" + hex.slice(20, 32);
+}
+
+// An opaque id for one control request. The SDK uses a short random string
+// here and the CLI only ever echoes it back, so the only requirement is
+// uniqueness within a session.
+export fn requestId(): str {
+    return ccffi.haze_claude_random_hex(Alloc.heap(), 8);
+}
+
+export fn randomHex(byteCount: int): str {
+    return ccffi.haze_claude_random_hex(Alloc.heap(), byteCount);
+}
+
+// ── Hashing ─────────────────────────────────────────────────────────────────
+
+export fn sha256(data: str): str {
+    return ccffi.haze_claude_sha256_str(Alloc.heap(), data);
+}
+
+// Lowercase hex SHA-256 of a file's contents, streamed. none if unreadable.
+export fn sha256File(path: str): str | none {
+    let result = ccffi.haze_claude_sha256_file(Alloc.heap(), path);
+    if !result.ok {
+        return none;
+    }
+    return result.value;
+}
+
+// ── Filesystem and platform ─────────────────────────────────────────────────
+
+export fn makeExecutable(path: str): bool {
+    return ccffi.haze_claude_make_executable(path);
+}
+
+export fn isExecutable(path: str): bool {
+    return ccffi.haze_claude_is_executable(path);
+}
+
+export fn removeFile(path: str): bool {
+    return ccffi.haze_claude_remove_file(path);
+}
+
+// Restricts a file to owner read/write. Every credential file this module
+// writes goes through it.
+export fn makePrivate(path: str): bool {
+    return ccffi.haze_claude_make_private(path);
+}
+
+// Canonical path with symlinks resolved, or the input unchanged when the path
+// does not exist yet.
+export fn realpath(path: str): str {
+    let result = ccffi.haze_claude_realpath(Alloc.heap(), path);
+    if !result.ok {
+        return path;
+    }
+    return result.value;
+}
+
+export ref struct HeadTail {
+    head: str = "";
+    tail: str = "";
+    size: int = 0;
+}
+
+// The first and last `limit` bytes of a file, without reading the middle.
+// Returns none if the file cannot be read. When the file is smaller than
+// 2*limit, `head` holds all of it and `tail` is empty -- so scanning both never
+// sees a byte twice.
+export fn readHeadTail(path: str, limit: int): HeadTail | none {
+    let result = ccffi.haze_claude_read_head_tail(Alloc.heap(), path, limit);
+    if !result.ok {
+        return none;
+    }
+    let value = HeadTail { head: result.head, tail: result.tail, size: result.size };
+    return value;
+}
+
+// Appends to a file, creating it if needed. `fs.writeText` truncates, and the
+// transcript format is an append-only log.
+export fn appendText(path: str, text: str): bool {
+    return ccffi.haze_claude_append_text(path, text);
+}
+
+// Cumulative bytes the collector has handed out since the process started.
+//
+// A diagnostic, not a runtime facility. This module guarantees that an idle
+// `Session.poll()` -- one where no bytes arrived and nothing needed answering
+// -- performs no heap allocation at all, so that a chat UI polling at frame
+// rate produces no garbage while the user is reading. The test suite asserts
+// that by sampling this either side of a few thousand polls.
+export fn totalAllocatedBytes(): int {
+    return ccffi.haze_claude_total_allocated_bytes();
+}
+
+export fn processId(): int {
+    return ccffi.haze_claude_pid();
+}
+
+// Asks a process to exit (SIGTERM), or kills it (SIGKILL) when `force` is set.
+// The core `process` API can only close a child's stdin and block on join();
+// tearing down a CLI that is midway through a turn needs a signal.
+export fn signalProcess(pid: int, force: bool): bool {
+    return ccffi.haze_claude_signal_process(pid, force);
+}
+
+// "x86_64", "aarch64", "arm64", ... exactly as the kernel reports it.
+export fn machineArch(): str {
+    return ccffi.haze_claude_arch(Alloc.heap());
+}
+
+// Every `NAME=value` in this process's environment.
+//
+// `process.spawn` does not merge: an `env` array replaces the child's
+// environment outright. A child that inherited nothing would have no PATH, no
+// HOME and no terminal settings, so overriding a single variable means
+// rebuilding the whole set -- which is what `spawnEnvironment` below does.
+export fn currentEnvironment(): []str {
+    let entries: []str = [];
+    let count = ccffi.haze_claude_environ_count();
+    for (let i = 0; i < count; i++) {
+        let entry = ccffi.haze_claude_environ_at(Alloc.heap(), i);
+        if entry.length > 0 {
+            entries.push(entry);
+        }
+    }
+    return entries;
+}
+
+// The name part of a `NAME=value` entry.
+export fn environmentName(entry: str): str {
+    let cut = indexOf(entry, "=");
+    if cut < 0 {
+        return entry;
+    }
+    return entry.slice(0, cut);
+}
+
+// The full environment for a child: everything this process has, minus
+// `remove`, with `overrides` applied last so they win over an inherited value
+// of the same name.
+export fn spawnEnvironment(overrides: []str, remove: []str): []str {
+    let result: []str = [];
+
+    for entry in currentEnvironment() {
+        let name = environmentName(entry);
+        let drop = false;
+        for removed in remove {
+            if name == removed {
+                drop = true;
+                break;
+            }
+        }
+        if drop {
+            continue;
+        }
+        for override in overrides {
+            if environmentName(override) == name {
+                drop = true;
+                break;
+            }
+        }
+        if drop {
+            continue;
+        }
+        result.push(entry);
+    }
+
+    for override in overrides {
+        result.push(override);
+    }
+    return result;
+}
+
+export fn homeDirectory(): str {
+    let home = env.get("HOME");
+    if home {
+        return home;
+    }
+    let userProfile = env.get("USERPROFILE");
+    if userProfile {
+        return userProfile;
+    }
+    return ".";
+}
+
+// `$CLAUDE_CONFIG_DIR` if set, else `~/.claude`. This is the root of
+// everything the CLI persists, and pointing it somewhere else is how this
+// module keeps several signed-in accounts side by side (see auth.hz).
+export fn defaultConfigDir(): str {
+    let configured = env.get("CLAUDE_CONFIG_DIR");
+    if configured {
+        if configured.length > 0 {
+            return configured;
+        }
+    }
+    return homeDirectory() + "/.claude";
+}
+
+// Joins two path segments with exactly one separator.
+export fn joinPath(base: str, child: str): str {
+    if base.length == 0 {
+        return child;
+    }
+    if child.length == 0 {
+        return base;
+    }
+    if base.endsWith("/") {
+        return base + child;
+    }
+    return base + "/" + child;
+}
+
+// The final segment of a path.
+export fn baseName(path: str): str {
+    let start = 0;
+    for (let i = 0; i < path.length; i++) {
+        let byte = path.slice(i, i + 1);
+        if byte == "/" || byte == "\\" {
+            start = i + 1;
+        }
+    }
+    return path.slice(start, path.length);
+}
+
+// Everything before the final segment, or "" when there is no separator.
+export fn dirName(path: str): str {
+    let cut = -1;
+    for (let i = 0; i < path.length; i++) {
+        let byte = path.slice(i, i + 1);
+        if byte == "/" || byte == "\\" {
+            cut = i;
+        }
+    }
+    if cut <= 0 {
+        return "";
+    }
+    return path.slice(0, cut);
+}
+
+// ── Small string helpers ────────────────────────────────────────────────────
+
+// Byte index of the first occurrence of `needle`, or -1. `str` has no
+// indexOf(), and several parsers here need positions rather than a bool.
+export fn indexOf(haystack: str, needle: str): int {
+    return indexOfFrom(haystack, needle, 0);
+}
+
+export fn indexOfFrom(haystack: str, needle: str, start: int): int {
+    if needle.length == 0 {
+        return start;
+    }
+    if needle.length > haystack.length {
+        return -1;
+    }
+    let first = start;
+    if first < 0 {
+        first = 0;
+    }
+    let last = haystack.length - needle.length;
+    for (let i = first; i <= last; i++) {
+        if haystack.slice(i, i + needle.length) == needle {
+            return i;
+        }
+    }
+    return -1;
+}
+
+export fn lastIndexOf(haystack: str, needle: str): int {
+    if needle.length == 0 {
+        return haystack.length;
+    }
+    for (let i = haystack.length - needle.length; i >= 0; i--) {
+        if haystack.slice(i, i + needle.length) == needle {
+            return i;
+        }
+    }
+    return -1;
+}
+
+// Splits on newlines, tolerating CRLF, and keeps no trailing empty line for a
+// text that ends in a newline.
+export fn splitLines(text: str): []str {
+    let lines: []str = [];
+    let start = 0;
+    for (let i = 0; i < text.length; i++) {
+        if text.slice(i, i + 1) == "\n" {
+            let end = i;
+            if end > start && text.slice(end - 1, end) == "\r" {
+                end = end - 1;
+            }
+            lines.push(text.slice(start, end));
+            start = i + 1;
+        }
+    }
+    if start < text.length {
+        let end = text.length;
+        if end > start && text.slice(end - 1, end) == "\r" {
+            end = end - 1;
+        }
+        lines.push(text.slice(start, end));
+    }
+    return lines;
+}
+
+export fn joinStrings(parts: []str, separator: str): str {
+    let result = "";
+    for (let i = 0; i < parts.length; i++) {
+        if i > 0 {
+            result = result + separator;
+        }
+        result = result + parts[i];
+    }
+    return result;
+}
+
+// Truncates to `limit` bytes, appending an ellipsis when anything was cut.
+// Used for session titles and one-line tool summaries.
+export fn truncate(text: str, limit: int): str {
+    if text.length <= limit {
+        return text;
+    }
+    if limit <= 0 {
+        return "";
+    }
+    return text.slice(0, limit) + "…";
+}
+
+// Milliseconds since the Unix epoch.
+//
+// NOT `time.now()`, which is monotonic since process start: that is the right
+// clock for measuring how long a turn took, and the wrong one for a token
+// expiry or a message time. Both appear in this module, so they are kept
+// visibly distinct -- `nowMillis` for anything compared against the outside
+// world, `time.now()` for intervals measured inside one run.
+export fn nowMillis(): int {
+    return ccffi.haze_claude_unix_millis();
+}

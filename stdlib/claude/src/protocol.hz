@@ -1,0 +1,1104 @@
+// The wire vocabulary of the `claude` CLI's `--input-format stream-json` /
+// `--output-format stream-json` protocol: every enum, every frame kind, and
+// the parsers that turn one line of NDJSON into something typed.
+//
+// Two representations coexist on purpose. Things with a fixed, known shape --
+// usage counters, permission suggestions, content blocks -- become Haze
+// structs, because that is what the conversation model and the UI actually
+// consume. Things that are open-ended -- a tool's `input`, an MCP payload, an
+// unrecognised `system` subtype -- stay as `json.Node` and are carried through
+// verbatim. Every parsed struct also keeps its `raw` node, so a caller can
+// always reach a field this module has not learned about yet, and a future CLI
+// release can add fields without breaking anything here.
+//
+// Nothing in this file does I/O or holds state; it is pure translation.
+
+// ── Permission modes ────────────────────────────────────────────────────────
+
+// How the CLI decides whether a tool may run.
+//
+//   Default            ask the client for every tool that needs permission
+//   AcceptEdits        file edits are pre-approved, everything else asks
+//   Plan               research only; no mutation until the plan is accepted
+//   BypassPermissions  ask for nothing (requires the CLI to allow it)
+//   DontAsk            never prompt; deny instead of asking
+//   Auto               the CLI decides per tool based on risk
+export enum PermissionMode {
+    Default,
+    AcceptEdits,
+    Plan,
+    BypassPermissions,
+    DontAsk,
+    Auto,
+}
+
+export fn permissionModeName(mode: PermissionMode): str {
+    if mode == PermissionMode.Default { return "default"; }
+    if mode == PermissionMode.AcceptEdits { return "acceptEdits"; }
+    if mode == PermissionMode.Plan { return "plan"; }
+    if mode == PermissionMode.BypassPermissions { return "bypassPermissions"; }
+    if mode == PermissionMode.DontAsk { return "dontAsk"; }
+    return "auto";
+}
+
+export fn permissionModeFromName(name: str): PermissionMode | none {
+    if name == "default" { return PermissionMode.Default; }
+    if name == "acceptEdits" { return PermissionMode.AcceptEdits; }
+    if name == "plan" { return PermissionMode.Plan; }
+    if name == "bypassPermissions" { return PermissionMode.BypassPermissions; }
+    if name == "dontAsk" { return PermissionMode.DontAsk; }
+    if name == "auto" { return PermissionMode.Auto; }
+    return none;
+}
+
+// A label suitable for a mode switcher. "Manual" rather than "Default"
+// because that is what the mode actually means to a user.
+export fn permissionModeLabel(mode: PermissionMode): str {
+    if mode == PermissionMode.Default { return "Manual"; }
+    if mode == PermissionMode.AcceptEdits { return "Accept edits"; }
+    if mode == PermissionMode.Plan { return "Plan"; }
+    if mode == PermissionMode.BypassPermissions { return "Bypass permissions"; }
+    if mode == PermissionMode.DontAsk { return "Don't ask"; }
+    return "Auto";
+}
+
+// ── Thinking ────────────────────────────────────────────────────────────────
+
+export enum ThinkingMode {
+    // No extended thinking at all (`--thinking disabled`).
+    Disabled,
+    // A fixed token budget (`--max-thinking-tokens N`).
+    Enabled,
+    // Let the model choose how much to think (`--thinking adaptive`).
+    Adaptive,
+}
+
+export ref struct ThinkingConfig {
+    mode: ThinkingMode = ThinkingMode.Enabled;
+    // Only meaningful for ThinkingMode.Enabled. 31999 is what the VS Code
+    // extension uses.
+    budgetTokens: int = 31999;
+    // "summarized" makes the CLI emit condensed thinking blocks instead of
+    // raw ones; empty means the CLI's default.
+    display: str = "summarized";
+}
+
+// ── Content blocks ──────────────────────────────────────────────────────────
+
+// The Anthropic Messages content-block types, plus the two synthetic kinds the
+// CLI adds.
+export enum BlockKind {
+    Text,
+    Thinking,
+    RedactedThinking,
+    ToolUse,
+    ToolResult,
+    Image,
+    Document,
+    ServerToolUse,
+    ToolReference,
+    // A block whose `type` this module does not know. `raw` still holds it, so
+    // a UI can render something rather than dropping the content.
+    Unknown,
+}
+
+export fn blockKindFromName(name: str): BlockKind {
+    if name == "text" { return BlockKind.Text; }
+    if name == "thinking" { return BlockKind.Thinking; }
+    if name == "redacted_thinking" { return BlockKind.RedactedThinking; }
+    if name == "tool_use" { return BlockKind.ToolUse; }
+    if name == "tool_result" { return BlockKind.ToolResult; }
+    if name == "image" { return BlockKind.Image; }
+    if name == "document" { return BlockKind.Document; }
+    if name == "server_tool_use" { return BlockKind.ServerToolUse; }
+    if name == "tool_reference" { return BlockKind.ToolReference; }
+    return BlockKind.Unknown;
+}
+
+export fn blockKindName(kind: BlockKind): str {
+    if kind == BlockKind.Text { return "text"; }
+    if kind == BlockKind.Thinking { return "thinking"; }
+    if kind == BlockKind.RedactedThinking { return "redacted_thinking"; }
+    if kind == BlockKind.ToolUse { return "tool_use"; }
+    if kind == BlockKind.ToolResult { return "tool_result"; }
+    if kind == BlockKind.Image { return "image"; }
+    if kind == BlockKind.Document { return "document"; }
+    if kind == BlockKind.ServerToolUse { return "server_tool_use"; }
+    if kind == BlockKind.ToolReference { return "tool_reference"; }
+    return "unknown";
+}
+
+// One content block. A single struct rather than a union per kind: a UI walks
+// a heterogeneous list and switches on `kind`, and Haze has no sum type with
+// payloads that would survive being stored in one array.
+//
+// Which fields are meaningful depends on `kind`:
+//   Text, Thinking           text (Thinking also: signature, thinkingTokens)
+//   RedactedThinking         data
+//   ToolUse, ServerToolUse   id, name, input, and once matched: result
+//   ToolResult               toolUseId, text, isError, content
+//   Image                    mediaType, data (base64) or url
+//   Document                 mediaType, data, title
+export ref struct ContentBlock {
+    kind: BlockKind = BlockKind.Unknown;
+
+    // Text / Thinking body, or the flattened text of a ToolResult.
+    text: str = "";
+    // Cryptographic signature that accompanies a thinking block; must be
+    // echoed back untouched if the block is ever replayed.
+    signature: str = "";
+    // Live token estimate carried on thinking deltas.
+    thinkingTokens: int = 0;
+
+    // ToolUse / ServerToolUse.
+    id: str = "";
+    name: str = "";
+    input?: json.Node;
+
+    // ToolResult.
+    toolUseId: str = "";
+    isError: bool = false;
+    // The unflattened `content` of a tool result, which may be a string or an
+    // array of blocks. Kept because an image-returning tool (a screenshot, a
+    // rendered chart) has no text form.
+    content?: json.Node;
+
+    // Image / Document.
+    mediaType: str = "";
+    data: str = "";
+    url: str = "";
+    title: str = "";
+
+    // The block exactly as it arrived.
+    raw?: json.Node;
+
+    // ── Streaming state ────────────────────────────────────────────────
+    // True between `content_block_start` and `content_block_stop`. A partial
+    // ToolUse block must not be shown: its `input` is still being assembled
+    // from `input_json_delta` fragments and is not valid JSON yet.
+    partial: bool = false;
+    // Accumulated `partial_json` fragments, parsed into `input` at stop.
+    partialJson: str = "";
+    startTime: int = 0;
+    endTime: int = 0;
+
+    // ── Resolution state (filled in by the conversation model) ──────────
+    // For a ToolUse block: the matching ToolResult once it arrives. This is
+    // what lets a UI render a tool call and its output as one unit.
+    result?: ContentBlock;
+    // For a ToolUse block that is a REPL: the inner calls reported through
+    // `tool_progress`.
+    progress: []ToolProgressEntry = [];
+
+    // Milliseconds between the block starting and completing; 0 while running.
+    // Drives "Thought for 8s" and per-tool timings.
+    fn durationMillis(): int {
+        if this.endTime <= this.startTime {
+            return 0;
+        }
+        return this.endTime - this.startTime;
+    }
+
+    // True once a ToolUse block has an answer, whatever that answer was.
+    fn isResolved(): bool {
+        if this.kind != BlockKind.ToolUse && this.kind != BlockKind.ServerToolUse {
+            return true;
+        }
+        return this.result is ContentBlock;
+    }
+
+    fn failed(): bool {
+        let result = this.result;
+        if !result {
+            return false;
+        }
+        return result.isError;
+    }
+}
+
+// One inner tool call reported by a REPL-style tool while it runs.
+export ref struct ToolProgressEntry {
+    innerToolUseId: str = "";
+    toolName: str = "";
+    phase: str = "";
+    input?: json.Node;
+}
+
+// Flattens a `tool_result.content` -- which is either a plain string or an
+// array of blocks -- into displayable text. Non-text blocks contribute a short
+// placeholder rather than being dropped silently, so an image-only result does
+// not look like an empty one.
+export fn flattenContent(node: json.Node): str {
+    let text = asStr(node);
+    if text {
+        return text;
+    }
+    if !isArray(node) {
+        return "";
+    }
+    let parts: []str = [];
+    for element in elements(node) {
+        let kind = getStringOr(element, "type", "");
+        if kind == "text" {
+            let value = getString(element, "text");
+            if value {
+                parts.push(value);
+            }
+        }
+        else if kind == "image" {
+            parts.push("[image]");
+        }
+        else {
+            let value = getString(element, "text");
+            if value {
+                parts.push(value);
+            }
+            else {
+                parts.push("[" + kind + "]");
+            }
+        }
+    }
+    return joinStrings(parts, "\n");
+}
+
+// Parses one content block. Total: an unrecognised `type` yields a block of
+// kind Unknown that still carries `raw`.
+export fn parseContentBlock(node: json.Node): ContentBlock {
+    let kind = blockKindFromName(getStringOr(node, "type", ""));
+    let block = ContentBlock { kind: kind, raw: node };
+
+    if kind == BlockKind.Text {
+        block.text = getStringOr(node, "text", "");
+    }
+    else if kind == BlockKind.Thinking {
+        block.text = getStringOr(node, "thinking", "");
+        block.signature = getStringOr(node, "signature", "");
+        block.thinkingTokens = getIntOr(node, "estimated_tokens", 0);
+    }
+    else if kind == BlockKind.RedactedThinking {
+        block.data = getStringOr(node, "data", "");
+    }
+    else if kind == BlockKind.ToolUse || kind == BlockKind.ServerToolUse {
+        block.id = getStringOr(node, "id", "");
+        block.name = getStringOr(node, "name", "");
+        block.input = get(node, "input");
+    }
+    else if kind == BlockKind.ToolResult {
+        block.toolUseId = getStringOr(node, "tool_use_id", "");
+        block.isError = getBoolOr(node, "is_error", false);
+        let content = get(node, "content");
+        if content {
+            block.content = content;
+            block.text = flattenContent(content);
+        }
+    }
+    else if kind == BlockKind.Image {
+        let source = get(node, "source");
+        if source {
+            block.mediaType = getStringOr(source, "media_type", "");
+            block.data = getStringOr(source, "data", "");
+            block.url = getStringOr(source, "url", "");
+        }
+    }
+    else if kind == BlockKind.Document {
+        block.title = getStringOr(node, "title", "");
+        let source = get(node, "source");
+        if source {
+            block.mediaType = getStringOr(source, "media_type", "");
+            block.data = getStringOr(source, "data", "");
+            block.url = getStringOr(source, "url", "");
+        }
+    }
+    else if kind == BlockKind.ToolReference {
+        block.name = getStringOr(node, "name", "");
+        block.text = getStringOr(node, "text", "");
+    }
+    else {
+        block.text = getStringOr(node, "text", "");
+    }
+
+    return block;
+}
+
+// `message.content`, which the CLI may send either as a bare string (synthetic
+// messages and compaction summaries do) or as an array of blocks.
+export fn parseContentBlocks(node: json.Node): []ContentBlock {
+    let blocks: []ContentBlock = [];
+
+    let text = asStr(node);
+    if text {
+        blocks.push(ContentBlock { kind: BlockKind.Text, text: text, raw: node });
+        return blocks;
+    }
+
+    for element in elements(node) {
+        // The CLI emits `{"type":"fallback"}` placeholders that carry nothing;
+        // they exist to keep block indices stable and must not be rendered.
+        if getStringOr(element, "type", "") == "fallback" {
+            continue;
+        }
+        blocks.push(parseContentBlock(element));
+    }
+    return blocks;
+}
+
+// ── Building outgoing content blocks ────────────────────────────────────────
+
+export fn textBlock(text: str): json.Node {
+    let node = newObject();
+    setStr(node, "type", "text");
+    setStr(node, "text", text);
+    return node;
+}
+
+// An inline image. `data` is base64 without a data: prefix; `mediaType` is one
+// of image/jpeg, image/png, image/gif, image/webp.
+export fn imageBlock(mediaType: str, base64Data: str): json.Node {
+    let source = newObject();
+    setStr(source, "type", "base64");
+    setStr(source, "media_type", mediaType);
+    setStr(source, "data", base64Data);
+
+    let node = newObject();
+    setStr(node, "type", "image");
+    set(node, "source", source);
+    return node;
+}
+
+// A text document attachment -- the form used for .txt/.md/source files, where
+// the model sees the content directly rather than a base64 blob.
+export fn textDocumentBlock(title: str, mediaType: str, text: str): json.Node {
+    let source = newObject();
+    setStr(source, "type", "text");
+    setStr(source, "media_type", mediaType);
+    setStr(source, "data", text);
+
+    let node = newObject();
+    setStr(node, "type", "document");
+    set(node, "source", source);
+    setStr(node, "title", title);
+    return node;
+}
+
+// A binary document attachment, used for PDFs (media type application/pdf).
+export fn binaryDocumentBlock(title: str, mediaType: str, base64Data: str): json.Node {
+    let source = newObject();
+    setStr(source, "type", "base64");
+    setStr(source, "media_type", mediaType);
+    setStr(source, "data", base64Data);
+
+    let node = newObject();
+    setStr(node, "type", "document");
+    set(node, "source", source);
+    setStr(node, "title", title);
+    return node;
+}
+
+// The editor-context wrapper the CLI is taught to recognise. The native VS
+// Code UI exposes no editor tools at all -- the model learns about the current
+// selection purely because the client prepends a block like this to the turn.
+export fn ideSelectionBlock(filePath: str, startLine: int, endLine: int, selectedText: str): json.Node {
+    let text = "<ide_selection>The user selected the lines " + f"{startLine}" + " to " + f"{endLine}"
+        + " from " + filePath + ":\n" + selectedText
+        + "\n\nThis may or may not be related to the current task.</ide_selection>";
+    return textBlock(text);
+}
+
+export fn ideOpenedFileBlock(filePath: str): json.Node {
+    return textBlock("<ide_opened_file>The user has the file " + filePath
+        + " open in their editor. This may or may not be related to the current task.</ide_opened_file>");
+}
+
+// ── Usage and cost ──────────────────────────────────────────────────────────
+
+// A value type, not a reference: usage is read and copied on every assistant
+// message and every context meter repaint, and a ref struct would allocate
+// each time.
+export struct Usage {
+    inputTokens: int = 0;
+    cacheCreationInputTokens: int = 0;
+    cacheReadInputTokens: int = 0;
+    outputTokens: int = 0;
+
+    // What a context meter should show: everything that occupies the window,
+    // cached or not.
+    fn totalTokens(): int {
+        return this.inputTokens + this.cacheCreationInputTokens + this.cacheReadInputTokens + this.outputTokens;
+    }
+}
+
+export fn parseUsage(node: json.Node): Usage {
+    return Usage {
+        inputTokens: getIntOr(node, "input_tokens", 0),
+        cacheCreationInputTokens: getIntOr(node, "cache_creation_input_tokens", 0),
+        cacheReadInputTokens: getIntOr(node, "cache_read_input_tokens", 0),
+        outputTokens: getIntOr(node, "output_tokens", 0),
+    };
+}
+
+// Per-model limits reported at the end of a turn. `contextWindow` minus
+// `maxOutputTokens` is the space a conversation actually has.
+export ref struct ModelUsage {
+    model: str = "";
+    contextWindow: int = 0;
+    maxOutputTokens: int = 0;
+    inputTokens: int = 0;
+    outputTokens: int = 0;
+    costUsd: real = 0.0;
+    webSearchRequests: int = 0;
+}
+
+// ── initialize handshake ────────────────────────────────────────────────────
+
+export ref struct SlashCommand {
+    name: str = "";
+    description: str = "";
+    argumentHint: str = "";
+    aliases: []str = [];
+    // Commands the CLI marks as taking no arguments, so a UI can submit them
+    // immediately instead of waiting for text.
+    isLocal: bool = false;
+    raw?: json.Node;
+}
+
+export ref struct ModelInfo {
+    value: str = "";
+    displayName: str = "";
+    description: str = "";
+    supportsEffort: bool = false;
+    raw?: json.Node;
+}
+
+export ref struct AgentInfo {
+    name: str = "";
+    description: str = "";
+    raw?: json.Node;
+}
+
+export ref struct AccountInfo {
+    // "max" / "pro" / "team" / "enterprise" / "" for API-key auth.
+    subscriptionType: str = "";
+    // Where the credential came from, as the CLI classifies it.
+    tokenSource: str = "";
+    emailAddress: str = "";
+    organizationName: str = "";
+    displayName: str = "";
+    raw?: json.Node;
+}
+
+// Everything the CLI reports in its answer to `initialize`. This is the single
+// richest message in the protocol: slash commands, model list, account, the
+// permission mode actually in force, and the CLI's pid.
+export ref struct InitializeResult {
+    commands: []SlashCommand = [];
+    models: []ModelInfo = [];
+    unavailableModels: []str = [];
+    agents: []AgentInfo = [];
+    account?: AccountInfo;
+    pid: int = 0;
+    currentPermissionMode: PermissionMode = PermissionMode.Default;
+    permissionModeFromDefaultFallback: bool = false;
+    autoDefaultNudge: bool = false;
+    fastModeState: str = "";
+    remoteControlAutoEnable: bool = false;
+    // Permission prompts and dialogs that were outstanding when a resumed
+    // session was last closed. The CLI hands them back so the client can
+    // re-present them instead of leaving the conversation stuck.
+    pendingPermissionRequests: []json.Node = [];
+    pendingUserDialogRequests: []json.Node = [];
+    raw?: json.Node;
+}
+
+export fn parseInitializeResult(node: json.Node): InitializeResult {
+    let result = InitializeResult { raw: node };
+
+    for command in getArray(node, "commands") {
+        result.commands.push(SlashCommand {
+            name: getStringOr(command, "name", ""),
+            description: getStringOr(command, "description", ""),
+            argumentHint: getStringOr(command, "argumentHint", ""),
+            aliases: getStringArray(command, "aliases"),
+            isLocal: getBoolOr(command, "isLocal", false),
+            raw: command,
+        });
+    }
+
+    for model in getArray(node, "models") {
+        result.models.push(ModelInfo {
+            value: getStringOr(model, "value", ""),
+            displayName: getStringOr(model, "displayName", ""),
+            description: getStringOr(model, "description", ""),
+            supportsEffort: getBoolOr(model, "supportsEffort", false),
+            raw: model,
+        });
+    }
+
+    result.unavailableModels = getStringArray(node, "unavailable_models");
+
+    for agent in getArray(node, "agents") {
+        result.agents.push(AgentInfo {
+            name: getStringOr(agent, "name", ""),
+            description: getStringOr(agent, "description", ""),
+            raw: agent,
+        });
+    }
+
+    let account = get(node, "account");
+    if account {
+        result.account = AccountInfo {
+            subscriptionType: getStringOr(account, "subscriptionType", ""),
+            tokenSource: getStringOr(account, "tokenSource", ""),
+            emailAddress: getStringOr(account, "emailAddress", ""),
+            organizationName: getStringOr(account, "organizationName", ""),
+            displayName: getStringOr(account, "displayName", ""),
+            raw: account,
+        };
+    }
+
+    result.pid = getIntOr(node, "pid", 0);
+    let mode = permissionModeFromName(getStringOr(node, "current_permission_mode", "default"));
+    if mode {
+        result.currentPermissionMode = mode;
+    }
+    result.permissionModeFromDefaultFallback = getBoolOr(node, "permission_mode_from_default_fallback", false);
+    result.autoDefaultNudge = getBoolOr(node, "auto_default_nudge", false);
+    result.fastModeState = getStringOr(node, "fast_mode_state", "");
+    result.remoteControlAutoEnable = getBoolOr(node, "remote_control_auto_enable", false);
+    result.pendingPermissionRequests = getArray(node, "pending_permission_requests");
+    result.pendingUserDialogRequests = getArray(node, "pending_user_dialog_requests");
+
+    return result;
+}
+
+// ── Permission suggestions ──────────────────────────────────────────────────
+
+// Where a permission rule should be written when the user picks "don't ask
+// again". `Session` means only for the life of this CLI process.
+export enum SuggestionDestination {
+    UserSettings,
+    ProjectSettings,
+    LocalSettings,
+    Session,
+    CliArg,
+}
+
+export fn suggestionDestinationName(destination: SuggestionDestination): str {
+    if destination == SuggestionDestination.UserSettings { return "userSettings"; }
+    if destination == SuggestionDestination.ProjectSettings { return "projectSettings"; }
+    if destination == SuggestionDestination.LocalSettings { return "localSettings"; }
+    if destination == SuggestionDestination.Session { return "session"; }
+    return "cliArg";
+}
+
+export fn suggestionDestinationFromName(name: str): SuggestionDestination | none {
+    if name == "userSettings" { return SuggestionDestination.UserSettings; }
+    if name == "projectSettings" { return SuggestionDestination.ProjectSettings; }
+    if name == "localSettings" { return SuggestionDestination.LocalSettings; }
+    if name == "session" { return SuggestionDestination.Session; }
+    if name == "cliArg" { return SuggestionDestination.CliArg; }
+    return none;
+}
+
+// Human wording for a destination, for the "always allow" button.
+export fn suggestionDestinationLabel(destination: SuggestionDestination): str {
+    if destination == SuggestionDestination.UserSettings { return "for all projects"; }
+    if destination == SuggestionDestination.ProjectSettings { return "for this project"; }
+    if destination == SuggestionDestination.LocalSettings { return "for this project (just you)"; }
+    if destination == SuggestionDestination.Session { return "for this session"; }
+    return "for this launch";
+}
+
+export enum SuggestionKind {
+    // Add permission rules, e.g. Bash(npm test:*).
+    AddRules,
+    // Trust additional directories.
+    AddDirectories,
+    // Switch permission mode.
+    SetMode,
+    Unknown,
+}
+
+export ref struct PermissionRule {
+    toolName: str = "";
+    // The pattern inside the parentheses of a rule string, e.g. `npm test:*`.
+    // Empty means the rule covers the whole tool.
+    ruleContent: str = "";
+
+    // The canonical rule string the settings files store.
+    fn text(): str {
+        if this.ruleContent.length == 0 {
+            return this.toolName;
+        }
+        return this.toolName + "(" + this.ruleContent + ")";
+    }
+}
+
+// One option the CLI offers alongside a permission request. The client picks
+// which (if any) to send back in `updatedPermissions`; the CLI is what
+// persists them.
+export ref struct PermissionSuggestion {
+    kind: SuggestionKind = SuggestionKind.Unknown;
+    // AddRules
+    rules: []PermissionRule = [];
+    behavior: str = "allow";
+    // AddDirectories
+    directories: []str = [];
+    // SetMode
+    mode: PermissionMode = PermissionMode.Default;
+    destination: SuggestionDestination = SuggestionDestination.LocalSettings;
+    raw?: json.Node;
+}
+
+export fn parsePermissionSuggestion(node: json.Node): PermissionSuggestion {
+    let suggestion = PermissionSuggestion { raw: node };
+    let kind = getStringOr(node, "type", "");
+
+    if kind == "addRules" {
+        suggestion.kind = SuggestionKind.AddRules;
+        for rule in getArray(node, "rules") {
+            suggestion.rules.push(PermissionRule {
+                toolName: getStringOr(rule, "toolName", ""),
+                ruleContent: getStringOr(rule, "ruleContent", ""),
+            });
+        }
+        suggestion.behavior = getStringOr(node, "behavior", "allow");
+    }
+    else if kind == "addDirectories" {
+        suggestion.kind = SuggestionKind.AddDirectories;
+        suggestion.directories = getStringArray(node, "directories");
+    }
+    else if kind == "setMode" {
+        suggestion.kind = SuggestionKind.SetMode;
+        let mode = permissionModeFromName(getStringOr(node, "mode", "default"));
+        if mode {
+            suggestion.mode = mode;
+        }
+    }
+
+    let destination = suggestionDestinationFromName(getStringOr(node, "destination", ""));
+    if destination {
+        suggestion.destination = destination;
+    }
+
+    return suggestion;
+}
+
+// Serializes a suggestion for `updatedPermissions`, overriding the destination
+// with the one the user chose. A `setMode` suggestion keeps its own
+// destination -- switching mode "for all projects" is not a thing.
+export fn permissionSuggestionToJson(suggestion: PermissionSuggestion, destination: SuggestionDestination): json.Node {
+    let node = newObject();
+
+    if suggestion.kind == SuggestionKind.AddRules {
+        setStr(node, "type", "addRules");
+        let rules = newArray();
+        for rule in suggestion.rules {
+            let entry = newObject();
+            setStr(entry, "toolName", rule.toolName);
+            if rule.ruleContent.length > 0 {
+                setStr(entry, "ruleContent", rule.ruleContent);
+            }
+            push(rules, entry);
+        }
+        set(node, "rules", rules);
+        setStr(node, "behavior", suggestion.behavior);
+        setStr(node, "destination", suggestionDestinationName(destination));
+    }
+    else if suggestion.kind == SuggestionKind.AddDirectories {
+        setStr(node, "type", "addDirectories");
+        set(node, "directories", stringArrayNode(suggestion.directories));
+        setStr(node, "destination", suggestionDestinationName(destination));
+    }
+    else if suggestion.kind == SuggestionKind.SetMode {
+        setStr(node, "type", "setMode");
+        setStr(node, "mode", permissionModeName(suggestion.mode));
+        setStr(node, "destination", suggestionDestinationName(suggestion.destination));
+    }
+    else {
+        let raw = suggestion.raw;
+        if raw {
+            return clone(raw);
+        }
+    }
+
+    return node;
+}
+
+// A one-line description of what accepting this suggestion would do, for the
+// "Yes, and don't ask again" button.
+export fn permissionSuggestionLabel(suggestion: PermissionSuggestion, destination: SuggestionDestination): str {
+    if suggestion.kind == SuggestionKind.AddRules {
+        let names: []str = [];
+        for rule in suggestion.rules {
+            names.push(rule.text());
+        }
+        return "allow " + joinStrings(names, ", ") + " " + suggestionDestinationLabel(destination);
+    }
+    if suggestion.kind == SuggestionKind.AddDirectories {
+        return "allow access to " + joinStrings(suggestion.directories, ", ") + " "
+            + suggestionDestinationLabel(destination);
+    }
+    if suggestion.kind == SuggestionKind.SetMode {
+        if suggestion.mode == PermissionMode.AcceptEdits {
+            return "allow all edits this session";
+        }
+        if suggestion.mode == PermissionMode.Default {
+            return "return to manual approval";
+        }
+        return "switch to " + permissionModeLabel(suggestion.mode).trim();
+    }
+    return "remember this choice";
+}
+
+// ── Frames ──────────────────────────────────────────────────────────────────
+
+// The `type` discriminator on a line the CLI writes to stdout.
+export enum FrameKind {
+    System,
+    Assistant,
+    User,
+    Result,
+    StreamEvent,
+    ControlRequest,
+    ControlResponse,
+    ControlCancelRequest,
+    KeepAlive,
+    AuthStatus,
+    ToolProgress,
+    RateLimitEvent,
+    PromptSuggestion,
+    TranscriptMirror,
+    ToolUseSummary,
+    ActiveGoal,
+    AutocompactState,
+    Unknown,
+}
+
+export fn frameKindFromName(name: str): FrameKind {
+    if name == "system" { return FrameKind.System; }
+    if name == "assistant" { return FrameKind.Assistant; }
+    if name == "user" { return FrameKind.User; }
+    if name == "result" { return FrameKind.Result; }
+    if name == "stream_event" { return FrameKind.StreamEvent; }
+    if name == "control_request" { return FrameKind.ControlRequest; }
+    if name == "control_response" { return FrameKind.ControlResponse; }
+    if name == "control_cancel_request" { return FrameKind.ControlCancelRequest; }
+    if name == "keep_alive" { return FrameKind.KeepAlive; }
+    if name == "auth_status" { return FrameKind.AuthStatus; }
+    if name == "tool_progress" { return FrameKind.ToolProgress; }
+    if name == "rate_limit_event" { return FrameKind.RateLimitEvent; }
+    if name == "prompt_suggestion" { return FrameKind.PromptSuggestion; }
+    if name == "transcript_mirror" { return FrameKind.TranscriptMirror; }
+    if name == "tool_use_summary" { return FrameKind.ToolUseSummary; }
+    if name == "active_goal" { return FrameKind.ActiveGoal; }
+    if name == "autocompact_state" { return FrameKind.AutocompactState; }
+    return FrameKind.Unknown;
+}
+
+// One decoded line of the CLI's stdout. `raw` is always the whole object, so
+// nothing is ever lost; the named fields are the ones every consumer needs.
+//
+// A value type: one of these is built for every frame that arrives, the string
+// fields are slices into the already-parsed JSON rather than copies, and
+// nothing outlives the dispatch that consumes it.
+export struct Frame {
+    kind: FrameKind = FrameKind.Unknown;
+    // `subtype` for system/result frames, "" otherwise.
+    subtype: str = "";
+    uuid: str = "";
+    sessionId: str = "";
+    // The `Task`/`Agent` tool_use id this frame belongs to; empty for the main
+    // conversation. Subagent output is interleaved with the main stream and
+    // this is the only thing that separates them.
+    parentToolUseId: str = "";
+    raw: json.Node;
+    typeName: str = "";
+}
+
+export fn parseFrame(node: json.Node): Frame {
+    let typeName = getStringOr(node, "type", "");
+    return Frame {
+        kind: frameKindFromName(typeName),
+        typeName: typeName,
+        subtype: getStringOr(node, "subtype", ""),
+        uuid: getStringOr(node, "uuid", ""),
+        sessionId: getStringOr(node, "session_id", ""),
+        parentToolUseId: getStringOr(node, "parent_tool_use_id", ""),
+        raw: node,
+    };
+}
+
+// ── result frame ────────────────────────────────────────────────────────────
+
+export ref struct TurnResult {
+    // "success", or an error subtype such as "error_max_turns" /
+    // "error_during_execution".
+    subtype: str = "";
+    isError: bool = false;
+    // The assistant's final text on success, or the joined errors otherwise.
+    text: str = "";
+    errors: []str = [];
+    totalCostUsd: real = 0.0;
+    durationMillis: int = 0;
+    apiDurationMillis: int = 0;
+    numTurns: int = 0;
+    usage: Usage = {};
+    modelUsage: []ModelUsage = [];
+    fastModeState: str = "";
+    raw?: json.Node;
+}
+
+export fn parseTurnResult(node: json.Node): TurnResult {
+    let result = TurnResult {
+        subtype: getStringOr(node, "subtype", ""),
+        isError: getBoolOr(node, "is_error", false),
+        totalCostUsd: getRealOr(node, "total_cost_usd", 0.0),
+        durationMillis: getIntOr(node, "duration_ms", 0),
+        apiDurationMillis: getIntOr(node, "duration_api_ms", 0),
+        numTurns: getIntOr(node, "num_turns", 0),
+        fastModeState: getStringOr(node, "fast_mode_state", ""),
+        raw: node,
+    };
+
+    result.errors = getStringArray(node, "errors");
+    if result.subtype == "success" {
+        result.text = getStringOr(node, "result", "");
+    }
+    else {
+        result.text = joinStrings(result.errors, "; ");
+    }
+
+    let usage = get(node, "usage");
+    if usage {
+        result.usage = parseUsage(usage);
+    }
+
+    let modelUsage = get(node, "modelUsage");
+    if modelUsage {
+        for entry in entries(modelUsage) {
+            result.modelUsage.push(ModelUsage {
+                model: entry.key,
+                contextWindow: getIntOr(entry.value, "contextWindow", 0),
+                maxOutputTokens: getIntOr(entry.value, "maxOutputTokens", 0),
+                inputTokens: getIntOr(entry.value, "inputTokens", 0),
+                outputTokens: getIntOr(entry.value, "outputTokens", 0),
+                costUsd: getRealOr(entry.value, "costUSD", 0.0),
+                webSearchRequests: getIntOr(entry.value, "webSearchRequests", 0),
+            });
+        }
+    }
+
+    return result;
+}
+
+// ── system frames ───────────────────────────────────────────────────────────
+
+export ref struct InitInfo {
+    sessionId: str = "";
+    cwd: str = "";
+    model: str = "";
+    permissionMode: PermissionMode = PermissionMode.Default;
+    tools: []str = [];
+    slashCommands: []str = [];
+    mcpServers: []McpServerStatus = [];
+    apiKeySource: str = "";
+    analyticsDisabled: bool = false;
+    fastModeState: str = "";
+    raw?: json.Node;
+}
+
+export ref struct McpServerStatus {
+    name: str = "";
+    // "connected" | "failed" | "needs-auth" | "pending" | "disabled"
+    status: str = "";
+    toolCount: int = 0;
+    raw?: json.Node;
+}
+
+export fn parseInitInfo(node: json.Node): InitInfo {
+    let info = InitInfo {
+        sessionId: getStringOr(node, "session_id", ""),
+        cwd: getStringOr(node, "cwd", ""),
+        model: getStringOr(node, "model", ""),
+        apiKeySource: getStringOr(node, "apiKeySource", ""),
+        analyticsDisabled: getBoolOr(node, "analytics_disabled", false),
+        fastModeState: getStringOr(node, "fast_mode_state", ""),
+        raw: node,
+    };
+
+    let mode = permissionModeFromName(getStringOr(node, "permissionMode", "default"));
+    if mode {
+        info.permissionMode = mode;
+    }
+
+    info.tools = getStringArray(node, "tools");
+    info.slashCommands = getStringArray(node, "slash_commands");
+
+    for server in getArray(node, "mcp_servers") {
+        info.mcpServers.push(McpServerStatus {
+            name: getStringOr(server, "name", ""),
+            status: getStringOr(server, "status", ""),
+            toolCount: getIntOr(server, "toolCount", 0),
+            raw: server,
+        });
+    }
+
+    return info;
+}
+
+// The boundary the CLI writes when it compacts the conversation. The synthetic
+// user message that follows carries the summary text.
+export struct CompactInfo {
+    // "manual" when the user asked, "auto" when the window filled up.
+    trigger: str = "";
+    preTokens: int = 0;
+}
+
+export ref struct TaskInfo {
+    taskId: str = "";
+    toolUseId: str = "";
+    taskType: str = "";
+    description: str = "";
+    prompt: str = "";
+    summary: str = "";
+    lastToolName: str = "";
+    totalTokens: int = 0;
+    toolUses: int = 0;
+    durationMillis: int = 0;
+    running: bool = true;
+}
+
+export ref struct RateLimitInfo {
+    // "allowed" | "allowed_warning" | "rejected"
+    status: str = "";
+    rateLimitType: str = "";
+    // Unix seconds at which the limit resets.
+    resetsAt: int = 0;
+    // 0.0 .. 1.0
+    utilization: real = 0.0;
+    overageInUse: bool = false;
+    raw?: json.Node;
+}
+
+export fn parseRateLimitInfo(node: json.Node): RateLimitInfo {
+    return RateLimitInfo {
+        status: getStringOr(node, "status", ""),
+        rateLimitType: getStringOr(node, "rateLimitType", ""),
+        resetsAt: getIntOr(node, "resetsAt", 0),
+        utilization: getRealOr(node, "utilization", 0.0),
+        overageInUse: getBoolOr(node, "overageInUse", false),
+        raw: node,
+    };
+}
+
+// ── auth_status ─────────────────────────────────────────────────────────────
+
+export ref struct AuthStatusFrame {
+    isAuthenticating: bool = false;
+    output: str = "";
+    error: str = "";
+    raw?: json.Node;
+}
+
+export fn parseAuthStatusFrame(node: json.Node): AuthStatusFrame {
+    return AuthStatusFrame {
+        isAuthenticating: getBoolOr(node, "isAuthenticating", false),
+        output: getStringOr(node, "output", ""),
+        error: getStringOr(node, "error", ""),
+        raw: node,
+    };
+}
+
+// ── Hooks ───────────────────────────────────────────────────────────────────
+
+// The hook events a client can register for over the control channel. Only
+// these two are used by the VS Code client, but the CLI supports the full set
+// and a client may declare any of them.
+export enum HookEvent {
+    PreToolUse,
+    PostToolUse,
+    UserPromptSubmit,
+    Stop,
+    SubagentStop,
+    SessionStart,
+    SessionEnd,
+    Notification,
+    PreCompact,
+}
+
+export fn hookEventName(event: HookEvent): str {
+    if event == HookEvent.PreToolUse { return "PreToolUse"; }
+    if event == HookEvent.PostToolUse { return "PostToolUse"; }
+    if event == HookEvent.UserPromptSubmit { return "UserPromptSubmit"; }
+    if event == HookEvent.Stop { return "Stop"; }
+    if event == HookEvent.SubagentStop { return "SubagentStop"; }
+    if event == HookEvent.SessionStart { return "SessionStart"; }
+    if event == HookEvent.SessionEnd { return "SessionEnd"; }
+    if event == HookEvent.Notification { return "Notification"; }
+    return "PreCompact";
+}
+
+// One hook the client asks the CLI to call back on. `matcher` is a regular
+// expression over tool names, e.g. "Edit|Write|MultiEdit".
+export ref struct HookRegistration {
+    event: HookEvent = HookEvent.PreToolUse;
+    matcher: str = "";
+    // Called when the CLI reaches this hook. Returning `none` means "no
+    // opinion" and is answered with `{}`; returning a node lets the hook
+    // inject context, block the tool, or rewrite its input.
+    handler: (input: HookInput) => json.Node | none;
+}
+
+// A value type: one is built per hook callback and consumed immediately.
+export struct HookInput {
+    event: HookEvent = HookEvent.PreToolUse;
+    eventName: str = "";
+    toolName: str = "";
+    toolUseId: str = "";
+    toolInput?: json.Node;
+    // The full hook payload, which carries session_id, cwd, transcript_path
+    // and event-specific extras.
+    raw: json.Node;
+
+    // The `file_path` of the tool being run, which is what an autosave or a
+    // diagnostics hook keys off.
+    fn filePath(): str {
+        let input = this.toolInput;
+        if !input {
+            return "";
+        }
+        return getStringOr(input, "file_path", "");
+    }
+}
+
+// The standard "carry on, and here is some extra context" hook answer. The
+// text is injected into the conversation as if the tool had reported it.
+export fn hookAdditionalContext(event: HookEvent, context: str): json.Node {
+    let specific = newObject();
+    setStr(specific, "hookEventName", hookEventName(event));
+    setStr(specific, "additionalContext", context);
+
+    let node = newObject();
+    setBool(node, "continue", true);
+    set(node, "hookSpecificOutput", specific);
+    return node;
+}
+
+// Stops the tool from running and tells the model why.
+export fn hookBlock(reason: str): json.Node {
+    let node = newObject();
+    setBool(node, "continue", false);
+    setStr(node, "stopReason", reason);
+    return node;
+}
+
+export fn hookContinue(): json.Node {
+    let node = newObject();
+    setBool(node, "continue", true);
+    return node;
+}
+
+// Wraps IDE diagnostics the way the CLI expects them from a PostToolUse hook.
+export fn ideDiagnosticsContext(diagnosticsJson: str): str {
+    return "<ide_diagnostics>" + diagnosticsJson + "</ide_diagnostics>";
+}

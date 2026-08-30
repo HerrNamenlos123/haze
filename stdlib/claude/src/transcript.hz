@@ -1,0 +1,718 @@
+// Past conversations: finding them, titling them, resuming them, forking them.
+//
+// The CLI writes one append-only JSONL file per session under
+// `<configDir>/projects/<projectKey>/<sessionId>.jsonl`. There is no index --
+// a session list is built by scanning that directory, which is why everything
+// here is careful about how much of each file it reads.
+//
+// === Why head/tail scanning ================================================
+//
+// A transcript grows without bound and routinely reaches tens of megabytes,
+// but everything a session list needs sits at one end or the other: the first
+// user prompt and the creation time at the head, the latest title, branch and
+// last prompt at the tail. Reading 64 KiB from each end of each file turns
+// "open the session list" from hundreds of megabytes of I/O into a few
+// hundred kilobytes. Only lines that contain the marker being looked for are
+// handed to the JSON parser, so a 64 KiB window costs a substring scan, not
+// a thousand parses.
+//
+// === Titles ================================================================
+//
+// Titles are append-only records; the LAST one in the file wins. Renaming a
+// session appends a `custom-title` record rather than rewriting the file, and
+// the CLI itself appends `ai-title` records as it goes. The precedence a
+// client must honour is: custom-title, then ai-title, then last-prompt, then
+// summary, then the first user prompt.
+
+export ref struct TranscriptError {
+    message: str;
+}
+
+// How much of each end of a transcript the lister reads. The CLI's own client
+// uses the same 64 KiB.
+const comptime SCAN_WINDOW = 65536;
+
+// The directory name the CLI derives from a working directory: the real path
+// with every non-alphanumeric byte replaced by `-`.
+//
+// The mapping is lossy -- `/a/b`, `/a-b` and `/a.b` all collapse to the same
+// key -- which is why every record also carries the real `cwd` and why
+// `listSessions` filters on it.
+export fn projectKeyFor(cwd: str): str {
+    let resolved = realpath(cwd);
+    let key = "";
+    for (let i = 0; i < resolved.length; i++) {
+        let byte = resolved.slice(i, i + 1);
+        if isAlphanumericByte(byte) {
+            key = key + byte;
+        }
+        else {
+            key = key + "-";
+        }
+    }
+    if key.length <= 200 {
+        return key;
+    }
+    // Long paths are truncated and disambiguated with a hash. The CLI uses its
+    // own hash here, so a key produced this way may not match the one it
+    // writes; `projectDirectories` below also returns every sibling sharing the
+    // 200-character prefix, which is how a client finds those sessions anyway.
+    return key.slice(0, 200) + "-" + sha256(resolved).slice(0, 8);
+}
+
+fn isAlphanumericByte(byte: str): bool {
+    if indexOf("abcdefghijklmnopqrstuvwxyz", byte) >= 0 {
+        return true;
+    }
+    if indexOf("ABCDEFGHIJKLMNOPQRSTUVWXYZ", byte) >= 0 {
+        return true;
+    }
+    return indexOf("0123456789", byte) >= 0;
+}
+
+export fn projectsRoot(configDir: str): str {
+    return joinPath(configDir, "projects");
+}
+
+// The project directory for a working directory.
+export fn projectDirectory(configDir: str, cwd: str): str {
+    return joinPath(projectsRoot(configDir), projectKeyFor(cwd));
+}
+
+// Every directory that may hold this project's transcripts: the exact key,
+// plus any sibling whose name starts with the truncated 200-character prefix
+// (older CLI versions hashed long paths differently).
+export fn projectDirectories(configDir: str, cwd: str): []str {
+    let directories: []str = [];
+    let key = projectKeyFor(cwd);
+    let root = projectsRoot(configDir);
+    directories.push(joinPath(root, key));
+
+    if key.length < 200 {
+        return directories;
+    }
+
+    let prefix = key.slice(0, 200) + "-";
+    let listed = fs.listDir(root);
+    if !listed {
+        return directories;
+    }
+    for entry in listed {
+        if entry.isDirectory && entry.name.startsWith(prefix) && entry.name != key {
+            directories.push(entry.path);
+        }
+    }
+    return directories;
+}
+
+// One past conversation, as a session list needs it. Everything here comes
+// from the two 64 KiB windows -- nothing required a full read.
+export ref struct SessionSummary {
+    id: str = "";
+    filePath: str = "";
+    // The title to show, already resolved through the precedence rules.
+    title: str = "";
+    // Where that title came from: "custom", "ai", "prompt", "summary", "first".
+    titleSource: str = "";
+    // The working directory the session actually ran in, from the records
+    // themselves rather than inferred from the directory name.
+    cwd: str = "";
+    gitBranch: str = "";
+    // Unix nanoseconds, from the file's mtime.
+    lastModified: int = 0;
+    fileSize: int = 0;
+    // ISO-8601, as the transcript writes it.
+    createdAt: str = "";
+    // The session's three-word nickname, used for plan file names.
+    slug: str = "";
+    // A subagent transcript, not a conversation: never shown in a session list.
+    isSidechain: bool = false;
+}
+
+export ref struct ListOptions {
+    // Drop sessions whose recorded `cwd` is a different real directory that
+    // merely collides on the project key. On by default: without it, a session
+    // from `/work/app.old` shows up in `/work/app`.
+    filterByCwd: bool = true;
+    // Include sessions started by a non-interactive entrypoint.
+    includeProgrammatic: bool = false;
+    // Stop after this many, newest first. 0 means no limit.
+    limit: int = 0;
+}
+
+// Every conversation recorded for a working directory, newest first.
+//
+// The cost is one stat plus two 64 KiB reads per transcript, and no full file
+// read at all.
+export fn listSessions(configDir: str, cwd: str, options: ListOptions): []SessionSummary {
+    let summaries: []SessionSummary = [];
+    let resolvedCwd = realpath(cwd);
+
+    for directory in projectDirectories(configDir, cwd) {
+        let listed = fs.listDir(directory);
+        if !listed {
+            continue;
+        }
+        for entry in listed {
+            if !entry.isFile || !entry.name.endsWith(".jsonl") {
+                continue;
+            }
+            let summary = readSessionSummary(entry.path);
+            if !summary {
+                continue;
+            }
+            if summary.isSidechain {
+                continue;
+            }
+            if summary.title.length == 0 {
+                // A transcript with nothing a human could recognise it by --
+                // an aborted launch, or a probe session.
+                continue;
+            }
+            if options.filterByCwd && summary.cwd.length > 0 {
+                if realpath(summary.cwd) != resolvedCwd {
+                    continue;
+                }
+            }
+            summaries.push(summary);
+        }
+    }
+
+    sortByLastModified(summaries);
+
+    if options.limit > 0 && summaries.length > options.limit {
+        let trimmed: []SessionSummary = [];
+        for (let i = 0; i < options.limit; i++) {
+            trimmed.push(summaries[i]);
+        }
+        return trimmed;
+    }
+    return summaries;
+}
+
+// Newest first. Insertion sort: a project has tens of sessions, not thousands,
+// and this keeps the comparison in one obvious place.
+fn sortByLastModified(summaries: []SessionSummary) {
+    for (let i = 1; i < summaries.length; i++) {
+        let current = summaries[i];
+        let j = i - 1;
+        while j >= 0 && summaries[j].lastModified < current.lastModified {
+            summaries[j + 1] = summaries[j];
+            j = j - 1;
+        }
+        summaries[j + 1] = current;
+    }
+}
+
+// Builds a summary from one transcript's two scan windows.
+export fn readSessionSummary(path: str): SessionSummary | none {
+    let stat = fs.statFile(path);
+    if !stat {
+        return none;
+    }
+
+    let windows = readHeadTail(path, SCAN_WINDOW);
+    if !windows {
+        return none;
+    }
+
+    let name = baseName(path);
+    let summary = SessionSummary {
+        id: name.slice(0, name.length - 6),
+        filePath: path,
+        lastModified: stat.mtime,
+        fileSize: stat.size,
+    };
+
+    let headLines = splitLines(windows.head);
+    let tailLines = splitLines(windows.tail);
+
+    // The very first record decides whether this is a conversation at all.
+    if headLines.length > 0 {
+        if indexOf(headLines[0], "\"isSidechain\":true") >= 0 {
+            summary.isSidechain = true;
+            return summary;
+        }
+    }
+
+    // Head: creation time, cwd, branch, slug, and the first real prompt.
+    for line in headLines {
+        if summary.createdAt.length > 0 && summary.cwd.length > 0 && summary.slug.length > 0 {
+            break;
+        }
+        if indexOf(line, "\"timestamp\"") < 0 {
+            continue;
+        }
+        let node = parseJson(line);
+        if !node {
+            continue;
+        }
+        if summary.createdAt.length == 0 {
+            summary.createdAt = getStringOr(node, "timestamp", "");
+        }
+        if summary.cwd.length == 0 {
+            summary.cwd = getStringOr(node, "cwd", "");
+        }
+        if summary.gitBranch.length == 0 {
+            summary.gitBranch = getStringOr(node, "gitBranch", "");
+        }
+        if summary.slug.length == 0 {
+            summary.slug = getStringOr(node, "slug", "");
+        }
+    }
+
+    // Tail wins for anything that can change over the life of a session.
+    let tailBranch = lastFieldOfType(tailLines, "", "gitBranch");
+    if tailBranch.length > 0 {
+        summary.gitBranch = tailBranch;
+    }
+    let relocated = lastFieldOfType(tailLines, "relocated", "relocatedCwd");
+    if relocated.length > 0 {
+        summary.cwd = relocated;
+    }
+
+    // Title precedence: custom, then AI-generated, then the last prompt, then
+    // a fork summary, then the first thing the user said.
+    let custom = lastFieldOfType(tailLines, "custom-title", "customTitle");
+    if custom.length == 0 {
+        custom = lastFieldOfType(headLines, "custom-title", "customTitle");
+    }
+    if custom.length == 0 {
+        // The lister also honours a sidecar file, which is where a rename
+        // lands when the transcript itself is not writable.
+        let sidecar = fs.readText(joinPath(dirName(path) + "/" + summary.id, "custom-title.json"));
+        if sidecar {
+            let node = parseJson(sidecar);
+            if node {
+                custom = getStringOr(node, "customTitle", "");
+            }
+        }
+    }
+    if custom.length > 0 {
+        summary.title = truncate(custom.trim(), 200);
+        summary.titleSource = "custom";
+        return summary;
+    }
+
+    let aiTitle = lastFieldOfType(tailLines, "ai-title", "aiTitle");
+    if aiTitle.length == 0 {
+        aiTitle = lastFieldOfType(headLines, "ai-title", "aiTitle");
+    }
+    if aiTitle.length > 0 {
+        summary.title = truncate(aiTitle.trim(), 200);
+        summary.titleSource = "ai";
+        return summary;
+    }
+
+    let lastPrompt = lastFieldOfType(tailLines, "last-prompt", "lastPrompt");
+    if lastPrompt.length > 0 {
+        summary.title = truncate(lastPrompt.trim(), 200);
+        summary.titleSource = "prompt";
+        return summary;
+    }
+
+    let forkSummary = lastFieldOfType(tailLines, "summary", "summary");
+    if forkSummary.length > 0 {
+        summary.title = truncate(forkSummary.trim(), 200);
+        summary.titleSource = "summary";
+        return summary;
+    }
+
+    let first = firstUserPrompt(headLines);
+    if first.length > 0 {
+        summary.title = truncate(first, 200);
+        summary.titleSource = "first";
+    }
+    return summary;
+}
+
+// The `field` of the LAST record of `type` in these lines. `recordType` may be
+// empty to match any record. Only lines containing the field name are parsed.
+fn lastFieldOfType(lines: []str, recordType: str, field: str): str {
+    let marker = "\"" + field + "\"";
+    let typeMarker = "\"type\":\"" + recordType + "\"";
+    for (let i = lines.length - 1; i >= 0; i--) {
+        let line = lines[i];
+        if indexOf(line, marker) < 0 {
+            continue;
+        }
+        if recordType.length > 0 && indexOf(line, typeMarker) < 0 {
+            continue;
+        }
+        let node = parseJson(line);
+        if !node {
+            continue;
+        }
+        if recordType.length > 0 && getStringOr(node, "type", "") != recordType {
+            continue;
+        }
+        let value = getString(node, field);
+        if value {
+            if value.length > 0 {
+                return value;
+            }
+        }
+    }
+    return "";
+}
+
+// The first thing the user actually said, applying the same exclusions the
+// CLI's own lister does: tool results, meta records, compaction summaries and
+// interruption notices are not what a session is "about".
+fn firstUserPrompt(lines: []str): str {
+    let slashCommandFallback = "";
+
+    for line in lines {
+        if indexOf(line, "\"type\":\"user\"") < 0 {
+            continue;
+        }
+        let node = parseJson(line);
+        if !node {
+            continue;
+        }
+        if getStringOr(node, "type", "") != "user" {
+            continue;
+        }
+        if getBoolOr(node, "isMeta", false) || getBoolOr(node, "isCompactSummary", false) {
+            continue;
+        }
+        if getBoolOr(node, "isSidechain", false) {
+            continue;
+        }
+
+        let message = get(node, "message");
+        if !message {
+            continue;
+        }
+        let content = get(message, "content");
+        if !content {
+            continue;
+        }
+
+        let text = asStr(content);
+        if !text {
+            // An array of blocks: take the first text block, and skip the
+            // record entirely if it is a tool result.
+            let isToolResult = false;
+            for block in elements(content) {
+                if getStringOr(block, "type", "") == "tool_result" {
+                    isToolResult = true;
+                    break;
+                }
+                if getStringOr(block, "type", "") == "text" {
+                    let value = getString(block, "text");
+                    if value {
+                        text = value;
+                        break;
+                    }
+                }
+            }
+            if isToolResult {
+                continue;
+            }
+        }
+        if !text {
+            continue;
+        }
+
+        let trimmed = text.trim();
+        if trimmed.length == 0 {
+            continue;
+        }
+
+        // A shell escape reads better as what the user typed.
+        if trimmed.startsWith("<bash-input>") {
+            let close = indexOf(trimmed, "</bash-input>");
+            if close > 12 {
+                return "! " + trimmed.slice(12, close);
+            }
+            continue;
+        }
+
+        // A slash command is a weak title -- it says what was run, not what
+        // the session was about -- so it is only used if nothing better turns
+        // up later in the window.
+        if trimmed.startsWith("<command-name>") {
+            if slashCommandFallback.length == 0 {
+                let close = indexOf(trimmed, "</command-name>");
+                if close > 14 {
+                    slashCommandFallback = "/" + trimmed.slice(14, close);
+                }
+            }
+            continue;
+        }
+
+        // Any other XML-ish wrapper is injected context, not a prompt.
+        if trimmed.startsWith("<") {
+            continue;
+        }
+        if trimmed.startsWith("[Request interrupted by user") {
+            continue;
+        }
+
+        return trimmed;
+    }
+
+    return slashCommandFallback;
+}
+
+// ── Reading a transcript in full ────────────────────────────────────────────
+
+// Every record of a transcript, in write order.
+//
+// Reads and parses the whole file, so this is for opening one session, not for
+// listing many. A long conversation is tens of megabytes of JSON.
+export fn readRecords(path: str): Result<[]json.Node, TranscriptError> {
+    let text = fs.readText(path);
+    if !text {
+        return TranscriptError { message: "cannot read " + path };
+    }
+    let records: []json.Node = [];
+    for line in splitLines(text) {
+        if line.length == 0 {
+            continue;
+        }
+        let node = parseJson(line);
+        if node {
+            records.push(node);
+        }
+    }
+    return records;
+}
+
+// The path of a session's transcript, given its id.
+export fn sessionPath(configDir: str, cwd: str, sessionId: str): str {
+    return joinPath(projectDirectory(configDir, cwd), sessionId + ".jsonl");
+}
+
+// Appends a record to a transcript. The format is an append-only log; nothing
+// here ever rewrites an existing file.
+export fn appendRecord(path: str, record: json.Node): Result<none, TranscriptError> {
+    if !appendText(path, stringify(record) + "\n") {
+        return TranscriptError { message: "cannot append to " + path };
+    }
+    return none;
+}
+
+// Renames a session by appending a `custom-title` record. The last title in
+// the file wins, so this takes effect immediately and survives a resume,
+// without touching a byte of the conversation.
+export fn renameSession(path: str, sessionId: str, title: str): Result<none, TranscriptError> {
+    let record = newObject();
+    setStr(record, "type", "custom-title");
+    setStr(record, "sessionId", sessionId);
+    setStr(record, "customTitle", truncate(title.trim(), 200));
+    return appendRecord(path, record);
+}
+
+// Deletes a transcript outright.
+//
+// The VS Code client only ever hides sessions from its own list and leaves the
+// file behind. That is a defensible default and a client is free to do the
+// same -- but "delete" that does not delete is its own kind of surprise, so
+// this really removes it, and a client that wants the softer behaviour should
+// keep its own hidden-id list instead of calling this.
+export fn deleteSession(path: str): bool {
+    return removeFile(path);
+}
+
+// ── Forking ─────────────────────────────────────────────────────────────────
+
+// A copy-on-write branch of an existing conversation.
+//
+// The CLI can do this itself (`--fork-session` with `--resume-session-at`), and
+// for most clients that is the simpler route. This exists for the case the
+// flags cannot cover: producing the new transcript BEFORE starting a session,
+// so a client can show the branch in its session list, name it, or fork
+// several times from one point without spawning a CLI each time.
+//
+// The chain from the root to `atUuid` is copied with fresh uuids -- a record
+// whose parent is not in the copied chain would make the CLI reject the
+// transcript -- and the original file is not touched.
+export ref struct ForkResult {
+    sessionId: str = "";
+    path: str = "";
+    recordCount: int = 0;
+}
+
+export fn forkSession(configDir: str, cwd: str, sourceSessionId: str,
+                      atUuid: str): Result<ForkResult, TranscriptError> {
+    let directory = projectDirectory(configDir, cwd);
+    let sourcePath = joinPath(directory, sourceSessionId + ".jsonl");
+
+    let records = readRecords(sourcePath);
+    if !records {
+        return records;
+    }
+
+    // Index the conversation records by uuid so the chain can be walked.
+    let uuids: []str = [];
+    let parents: []str = [];
+    let indices: []int = [];
+    for (let i = 0; i < records.length; i++) {
+        let uuid = getStringOr(records[i], "uuid", "");
+        if uuid.length == 0 {
+            continue;
+        }
+        uuids.push(uuid);
+        // `logicalParentUuid` is what bridges a compaction boundary, where
+        // `parentUuid` is deliberately null.
+        let parent = getStringOr(records[i], "parentUuid", "");
+        if parent.length == 0 {
+            parent = getStringOr(records[i], "logicalParentUuid", "");
+        }
+        parents.push(parent);
+        indices.push(i);
+    }
+
+    // The leaf to cut at: the named message, or the last record when none was
+    // named.
+    let leaf = atUuid;
+    if leaf.length == 0 {
+        if uuids.length == 0 {
+            return TranscriptError { message: "the transcript has no messages to fork" };
+        }
+        leaf = uuids[uuids.length - 1];
+    }
+
+    // Walk parents from the leaf back to the root, collecting the chain.
+    let chain: []int = [];
+    let cursor = leaf;
+    let guard = 0;
+    while cursor.length > 0 && guard < records.length + 1 {
+        guard = guard + 1;
+        let found = -1;
+        for (let i = 0; i < uuids.length; i++) {
+            if uuids[i] == cursor {
+                found = i;
+                break;
+            }
+        }
+        if found < 0 {
+            break;
+        }
+        chain.push(indices[found]);
+        cursor = parents[found];
+    }
+    if chain.length == 0 {
+        return TranscriptError { message: "no message with uuid " + leaf };
+    }
+
+    let newSessionId = uuid();
+    let destinationPath = joinPath(directory, newSessionId + ".jsonl");
+
+    // Fresh uuids for every copied record, with parent links remapped. Reusing
+    // the originals would make two transcripts claim the same message ids.
+    let oldIds: []str = [];
+    let newIds: []str = [];
+    for (let i = chain.length - 1; i >= 0; i--) {
+        oldIds.push(getStringOr(records[chain[i]], "uuid", ""));
+        newIds.push(uuid());
+    }
+
+    let written = 0;
+    let text = "";
+    for (let position = 0; position < chain.length; position++) {
+        let record = records[chain[chain.length - 1 - position]];
+        let copy = clone(record);
+        setStr(copy, "uuid", newIds[position]);
+        setStr(copy, "sessionId", newSessionId);
+
+        let parent = getStringOr(record, "parentUuid", "");
+        if parent.length == 0 {
+            setNull(copy, "parentUuid");
+        }
+        else {
+            let mapped = "";
+            for (let i = 0; i < oldIds.length; i++) {
+                if oldIds[i] == parent {
+                    mapped = newIds[i];
+                    break;
+                }
+            }
+            if mapped.length == 0 {
+                setNull(copy, "parentUuid");
+            }
+            else {
+                setStr(copy, "parentUuid", mapped);
+            }
+        }
+
+        text = text + stringify(copy) + "\n";
+        written = written + 1;
+    }
+
+    let createdDirectory = fs.createDirectory(directory);
+    if !createdDirectory {
+        return TranscriptError { message: "cannot create " + directory };
+    }
+    let wrote = fs.writeText(destinationPath, text);
+    if !wrote {
+        return TranscriptError { message: "cannot write " + destinationPath };
+    }
+    // Transcripts hold the whole conversation, including whatever the user
+    // pasted into it. The CLI writes them 0600 and so does this.
+    makePrivate(destinationPath);
+
+    return ForkResult {
+        sessionId: newSessionId,
+        path: destinationPath,
+        recordCount: written,
+    };
+}
+
+// ── The live-session registry ───────────────────────────────────────────────
+
+// A CLI process that is currently running. The CLI registers itself in
+// `<configDir>/sessions/<pid>.json` while it lives, which lets a client mark a
+// session in its list as "open elsewhere" rather than offering to resume a
+// transcript another process is appending to.
+export ref struct RunningSession {
+    pid: int = 0;
+    sessionId: str = "";
+    cwd: str = "";
+    startedAt: int = 0;
+    version: str = "";
+    entrypoint: str = "";
+    name: str = "";
+}
+
+export fn listRunningSessions(configDir: str): []RunningSession {
+    let running: []RunningSession = [];
+    let listed = fs.listDir(joinPath(configDir, "sessions"));
+    if !listed {
+        return running;
+    }
+    for entry in listed {
+        if !entry.isFile || !entry.name.endsWith(".json") {
+            continue;
+        }
+        let text = fs.readText(entry.path);
+        if !text {
+            continue;
+        }
+        let node = parseJson(text);
+        if !node {
+            continue;
+        }
+        running.push(RunningSession {
+            pid: getIntOr(node, "pid", 0),
+            sessionId: getStringOr(node, "sessionId", ""),
+            cwd: getStringOr(node, "cwd", ""),
+            startedAt: getIntOr(node, "startedAt", 0),
+            version: getStringOr(node, "version", ""),
+            entrypoint: getStringOr(node, "entrypoint", ""),
+            name: getStringOr(node, "name", ""),
+        });
+    }
+    return running;
+}
+
+export fn isSessionRunning(configDir: str, sessionId: str): bool {
+    for session in listRunningSessions(configDir) {
+        if session.sessionId == sessionId {
+            return true;
+        }
+    }
+    return false;
+}
