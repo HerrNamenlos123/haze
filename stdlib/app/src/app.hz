@@ -6,6 +6,16 @@ import renderer
 export struct AppOptions {
     title: ccstr = "Haze App";
     presentMode: wgpu.PresentMode = wgpu.PresentMode.Fifo;
+    // Does the OS draw this window's titlebar and frame?
+    //
+    // Turning it off makes the window borderless, and the application owes
+    // it a titlebar of its own -- one that is a real titlebar, not a strip
+    // that looks like one: see App.pushWindowRegion, which publishes where
+    // that titlebar is so the window manager can go on doing everything it
+    // did with the one it no longer draws (drag, double-click to maximize,
+    // snap to an edge or a corner, tile, the window menu, the keyboard
+    // move/resize gestures).
+    nativeTitlebar: bool = true;
 }
 
 fn pickSurfaceFormat(caps: wgpu.SurfaceCapabilities): wgpu.TextureFormat {
@@ -160,8 +170,21 @@ export opaque ref struct App {
         let window = sdl.createWindow({
             title: options.title,
             noApi: true,
+            borderless: !options.nativeTitlebar,
         });
         if !window { return f"Window creation failed: {window}"; }
+
+        // A borderless window is inert until the platform is told which of
+        // its pixels are titlebar and which are its (now interior) resize
+        // handles -- without this it cannot be moved or resized at all. Only
+        // installed when the decorations are actually gone: on a normally
+        // decorated window the same hit test would carve fake resize borders
+        // out of the inside of the frame the platform already draws.
+        if !options.nativeTitlebar {
+            if !window.enableHitTest() {
+                return "This platform has no window hit-test support, so a borderless window cannot be moved or resized";
+            }
+        }
 
         let instance = wgpu.createInstance();
         if !instance { return "WGPU instance creation failed"; }
@@ -332,6 +355,74 @@ export opaque ref struct App {
     // True for exactly the frame the window regained it.
     fn justGainedFocus(): bool {
         return this.focusGained;
+    }
+
+    // ── The OS window ────────────────────────────────────────────────
+    //
+    // Everything a custom titlebar needs, in the platform's own terms. None
+    // of it is emulated: close pushes the very event the window manager's
+    // close button pushes, and minimize/maximize/restore are the platform
+    // operations, so a hand-drawn titlebar's buttons behave exactly like the
+    // ones they replaced.
+
+    // Ask this window to close, exactly as if its X had been clicked. The
+    // request travels through SDL's event queue and comes back out of
+    // pollEvents() as an ordinary close-requested event, so nextFrame()
+    // returns none on the next tick and the application runs its one
+    // ordinary shutdown -- there is no second path out.
+    fn requestClose() {
+        this.window.close();
+    }
+
+    fn minimize() {
+        this.window.minimize();
+    }
+
+    fn maximize() {
+        this.window.maximize();
+    }
+
+    fn restore() {
+        this.window.restore();
+    }
+
+    fn isMaximized(): bool {
+        return this.window.isMaximized();
+    }
+
+    // Does the OS draw this window's titlebar (see AppOptions.nativeTitlebar)?
+    // False means the application is responsible for one -- which is exactly
+    // the condition a UI shell should render its own titlebar on, rather than
+    // hard-coding the same choice a second time.
+    fn hasNativeTitlebar(): bool {
+        return !this.window.isBorderless();
+    }
+
+    // ── Publishing where the titlebar is ─────────────────────────────
+    //
+    // One frame's worth of boxes: begin, push each in PAINT order (a later
+    // box wins where it overlaps an earlier one), commit. Only the committed
+    // set is ever visible to the platform's hit test, so a half-built list
+    // cannot be read.
+    //
+    // Coordinates are LOGICAL window pixels -- the same space mousePos() and
+    // the UI's own layout use.
+    //
+    // Deliberately three plain calls over Vec2/bool rather than one taking a
+    // list of some region type: app sits below the UI layer and stays
+    // ignorant of it, exactly like setCursor() taking a bare int instead of a
+    // ui_styling.Cursor. The UI decides what the boxes are; this only carries
+    // them across.
+    fn beginWindowRegions() {
+        this.window.beginRegions();
+    }
+
+    fn pushWindowRegion(pos: Vec2, size: Vec2, draggable: bool) {
+        this.window.pushRegion(pos, size, draggable);
+    }
+
+    fn commitWindowRegions() {
+        this.window.commitRegions();
     }
 
     // Polls events, handles resize, and returns this App's Frame reset for

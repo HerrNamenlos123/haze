@@ -21,6 +21,11 @@ export struct RuntimeArgs {
     // the rest: omit it and ui.hasClipboard() reports false, which widgets
     // read as "fall back to whatever register you keep yourself".
     clipboard?: ui_components.ClipboardCallbacks;
+    // The OS window, for `ui.window` -- close/minimize/maximize plus the
+    // titlebar regions this runtime publishes after every layout pass. See
+    // ui_components.WindowCallbacks; omit it and every window operation is a
+    // no-op, which is what a headless context wants.
+    window?: ui_components.WindowCallbacks;
     ui: (ui: ui_components.UIContext) => none;
 }
 
@@ -71,6 +76,7 @@ export opaque ref struct Runtime {
             keyboard: args.keyboard,
             setCursor: args.setCursor,
             clipboard: args.clipboard,
+            window: args.window,
             measureText: (fontFamily: str, fontSize: real, text: str): Vec2 => {
                 return layout.measureText(fontFamily, fontSize, text);
             },
@@ -155,6 +161,12 @@ export opaque ref struct Runtime {
             setClip: this.setClip,
             renderBorder: this.renderBorder,
         });
+
+        // Where the window's own titlebar is, published now that this
+        // frame's layout has resolved every box -- see
+        // ui_components.UIContext.syncWindowRegions for why it has to happen
+        // here and not inside process().
+        this.ui.syncWindowRegions(tree);
 
         this.currentFrame = none;
         r.commit();

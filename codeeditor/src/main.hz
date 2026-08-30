@@ -8,6 +8,19 @@ import wgpu
 const comptime profile = false;
 const comptime vsync = true;
 
+// Does the OS draw this window's titlebar, or does the editor?
+//
+// Turning this off makes the window borderless -- the platform's titlebar and
+// frame are genuinely gone, not painted over -- and the UI shell renders
+// TitleBar.hzui instead (it asks ui.window.hasNativeTitlebar(), so this one
+// constant decides both halves and they cannot drift apart).
+//
+// The custom bar is still a real titlebar: the window's draggable area and its
+// resize handles are published to the window manager every frame (see
+// app.App.pushWindowRegion), so moving, resizing, double-click-to-maximize,
+// snapping and tiling are all done by the desktop itself.
+const comptime nativeTitlebar = false;
+
 // Translates app's platform-level pointer edge queue into ui_components'
 // own PointerEdge type -- kept as a small glue function here (rather than
 // having either module import the other's types) so app stays ignorant of
@@ -75,6 +88,7 @@ fn main(): int {
         let a = app.App({
             title: "Haze CodeEditor",
             presentMode: vsync ? wgpu.PresentMode.Fifo : wgpu.PresentMode.Mailbox,
+            nativeTitlebar: nativeTitlebar,
         })?!;
 
         let font = a.gfx.fontRenderer.fs.addFont(
@@ -128,6 +142,30 @@ fn main(): int {
             clipboard: ui_components.ClipboardCallbacks {
                 getText: (): str => { return app.getClipboardText(); },
                 setText: (text: str): bool => { return app.setClipboardText(text); },
+            },
+            // The OS window, behind `ui.window` -- what a custom titlebar
+            // calls to close, minimize or maximize the window it is drawing,
+            // plus the per-frame publication of where that titlebar IS (see
+            // ui_components.WindowRegion). Same layering as clipboard and
+            // setCursor above: app knows about SDL and the UI does not, so
+            // this is the seam the two meet at.
+            window: ui_components.WindowCallbacks {
+                requestClose: (): void => { a.requestClose(); },
+                minimize: (): void => { a.minimize(); },
+                maximize: (): void => { a.maximize(); },
+                restore: (): void => { a.restore(); },
+                isMaximized: () => a.isMaximized(),
+                hasNativeTitlebar: () => a.hasNativeTitlebar(),
+                // Unrolled into app's begin/push/commit rather than handed
+                // over as an array, so nothing has to cross the C boundary but
+                // scalars -- see app.App.pushWindowRegion.
+                setRegions: (regions: []ui_components.WindowRegion): void => {
+                    a.beginWindowRegions();
+                    for r in regions {
+                        a.pushWindowRegion(r.pos, r.size, r.draggable);
+                    }
+                    a.commitWindowRegions();
+                },
             },
             ui: (ui: ui_components.UIContext) => { UiComponent(ui, { id: 0 }); },
         });

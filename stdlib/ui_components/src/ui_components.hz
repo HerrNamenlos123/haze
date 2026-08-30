@@ -1039,6 +1039,107 @@ export fn applyRenderFeedback(element: ui_elements.Element, pos: Vec2, size: Vec
     }
 }
 
+// ── OS titlebar regions ──────────────────────────────────────────────────
+//
+// The walk that turns "this element is styled `os-titlebar`" into the flat
+// list of boxes the platform's hit test reads. See ui_styling.OSTitlebar for
+// what the style axis means and WindowRegion for what comes out.
+
+// This element's own explicit answer, or none if it took no position.
+// Only Div and Canvas carry a ComputedDivStyle; a TextElement has no style
+// axis of its own and is covered by the div wrapping it, exactly as it is for
+// `cursor` (see UIContext.resolveCursor).
+fn osTitlebarOf(element: ui_elements.Element): ui_styling.OSTitlebar | none :: final {
+    if element is ui_elements.DivElement {
+        return element.style.osTitlebar;
+    }
+    if element is ui_elements.CanvasElement {
+        return element.style.osTitlebar;
+    }
+    return none;
+}
+
+// Does this element take pointer input of its own?
+//
+// A titlebar's buttons do, and so must NOT be part of the draggable region: a
+// press on a close button has to arrive here, while a press on the strip
+// beside it has to go to the window manager. Read off the handlers the
+// element actually has rather than requiring an annotation, so an ordinary
+// Button dropped into a titlebar simply works -- which is both what anyone
+// would expect and the version that cannot be forgotten. An explicit
+// `os-titlebar` still wins, for the rare case where something interactive
+// really should drag the window.
+//
+// `focusable` counts: an element that can take focus by being clicked is
+// click-driven by definition, even with no handler of its own yet.
+fn isPointerInteractive(element: ui_elements.Element): bool :: final {
+    let data = runtimeDataOf(element);
+    if data.focusable { return true; }
+    if data.onPointerDown { return true; }
+    if data.onPointerUp { return true; }
+    if data.onClick { return true; }
+    if data.onDoubleClick { return true; }
+    if data.onAuxClick { return true; }
+    if data.onContextMenu { return true; }
+    if data.onWheel { return true; }
+    if data.onPointerDownCapture { return true; }
+    if data.onClickCapture { return true; }
+    return false;
+}
+
+// Depth first, in declaration order -- which is paint order, so the platform
+// resolves every overlap by taking the LAST match and nothing here has to
+// compute intersections or sort anything.
+//
+// Only TRANSITIONS are emitted, never one box per element: an element
+// contributes nothing unless its own answer differs from the region it sits
+// inside. A titlebar is therefore one box plus one hole per control, however
+// many wrappers, labels and icons it happens to be built out of.
+//
+// `inTitlebar` is what the enclosing boxes decided, and it is also why
+// interactivity is only consulted INSIDE a titlebar: an editor is full of
+// clickable things and not one of them is a hole in anything.
+fn collectWindowRegions(element: ui_elements.Element, out: []WindowRegion, inTitlebar: bool): void :: final {
+    // A hidden subtree keeps whatever box it had when it was last visible
+    // (nothing clears render feedback -- see collectHitPath), so this check
+    // has to be explicit: without it a closed panel would go on donating a
+    // draggable strip to a window that no longer shows one.
+    if ui_elements.isDisplayNone(element) {
+        return;
+    }
+
+    let decided = false;
+    let draggable = false;
+    let explicit = osTitlebarOf(element);
+    if explicit {
+        decided = true;
+        draggable = explicit == ui_styling.OSTitlebar.Drag;
+    }
+    else if inTitlebar && isPointerInteractive(element) {
+        decided = true;
+        draggable = false;
+    }
+
+    let childInTitlebar = inTitlebar;
+    if decided {
+        childInTitlebar = draggable;
+        let pos = ui_position(element);
+        let size = ui_size(element);
+        // No box yet (an element that has never been laid out) simply
+        // contributes nothing this frame; its children still can, so the walk
+        // continues either way.
+        if pos && size {
+            out.push({ pos: pos, size: size, draggable: draggable });
+        }
+    }
+
+    if element is ui_elements.DivElement {
+        for child in element.children {
+            collectWindowRegions(child, out, childInTitlebar);
+        }
+    }
+}
+
 // When a watcher's callback runs relative to the frame's template pass
 // (Vue's `flush` option). See UIContext.flushJobs.
 export enum WatchFlush {
@@ -1265,6 +1366,165 @@ export ref struct ClipboardCallbacks {
     setText: (text: str) => bool;
 }
 
+// ── The OS window ────────────────────────────────────────────────────────
+//
+// One box the UI publishes to the platform as part of (or explicitly not part
+// of) the window's own titlebar -- see ui_styling.OSTitlebar for what that
+// means and why a native application needs it at all.
+//
+// Emitted in PAINT order, so a later box wins wherever two overlap. That is
+// what makes a hole work: a close button's box comes after the titlebar's
+// because it is drawn after it.
+//
+// `pos`/`size` are in the same logical coordinate space as everything else
+// the UI works in.
+export struct WindowRegion {
+    pos: Vec2;
+    size: Vec2;
+    // False marks a hole: this box is NOT titlebar, even inside one that is.
+    draggable: bool;
+}
+
+// The host's window, bundled and optional for exactly the reason
+// ClipboardCallbacks above is: this module knows nothing about SDL or any
+// other windowing layer, and neither may anything built on it, so a titlebar
+// component cannot reach for app.requestClose() itself. The host, which is
+// the one piece that does know, hands its window down here.
+//
+// Reached from component code as `ui.window` -- see WindowApi, which is the
+// small curated surface those callbacks are offered through. A context with
+// none of this wired up (a headless test, an embedded surface) answers
+// `ui.window.available()` with false and treats every call as a no-op.
+export ref struct WindowCallbacks {
+    // Ask the window to close. This must take the SAME path the platform's
+    // own close button takes -- app.App.requestClose pushes the platform's
+    // close event rather than shortcutting to a shutdown flag -- so that an
+    // application has one shutdown sequence and not two.
+    requestClose: () => void;
+    minimize: () => void;
+    maximize: () => void;
+    restore: () => void;
+    // Polled once a frame (see WindowApi.poll), because the platform can
+    // change this without any input this process ever sees: a double click on
+    // the titlebar, a keyboard gesture, a snap to the side of the screen.
+    isMaximized: () => bool;
+    // Does the OS draw this window's titlebar? False is what tells a UI shell
+    // that it owes the window one of its own.
+    hasNativeTitlebar: () => bool;
+    // This frame's titlebar boxes, in paint order. Called only on frames
+    // where something could have moved -- see UIContext.syncWindowRegions.
+    setRegions: (regions: []WindowRegion) => void;
+}
+
+// The window this UI is running in, as component code is allowed to touch it:
+// `ui.window.close()`, `ui.window.toggleMaximize()`, and nothing else.
+//
+// Deliberately its own small object rather than more methods on UIContext.
+// UIContext's surface is large and mostly framework internals (defineComponent,
+// process, the hit-path walks), and none of that is something a component
+// should be offered -- so the window operations live behind a name that
+// contains exactly them, and an editor completing `ui.window.` shows the whole
+// list.
+//
+// Per-UIContext rather than global, because a window is: one context drives
+// one window, so `ui.window.close()` means "the window THIS component is in".
+// The day a second window exists that sentence still picks the right one, with
+// nothing here to change.
+export ref struct WindowApi {
+    _cb?: WindowCallbacks;
+    // The platform's maximized flag, mirrored into a reactive cell so a
+    // titlebar's maximize/restore icon re-renders the moment it flips -- see
+    // poll(), which is the only thing that ever writes it.
+    _maximized: rx.Reactive<bool>;
+    // The last value poll() read from the platform. A plain field, not a read
+    // of the cell above: poll() runs outside any reactive scope and must
+    // decide whether to write WITHOUT taking a dependency on what it writes.
+    _maximizedSeen: bool = false;
+
+    // Whether a host wired a real window up at all. False in a headless or
+    // embedded context, where every call below does nothing -- worth asking
+    // before drawing window controls that could not work.
+    fn available(): bool {
+        return this._cb is not none;
+    }
+
+    // Close this window, exactly as if its titlebar's X had been clicked.
+    //
+    // Not a shortcut to a shutdown flag: the request goes out as the
+    // platform's own close event and comes back through the ordinary event
+    // loop, so whatever an application already does when the user closes its
+    // window -- prompting for unsaved work, flushing caches, tearing the
+    // window down -- happens here too, because it is literally the same path.
+    fn close() {
+        let cb = this._cb;
+        if cb { cb.requestClose(); }
+    }
+
+    fn minimize() {
+        let cb = this._cb;
+        if cb { cb.minimize(); }
+    }
+
+    fn maximize() {
+        let cb = this._cb;
+        if cb { cb.maximize(); }
+    }
+
+    fn restore() {
+        let cb = this._cb;
+        if cb { cb.restore(); }
+    }
+
+    // What a maximize BUTTON actually does -- and what the OS itself does on
+    // a double click in the titlebar, which is why a custom titlebar needs no
+    // handler for that: the window manager already has one.
+    fn toggleMaximize() {
+        if this.isMaximized() { this.restore(); }
+        else { this.maximize(); }
+    }
+
+    // Reactive: reading this from a template or a computed re-renders it when
+    // the window is maximized or restored, however that happened.
+    fn isMaximized(): bool {
+        return this._maximized;
+    }
+
+    // Does the OS draw this window's titlebar? False means the application
+    // does, which is exactly the condition a shell should render its own
+    // titlebar on -- rather than hard-coding that decision a second time
+    // somewhere it can drift from the window it describes.
+    //
+    // Fixed for the window's lifetime (decorations are chosen at creation),
+    // so it is a plain read with nothing reactive about it.
+    fn hasNativeTitlebar(): bool {
+        let cb = this._cb;
+        if cb { return cb.hasNativeTitlebar(); }
+        // Nothing wired up: claim the platform has it covered, so a shell
+        // does not draw a titlebar for a window it knows nothing about.
+        return true;
+    }
+
+    // Re-reads the platform state reported above, once a frame.
+    //
+    // Called from the very top of UIContext.process(), BEFORE its "is there
+    // anything to do this frame?" gate, because the answer can change with no
+    // input of ours involved at all: the user double-clicks the titlebar, hits
+    // the keyboard maximize gesture, or drags the window into a screen edge,
+    // and the flag flipping is the first this process hears of it. Writing the
+    // reactive from here is what carries that into the UI -- and writing it
+    // ONLY on a real change is what keeps a titlebar that reads it from
+    // re-rendering on every single frame.
+    fn poll() {
+        let cb = this._cb;
+        if !cb { return; }
+        let maximized = cb.isMaximized();
+        if maximized != this._maximizedSeen {
+            this._maximizedSeen = maximized;
+            this._maximized := maximized;
+        }
+    }
+}
+
 // How the resolved mouse cursor reaches the platform. Unlike the callbacks
 // above this is an OUTPUT: the UI decides a shape each frame and hands it
 // down, rather than polling the host for state.
@@ -1338,6 +1598,17 @@ export opaque ref struct UIContext {
     // one, has no clipboard at all. See hasClipboard() for why that is worth
     // telling apart from an empty one.
     _clipboard?: ClipboardCallbacks;
+    // The OS window this UI is running in, as component code may touch it --
+    // `ui.window.close()`. A field rather than a set of methods here on
+    // purpose; see WindowApi.
+    window: WindowApi;
+    // Reused by syncWindowRegions every frame it publishes; clear() keeps the
+    // capacity, so a titlebar costs no allocation after the first frame.
+    _windowRegions: []WindowRegion = [];
+    // Did process() get past its gate this frame? Read (and reset) by
+    // syncWindowRegions, which has nothing to re-publish on a frame where
+    // nothing was rebuilt.
+    _workedThisFrame: bool = false;
     // Optional so a headless/test UIContext (no layout engine wired up) can
     // still be constructed -- measureText() below asserts before using it.
     _measureText?: (fontFamily: str, fontSize: real, text: str) => Vec2;
@@ -1451,6 +1722,10 @@ export opaque ref struct UIContext {
         keyboard?: KeyboardCallbacks;
         setCursor?: CursorCallback;
         clipboard?: ClipboardCallbacks;
+        // The OS window, for `ui.window` -- see WindowCallbacks. Optional:
+        // omitting it leaves every window operation a no-op, which is what a
+        // headless or embedded context wants.
+        window?: WindowCallbacks;
         measureText?: (fontFamily: str, fontSize: real, text: str) => Vec2;
         // See UIContext.provideFont. Optional; a context without one cannot
         // accept fonts, which is exactly right for a headless/test context.
@@ -1473,6 +1748,7 @@ export opaque ref struct UIContext {
             _keyboard: args.keyboard,
             _setCursor: args.setCursor,
             _clipboard: args.clipboard,
+            window: WindowApi { _cb: args.window, _maximized: rx.reactive<bool>(false) },
             _measureText: args.measureText,
             _provideFont: args.provideFont,
         };
@@ -1647,6 +1923,43 @@ export opaque ref struct UIContext {
             return this._clipboard.setText(text);
         }
         return false;
+    }
+
+    // Hands this frame's OS titlebar boxes to the host window.
+    //
+    // Called by the composition root once LAYOUT HAS RUN (see
+    // ui_runtime.Runtime.render), not from inside process(). The boxes are
+    // read back out of render feedback, and the pass that produces it is the
+    // one that has only just finished -- collect them any earlier and what
+    // gets published is the PREVIOUS frame's geometry. Hit-testing lives with
+    // that lag quite happily; a window manager should not have to, and on the
+    // very first frame there would be no geometry to publish at all, which an
+    // otherwise idle UI would then never get around to correcting.
+    //
+    // Does nothing on a frame where process() stayed behind its gate: nothing
+    // was rebuilt, so nothing moved, so what is already published is still
+    // right.
+    fn syncWindowRegions(root: ui_elements.Element): void {
+        if !this._workedThisFrame {
+            return;
+        }
+        this._workedThisFrame = false;
+
+        let cb = this.window._cb;
+        if !cb {
+            return;
+        }
+        // A window the OS still draws the titlebar for has no regions to
+        // publish, and checking here is what keeps the whole tree walk off
+        // the frame of every application that never asked for one.
+        if cb.hasNativeTitlebar() {
+            return;
+        }
+
+        let regions = this._windowRegions;
+        regions.clear();
+        collectWindowRegions(root, regions, false);
+        cb.setRegions(regions);
     }
 
     // Returns ordered path [root, ..., deepest-hit-element] using last-child-on-top z-order.
@@ -2615,6 +2928,12 @@ export opaque ref struct UIContext {
     }
 
     fn process() {
+        // The platform's own window state, re-read before this frame's gate
+        // rather than after it -- the window can be maximized, restored or
+        // snapped without any input this process sees, and noticing that is
+        // itself a reason to render a frame. See WindowApi.poll.
+        this.window.poll();
+
         let now = time.now();
         let elapsed = now - this._prevTime;
         this._prevTime = now;
@@ -2762,6 +3081,11 @@ export opaque ref struct UIContext {
         // made later in this same frame -- a click handler calling focus(),
         // say -- survives to open the gate for the next one.
         ui_takeUpdateRequest();
+
+        // Past the gate: this frame rebuilds the tree, so this frame's layout
+        // will produce fresh boxes and the OS titlebar regions are worth
+        // re-publishing once it has. See syncWindowRegions.
+        this._workedThisFrame = true;
 
         // HIT TESTING & EVENT SCHEDULING
         //

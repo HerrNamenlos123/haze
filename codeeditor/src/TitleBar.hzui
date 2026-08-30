@@ -1,13 +1,38 @@
-
-from codicons import CodiconComponent
+// A REAL titlebar, not a strip that looks like one.
+//
+// The root element carries `os-titlebar`, which publishes its box to the
+// window manager (see ui_styling.OSTitlebar, and
+// ui_components.UIContext.syncWindowRegions for how it gets there). Everything
+// a titlebar is expected to do -- drag the window, double-click to
+// maximize/restore, throw it at a screen edge or a corner to snap or tile it,
+// shake it, right-click for the window menu, move it with the keyboard -- is
+// therefore done BY the window manager, on that box, and not one line of it is
+// implemented in this file. It could not be: those gestures are the desktop's,
+// they differ per platform and per user setting, and an application that
+// reimplements them gets a window that behaves almost, but not quite, like
+// every other window on the machine.
+//
+// What is implemented here is the three buttons, because they are the only
+// part the platform cannot infer, and the layout. The buttons need no
+// annotation to stay clickable: an element that takes pointer input of its own
+// is carved out of the drag region automatically -- see
+// ui_components.isPointerInteractive.
 
 @props
-color: str = "#292929";
-textColor: str = "#FFF";
-// showCloseButton: bool = true;
-// showMinimizeButton: bool = true;
-// showMaximizeButton: bool = true;
+color: str = "#3C3C3C";
+textColor: str = "#CCCCCC";
 title: str = "";
+height: real = 32.0;
+// The minimize/maximize/close group. Turn it off for a titlebar that supplies
+// its own controls through the rightContent slot; dragging, resizing and
+// snapping do not depend on it either way, since those come from the OS.
+windowControls: bool = true;
+controlHoverColor: str = "#FFFFFF14";
+controlActiveColor: str = "#FFFFFF29";
+// Close hovers red rather than the neutral grey the other two get, matching
+// what every desktop does with the one button that discards work.
+closeHoverColor: str = "#C42B1C";
+closeActiveColor: str = "#B0271A";
 
 @slot
 leftContent: {
@@ -22,17 +47,73 @@ rightContent: {
 
 @setup
 
-let closeWindow = () => {
+let rootRef = elementRef<DivElement>();
 
+// Centering the title EXACTLY, rather than approximately.
+//
+// The obvious version -- a growing spacer either side -- only centres when the
+// left and right content happen to be the same width, which they never are
+// once there are three buttons on one side. So the title floats out of flow
+// (nothing can push it around), is placed at the bar's midpoint, and is then
+// shifted back by half of its OWN width. That last part is what `translate`
+// is for here: it is a multiple of the element's own size, which is the one
+// measurement this side does not have. It is CSS's
+// `position: absolute; left: 50%; transform: translateX(-50%)`, written in
+// the units this layout engine has.
+let centerX = computed(() => {
+    let size = rootRef?.size();
+    if size { return size.x / 2.0; }
+    return 0.0;
+});
+
+// `ui.window` is per-UIContext, so every call below means THE window this
+// component is running in -- there is no global here to pick the wrong one,
+// and nothing in this file changes the day a second window exists.
+let maximizeIcon = computed(() => {
+    if ui.window.isMaximized() { return "chrome-restore"; }
+    return "chrome-maximize";
+});
+
+let minimizeWindow = () => {
+    ui.window.minimize();
 };
 
-@template [relative w-grow h-fit bg-["#3C3C3C"] items-center font-size-16]
+// Bound to the maximize button, and also to a double click on the bar.
+//
+// On a backend where the press in a drag region belongs to the platform, this
+// never fires for the double click and does not need to: Windows turns
+// SDL_HITTEST_DRAGGABLE into HTCAPTION, and the OS then does the toggle
+// itself, with the user's own settings for what a double click means. Where
+// the press does reach the application, this is the fallback -- and it is
+// still not a reimplementation of anything, since toggleMaximize() is the
+// platform's own maximize/restore. See the note in ui_styling.OSTitlebar.
+let toggleMaximizeWindow = () => {
+    ui.window.toggleMaximize();
+};
+
+// Goes out as the platform's own close request, so this runs the identical
+// shutdown sequence the window manager's X runs: same event, same queue, same
+// handler, one path. See ui_components.WindowApi.close.
+let closeWindow = () => {
+    ui.window.close();
+};
+
+let titlebarDoubleClicked = (event: PointerEvent) => {
+    toggleMaximizeWindow();
+};
+
+@template [
+        os-titlebar relative row w-grow h-[props.height]px items-center
+        bg-[props.color] font-size-16
+    ]
+    ref=rootRef
+    @doubleclick=titlebarDoubleClicked
 
 slot leftContent title=[props.title]
 
 div [w-grow] {}
 
-div [absolute] {
+div [absolute left-[rx.get(centerX)] translate-x-[-0.5] h-[props.height]px w-fit row items-center] {
     slot centerContent title=[props.title] {
         text [no-wrap text-color-[props.textColor]] [props.title]
     }
@@ -40,8 +121,16 @@ div [absolute] {
 
 slot rightContent title=[props.title]
 
-// Codicon [] icon="chrome-minimize" {}
-// Codicon [] icon="chrome-maximize" {}
-div [m-1] {
-    Button [] icon="chrome-close" paddingX=[4] rounded=[999] @click=closeWindow {}
+div if=[props.windowControls] [row items-center h-grow] {
+    Button [] icon="chrome-minimize" paddingX=[14] paddingY=[9] rounded=[0]
+        bgHover=[props.controlHoverColor] bgActive=[props.controlActiveColor]
+        textColor=[props.textColor] focusRing=[0] @click=minimizeWindow {}
+
+    Button [] icon=[rx.get(maximizeIcon)] paddingX=[14] paddingY=[9] rounded=[0]
+        bgHover=[props.controlHoverColor] bgActive=[props.controlActiveColor]
+        textColor=[props.textColor] focusRing=[0] @click=toggleMaximizeWindow {}
+
+    Button [] icon="chrome-close" paddingX=[14] paddingY=[9] rounded=[0]
+        bgHover=[props.closeHoverColor] bgActive=[props.closeActiveColor]
+        textColor=[props.textColor] focusRing=[0] @click=closeWindow {}
 }

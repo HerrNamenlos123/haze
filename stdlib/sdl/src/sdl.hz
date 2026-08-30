@@ -7,7 +7,7 @@ namespace ffi {
 
 	extern C fn haze_sdl_init(): bool :: final;
 	extern C fn haze_sdl_terminate(): void :: final;
-	extern C fn haze_sdl_createWindow(width: i32, height: i32, title: ccstr, noApi: bool): SDL_Window | none :: final;
+	extern C fn haze_sdl_createWindow(width: i32, height: i32, title: ccstr, noApi: bool, borderless: bool): SDL_Window | none :: final;
 	extern C fn haze_sdl_destroyWindow(window: SDL_Window): void :: final;
 	extern C fn haze_sdl_windowShouldClose(window: SDL_Window): bool :: final;
 	extern C fn haze_sdl_setWindowShouldClose(window: SDL_Window, value: bool): void :: final;
@@ -19,6 +19,23 @@ namespace ffi {
 	extern C fn haze_sdl_getTime(): f64 :: final;
 	extern C fn haze_sdl_consumeWindowSizeChanged(window: SDL_Window): bool :: final;
 	extern C fn haze_sdl_windowHasFocus(window: SDL_Window): bool :: final;
+
+	// Custom-titlebar / OS window integration -- see the block comment above
+	// haze_sdl_hit_test in sdl_impl.c. The region list is pushed one box at a
+	// time rather than as an array so nothing has to be marshalled across the
+	// FFI boundary: three scalar calls per frame, no allocation on either
+	// side.
+	extern C fn haze_sdl_enableWindowHitTest(window: SDL_Window): bool :: final;
+	extern C fn haze_sdl_beginWindowRegions(window: SDL_Window): void :: final;
+	extern C fn haze_sdl_pushWindowRegion(window: SDL_Window, x: f32, y: f32, w: f32, h: f32, draggable: bool): void :: final;
+	extern C fn haze_sdl_commitWindowRegions(window: SDL_Window): void :: final;
+
+	extern C fn haze_sdl_minimizeWindow(window: SDL_Window): void :: final;
+	extern C fn haze_sdl_maximizeWindow(window: SDL_Window): void :: final;
+	extern C fn haze_sdl_restoreWindow(window: SDL_Window): void :: final;
+	extern C fn haze_sdl_windowIsMaximized(window: SDL_Window): bool :: final;
+	extern C fn haze_sdl_windowIsBorderless(window: SDL_Window): bool :: final;
+	extern C fn haze_sdl_requestWindowClose(window: SDL_Window): void :: final;
 	extern C noemit fn SDL_GetWindowSize(window: SDL_Window, width: cptr, height: cptr): bool :: final;
 	extern C noemit fn SDL_GetWindowSizeInPixels(window: SDL_Window, width: cptr, height: cptr): bool :: final;
 	extern C noemit fn SDL_GetError(): ccstr :: final;
@@ -91,8 +108,8 @@ namespace ffi {
 		haze_sdl_terminate();
 	}
 
-	export fn createWindow(width: i32, height: i32, title: ccstr, noApi: bool): SDL_Window | none {
-		return haze_sdl_createWindow(width, height, title, noApi);
+	export fn createWindow(width: i32, height: i32, title: ccstr, noApi: bool, borderless: bool): SDL_Window | none {
+		return haze_sdl_createWindow(width, height, title, noApi, borderless);
 	}
 
 	export fn destroyWindow(window: SDL_Window) {
@@ -141,6 +158,46 @@ namespace ffi {
 
 	export fn windowHasFocus(window: SDL_Window): bool {
 		return haze_sdl_windowHasFocus(window);
+	}
+
+	export fn enableWindowHitTest(window: SDL_Window): bool {
+		return haze_sdl_enableWindowHitTest(window);
+	}
+
+	export fn beginWindowRegions(window: SDL_Window) {
+		haze_sdl_beginWindowRegions(window);
+	}
+
+	export fn pushWindowRegion(window: SDL_Window, x: f32, y: f32, w: f32, h: f32, draggable: bool) {
+		haze_sdl_pushWindowRegion(window, x, y, w, h, draggable);
+	}
+
+	export fn commitWindowRegions(window: SDL_Window) {
+		haze_sdl_commitWindowRegions(window);
+	}
+
+	export fn minimizeWindow(window: SDL_Window) {
+		haze_sdl_minimizeWindow(window);
+	}
+
+	export fn maximizeWindow(window: SDL_Window) {
+		haze_sdl_maximizeWindow(window);
+	}
+
+	export fn restoreWindow(window: SDL_Window) {
+		haze_sdl_restoreWindow(window);
+	}
+
+	export fn windowIsMaximized(window: SDL_Window): bool {
+		return haze_sdl_windowIsMaximized(window);
+	}
+
+	export fn windowIsBorderless(window: SDL_Window): bool {
+		return haze_sdl_windowIsBorderless(window);
+	}
+
+	export fn requestWindowClose(window: SDL_Window) {
+		haze_sdl_requestWindowClose(window);
 	}
 }
 
@@ -445,8 +502,70 @@ export ref struct Window {
 		return ffi.windowShouldClose(this.handle);
 	}
 
+	// Ask this window to close, exactly as if its titlebar's X had been
+	// clicked: it pushes the platform's own SDL_EVENT_WINDOW_CLOSE_REQUESTED
+	// rather than setting the should-close flag behind the event loop's back,
+	// so a close from a custom titlebar and a close from the window manager
+	// are the same code path from here on -- one shutdown sequence, not two.
+	// See haze_sdl_requestWindowClose.
 	fn close() {
-		ffi.setWindowShouldClose(this.handle, true);
+		ffi.requestWindowClose(this.handle);
+	}
+
+	// ── Window state ────────────────────────────────────────────────
+	//
+	// The real platform operations, not an emulation of them, so a custom
+	// titlebar's buttons behave (and animate) like the ones they replace.
+
+	fn minimize() {
+		ffi.minimizeWindow(this.handle);
+	}
+
+	fn maximize() {
+		ffi.maximizeWindow(this.handle);
+	}
+
+	fn restore() {
+		ffi.restoreWindow(this.handle);
+	}
+
+	fn isMaximized(): bool {
+		return ffi.windowIsMaximized(this.handle);
+	}
+
+	// Is the platform's own titlebar and frame gone (SDL_WINDOW_BORDERLESS)?
+	// True exactly when the application asked for a borderless window, which
+	// is the moment it owes the window a titlebar of its own.
+	fn isBorderless(): bool {
+		return ffi.windowIsBorderless(this.handle);
+	}
+
+	// ── OS window regions (custom titlebar) ─────────────────────────
+	//
+	// See the block comment above haze_sdl_hit_test in sdl_impl.c for what
+	// these are and why the platform, not this process, is what ends up
+	// moving the window.
+	//
+	// Reports false when the video backend has no hit-test support -- a
+	// borderless window is then immovable, which a caller wants to know
+	// about rather than discover by dragging.
+	fn enableHitTest(): bool {
+		return ffi.enableWindowHitTest(this.handle);
+	}
+
+	// One frame's worth of regions: begin, push each box in PAINT order
+	// (later boxes win where they overlap), commit. The committed set is
+	// what the hit test reads, so a half-built list is never visible to it.
+	fn beginRegions() {
+		ffi.beginWindowRegions(this.handle);
+	}
+
+	fn pushRegion(pos: Vec2, size: Vec2, draggable: bool) {
+		ffi.pushWindowRegion(this.handle, pos.x as f32, pos.y as f32, size.x as f32, size.y as f32, draggable);
+	}
+
+	fn commitRegions() {
+		ffi.commitWindowRegions(this.handle);
 	}
 
 	fn destroy() {
@@ -750,6 +869,10 @@ export ref struct WindowConfig {
 	title: ccstr;
 	size: WindowSizeConfig = {};
 	noApi: bool = false;
+	// Drop the platform's titlebar and frame -- the application draws its
+	// own. See Window.enableHitTest, which is what gives such a window its
+	// dragging, resizing, snapping and double-click-to-maximize back.
+	borderless: bool = false;
 }
 
 export fn init() {
@@ -763,7 +886,7 @@ export fn terminate() {
 export fn createWindow(config: WindowConfig): Result<mut Window, str> {
 	assert(config.size.width >= i32.min && config.size.width <= i32.max);
 	assert(config.size.height >= i32.min && config.size.height <= i32.max);
-	const handle = ffi.createWindow(config.size.width, config.size.height, config.title, config.noApi);
+	const handle = ffi.createWindow(config.size.width, config.size.height, config.title, config.noApi, config.borderless);
 	if !handle {
 		return Result<mut Window, str>.Err(ffi.getError());
 	}

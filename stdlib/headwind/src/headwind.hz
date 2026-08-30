@@ -534,4 +534,20 @@ namespace presets {
     export fn cursorResizeNESW(): ui_styling.CursorOp {
         return ui_styling.CursorOp { value: ui_styling.Cursor.ResizeNESW };
     }
+
+    // The OS window's own titlebar -- see ui_styling.OSTitlebar. `os-titlebar`
+    // hands every gesture that lands in this box to the window manager
+    // (drag to move, double-click to maximize, snap to an edge or corner);
+    // `os-titlebar-none` carves a hole back out of one.
+    //
+    // No Tailwind counterpart, because the web has no window to move. The
+    // nearest relative is Electron's `-webkit-app-region: drag / no-drag`,
+    // which does the same job for the same reason.
+    export fn osTitlebar(): ui_styling.OSTitlebarOp {
+        return ui_styling.OSTitlebarOp { value: ui_styling.OSTitlebar.Drag };
+    }
+
+    export fn osTitlebarNone(): ui_styling.OSTitlebarOp {
+        return ui_styling.OSTitlebarOp { value: ui_styling.OSTitlebar.NoDrag };
+    }
 }

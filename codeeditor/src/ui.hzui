@@ -465,7 +465,12 @@ fn fileNameOf(path: str): str {
     @keydowncapture=keyDownCapture
     @pointerdowncapture=dismissMenusOnPressCapture
 
-TitleBar []
+// Only when the platform is NOT drawing one. The condition is asked of the
+// window itself rather than restating main.hz's `nativeTitlebar` constant
+// here, so the bar appears exactly when the window is missing its own and
+// the two cannot drift apart.
+TitleBar if=[!ui.window.hasNativeTitlebar()] []
+    title="Haze CodeEditor"
     // documentName=[activeKey >= 0 ? fileNameOf(pathForKey(activeKey)) : ""]
     // workspaceName=[workspace().name]
     // openMenu=[titleBarState.openMenu]

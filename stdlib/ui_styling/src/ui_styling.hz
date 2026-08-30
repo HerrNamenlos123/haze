@@ -204,6 +204,53 @@ export fn cursorToInt(cursor: Cursor): int :: final {
     };
 }
 
+// Which part of the OS WINDOW a box is, as far as the window manager is
+// concerned. CSS has no counterpart to this, for the simple reason that a web
+// page is never the window it is displayed in -- a native application is.
+//
+// An application that draws its own titlebar has taken the window's
+// decorations away from the platform, and with them everything the platform
+// did with them: dragging the window, double-click to maximize, snapping to
+// an edge or a corner, the window menu, the keyboard move/resize gestures.
+// None of that is re-implemented here. Instead this marks WHERE the titlebar
+// is, the host publishes those boxes to the windowing layer (see
+// ui_components.WindowRegion -> app.App.setWindowRegions -> SDL's hit test),
+// and every gesture that lands in one is handed straight to the window
+// manager -- HTCAPTION on Windows, xdg_toplevel_move on Wayland,
+// _NET_WM_MOVERESIZE on X11. The window then behaves like any other window on
+// the desktop because it IS being moved by the same code that moves any other
+// window.
+//
+// How much of a titlebar's behavior that covers is the platform's decision,
+// not ours, and the two ends of the range are worth knowing:
+//
+//   Windows  SDL turns a draggable region into HTCAPTION, i.e. the window
+//            genuinely has a caption bar there. Dragging, snapping, Aero
+//            Shake, double-click to maximize, the right-click window menu and
+//            the keyboard move/resize gestures all follow, and the press
+//            never reaches the application at all.
+//   Wayland  SDL calls xdg_toplevel_move / xdg_toplevel_resize, so the
+//            compositor owns the drag: moving, snapping and tiling are its
+//            own. It stops there -- the protocol has no "this is a caption
+//            bar" concept, so a client-drawn titlebar is expected to turn a
+//            double click into a maximize call itself, exactly as GTK and Qt
+//            do. SDL consumes the press for the move grab, though, so that
+//            fallback only runs where the press is actually delivered.
+//
+// Boxes resolve in PAINT ORDER, last one wins, so NoDrag carves a hole out of
+// an enclosing Drag region -- which is exactly what a close button in a
+// titlebar needs. That case needs no annotation at all, though: an element
+// that takes pointer input of its own is excluded automatically (see
+// ui_components.isPointerInteractive). The explicit values are for what that
+// rule cannot see -- a decorative strip that should NOT drag the window, or a
+// non-interactive element inside a NoDrag box that should.
+export enum OSTitlebar {
+    // This box is titlebar: presses in it belong to the window manager.
+    Drag,
+    // This box is not, even when it sits inside one that is.
+    NoDrag,
+}
+
 // top/right/bottom/left offsets, CSS/Tailwind-style -- independent optional
 // edges, not Clay's corner-pair attach points (that stays an internal
 // ui_layout concern). Only one edge per axis is meaningful: if both left and
@@ -445,6 +492,13 @@ export struct DivStyle {
     // see the note on ComputedDivStyle.cursor.
     cursor?: Cursor;
 
+    // Whether this box is part of the OS window's titlebar -- see OSTitlebar.
+    // Unset means "whatever the enclosing box decided", and stays a distinct
+    // answer all the way into ComputedDivStyle for the same reason `cursor`
+    // does: "took no position" and "explicitly not draggable" are different,
+    // and only the second one punches a hole in a titlebar around it.
+    osTitlebar?: OSTitlebar;
+
     borderWidth: BorderWidthValues = {};
     borderColor?: Color;
 
@@ -489,6 +543,7 @@ export struct DivStyle {
         this.zIndex = other.zIndex;
         this.anchorTarget = other.anchorTarget;
         this.cursor = other.cursor;
+        this.osTitlebar = other.osTitlebar;
         this.borderWidth = other.borderWidth;
         this.borderColor = other.borderColor;
         this.outlineWidth = other.outlineWidth;
@@ -518,6 +573,7 @@ export struct DivStyle {
             this.translate.y == other.translate.y &&
             this.zIndex == other.zIndex &&
             this.cursor == other.cursor &&
+            this.osTitlebar == other.osTitlebar &&
             this.fontFamily == other.fontFamily &&
             this.fontSize == other.fontSize &&
             this.fontWeight == other.fontWeight &&
@@ -608,6 +664,10 @@ export struct ComputedDivStyle {
     // would make every element opt out of its parent's cursor.
     cursor?: Cursor;
 
+    // Stays optional after resolution for the same reason `cursor` above
+    // does -- see DivStyle.osTitlebar.
+    osTitlebar?: OSTitlebar;
+
     borderWidth: BorderWidth = {};
     borderColor: Color = {};
 
@@ -644,6 +704,7 @@ export struct ComputedDivStyle {
         this.zIndex = other.zIndex;
         this.anchorTarget = other.anchorTarget;
         this.cursor = other.cursor;
+        this.osTitlebar = other.osTitlebar;
         this.borderWidth = other.borderWidth;
         this.borderColor = other.borderColor;
         this.outlineWidth = other.outlineWidth;
@@ -779,6 +840,7 @@ export struct TranslateYOp { value: real; }
 export struct ZIndexOp { value: int; }
 export struct AnchorToOp { target: AnchorTarget; }
 export struct CursorOp { value: Cursor; }
+export struct OSTitlebarOp { value: OSTitlebar; }
 export struct BorderWidthOp { value: real; }
 export struct BorderTopWidthOp { value: real; }
 export struct BorderRightWidthOp { value: real; }
@@ -821,7 +883,7 @@ export type DivStyleOp =
     | DirectionOp | CornerRadiusOp | RoundedOp | WidthOp | HeightOp | WidthLengthOp | HeightLengthOp
     | PositionOp | TopOp | RightOp | BottomOp | LeftOp
     | TranslateOp | TranslateXOp | TranslateYOp
-    | ZIndexOp | AnchorToOp | CursorOp
+    | ZIndexOp | AnchorToOp | CursorOp | OSTitlebarOp
     | BorderWidthOp | BorderTopWidthOp | BorderRightWidthOp | BorderBottomWidthOp | BorderLeftWidthOp
     | BorderColorOp | OutlineWidthOp | OutlineColorOp | OutlineOffsetOp | TextWrapOp
     | FontFamilyOp | FontSizeOp | FontSizeLengthOp | FontWeightOp | LineHeightOp | LetterSpacingOp
@@ -906,6 +968,7 @@ export fn applyDivOp(working: mut stackref DivStyle, op: DivStyleOp) {
     else if op is ZIndexOp { working.zIndex = op.value; }
     else if op is AnchorToOp { working.anchorTarget = op.target; }
     else if op is CursorOp { working.cursor = op.value; }
+    else if op is OSTitlebarOp { working.osTitlebar = op.value; }
     else if op is BorderWidthOp {
         working.borderWidth.top = op.value;
         working.borderWidth.right = op.value;
@@ -937,6 +1000,7 @@ export fn finishDivStyle(working: DivStyle): ComputedDivStyle {
         translate: working.translate,
         anchorTarget: working.anchorTarget,
         cursor: working.cursor,
+        osTitlebar: working.osTitlebar,
         borderWidth: resolveBorderWidth(working.borderWidth),
         fontFamily: working.fontFamily,
         fontSize: working.fontSize,
@@ -1002,6 +1066,7 @@ export fn overlayExplicitDiv(working: mut stackref DivStyle, raw: DivStyle) {
     if raw.zIndex { working.zIndex = raw.zIndex; }
     if raw.anchorTarget { working.anchorTarget = raw.anchorTarget; }
     if raw.cursor { working.cursor = raw.cursor; }
+    if raw.osTitlebar { working.osTitlebar = raw.osTitlebar; }
     if raw.borderColor { working.borderColor = raw.borderColor; }
     if raw.outlineWidth { working.outlineWidth = raw.outlineWidth; }
     if raw.outlineColor { working.outlineColor = raw.outlineColor; }
