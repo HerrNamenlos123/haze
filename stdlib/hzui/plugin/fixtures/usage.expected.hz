@@ -56,7 +56,7 @@ let save = () => {};
                 });
             }
             #source "usage.hzui:17:1" {
-                ui.text({ id: 2, text: props.title });
+                ui.text({ id: 1, text: props.title });
             }
             #source "usage.hzui:7:1" {
                 return {

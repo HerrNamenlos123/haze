@@ -1,0 +1,96 @@
+@export
+
+import claude
+from codicons import CodiconComponent
+
+// One content block. A ToolResult draws nothing: the conversation model
+// matches it onto the call that produced it, and the two render as one unit.
+
+@props
+[[hzui.untracked]]
+block: claude.ContentBlock;
+// A ref struct cannot be compared, so this is what says it changed. Per
+// block, so a growing stream re-renders only the block that is growing.
+revision: int = 0;
+
+textColor: str = "#DDDDDD";
+mutedColor: str = "#8A8A8A";
+errorColor: str = "#F48771";
+toolBg: str = "#1F1F1F";
+rounded: real = 4.0;
+fontSize: real = 13.0;
+// Thinking opens while it streams and closes when done, unless the reader
+// opened it by hand.
+followThinking: bool = true;
+
+@setup
+let expanded = reactive<bool>(false);
+let toggle = (event: PointerEvent) => { expanded := !rx.get(expanded); };
+
+let isThinking = computed(() => props.block.kind == claude.BlockKind.Thinking);
+let isTool = computed(() => props.block.kind == claude.BlockKind.ToolUse
+    || props.block.kind == claude.BlockKind.ServerToolUse);
+let showBody = computed(() => rx.get(expanded)
+    || (props.followThinking && props.block.partial));
+
+let thinkingLabel = computed((): str => {
+    if props.block.partial { return "Thinking…"; }
+    let seconds = props.block.durationMillis() / 1000;
+    if seconds <= 0 { return "Thought"; }
+    return f"Thought for {seconds}s";
+});
+
+let summary = computed((): claude.ToolSummary => {
+    let input = props.block.input;
+    if !input {
+        let bare: claude.ToolSummary = { verb: props.block.name };
+        return bare;
+    }
+    return claude.describeTool(props.block.name, input);
+});
+
+// One line: a tool's output is often thousands. strippedDenialReason turns
+// the CLI's canned refusal back into what the user actually said.
+let resultLine = computed((): str => {
+    let result = props.block.result;
+    if !result { return props.block.partial ? "…" : "running…"; }
+    if result.isError { return claude.strippedDenialReason(result.text); }
+    return result.text;
+});
+
+@template [col w-grow h-fit gap-1 font-size-[props.fontSize]]
+
+text if=[props.block.kind == claude.BlockKind.Text]
+    [text-color-[props.textColor]] [props.block.text]
+
+div else-if=isThinking [col w-grow h-fit gap-1] {
+    div [row w-fit h-fit gap-1 items-center cursor-pointer
+            text-color-[props.mutedColor]]
+        @pointerdown=toggle
+    {
+        Codicon [] icon=[showBody ? "chevron-down" : "chevron-right"] {}
+        text [] [thinkingLabel]
+    }
+    text if=[showBody] [text-color-[props.mutedColor]] [props.block.text]
+}
+
+div else-if=isTool [col w-grow h-fit gap-1 p-2 rounded-[props.rounded]px
+        bg-[props.toolBg]]
+{
+    div [row w-grow h-fit gap-2 items-center] {
+        Codicon [] icon=[props.block.failed() ? "error" : "tools"] {}
+        text [text-color-[props.textColor] text-nowrap] [summary.verb]
+        text if=[summary.subject.length > 0]
+            [text-color-[props.textColor] text-nowrap] [summary.subject]
+        text if=[summary.detail.length > 0] [text-color-[props.mutedColor]]
+            [summary.detail]
+    }
+    text if=[resultLine.length > 0]
+        [text-color-[props.block.failed() ? props.errorColor : props.mutedColor]]
+        [resultLine]
+}
+
+// An image, a document, a kind this client does not model: named rather than
+// dropped, so a reader can see that something arrived.
+text else-if=[props.block.kind != claude.BlockKind.ToolResult]
+    [text-color-[props.mutedColor]] [props.block.mediaType]

@@ -1,0 +1,18 @@
+name = "claude_ui"
+id = "cLaUdEUi"
+version = "0.1.0"
+description = "Reactive UI components for the claude module: chat, tool permissions, model selection and sign-in"
+license = "MIT"
+authors = ["HerrNamenlos123"]
+type = "lib"
+
+[dependencies]
+claude = { path = "../claude" }
+ui_widgets = { path = "../ui_widgets" }
+codicons = { path = "../codicons" }
+# The SFC transformer below generates `from hzui import ...` into every
+# .hzui file in this module, so hzui is a real dependency, not only a plugin.
+hzui = { path = "../hzui" }
+
+[plugins]
+hzui = { path = "../hzui" }

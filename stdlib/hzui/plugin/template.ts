@@ -450,6 +450,27 @@ export type TemplateContext = {
   slots: Map<string, string>;
   /** Rewrites dialect accessors in an expression (props./slots./emits.). */
   rewriteExpr: (expr: string) => string;
+  /**
+   * The next id for a COMPONENT in this template. One counter for the whole
+   * file, not one per children block, because the two id spaces are scoped
+   * differently by the runtime and only elements are per-parent:
+   *
+   *   ui.div(id)  -> getOrCreateDiv(PARENT ELEMENT, id)
+   *   Tag(id)     -> makeCurrentComponentAvailable -> the enclosing
+   *                  COMPONENT's flat child list
+   *
+   * So two components at different depths of the same template are siblings
+   * as far as the runtime is concerned, and per-block numbering gave them the
+   * same id -- which is a component IDENTITY, so the second one was handed
+   * the first one's instance and crashed reading its props out of the wrong
+   * TypeErasedBox.
+   *
+   * KNOWN GAP: a component declared inside a SLOT provider is registered
+   * against the component that RENDERS the slot, not the one that wrote it,
+   * so it is numbered from the wrong counter. It only collides if the slot's
+   * owner also declares child components of its own.
+   */
+  nextComponentId: () => number;
 };
 
 // Every callback ui_components.DivProps accepts, in its own order. This is
@@ -845,7 +866,10 @@ function lowerElementInner(
   ctx: TemplateContext,
   scope: Scope
 ) {
-  const staticId = ++scope.counter;
+  const isComponent = /^[A-Z]/.test(node.tag);
+  // See TemplateContext.nextComponentId for why a component does not take its
+  // id from the per-block element counter.
+  const staticId = isComponent ? ctx.nextComponentId() : ++scope.counter;
   let idExpr = `${staticId}`;
   if (scope.inLoop || node.forExpr !== null) {
     if (node.keyExpr === null) {
@@ -858,7 +882,6 @@ function lowerElementInner(
   }
 
   const rw = ctx.rewriteExpr;
-  const isComponent = /^[A-Z]/.test(node.tag);
 
   if (isComponent) {
     // A component's class list is RESERVED and must be written empty.

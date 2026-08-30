@@ -599,12 +599,14 @@ export function compose(filepath: string, source: string): string {
     push(`            }`);
     push(`}`);
   }
+  let componentIds = 0;
   const ctx: TemplateContext = {
     componentName: comp,
     sourceFile: src,
     presetNamespace: "presets",
     slots: new Map(slots.map((s) => [s.name, slotStructName(s)])),
     rewriteExpr: rewriteTemplateExpr,
+    nextComponentId: () => ++componentIds,
   };
 
   push("");

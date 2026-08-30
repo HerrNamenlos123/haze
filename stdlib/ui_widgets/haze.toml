@@ -1,7 +1,7 @@
 name = "ui_widgets"
 id = "Uw1dGe7s"
 version = "0.0.1"
-description = "Generic, reusable widgets: Button, TextInput, Dropdown and FloatingPanel"
+description = "Generic, reusable widgets: Button, TextInput, Select, Tabs, ScrollView, Dropdown and FloatingPanel"
 license = "MIT"
 authors = []
 type = "lib"

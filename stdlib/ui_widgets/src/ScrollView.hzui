@@ -1,0 +1,115 @@
+@export
+
+import ui_components
+
+// A viewport that clips, a content layer offset by pixels, and a real
+// scrollbar. Vertical only: content wraps to the viewport's width. Sizes come
+// from the previous layout, so a resize lands one frame late.
+
+@props
+// Follows the end as content grows, but only while the reader is already
+// there. `bottomSlack` is how close to the end still counts as at it.
+stickToBottom: bool = false;
+bottomSlack: real = 4.0;
+overflow: ui_components.Overflow = ui_components.Overflow.Auto;
+wheelStep: real = 60.0;
+padding: real = 0.0;
+gap: real = 0.0;
+barSize: real = 10.0;
+barColor: str = "#00000000";
+thumbColor: str = "#FFFFFF33";
+thumbHoverColor: str = "#FFFFFF55";
+thumbActiveColor: str = "#FFFFFF77";
+
+@slot
+content: {};
+
+@expose
+scroll: mut ui_components.ScrollState;
+
+@setup
+let viewRef = elementRef<DivElement>();
+let contentRef = elementRef<DivElement>();
+let barRef = elementRef<DivElement>();
+
+let scroll = ui_components.ScrollState();
+scroll.overflowX = ui_components.Overflow.Hidden;
+
+let viewportWidth = computed(() => {
+    let view = rx.get(viewRef);
+    let size = view ? view.size() : none;
+    return size ? size.x : 0.0;
+});
+let thumbColor = computed(() => {
+    if scroll.isDragging() { return props.thumbActiveColor; }
+    if barRef?.hover() ?? false { return props.thumbHoverColor; }
+    return props.thumbColor;
+});
+
+let onWheel = (event: WheelEvent) => {
+    if scroll.handleWheel(event.delta) {
+        event.stopPropagation();
+    }
+};
+
+let trackOffset = (windowY: real): real => {
+    let view = rx.get(viewRef);
+    let pos = view ? view.position() : none;
+    return pos ? windowY - pos.y : windowY;
+};
+
+let grabBar = (event: PointerEvent) => {
+    // Any button: a press on the bar is chrome, never a press on the content.
+    // The drag itself is primary-only -- the pump below ends on the left
+    // button and would never release a drag some other button started.
+    event.stopPropagation();
+    if event.button != PointerButton.Left { return; }
+    scroll.beginDragY(trackOffset(event.pos.y));
+};
+
+// Neither of these can be event-driven: a size is only known after a layout,
+// and @pointermove stops firing the moment the pointer leaves the 10px bar.
+ui.onFrame(() => {
+    scroll.overflowY = props.overflow;
+    scroll.wheelStep = props.wheelStep;
+
+    let view = rx.get(viewRef);
+    let content = rx.get(contentRef);
+    let viewSize = view ? view.size() : none;
+    let contentSize = content ? content.size() : none;
+    if viewSize && contentSize {
+        let wasAtBottom = rx.get(scroll.scrollTop) >= scroll.maxScrollTop() - props.bottomSlack;
+        scroll.setMetrics(viewSize, contentSize);
+        if props.stickToBottom && wasAtBottom {
+            scroll.scrollTo(scroll.maxScrollTop(), 0.0);
+        }
+    }
+    if scroll.isDragging() {
+        if ui.leftMouseHeld() {
+            scroll.updateDrag(trackOffset(ui.mousePos.y));
+        } else {
+            scroll.endDrag();
+        }
+    }
+});
+
+@template [relative w-grow h-grow overflow-hidden] ref=viewRef @wheel=onWheel
+
+div [absolute top-[0.0 - rx.get(scroll.scrollTop)] left-[0] col w-[viewportWidth]px h-fit
+        p-[props.padding]px gap-[props.gap]px]
+    ref=contentRef
+{
+    slot content {}
+}
+
+// Last, so it paints over the content and wins the hit test against it.
+div if=[scroll.showsVerticalBar()] [absolute top-[0] left-[viewportWidth - props.barSize]
+        w-[props.barSize]px h-[scroll.verticalTrackLength()]px
+        bg-[props.barColor] cursor-default]
+    @pointerdown=grabBar
+{
+    div [absolute left-[0] top-[scroll.verticalThumbOffset()]
+            w-[props.barSize]px h-[scroll.verticalThumbLength()]px
+            bg-[thumbColor] rounded-[props.barSize / 2.0]px]
+        ref=barRef
+}

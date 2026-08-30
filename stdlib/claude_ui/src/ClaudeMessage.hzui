@@ -1,0 +1,47 @@
+@export
+
+import claude
+
+@props
+[[hzui.untracked]]
+message: claude.Message;
+// A ref struct cannot be compared, so this is what says it changed.
+revision: int = 0;
+
+userBg: str = "#1F1F1F";
+userColor: str = "#FFFFFF";
+assistantColor: str = "#DDDDDD";
+mutedColor: str = "#8A8A8A";
+errorColor: str = "#F48771";
+rounded: real = 6.0;
+fontSize: real = 13.0;
+
+@setup
+let isUser = computed(() => props.message.role == claude.MessageRole.User);
+let isCompact = computed(() => props.message.role == claude.MessageRole.Compact);
+
+@template [col w-grow h-fit gap-1]
+
+// Not a turn: the mark where the history behind it became a summary.
+div if=isCompact [col w-grow h-fit gap-1 py-2 text-color-[props.mutedColor]
+        font-size-[props.fontSize]] {
+    text [] ["── context compacted ──"]
+    text if=[props.message.compactSummary.length > 0] [] [props.message.compactSummary]
+}
+
+div else-if=isUser [col w-grow h-fit gap-1 p-2 rounded-[props.rounded]px
+        bg-[props.userBg] text-color-[props.userColor] font-size-[props.fontSize]] {
+    ClaudeBlock for=[block, index in props.message.blocks] key=[index] []
+        block=[block] revision=[blockFingerprint(block)]
+        textColor=[props.userColor] mutedColor=[props.mutedColor] {}
+}
+
+div else [col w-grow h-fit gap-2] {
+    ClaudeBlock for=[block, index in props.message.blocks] key=[index] []
+        block=[block] revision=[blockFingerprint(block)]
+        textColor=[props.assistantColor] mutedColor=[props.mutedColor]
+        errorColor=[props.errorColor] fontSize=[props.fontSize] {}
+
+    text if=[props.message.error.length > 0]
+        [text-color-[props.errorColor] font-size-[props.fontSize]] [props.message.error]
+}

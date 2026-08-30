@@ -2171,6 +2171,14 @@ class CodeGenerator {
           tempWriter.write(scope.temp);
           outWriter.write(scope.out);
           const emitted = this.emitExpr(block.emittedExpr);
+          // Into the BLOCK, not the enclosing statement's tempWriter: the
+          // trailing expression may name locals the scope above just declared,
+          // so its temps have to sit inside the same `({ ... })`. Dropping them
+          // (as this did) leaves `out` referring to names that were never
+          // declared -- a lone `&__hz_senv_2` with no `__hz_senv_2` anywhere,
+          // which is the same failure the CallableDatatype conversion above
+          // documents.
+          outWriter.write(emitted.temp);
           outWriter
             .writeLine(emitted.out.get() + ";")
             .popIndent()

@@ -1,0 +1,105 @@
+@export
+
+from codicons import CodiconComponent
+
+// Pick one of a short list. Owns its open state and dismisses itself, unlike
+// Dropdown, whose owner has to make several menus mutually exclusive.
+//
+// `dropUp` is not cosmetic. Hit-testing ignores z-index: it walks children in
+// REVERSE declaration order and the first subtree containing the point wins,
+// so a panel only RECEIVES clicks over siblings declared BEFORE it. Put a
+// select last among its siblings and open it toward the earlier ones.
+
+export struct SelectOption {
+    value: str = "";
+    label: str = "";
+    // Second line, dimmer. Omit it and the row is one line tall.
+    detail: str = "";
+}
+
+@props
+[[hzui.untracked]]
+options?: []SelectOption;
+// Controlled, like every other widget here: this emits and never assigns.
+value: str = "";
+placeholder: str = "Select…";
+enabled: bool = true;
+dropUp: bool = false;
+// The panel is out of flow, so it cannot inherit a width.
+panelWidth: real = 260.0;
+bg: str = "#1F1F1F";
+borderColor: str = "#454545";
+textColor: str = "#CCCCCC";
+detailColor: str = "#8A8A8A";
+rounded: real = 4.0;
+
+@emit
+change: (str,);
+
+@setup
+let open = reactive<bool>(false);
+
+let list = computed((): []SelectOption => {
+    let options = props.options;
+    if options { return options; }
+    let empty: []SelectOption = [];
+    return empty;
+});
+
+// The chosen option's label, or the raw value when it is not in the list, or
+// the placeholder when nothing is chosen.
+let label = computed((): str => {
+    for option in list {
+        if option.value == props.value { return option.label; }
+    }
+    return props.value.length > 0 ? props.value : props.placeholder;
+});
+
+let toggle = () => { open := !rx.get(open); };
+let close = () => { if rx.get(open) { open := false; } };
+let choose = (value: str) => {
+    open := false;
+    emits.change(value);
+};
+
+// Bound here, not inline: a capturing closure is an allocation and the
+// template re-runs on every change.
+let dismissPress = (event: PointerEvent) => { close(); };
+let dismissFocus = (event: FocusEvent) => { close(); };
+
+let dismissKey = (event: KeyboardEvent) => {
+    if event.key != Key.Escape || !rx.get(open) { return; }
+    close();
+    event.preventDefault();
+    event.stopPropagation();
+};
+
+@template [relative w-fit h-fit] @keydown=dismissKey
+
+Button [] label=[label] icon="chevron-down" enabled=[props.enabled]
+    bg=[props.bg] textColor=[props.textColor] rounded=[props.rounded]
+    selected=[rx.get(open)] @click=toggle {}
+
+div if=[rx.get(open)] [
+        absolute left-[0] [props.dropUp]?bottom-[0] [!props.dropUp]?top-[0]
+        col gap-0 w-[props.panelWidth]px h-fit overflow-hidden
+        bg-[props.bg] border-[1] border-color-[props.borderColor]
+        rounded-[props.rounded]px
+    ]
+    @pointerdownoutside=dismissPress
+    @focusoutside=dismissFocus
+{
+    Button for=[option, index in list] key=[index] []
+        grow=[true] rounded=[0.0] paddingX=[10.0] paddingY=[6.0]
+        selected=[option.value == props.value]
+        @click=[() => { choose(option.value); }]
+    {
+        #content {
+            div [col gap-0 w-grow h-fit] {
+                text [text-color-[props.textColor]] [option.label]
+                text if=[option.detail.length > 0]
+                    [text-color-[props.detailColor] font-size-11] [option.detail]
+            }
+        }
+    }
+}

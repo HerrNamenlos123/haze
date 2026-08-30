@@ -18,15 +18,22 @@ import ui_elements
 import ui_styling
 import headwind
 
-// TODO(v0): id derivation for keyed loop elements: hash(staticId, key).
-// Referenced by lowered `for=`/`key=` template code.
-// export fn keyId(staticId: int, key: int): int {
-//     // Placeholder mixing; replace with a real hash.
-//     return staticId ^ (key * 2654435761);
-// }
-
+// The element id of a keyed child inside a `for=` loop, as the SFC
+// transformer lowers it (see plugin/template.ts).
+//
+// An id is a component/element IDENTITY: reuse one and the framework hands
+// back the previous occupant's state (see ui_components.getOrCreateDiv). So
+// the two inputs must not be able to alias each other, and a keyed child must
+// not be able to land on a plain sibling's small sequential id. They are
+// therefore kept in disjoint ranges rather than hashed together: the key
+// occupies the low 32 bits and the static template position everything above
+// it. Exact for any key of 32 bits or fewer, which is every key a list
+// actually uses (an index, or a monotonic counter).
 export fn keyId(staticId: int, key: int): int {
-    sys.panic("keyId NOT IMPLEMENTED");
+    const comptime SPAN = 4294967296;
+    let folded = key % SPAN;
+    if folded < 0 { folded = folded + SPAN; }
+    return staticId * SPAN + folded;
 }
 
 // Here, re-export all the modules and symbols anyone would want to import from hzui

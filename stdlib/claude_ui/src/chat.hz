@@ -1,0 +1,209 @@
+import claude
+
+// Bridges the polled `claude.Session` to the reactive tree: `poll()` drains
+// the process and writes one cell, `revision`, which every view depends on.
+// The session and the prompt handle are the caller's -- bind the prompt to a
+// cache file and a half-typed draft survives a reload.
+
+export fn blockFingerprint(block: claude.ContentBlock): int {
+    let sum = block.text.length + block.partialJson.length + block.progress.length * 5;
+    if block.partial { sum = sum + 1; }
+    let result = block.result;
+    if result {
+        sum = sum + 2 + result.text.length;
+        if result.isError { sum = sum + 4; }
+    }
+    return sum + block.durationMillis();
+}
+
+export fn messageFingerprint(message: claude.Message): int {
+    let sum = message.blocks.length * 3 + message.compactSummary.length + message.error.length;
+    if message.streaming { sum = sum + 1; }
+    for block in message.blocks {
+        sum = sum + blockFingerprint(block);
+    }
+    return sum;
+}
+
+export struct Chat {
+    session: mut claude.Session;
+    prompt: rx.Reactive<str>;
+    // Changes whenever the conversation does. Its value means nothing.
+    revision: rx.Reactive<int>;
+    // Separate from `revision` because it changes once, at the handshake,
+    // while `revision` changes on every token: anything derived from the
+    // model list is then built once instead of per frame.
+    handshake: rx.Reactive<int>;
+
+    // Refilled by visibleMessages(), never rebuilt. Do not hold across a call.
+    _visible: []claude.Message = [];
+    _noModels: []claude.ModelInfo = [];
+
+    fn constructor(session: mut claude.Session, prompt: rx.Reactive<str>): Chat {
+        return Chat {
+            session: session,
+            prompt: prompt,
+            revision: rx.reactive<int>(0),
+            handshake: rx.reactive<int>(0),
+        };
+    }
+
+    // A fingerprint, not a hash: two conversations could fold to one number.
+    // Text only grows, so the case that would matter cannot arise.
+    fn fingerprint(): int {
+        let conversation = this.session.conversation;
+        let sum = conversation.messages.length * 7
+            + this.session.pendingPermissions.length * 11
+            + conversation.status.length
+            + conversation.lastError.length
+            + conversation.model.length
+            + conversation.usage.totalTokens
+            + conversation.thinkingTokens
+            + conversation.todos.length;
+        if conversation.busy { sum = sum + 1; }
+        if this.session.initializeResult { sum = sum + 2; }
+        for message in conversation.messages {
+            sum = sum + messageFingerprint(message);
+        }
+        return sum;
+    }
+
+    // Once per frame. Both writes are guarded because a reactive write always
+    // marks its cell dirty, so an unchanged value would rebuild the tree.
+    fn poll() {
+        this.session.poll();
+        let current = this.fingerprint();
+        if rx.get(this.revision) != current {
+            this.revision := current;
+        }
+        let result = this.session.initializeResult;
+        let models = result ? result.models.length : 0;
+        if rx.get(this.handshake) != models {
+            this.handshake := models;
+        }
+    }
+
+    fn visibleMessages(): []claude.Message {
+        rx.get(this.revision);
+        let conversation = this.session.conversation;
+        this._visible.clear();
+        for message in conversation.messages {
+            if conversation.isVisible(message) {
+                this._visible.push(message);
+            }
+        }
+        return this._visible;
+    }
+
+    fn busy(): bool {
+        rx.get(this.revision);
+        return this.session.conversation.busy;
+    }
+
+    fn status(): str {
+        rx.get(this.revision);
+        return this.session.conversation.status;
+    }
+
+    fn error(): str {
+        rx.get(this.revision);
+        return this.session.conversation.lastError;
+    }
+
+    fn model(): str {
+        rx.get(this.revision);
+        return this.session.conversation.model;
+    }
+
+    fn models(): []claude.ModelInfo {
+        rx.get(this.handshake);
+        let result = this.session.initializeResult;
+        if result { return result.models; }
+        return this._noModels;
+    }
+
+    // Only the first: the agent cannot proceed past it, so the rest are not
+    // yet answerable.
+    fn ask(): claude.PermissionRequest | none {
+        rx.get(this.revision);
+        for request in this.session.pendingPermissions {
+            if !request.isAnswered() {
+                return request;
+            }
+        }
+        return none;
+    }
+
+    fn canSend(): bool {
+        rx.get(this.revision);
+        return !this.session.conversation.busy && rx.get(this.prompt).trim().length > 0;
+    }
+
+    fn submit() {
+        let text = rx.get(this.prompt);
+        if text.trim().length == 0 {
+            return;
+        }
+        this.session.sendText(text);
+        this.prompt := "";
+    }
+
+    fn stop() {
+        this.session.interrupt();
+    }
+
+    fn setModel(model: str) {
+        this.session.setModel(model);
+    }
+}
+
+fn stageRank(stage: claude.LoginStage): int {
+    if stage == claude.LoginStage.Requesting { return 100; }
+    if stage == claude.LoginStage.Awaiting { return 200; }
+    if stage == claude.LoginStage.Completing { return 300; }
+    if stage == claude.LoginStage.Success { return 400; }
+    if stage == claude.LoginStage.Failed { return 500; }
+    if stage == claude.LoginStage.Cancelled { return 600; }
+    return 0;
+}
+
+// The same bridge over claude.LoginFlow. poll() pumps its session too, so a
+// sign-in screen needs no conversation behind it.
+export struct Login {
+    flow: mut claude.LoginFlow;
+    code: rx.Reactive<str>;
+    revision: rx.Reactive<int>;
+
+    fn constructor(flow: mut claude.LoginFlow, code: rx.Reactive<str>): Login {
+        return Login {
+            flow: flow,
+            code: code,
+            revision: rx.reactive<int>(0),
+        };
+    }
+
+    fn poll() {
+        this.flow.poll();
+        let current = stageRank(this.flow.stage)
+            + this.flow.automaticUrl.length
+            + this.flow.manualUrl.length * 3
+            + this.flow.error.length * 7;
+        if rx.get(this.revision) != current {
+            this.revision := current;
+        }
+    }
+
+    fn progress(): claude.LoginProgress {
+        rx.get(this.revision);
+        return this.flow.progress();
+    }
+
+    fn submit() {
+        let code = rx.get(this.code);
+        if code.trim().length == 0 {
+            return;
+        }
+        this.flow.submitCode(code);
+        this.code := "";
+    }
+}

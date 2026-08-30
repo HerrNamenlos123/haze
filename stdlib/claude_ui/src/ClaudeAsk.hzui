@@ -1,0 +1,144 @@
+@export
+
+import claude
+from ui_widgets import ButtonComponent, ButtonSlotContent
+
+// The question blocking the agent. Three shapes arrive down the same channel:
+// AskUserQuestion, ExitPlanMode, and anything else ("may I run this tool?").
+// Exactly one answer may be given, so every shape offers a way out.
+
+@props
+[[hzui.untracked]]
+request: claude.PermissionRequest;
+// Any number that changes when `request` might have; a chat's revision does.
+revision: int = 0;
+// Read and cleared when an answer carries prose. Pass the composer's own
+// handle: what is typed there becomes the denial's reason or the plan's
+// comments, so there is one place to type and the draft is as safe as it.
+feedback: Reactive<str>;
+
+bg: str = "#1F1F1F";
+borderColor: str = "#454545";
+textColor: str = "#DDDDDD";
+mutedColor: str = "#8A8A8A";
+accent: str = "#0078D4";
+rounded: real = 6.0;
+fontSize: real = 13.0;
+
+@setup
+let questions = computed((): []claude.QuestionSpec => props.request.questions());
+
+// One chosen label per question, by position.
+let noAnswers: []str = [];
+let answers = shallowReactive<[]str>(noAnswers);
+
+let chosen = (index: int): str => {
+    let current: []str = rx.get(answers);
+    return index < current.length ? current[index] : "";
+};
+
+let choose = (index: int, label: str) => {
+    let current: []str = rx.get(answers);
+    while current.length <= index {
+        current.push("");
+    }
+    current[index] = label;
+    // The same array, written back: a shallow reactive only reports
+    // whole-value writes.
+    answers := current;
+};
+
+let answered = computed((): bool => {
+    let specs: []claude.QuestionSpec = questions;
+    let current: []str = rx.get(answers);
+    if specs.length == 0 { return false; }
+    for (let i = 0; i < specs.length; i++) {
+        if i >= current.length || current[i].length == 0 { return false; }
+    }
+    return true;
+});
+
+let takeFeedback = (): str => {
+    let text = rx.get(props.feedback);
+    if text.trim().length == 0 { return ""; }
+    props.feedback := "";
+    return text;
+};
+
+let sendAnswers = () => {
+    let specs: []claude.QuestionSpec = questions;
+    let current: []str = rx.get(answers);
+    let replies: []claude.QuestionAnswer = [];
+    for (let i = 0; i < specs.length; i++) {
+        let labels: []str = [];
+        if i < current.length && current[i].length > 0 {
+            labels.push(current[i]);
+        }
+        replies.push(claude.QuestionAnswer { question: specs[i].question, labels: labels });
+    }
+    props.request.answerQuestions(replies);
+};
+
+let acceptPlan = () => { props.request.acceptPlan(takeFeedback()); };
+let keepPlanning = () => { props.request.keepPlanning(takeFeedback()); };
+let allow = () => { props.request.allow(); };
+let allowAlways = () => {
+    props.request.allowAlways(props.request.suggestions,
+        claude.SuggestionDestination.LocalSettings);
+};
+// With prose the agent carries on and treats it as instructions; without, it
+// stops and waits. Which one the reader gave is whether they typed anything.
+let deny = () => {
+    let reason = takeFeedback();
+    if reason.length > 0 {
+        props.request.deny(reason, false);
+    } else {
+        props.request.denyDefault();
+    }
+};
+
+@template [col w-grow h-fit gap-3 p-3 rounded-[props.rounded]px bg-[props.bg]
+    border-[1] border-color-[props.borderColor] font-size-[props.fontSize]
+    text-color-[props.textColor]]
+
+div if=[props.request.isQuestion()] [col w-grow h-fit gap-3] {
+    div for=[spec, questionIndex in questions] key=[questionIndex]
+        [col w-grow h-fit gap-1]
+    {
+        text [] [spec.question]
+        Button for=[option, optionIndex in spec.options] key=[optionIndex] []
+            grow=[true] paddingX=[10.0] paddingY=[6.0]
+            selected=[chosen(questionIndex) == option.label]
+            @click=[() => { choose(questionIndex, option.label); }]
+        {
+            #content {
+                div [col gap-0 w-grow h-fit] {
+                    text [] [option.label]
+                    text if=[option.description.length > 0]
+                        [text-color-[props.mutedColor] font-size-11] [option.description]
+                }
+            }
+        }
+    }
+    Button [] label="Send" enabled=[answered] bg=[props.accent] @click=sendAnswers {}
+}
+
+div else-if=[props.request.isPlan()] [col w-grow h-fit gap-2] {
+    text [] [props.request.plan()]
+    div [row w-fit h-fit gap-2] {
+        Button [] label="Accept plan" bg=[props.accent] @click=acceptPlan {}
+        Button [] label="Keep planning" @click=keepPlanning {}
+    }
+}
+
+div else [col w-grow h-fit gap-2] {
+    text [] [claude.permissionQuestion(props.request.toolName, props.request.input)]
+    text if=[props.request.decisionReason.length > 0]
+        [text-color-[props.mutedColor]] [props.request.decisionReason]
+    div [row w-fit h-fit gap-2] {
+        Button [] label="Allow" bg=[props.accent] @click=allow {}
+        Button if=[props.request.suggestions.length > 0] []
+            label="Always allow" @click=allowAlways {}
+        Button [] label="Deny" @click=deny {}
+    }
+}

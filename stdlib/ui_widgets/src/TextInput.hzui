@@ -1,3 +1,5 @@
+@export
+
 import textedit_behavior
 import unicode
 

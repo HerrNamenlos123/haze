@@ -137,11 +137,40 @@ export ref struct ScrollState {
         return this.canScrollX();
     }
 
+    // --- Writing -------------------------------------------------
+
+    // Every reactive write in this struct goes through here.
+    //
+    // A reactive write is unconditional -- hzstd_reactive_cell_write marks
+    // the cell dirty whatever the value was -- and the geometry below is
+    // re-measured and re-written on EVERY frame by whoever owns the
+    // container. Writing the same number back would therefore invalidate the
+    // tree every frame and defeat the frame gate entirely (see
+    // UIContext.process), turning an idle scroll container into a permanent
+    // full rebuild.
+    fn assign(cell: rx.Reactive<real>, value: real) {
+        if rx.get(cell) != value {
+            cell := value;
+        }
+    }
+
+    // This frame's measured geometry, from the host: the viewport's box and
+    // the content's. The host is the only side that can measure them; the
+    // clamping that has to follow is this struct's business, so both happen
+    // in one call and neither can be forgotten.
+    mut fn setMetrics(viewport: Vec2, content: Vec2) {
+        this.assign(this.clientWidth, viewport.x);
+        this.assign(this.clientHeight, viewport.y);
+        this.assign(this.scrollWidth, content.x);
+        this.assign(this.scrollHeight, content.y);
+        this.clampToBounds();
+    }
+
     // --- Programmatic scrolling ----------------------------------
 
     mut fn scrollTo(top: real, left: real) {
-        this.scrollTop := clampReal(top, 0.0, this.maxScrollTop());
-        this.scrollLeft := clampReal(left, 0.0, this.maxScrollLeft());
+        this.assign(this.scrollTop, clampReal(top, 0.0, this.maxScrollTop()));
+        this.assign(this.scrollLeft, clampReal(left, 0.0, this.maxScrollLeft()));
     }
 
     mut fn scrollBy(dy: real, dx: real) {
@@ -159,9 +188,9 @@ export ref struct ScrollState {
         let bottom = top + height;
 
         if top < viewTop {
-            this.scrollTop := clampReal(top, 0.0, this.maxScrollTop());
+            this.assign(this.scrollTop, clampReal(top, 0.0, this.maxScrollTop()));
         } else if bottom > viewBottom {
-            this.scrollTop := clampReal(bottom - viewHeight, 0.0, this.maxScrollTop());
+            this.assign(this.scrollTop, clampReal(bottom - viewHeight, 0.0, this.maxScrollTop()));
         }
     }
 
@@ -169,17 +198,17 @@ export ref struct ScrollState {
     mut fn centerInView(top: real, height: real) {
         let viewHeight = rx.get(this.clientHeight);
         let target = top + height / 2.0 - viewHeight / 2.0;
-        this.scrollTop := clampReal(target, 0.0, this.maxScrollTop());
+        this.assign(this.scrollTop, clampReal(target, 0.0, this.maxScrollTop()));
     }
 
     // Put a span at the top / bottom of the viewport -- vim's `zt`/`zb`.
     mut fn scrollToTop(top: real) {
-        this.scrollTop := clampReal(top, 0.0, this.maxScrollTop());
+        this.assign(this.scrollTop, clampReal(top, 0.0, this.maxScrollTop()));
     }
 
     mut fn scrollToBottom(top: real, height: real) {
         let viewHeight = rx.get(this.clientHeight);
-        this.scrollTop := clampReal(top + height - viewHeight, 0.0, this.maxScrollTop());
+        this.assign(this.scrollTop, clampReal(top + height - viewHeight, 0.0, this.maxScrollTop()));
     }
 
     // --- Culling helper ------------------------------------------
@@ -316,7 +345,7 @@ export ref struct ScrollState {
             let travel = this.verticalTrackLength() - this.verticalThumbLength();
             if travel > 0.0 {
                 let ratio = (pointerOffset - this.verticalThumbLength() / 2.0) / travel;
-                this.scrollTop := clampReal(ratio * this.maxScrollTop(), 0.0, this.maxScrollTop());
+                this.assign(this.scrollTop, clampReal(ratio * this.maxScrollTop(), 0.0, this.maxScrollTop()));
             }
         }
         this._draggingY = true;
@@ -331,7 +360,7 @@ export ref struct ScrollState {
             let travel = this.horizontalTrackLength() - this.horizontalThumbLength();
             if travel > 0.0 {
                 let ratio = (pointerOffset - this.horizontalThumbLength() / 2.0) / travel;
-                this.scrollLeft := clampReal(ratio * this.maxScrollLeft(), 0.0, this.maxScrollLeft());
+                this.assign(this.scrollLeft, clampReal(ratio * this.maxScrollLeft(), 0.0, this.maxScrollLeft()));
             }
         }
         this._draggingX = true;
@@ -347,14 +376,14 @@ export ref struct ScrollState {
             if travel > 0.0 {
                 let moved = pointerOffset - this._dragStartPointer;
                 let scrolled = this._dragStartScroll + (moved / travel) * this.maxScrollTop();
-                this.scrollTop := clampReal(scrolled, 0.0, this.maxScrollTop());
+                this.assign(this.scrollTop, clampReal(scrolled, 0.0, this.maxScrollTop()));
             }
         } else if this._draggingX {
             let travel = this.horizontalTrackLength() - this.horizontalThumbLength();
             if travel > 0.0 {
                 let moved = pointerOffset - this._dragStartPointer;
                 let scrolled = this._dragStartScroll + (moved / travel) * this.maxScrollLeft();
-                this.scrollLeft := clampReal(scrolled, 0.0, this.maxScrollLeft());
+                this.assign(this.scrollLeft, clampReal(scrolled, 0.0, this.maxScrollLeft()));
             }
         }
     }
@@ -372,8 +401,8 @@ export ref struct ScrollState {
     // deleting the last lines of a file cannot leave the view scrolled
     // past the end.
     mut fn clampToBounds() {
-        this.scrollTop := clampReal(rx.get(this.scrollTop), 0.0, this.maxScrollTop());
-        this.scrollLeft := clampReal(rx.get(this.scrollLeft), 0.0, this.maxScrollLeft());
+        this.assign(this.scrollTop, clampReal(rx.get(this.scrollTop), 0.0, this.maxScrollTop()));
+        this.assign(this.scrollLeft, clampReal(rx.get(this.scrollLeft), 0.0, this.maxScrollLeft()));
     }
 }
 

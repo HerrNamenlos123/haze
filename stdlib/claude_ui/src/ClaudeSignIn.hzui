@@ -1,0 +1,76 @@
+@export
+
+import claude
+from ui_widgets import ButtonComponent, TextInputComponent
+
+// The OAuth flow, both paths at once: the browser opens itself, and the code
+// box is there from the start for the machine where it does not. The flow and
+// its throwaway session (claude.loginSessionOptions) belong to the caller.
+
+@props
+[[hzui.untracked]]
+login: Login;
+autoOpenBrowser: bool = true;
+
+textColor: str = "#DDDDDD";
+mutedColor: str = "#8A8A8A";
+errorColor: str = "#F48771";
+accent: str = "#0078D4";
+fontSize: real = 13.0;
+
+@emit
+finished: ();
+
+@setup
+// See ClaudeChat: bound once, because a Login is nothing but handles.
+let login = props.login;
+
+let browserOpened = reactive<bool>(false);
+let reported = reactive<bool>(false);
+
+let stage = computed(() => login.progress().stage);
+let awaiting = computed(() => stage == claude.LoginStage.Awaiting);
+
+ui.onFrame(() => {
+    login.poll();
+    let progress = login.progress();
+    if props.autoOpenBrowser && progress.stage == claude.LoginStage.Awaiting
+        && !rx.get(browserOpened) {
+        browserOpened := true;
+        login.flow.openBrowser();
+    }
+    if progress.isFinished() && !rx.get(reported) {
+        reported := true;
+        emits.finished();
+    }
+});
+
+let start = () => { login.flow.start(); };
+let openBrowser = () => { login.flow.openBrowser(); };
+let submit = () => { login.submit(); };
+let onBoxSubmit = (text: str) => { login.submit(); };
+
+@template [col w-grow h-fit gap-2 font-size-[props.fontSize]
+    text-color-[props.textColor]]
+
+Button if=[stage == claude.LoginStage.Idle] [] label="Sign in to Claude"
+    icon="sign-in" bg=[props.accent] @click=start {}
+
+div else [col w-grow h-fit gap-2] {
+    text [text-color-[stage == claude.LoginStage.Failed ? props.errorColor : props.textColor]]
+        [login.progress().describe()]
+
+    div if=awaiting [col w-grow h-fit gap-2] {
+        // Shown whether or not the browser opened: this is the address to
+        // visit by hand, and it ends in the code the box below wants.
+        text [text-color-[props.mutedColor]] [login.flow.manualUrl]
+        div [row w-fit h-fit gap-2] {
+            Button [] label="Open in browser" icon="link-external" @click=openBrowser {}
+        }
+        div [row w-grow h-fit gap-2 items-center] {
+            TextInput [] text=[login.code] placeholder="Paste the code"
+                @submit=onBoxSubmit {}
+            Button [] label="Continue" bg=[props.accent] @click=submit {}
+        }
+    }
+}

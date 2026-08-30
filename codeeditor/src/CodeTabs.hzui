@@ -4902,10 +4902,6 @@ active: bool = true;
                 presets.textColor("#FFF"),
                 presets.gap(2)
             );
-
-            ui_widgets.FloatingPanelWrapperComponent(ui, {
-                id: 3,
-            });
         }
         0.0;
     }]] {}

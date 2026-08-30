@@ -1,0 +1,95 @@
+@export
+
+import claude
+from ui_widgets import ButtonComponent, TextInputComponent, ScrollViewComponent,
+    ScrollViewSlotContent, SelectComponent, SelectOption
+
+// The panel, as a composition of the exported pieces below it. Mount it once
+// per chat: it is the only thing that pumps the session.
+
+@props
+[[hzui.untracked]]
+chat: Chat;
+placeholder: str = "Ask Claude…";
+showModelPicker: bool = true;
+
+bg: str = "#181818";
+textColor: str = "#DDDDDD";
+mutedColor: str = "#8A8A8A";
+errorColor: str = "#F48771";
+accent: str = "#0078D4";
+padding: real = 12.0;
+gap: real = 16.0;
+fontSize: real = 13.0;
+
+@setup
+// Bound once: a Chat is nothing but handles, so a copy is the same Chat, and
+// a method on a value struct needs an lvalue anyway. One instance, one Chat.
+let chat = props.chat;
+
+ui.onFrame(() => { chat.poll(); });
+
+let messages = computed((): []claude.Message => chat.visibleMessages());
+let ask = computed(() => chat.ask());
+let busy = computed(() => chat.busy());
+
+let models = computed((): []SelectOption => {
+    let options: []SelectOption = [];
+    for model in chat.models() {
+        options.push(SelectOption {
+            value: model.value,
+            label: model.displayName.length > 0 ? model.displayName : model.value,
+            detail: model.description,
+        });
+    }
+    return options;
+});
+
+// While a turn is in flight the only thing to do to it is stop it.
+let primary = () => {
+    if chat.busy() {
+        chat.stop();
+    } else {
+        chat.submit();
+    }
+};
+let setModel = (model: str) => { chat.setModel(model); };
+// Bound here, not inline in the template: a capturing closure is an
+// allocation and the template re-runs on every token.
+let onBoxSubmit = (text: str) => { primary(); };
+
+@template [col w-grow h-grow gap-0 bg-[props.bg] font-size-[props.fontSize]
+    text-color-[props.textColor]]
+
+ScrollView [] stickToBottom=[true] padding=[props.padding] gap=[props.gap] {
+    #content {
+        ClaudeMessage for=[message, index in messages] key=[message.slot] []
+            message=[message] revision=[messageFingerprint(message)]
+            assistantColor=[props.textColor] mutedColor=[props.mutedColor]
+            errorColor=[props.errorColor] fontSize=[props.fontSize] {}
+    }
+}
+
+div [col w-grow h-fit gap-2 px-[props.padding]px pb-[props.padding]px] {
+    text if=[chat.status().length > 0] [text-color-[props.mutedColor]]
+        [chat.status()]
+    text if=[chat.error().length > 0] [text-color-[props.errorColor]]
+        [chat.error()]
+
+    // `if=` does not narrow a computed's union for the props below it.
+    ClaudeAsk if=ask [] request=[do { let request = rx.get(ask); assert(request); request; }]
+        revision=[chat.revision]
+        feedback=[chat.prompt] mutedColor=[props.mutedColor]
+        accent=[props.accent] fontSize=[props.fontSize] {}
+
+    div [row w-grow h-fit gap-2 items-center] {
+        TextInput [] text=[chat.prompt] placeholder=[props.placeholder]
+            fontSize=[props.fontSize] @submit=onBoxSubmit {}
+        Button [] icon=[busy ? "debug-stop" : "send"] bg=[props.accent]
+            @click=primary {}
+        // Last, and dropping up: a floating panel only receives clicks over
+        // siblings declared before it. See Select.
+        Select if=[props.showModelPicker] [] dropUp=[true] options=models
+            value=[chat.model()] @change=setModel {}
+    }
+}

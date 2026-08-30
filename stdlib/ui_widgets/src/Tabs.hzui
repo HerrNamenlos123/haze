@@ -1,23 +1,68 @@
+@export
+
+from codicons import CodiconComponent
+
+// A strip of selectable tabs. Controlled: the owner holds `activeKey`.
+//
+// A key is an IDENTITY -- the row is built under it, so it survives
+// reordering. Keys must be unique for a tab's life and never reused, or a new
+// tab is handed a dead one's state. An index is the wrong choice: closing a
+// tab renumbers every tab after it.
 
 export struct TabItem {
     key: int;
     title?: str;
     icon?: str;
-    modified?: bool; // TODO: Remove
+    // Draws the unsaved-changes dot in place of the close button.
+    modified?: bool;
 }
 
 @props
 [[hzui.untracked]]
 items?: []TabItem;
+activeKey: int = -1;
+closable: bool = true;
+height: real = 35.0;
+bg: str = "#181818";
+tabBg: str = "#181818";
+tabBgActive: str = "#1F1F1F";
+textColor: str = "#8A8A8A";
+textColorActive: str = "#FFFFFF";
 
-@template [w-grow h-fit]
+@slot
+// Replaces a row's CONTENT only; the row, its highlight and its click stay.
+tab: {
+    item: TabItem;
+    active: bool;
+};
 
-// div for=[item,i in items] key=[i] [] {
-//     text [] [i]
-// }
+@emit
+select: (int,);
+close: (int,);
 
-// for item in items {
-//     div key=[i] [] {
-//         text [] [i]
-//     }
-// }
+@setup
+let list = computed((): []TabItem => {
+    let items = props.items;
+    if items { return items; }
+    let empty: []TabItem = [];
+    return empty;
+});
+
+
+@template [row w-grow h-[props.height]px bg-[props.bg] items-end gap-0]
+
+div for=[item in list] key=[item.key] [
+        row items-center gap-2 h-grow w-fit px-3 cursor-pointer
+        bg-[item.key == props.activeKey ? props.tabBgActive : props.tabBg]
+        text-color-[item.key == props.activeKey ? props.textColorActive : props.textColor]
+    ]
+    @pointerdown=[(e: PointerEvent) => { emits.select(item.key); }]
+{
+    slot tab item=[item] active=[item.key == props.activeKey] {
+        Codicon if=[item.icon] [] icon=[item.icon] {}
+        text [text-nowrap] [item.title ?? ""]
+        Button if=[props.closable] [] icon=[item.modified ?? false ? "circle-filled" : "close"]
+            paddingX=[2] paddingY=[2] rounded=[3]
+            @click=[() => { emits.close(item.key); }]
+    }
+}
