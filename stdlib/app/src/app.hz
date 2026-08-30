@@ -127,7 +127,24 @@ export opaque ref struct App {
     //
     // This is what tells the two apart. Nothing sets it but a real
     // platform mouse event.
+    //
+    // It only answers "has the pointer ever been located", which is half the
+    // question -- see pointerInside below for the other half, and
+    // mousePosKnown() for the two together.
     mousePositionKnown: bool = false;
+
+    // Is the pointer over this window RIGHT NOW? Refreshed once per
+    // nextFrame(), beside the keyboard focus below and for the same reason.
+    //
+    // Without this, mousePosition keeps its last value forever once the
+    // pointer leaves, and that value is never neutral: it is wherever the
+    // pointer was when it crossed the edge, i.e. sitting exactly on top of
+    // whatever it left through. Anything reading it then reports that element
+    // as hovered for as long as the pointer is away -- which is a statement
+    // about where the pointer is, and a false one. See
+    // ui_components.UIContext.updateHoverState, which stops claiming anything
+    // is hovered the moment this goes false.
+    pointerInside: bool = false;
     resized: bool = false;
 
     // ── OS window focus ──────────────────────────────────────────────
@@ -295,11 +312,16 @@ export opaque ref struct App {
         return this.mousePosition;
     }
 
-    // Whether mousePos() means anything yet -- see mousePositionKnown.
-    // False from startup until the platform first reports the pointer, so
-    // a UI can tell "pointer at the origin" from "no pointer yet".
+    // Whether mousePos() means anything RIGHT NOW.
+    //
+    // Both halves have to hold: the platform must have reported the pointer at
+    // least once (mousePositionKnown -- otherwise (0,0) would read as the
+    // top-left corner), and the pointer must be over this window at this
+    // moment (pointerInside -- otherwise the last position inside would go on
+    // answering forever). Either one alone leaves a UI claiming something is
+    // hovered when nothing is.
     fn mousePosKnown(): bool {
-        return this.mousePositionKnown;
+        return this.mousePositionKnown && this.pointerInside;
     }
 
     fn pointerLeftHeld(): bool {
@@ -454,6 +476,11 @@ export opaque ref struct App {
         this.focusGained = nowFocused && !this.focused;
         this.focusLost = !nowFocused && this.focused;
         this.focused = nowFocused;
+
+        // Where the pointer is, read at the same instant as the keyboard
+        // focus so everything this frame agrees. This is the one thing that
+        // ever sets pointerInside back to false -- see its comment.
+        this.pointerInside = this.window.hasMouseFocus();
 
         this.resized = false;
         if this.window.consumeSizeChanged() {

@@ -961,6 +961,22 @@ bool haze_sdl_windowHasFocus(SDL_Window* window)
   return (SDL_GetWindowFlags(window) & SDL_WINDOW_INPUT_FOCUS) != 0;
 }
 
+// Is the pointer over this window right now?
+//
+// Polled rather than pushed, exactly like haze_sdl_windowHasFocus above and
+// for the same reason. SDL_GetMouseFocus() is NULL whenever the pointer is
+// outside every window of this process, which is precisely the state the UI
+// needs in order to stop claiming something is hovered: a window's last known
+// pointer position keeps pointing at whatever the pointer left through, so
+// "where was it last" cannot answer "is it here".
+bool haze_sdl_windowHasMouseFocus(SDL_Window* window)
+{
+  if (!window) {
+    return false;
+  }
+  return SDL_GetMouseFocus() == window;
+}
+
 bool haze_sdl_makeContextCurrent(SDL_Window* window)
 {
   SDL_GLContext context = haze_sdl_get_window_gl_context(window);
