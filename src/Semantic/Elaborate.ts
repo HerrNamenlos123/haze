@@ -7242,9 +7242,16 @@ export class SemanticElaborator {
           blockFlow = this.sequenceControlFlow(blockFlow, statementFlow);
           blockWrites.addAll(statementWrites);
 
+          // A scope yields the value of its last expression statement only
+          // when that statement carries no trailing semicolon -- `do { x }`
+          // yields x, `do { x; }` yields none. The semicolon is the whole
+          // rule; nothing else about the statement makes it an emit.
+          const collectedStatement = this.sr.cc.statementNodes.get(sId);
           if (
             lastExprIsEmit &&
             statement.variant === Semantic.ENode.ExprStatement &&
+            collectedStatement.variant === Collect.ENode.ExprStatement &&
+            collectedStatement.emit &&
             index === statements.length - 1 &&
             // If it's void (as by calling a void function at the end), we ignore it, don't emit and
             // later let it be turned into "none" instead.

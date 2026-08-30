@@ -465,16 +465,25 @@ statement
     // These two must come before ExprStatement: `do { ... }` and `attempt { ... }`
     // are also reachable as plain expressions (primaryExpr / ternary), so without
     // a dedicated statement form, using either bare as a statement falls through
-    // to `expr SEMI` and forces a trailing semicolon after the closing '}' -- and
-    // if that semicolon is missing, the parser fails to recover cleanly (it can
+    // to the generic expression rule -- where a missing semicolon after the
+    // closing '}' derails the parser rather than ending the statement (it can
     // misinterpret the block as an anonymous struct literal and report a
-    // confusing, disconnected error far from the real problem). Making the
-    // semicolon explicitly optional here, and listing these before ExprStatement
-    // so ties resolve in their favor, fixes both: the semicolon is no longer
-    // required, and a missing one no longer derails the parser.
+    // confusing, disconnected error far from the real problem). Listing them
+    // here, before ExprStatement, keeps the block forms on a rule that ends at
+    // the brace.
+    //
+    // Their SEMI is the same one ExprStatement has, and means the same thing:
+    // present, the block's value is discarded; absent, a block sitting last in
+    // an emitting scope hands its value out (`do { do { 7 } }` is 7).
     | doScope SEMI?                                                                 #DoStatement
     | ATTEMPT rawScope attemptBody* SEMI?                                          #AttemptStatement
-    | expr SEMI                                                                     #ExprStatement
+    // The `;` is optional, and its absence is what makes a scope yield a value:
+    // an expression statement without one, sitting last in an emitting scope
+    // (`do { ... }`, `attempt { ... }`), IS that scope's value; with one, the
+    // value is discarded and the scope yields `none`. Elsewhere a missing `;`
+    // simply discards the value, exactly as `variableCreation` and the two
+    // block-statement forms above already do.
+    | expr SEMI?                                                                    #ExprStatement
     | RETURN expr? SEMI                                                             #ReturnStatement
     | RAISE expr? SEMI                                                              #RaiseStatement
     | BREAK SEMI                                                                    #BreakStatement

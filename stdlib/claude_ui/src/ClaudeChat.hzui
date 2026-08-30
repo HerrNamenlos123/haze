@@ -77,7 +77,7 @@ div [col w-grow h-fit gap-2 px-[props.padding]px pb-[props.padding]px] {
         [chat.error()]
 
     // `if=` does not narrow a computed's union for the props below it.
-    ClaudeAsk if=ask [] request=[do { let request = rx.get(ask); assert(request); request; }]
+    ClaudeAsk if=ask [] request=[do { let request = rx.get(ask); assert(request); request }]
         revision=[chat.revision]
         feedback=[chat.prompt] mutedColor=[props.mutedColor]
         accent=[props.accent] fontSize=[props.fontSize] {}

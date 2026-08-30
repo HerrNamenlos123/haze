@@ -321,7 +321,7 @@ export namespace fs {
         let err = do unsafe {
             let out = none as cptr;
             __c__("out = &handle;");
-            ffi.hzstd_file_open_write(Alloc.heap(), path, out);
+            ffi.hzstd_file_open_write(Alloc.heap(), path, out)
         };
         if err.code != ffi.hzstd_fs_error_code_none {
             return mapErrorEnum(err.code);

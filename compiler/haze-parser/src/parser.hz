@@ -994,6 +994,11 @@ ref struct Parser {
     // `;` belongs to the for rule rather than to the statement.
     noSemiInStatement: bool = false;
 
+    // Did the `attempt { } ... ;` statement just parsed end with a semicolon?
+    // attemptExprImpl() consumes it (the `;` is part of the AttemptExpr's own
+    // span there, unlike `do`), so it has to report back out of band.
+    attemptTookSemi: bool = false;
+
     fn isLiteralStart(k: TK): bool {
         return k == TK.True || k == TK.False || k == TK.IntLit || k == TK.HexIntLit
             || k == TK.FloatLit || k == TK.UnitIntLit || k == TK.UnitFloatLit
@@ -1872,7 +1877,7 @@ ref struct Parser {
             break;
         }
 
-        if takeSemi { this.accept(TK.Semi); }
+        if takeSemi { this.attemptTookSemi = this.accept(TK.Semi); }
 
         this.w.beginObject();
         this.w.keyString("variant", "AttemptExpr");
@@ -2056,10 +2061,11 @@ ref struct Parser {
             // `doScope SEMI?` is one statement rule: the optional `;` is part
             // of the statement's span (but not of the inner expression's).
             let e = this.captureWith(() => { this.doScopeExpr(); });
-            this.accept(TK.Semi);
+            let doSemi = this.accept(TK.Semi);
             this.w.beginObject();
             this.w.keyString("variant", "ExprStatement");
             this.w.keyRaw("expr", e);
+            this.w.keyBool("semicolon", doSemi);
             this.locHere(start);
             this.w.endObject();
             return;
@@ -2070,21 +2076,27 @@ ref struct Parser {
             // and the AttemptExpr node is built from it, so the optional `;`
             // falls inside the EXPRESSION's span too (unlike `do`, where the
             // expression comes from the separate doScope rule).
+            this.attemptTookSemi = false;
             let e = this.captureWith(() => { this.attemptExprImpl(true); });
             this.w.beginObject();
             this.w.keyString("variant", "ExprStatement");
             this.w.keyRaw("expr", e);
+            this.w.keyBool("semicolon", this.attemptTookSemi);
             this.locHere(start);
             this.w.endObject();
             return;
         }
 
-        // Expression statement.
+        // Expression statement. The trailing `;` is optional: without one, a
+        // last statement in an emitting scope (`do`/`attempt`) yields its value
+        // instead of discarding it -- see `emit` in SymbolCollection.ts.
         let e = this.captureExpr();
-        if !this.noSemiInStatement { this.expect(TK.Semi); }
+        let semi = false;
+        if !this.noSemiInStatement { semi = this.accept(TK.Semi); }
         this.w.beginObject();
         this.w.keyString("variant", "ExprStatement");
         this.w.keyRaw("expr", e);
+        this.w.keyBool("semicolon", semi);
         this.locHere(start);
         this.w.endObject();
     }
