@@ -27,17 +27,17 @@ content: {
 };
 
 @emit
-click: (ui_components.PointerEvent,);
+click: (PointerEvent,);
 
 @setup
-let buttonRef = elementRef<ui_elements.DivElement>();
+let buttonRef = elementRef<DivElement>();
 
 let isHovered = computed(() => buttonRef?.hover() ?? false);
 let isActive = computed(() => buttonRef?.active() ?? false);
 // :focus-visible, not :focus -- a clicked button must not keep a ring.
 let ringVisible = computed(() => (buttonRef?.focusVisible() ?? false) && props.focusRing > 0.0);
 
-let clicked = (event: ui_components.PointerEvent) => {
+let clicked = (event: PointerEvent) => {
     event.stopPropagation();
     if !props.enabled { return; }
     emits.click(event);

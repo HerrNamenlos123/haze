@@ -466,8 +466,8 @@ fn fileNameOf(path: str): str {
     @pointerdowncapture=dismissMenusOnPressCapture
 
 TitleBar []
-    documentName=[activeKey >= 0 ? fileNameOf(pathForKey(activeKey)) : ""]
-    workspaceName=[workspace().name]
+    // documentName=[activeKey >= 0 ? fileNameOf(pathForKey(activeKey)) : ""]
+    // workspaceName=[workspace().name]
     // openMenu=[titleBarState.openMenu]
 {}
 

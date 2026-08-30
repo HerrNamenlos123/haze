@@ -67,6 +67,10 @@ OPERATORGTE: 'operator>=';
 TRUE: 'true';
 FALSE: 'false';
 TYPE: 'type';
+// `alias` is the general symbol alias; `type` is `alias` plus a check that the
+// target resolves to a datatype. One node, two keywords -- see §1.1 of
+// R&D/Aliases, Anonymous Structs and Spreading.md.
+ALIAS: 'alias';
 RETURN: 'return';
 TYPEOF: 'typeof';
 IF: 'if';

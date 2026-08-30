@@ -19,10 +19,13 @@ import type { ASTRoot } from "../shared/AST";
 import { EPrimitive } from "../shared/common";
 import { HazeErrorCode } from "../shared/ErrorCodes";
 import { CompilerError } from "../shared/Errors";
-import { getInstalledParserBinary } from "../shared/InstallPaths";
+import {
+  getInstalledParserBinary,
+  isInstalledBuild,
+} from "../shared/InstallPaths";
 import { requestSync, warmupBridge } from "./SyncBridge";
 
-const PARSER_PROJECT_DIR = path.join("compiler", "haze-parser");
+export const PARSER_PROJECT_DIR = path.join("compiler", "haze-parser");
 // The `.exe` suffix matters for more than spawning: isParserUpToDate() probes
 // this path with existsSync, which does no PATHEXT resolution, so an
 // extensionless path made the check fail forever on Windows and rebuilt the
@@ -172,7 +175,7 @@ const NODES_WITH_GENERICS = new Set([
   "OptionalChainingExprMemberAccess",
   "FunctionDefinition",
   "StructDefinition",
-  "TypeAlias",
+  "AliasDef",
 ]);
 
 function isIntegerPrimitive(type: number): boolean {
@@ -231,23 +234,39 @@ export function isParserUpToDate(repoRoot: string): boolean {
 }
 
 /**
+ * The argv the bootstrap rebuild spawns, minus the executable itself.
+ *
+ * The compiler runs in two shapes and `process.execPath` means something
+ * different in each. Under `bun run src/main.ts` it is the JS runtime, which
+ * needs to be told which script to run. Under a compiled `dist/haze` it *is*
+ * the compiler, and handing it `src/main.ts` makes argparse reject it as an
+ * unknown subcommand -- which is exactly what made the rebuild silently
+ * impossible and left the build quietly on the ANTLR parser (§8.1).
+ *
+ * Pure and exported so `scripts/parser-bootstrap.test.ts` can pin both shapes
+ * without needing a compiled compiler to hand.
+ *
+ * `--parser antlr` is essential in both: the default parser mode is `native`,
+ * so without it the child would find the binary missing/stale, call
+ * buildNativeParser() itself, and recurse forever.
+ */
+export function nativeParserBuildArgs(
+  hostIsCompiledCompiler: boolean
+): string[] {
+  const command = ["build", "--dir", PARSER_PROJECT_DIR, "--parser", "antlr"];
+  return hostIsCompiledCompiler
+    ? command
+    : [path.join("src", "main.ts"), ...command];
+}
+
+/**
  * Build the native parser with the existing (ANTLR) pipeline. Returns false and
- * leaves stderr in place if the build fails, so the caller can fall back.
+ * leaves stderr in place if the build fails, so the caller can report it.
  */
 export function buildNativeParser(repoRoot: string): boolean {
   const result = child_process.spawnSync(
     process.execPath,
-    // `--parser antlr` is essential: the default parser mode is `native`, so
-    // without it the child would find the binary missing/stale, call
-    // buildNativeParser() itself, and recurse forever.
-    [
-      path.join("src", "main.ts"),
-      "build",
-      "--dir",
-      PARSER_PROJECT_DIR,
-      "--parser",
-      "antlr",
-    ],
+    nativeParserBuildArgs(isInstalledBuild()),
     {
       cwd: repoRoot,
       encoding: "utf8",

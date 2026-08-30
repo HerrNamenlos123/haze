@@ -16,7 +16,7 @@ import {
   type ASTSymbolDefinition,
   type ASTSymbolImport,
   type ASTTaggedUnionTypeExpr,
-  type ASTTypeAlias,
+  type ASTAliasDef,
   type ASTTypeDef,
   type ASTVariableDefinitionStatement,
   AssignmentOperationToString,
@@ -50,6 +50,7 @@ import {
   assert,
   CompilerError,
   formatSourceLoc,
+  InternalError,
   type SourceLoc,
 } from "../shared/Errors";
 import { HazeErrorCode } from "../shared/ErrorCodes";
@@ -78,6 +79,28 @@ export type CollectionContext = {
   elaboratedNamespacesAndStructs: Set<Collect.TypeDefId>;
 
   exportedGenericSymbols: Set<Collect.SymbolId>;
+
+  /**
+   * `from m import a;` where `m` has no `a`.
+   *
+   * The alias is created regardless -- it is just a name bound to a member
+   * access -- so nothing would ever notice the mistake unless the alias were
+   * used. §D7 says an import that names something the module does not export
+   * fails the build whether or not it is used, so the check is recorded here at
+   * collection time and run at pre-elaboration, which is the first point where
+   * the imported module's symbols are actually known.
+   */
+  symbolImportsToVerify: {
+    aliasTypeDef: Collect.TypeDefId;
+    moduleName: string;
+    /** The module's generated global namespace, e.g. `m_v1_0_0_AbC12xY9`. */
+    importedNamespace: string;
+    /** The name in the module. */
+    symbolName: string;
+    /** The name it was bound to here -- differs under `as`. */
+    boundName: string;
+    sourceloc: SourceLoc;
+  }[];
 };
 
 export function funcSymHasParameterPack(
@@ -106,6 +129,7 @@ export function makeCollectionContext(config: ModuleConfig): CollectionContext {
     overloadGroups: new Set(),
     exportedGenericSymbols: new Set<Collect.SymbolId>(),
     elaboratedNamespacesAndStructs: new Set(),
+    symbolImportsToVerify: [],
   };
 
   const [_, moduleScopeId] = Collect.makeScope(cc, {
@@ -142,7 +166,7 @@ export namespace Collect {
     FunctionSymbol,
     VariableSymbol,
     TypeDefSymbol,
-    TypeAliasDef,
+    AliasDef,
     StackArrayTypeDefinitionExpr,
     DynamicArrayTypeDefinitionExpr,
     UntaggedUnionTypeDefinitionExpr,
@@ -172,6 +196,7 @@ export namespace Collect {
     UnsafeExpr,
     BinaryExpr,
     TypeOfExpr,
+    AnonStructTypeExpr,
     LiteralExpr,
     FStringExpr,
     UnaryExpr,
@@ -405,9 +430,23 @@ export namespace Collect {
     | GenericTypeParameterSymbol
     | CInjectDirective;
 
-  export type TypeAliasDef = {
-    variant: ENode.TypeAliasDef;
+  /**
+   * `type Foo = Bar;` and `alias foo = m.bar;` -- one node, two keywords.
+   *
+   * `alias` names any symbol: a datatype, a namespace, a function overload
+   * group, a global variable, an enum member, or another alias. `type` is the
+   * same thing plus a check that the target resolves to a datatype, and
+   * `typeOnly` is the only record of which keyword was written (§1.1).
+   *
+   * `import m;` synthesises one of these too, with the module's generated
+   * global namespace as the target -- which is why aliasing a *symbol* through
+   * this node was already proven before `alias` existed.
+   */
+  export type AliasDef = {
+    variant: ENode.AliasDef;
     name: string;
+    /** Written as `type`: the target must resolve to a datatype. */
+    typeOnly: boolean;
     inScope: Collect.ScopeId;
     generics: Collect.SymbolId[];
     genericScope: Collect.ScopeId;
@@ -440,6 +479,17 @@ export namespace Collect {
 
   export type StructTypeDef = {
     variant: ENode.StructTypeDef;
+    /**
+     * Written inline in a type position (`{ x: int, y: int }`) rather than
+     * declared with `struct`.
+     *
+     * An anonymous struct is STRUCTURAL: two with the same members are one
+     * type, everywhere, across modules -- so it is interned by a canonical key
+     * at elaboration rather than being its own nominal identity. It has no
+     * methods, operators or constructors, deliberately: if every structurally
+     * identical use is the same type, "which methods apply here" has no answer.
+     */
+    anonymous: boolean;
     fullyQualifiedName: string;
     parentScope: Collect.ScopeId;
     generics: Collect.SymbolId[];
@@ -483,7 +533,7 @@ export namespace Collect {
   };
 
   export type TypeDef =
-    | TypeAliasDef
+    | AliasDef
     | StructTypeDef
     | NamespaceTypeDef
     | EnumTypeDef;
@@ -633,6 +683,20 @@ export namespace Collect {
     expr: Collect.ExprId;
   };
 
+  /**
+   * `{ x: int, y: int }` in a type position.
+   *
+   * Collected as a nameless StructTypeDef so that member collection, field
+   * scopes, defaults and optionality all reuse the named-struct machinery
+   * unchanged; this expression is only the pointer to it. What differs is
+   * elaboration, where the result is interned by structural key rather than
+   * given its own nominal identity.
+   */
+  export type AnonStructTypeExpr = BaseExpr & {
+    variant: ENode.AnonStructTypeExpr;
+    structTypeDef: Collect.TypeDefId;
+  };
+
   export type BinaryExpr = BaseExpr & {
     variant: ENode.BinaryExpr;
     left: Collect.ExprId;
@@ -697,6 +761,8 @@ export namespace Collect {
   export type AggregateLiteralElement = {
     key: string | null;
     value: Collect.ExprId;
+    /** `...bar`: spread every member of the value's type here (§6). */
+    spread: boolean;
     sourceloc: SourceLoc;
   };
 
@@ -912,6 +978,7 @@ export namespace Collect {
     | UntaggedUnionTypeDefinitionExpr
     | TaggedUnionTypeDefinitionExpr
     | PreIncrExpr
+    | AnonStructTypeExpr
     | PostIncrExpr;
 
   export type ModuleImport = {
@@ -1141,6 +1208,90 @@ function defineGenericTypeParameter(
   });
   functionScope.symbols.add(id);
   return id;
+}
+
+/**
+ * Insert a symbol into a scope, rejecting a name that is already taken there.
+ *
+ * The collector used to insert blind, and `lookupDirect` silently returned
+ * whichever hit it saw first -- so two declarations of one name in one scope
+ * quietly resolved to an arbitrary one of them. That was rare enough to live
+ * with while the only way to introduce a name was to declare it; `import` and
+ * `from ... import` make it routine, because a name now arrives from another
+ * module without the reader necessarily seeing it (§1.5).
+ *
+ * Namespaces are exempt because reopening one is not a redeclaration -- and
+ * they never reach here twice anyway, since collectSymbol reuses the existing
+ * namespace symbol. Function overloads are exempt for the same reason: they
+ * share one overload-group symbol.
+ */
+export function addSymbolToScope(
+  cc: CollectionContext,
+  scopeId: Collect.ScopeId,
+  symbolId: Collect.SymbolId
+) {
+  const scope = cc.scopeNodes.get(scopeId);
+  const symbol = cc.symbolNodes.get(symbolId);
+  const name =
+    symbol.variant === Collect.ENode.CInjectDirective ? null : symbol.name;
+
+  if (name !== null) {
+    for (const existingId of scope.symbols) {
+      if (existingId === symbolId) {
+        continue;
+      }
+      const existing = cc.symbolNodes.get(existingId);
+      if (
+        existing.variant === Collect.ENode.CInjectDirective ||
+        existing.name !== name
+      ) {
+        continue;
+      }
+      if (isNamespaceSymbol(cc, existing) && isNamespaceSymbol(cc, symbol)) {
+        continue;
+      }
+      // An overload group carries no source location of its own; its
+      // overloads each have one.
+      const previous = symbolSourceLoc(cc, existing);
+      throw new CompilerError(
+        `Symbol '${name}' was already declared in this scope. Previous definition: ${
+          (previous && formatSourceLoc(previous)) || "<unknown>"
+        }`,
+        symbolSourceLoc(cc, symbol),
+        HazeErrorCode.SymbolWasAlreadyDeclaredThisScopePreviousDefinition
+      );
+    }
+  }
+
+  scope.symbols.add(symbolId);
+  return symbolId;
+}
+
+/** Where a symbol was written, for symbols that record it. */
+function symbolSourceLoc(
+  cc: CollectionContext,
+  symbol: Collect.Symbols
+): SourceLoc {
+  if (symbol.variant === Collect.ENode.FunctionOverloadGroupSymbol) {
+    for (const overloadId of symbol.overloads) {
+      const overload = cc.symbolNodes.get(overloadId);
+      assert(overload.variant === Collect.ENode.FunctionSymbol);
+      return overload.sourceloc;
+    }
+    return null;
+  }
+  return symbol.sourceloc;
+}
+
+function isNamespaceSymbol(
+  cc: CollectionContext,
+  symbol: Collect.Symbols
+): boolean {
+  return (
+    symbol.variant === Collect.ENode.TypeDefSymbol &&
+    cc.typeDefNodes.get(symbol.typeDef).variant ===
+      Collect.ENode.NamespaceTypeDef
+  );
 }
 
 export function defineVariableSymbol(
@@ -1381,6 +1532,7 @@ function collectTypeDef(
         cc,
         {
           variant: Collect.ENode.StructTypeDef,
+          anonymous: false,
           name: item.name,
           fullyQualifiedName: fullyQualifiedName,
           generics: [],
@@ -1564,7 +1716,7 @@ function collectTypeDef(
       return typedefSymbolId;
     }
 
-    case "TypeAlias": {
+    case "AliasDef": {
       return collectGlobalDirective(cc, item, {
         currentParentScope: args.currentParentScope,
       });
@@ -1852,7 +2004,7 @@ function collectSymbol(
     // =================================================================================================================
 
     case "EnumDefinition":
-    case "TypeAlias":
+    case "AliasDef":
     case "NamespaceDefinition":
     case "StructDefinition": {
       return collectTypeDef(cc, item, args);
@@ -1901,7 +2053,23 @@ function collectSymbol(
     // =================================================================================================================
 
     case "StructMember": {
-      let datatype: ASTExpr = item.type;
+      // A member may omit its type when a default gives it one (`test = true`),
+      // which is what makes `call_foo(args: { id: int, test = true })` -- an
+      // anonymous struct used as an interface between named structs --
+      // writable at all. `typeof` already exists and already elaborates, so the
+      // omitted type simply *is* `typeof(<default>)`; nothing downstream has to
+      // learn about a second kind of member.
+      if (item.type === null) {
+        assert(
+          item.defaultValue,
+          "a struct member with no type must have a default"
+        );
+      }
+      let datatype: ASTExpr = item.type ?? {
+        variant: "TypeOfExpr",
+        expr: item.defaultValue as ASTExpr,
+        sourceloc: item.sourceloc,
+      };
       if (item.optional) {
         datatype = {
           variant: "BinaryExpr",
@@ -1976,7 +2144,7 @@ function collectSymbol(
 function collectGlobalDirective(
   cc: CollectionContext,
   item:
-    | ASTTypeAlias
+    | ASTAliasDef
     | ASTCInjectDirective
     | ASTGlobalVariableDefinition
     | ASTModuleImport
@@ -2044,7 +2212,7 @@ function collectGlobalDirective(
     // =================================================================================================================
     // =================================================================================================================
 
-    case "TypeAlias": {
+    case "AliasDef": {
       const [genericsScope, genericsScopeId] =
         Collect.makeScope<Collect.TypeDefScope>(cc, {
           variant: Collect.ENode.TypeDefScope,
@@ -2054,8 +2222,9 @@ function collectGlobalDirective(
           symbols: new Set(),
         });
 
-      const [alias, aliasId] = Collect.makeTypeDef<Collect.TypeAliasDef>(cc, {
-        variant: Collect.ENode.TypeAliasDef,
+      const [alias, aliasId] = Collect.makeTypeDef<Collect.AliasDef>(cc, {
+        variant: Collect.ENode.AliasDef,
+        typeOnly: item.typeOnly,
         inScope: args.currentParentScope,
         name: item.name,
         generics: [],
@@ -2075,7 +2244,7 @@ function collectGlobalDirective(
         sourceloc: item.sourceloc,
       })[1];
       genericsScope.owningSymbol = symbolId;
-      cc.scopeNodes.get(args.currentParentScope).symbols.add(symbolId);
+      addSymbolToScope(cc, args.currentParentScope, symbolId);
       // if (item.export) {
       //   cc.exportedSymbols.exported.add(symbolId);
       // }
@@ -2123,8 +2292,15 @@ function collectGlobalDirective(
         metadata.version,
         metadata.id
       );
-      const [alias, aliasId] = Collect.makeTypeDef<Collect.TypeAliasDef>(cc, {
-        variant: Collect.ENode.TypeAliasDef,
+      // `import m as n;` binds the module namespace under `n`. The `as` clause
+      // parsed correctly all along but was never read here, so the alias was
+      // always named after the module and `as` was silently ignored (bug 2 of
+      // §0.2).
+      const boundName = item.alias ?? item.name;
+      const [alias, aliasId] = Collect.makeTypeDef<Collect.AliasDef>(cc, {
+        variant: Collect.ENode.AliasDef,
+        // A module namespace is a datatype, so this is the `type` subset.
+        typeOnly: true,
         inScope: args.currentParentScope,
         target: collectExpr(
           cc,
@@ -2138,7 +2314,7 @@ function collectGlobalDirective(
         ),
         generics: [],
         genericScope: -1 as Collect.ScopeId,
-        name: item.name,
+        name: boundName,
         annotations: [],
         sourceloc: item.sourceloc,
       });
@@ -2147,11 +2323,10 @@ function collectGlobalDirective(
         inScope: args.currentParentScope,
         typeDef: aliasId,
         export: false,
-        name: item.name,
+        name: boundName,
         sourceloc: item.sourceloc,
       })[1];
-      const scope = cc.scopeNodes.get(args.currentParentScope);
-      scope.symbols.add(symbolId);
+      addSymbolToScope(cc, args.currentParentScope, symbolId);
 
       const structScopeId = Collect.makeScope<Collect.TypeDefScope>(cc, {
         variant: Collect.ENode.TypeDefScope,
@@ -2169,73 +2344,121 @@ function collectGlobalDirective(
     // =================================================================================================================
     // =================================================================================================================
 
-    // case "SymbolImport": {
-    //   const dependency = cc.config.dependencies.find(
-    //     (d) => d.name === item.name
-    //   );
-    //   if (!dependency) {
-    //     throw new CompilerError(
-    //       `Cannot find import '${item.name}': No such module`,
-    //       item.sourceloc,
-    //       HazeErrorCode.CannotFindImportNoSuchModule
-    //     );
-    //   }
-    //   const globalBuildDir = join(process.cwd(), "__haze__");
-    //   const metadataPath = join(
-    //     globalBuildDir,
-    //     cc.config.name,
-    //     "__deps",
-    //     dependency.name,
-    //     "metadata.json"
-    //   );
-    //   const filecontent = readFileSync(metadataPath, "utf8");
-    //   const metadata: ModuleConfig = JSON.parse(filecontent);
-    //   const importedNamespace = getModuleGlobalNamespaceName(
-    //     metadata.name,
-    //     metadata.version,
-    //     metadata.id
-    //   );
-    //   const [alias, aliasId] = Collect.makeTypeDef<Collect.TypeAliasDef>(cc, {
-    //     variant: Collect.ENode.TypeAliasDef,
-    //     inScope: args.currentParentScope,
-    //     target: collectExpr(
-    //       cc,
-    //       {
-    //         variant: "SymbolValueExpr",
-    //         name: importedNamespace,
-    //         generics: [],
-    //         sourceloc: null,
-    //       },
-    //       args
-    //     ),
-    //     generics: [],
-    //     genericScope: -1 as Collect.ScopeId,
-    //     name: item.name,
-    //     annotations: [],
-    //     sourceloc: item.sourceloc,
-    //   });
-    //   const symbolId = Collect.makeSymbol(cc, {
-    //     variant: Collect.ENode.TypeDefSymbol,
-    //     inScope: args.currentParentScope,
-    //     typeDef: aliasId,
-    //     export: false,
-    //     name: item.name,
-    //     sourceloc: item.sourceloc,
-    //   })[1];
-    //   const scope = cc.scopeNodes.get(args.currentParentScope);
-    //   scope.symbols.add(symbolId);
+    case "SymbolImport": {
+      // `from m import a, b as c;` desugars to two aliases in file scope:
+      //
+      //   alias a = m_v1_0_0_AbC12xY9.a;
+      //   alias c = m_v1_0_0_AbC12xY9.b;
+      //
+      // That is the whole feature. Overload sets, generics, error naming and C
+      // emission are all inherited from `alias` (§1), which is why the alias
+      // had to exist first -- this adds no mechanism of its own.
+      if (item.mode === "path") {
+        throw new CompilerError(
+          `Cannot import from '${item.name}': importing by path is not supported`,
+          item.sourceloc,
+          HazeErrorCode.CannotFindImportNoSuchModule
+        );
+      }
 
-    //   const structScopeId = Collect.makeScope<Collect.TypeDefScope>(cc, {
-    //     variant: Collect.ENode.TypeDefScope,
-    //     owningSymbol: symbolId,
-    //     parentScope: args.currentParentScope,
-    //     sourceloc: item.sourceloc,
-    //     symbols: new Set(),
-    //   })[1];
-    //   alias.genericScope = structScopeId;
+      const dependency = cc.config.dependencies.find(
+        (d) => d.name === item.name
+      );
+      if (!dependency) {
+        throw new CompilerError(
+          `Cannot find import '${item.name}': No such module`,
+          item.sourceloc,
+          HazeErrorCode.CannotFindImportNoSuchModule
+        );
+      }
+      const globalBuildDir = join(process.cwd(), "__haze__");
+      const metadataPath = join(
+        globalBuildDir,
+        cc.config.name,
+        "__deps",
+        dependency.name,
+        "metadata.json"
+      );
+      const filecontent = readFileSync(metadataPath, "utf8");
+      const metadata: ModuleConfig = JSON.parse(filecontent);
+      const importedNamespace = getModuleGlobalNamespaceName(
+        metadata.name,
+        metadata.version,
+        metadata.id
+      );
 
-    //   return symbolId;
-    // }
+      let lastSymbolId = -1 as Collect.SymbolId;
+      for (const imported of item.symbols) {
+        // `b as c` binds `c`. Only the listed names are bound -- `m` itself is
+        // NOT, so it still has to be a declared dependency to be named (§2.2).
+        const boundName = imported.alias ?? imported.symbol;
+
+        const [genericsScope, genericsScopeId] =
+          Collect.makeScope<Collect.TypeDefScope>(cc, {
+            variant: Collect.ENode.TypeDefScope,
+            owningSymbol: -1 as Collect.SymbolId,
+            parentScope: args.currentParentScope,
+            sourceloc: item.sourceloc,
+            symbols: new Set(),
+          });
+
+        const [, aliasId] = Collect.makeTypeDef<Collect.AliasDef>(cc, {
+          variant: Collect.ENode.AliasDef,
+          // An imported symbol may be a function, a global or an enum member
+          // just as easily as a type, so this is never the `type` subset.
+          typeOnly: false,
+          inScope: args.currentParentScope,
+          name: boundName,
+          generics: [],
+          genericScope: genericsScopeId,
+          target: collectExpr(
+            cc,
+            {
+              variant: "ExprMemberAccess",
+              expr: {
+                variant: "SymbolValueExpr",
+                name: importedNamespace,
+                generics: [],
+                sourceloc: item.sourceloc,
+              },
+              member: imported.symbol,
+              generics: [],
+              sourceloc: item.sourceloc,
+            },
+            { currentParentScope: genericsScopeId }
+          ),
+          annotations: [],
+          sourceloc: item.sourceloc,
+        });
+
+        const symbolId = Collect.makeSymbol(cc, {
+          variant: Collect.ENode.TypeDefSymbol,
+          inScope: args.currentParentScope,
+          typeDef: aliasId,
+          export: false,
+          name: boundName,
+          sourceloc: item.sourceloc,
+        })[1];
+        genericsScope.owningSymbol = symbolId;
+        addSymbolToScope(cc, args.currentParentScope, symbolId);
+
+        // An import that names something the module does not export fails the
+        // build whether or not anything uses it (§D7). Recorded here and
+        // checked at pre-elaboration, where the module's symbols are known.
+        cc.symbolImportsToVerify.push({
+          aliasTypeDef: aliasId,
+          moduleName: item.name,
+          importedNamespace: importedNamespace,
+          symbolName: imported.symbol,
+          boundName: boundName,
+          sourceloc: item.sourceloc,
+        });
+
+        lastSymbolId = symbolId;
+      }
+
+      return lastSymbolId;
+    }
 
     default:
       assert(false, "" + (item as any).variant);
@@ -2461,15 +2684,34 @@ function collectScope(
         break;
       }
 
-      case "TypeAlias": {
-        const [typeDef, typeDefId] = Collect.makeTypeDef(cc, {
-          variant: Collect.ENode.TypeAliasDef,
+      case "AliasDef": {
+        // The generics scope has to exist BEFORE the target is collected, and
+        // the target has to be collected inside it -- otherwise the alias's own
+        // type parameters are not in scope for its own right-hand side.
+        //
+        // This is bug 3 of §0.2: this case hardcoded `generics: []`, never read
+        // `astStatement.generics`, and collected the target in the block scope,
+        // so `type F<T> = G<T>;` inside a function body failed with "Type F
+        // expects 0 type parameters but got 1". The global path (above) always
+        // did this correctly; only the local one did not.
+        const [genericsScope, genericsScopeId] =
+          Collect.makeScope<Collect.TypeDefScope>(cc, {
+            variant: Collect.ENode.TypeDefScope,
+            owningSymbol: -1 as Collect.SymbolId,
+            parentScope: blockScopeId,
+            sourceloc: astStatement.sourceloc,
+            symbols: new Set(),
+          });
+
+        const [typeDef, typeDefId] = Collect.makeTypeDef<Collect.AliasDef>(cc, {
+          variant: Collect.ENode.AliasDef,
+          typeOnly: astStatement.typeOnly,
           inScope: blockScopeId,
           name: astStatement.name,
           generics: [],
-          genericScope: -1 as Collect.ScopeId,
+          genericScope: genericsScopeId,
           target: collectExpr(cc, astStatement.datatype, {
-            currentParentScope: blockScopeId,
+            currentParentScope: genericsScopeId,
           }),
           annotations: astStatement.annotations,
           sourceloc: astStatement.sourceloc,
@@ -2482,18 +2724,14 @@ function collectScope(
           name: astStatement.name,
           sourceloc: astStatement.sourceloc,
         })[1];
-        (cc.scopeNodes.get(blockScopeId) as Collect.BlockScope).symbols.add(
-          symbolId
-        );
+        genericsScope.owningSymbol = symbolId;
+        addSymbolToScope(cc, blockScopeId, symbolId);
 
-        const structScopeId = Collect.makeScope<Collect.TypeDefScope>(cc, {
-          variant: Collect.ENode.TypeDefScope,
-          owningSymbol: symbolId,
-          parentScope: blockScopeId,
-          sourceloc: item.sourceloc,
-          symbols: new Set(),
-        })[1];
-        typeDef.genericScope = structScopeId;
+        for (const g of astStatement.generics) {
+          typeDef.generics.push(
+            defineGenericTypeParameter(cc, g.name, genericsScopeId, g.sourceloc)
+          );
+        }
 
         break;
       }
@@ -2984,6 +3222,7 @@ function collectExpr(
         elements: item.elements.map((m) => ({
           key: m.key,
           value: collectExpr(cc, m.value, args),
+          spread: m.spread,
           sourceloc: m.sourceloc,
         })),
         allocator: item.allocator
@@ -3234,6 +3473,112 @@ function collectExpr(
       return Collect.makeExpr(cc, {
         variant: Collect.ENode.TypeOfExpr,
         expr: collectExpr(cc, item.expr, args),
+        sourceloc: item.sourceloc,
+      })[1];
+    }
+
+    // =================================================================================================================
+    // =================================================================================================================
+    // =================================================================================================================
+
+    case "AnonStructType": {
+      // A nameless StructTypeDef, so member collection, the field scope,
+      // defaults and optionality are all the named-struct code unchanged.
+      // Identity is what differs, and that is settled at elaboration: this
+      // definition is interned away by structural key, so two `{ x: int }`
+      // written in different places become one type.
+      //
+      // No lexical scope of its own beyond the field scope: an anonymous struct
+      // has no methods, no nested types and no generic parameters to hold.
+      const [struct, structId] = Collect.makeTypeDef<Collect.StructTypeDef>(
+        cc,
+        {
+          variant: Collect.ENode.StructTypeDef,
+          anonymous: true,
+          name: "",
+          fullyQualifiedName: "",
+          generics: [],
+          optional: new Set(
+            item.members.filter((m) => m.optional).map((m) => m.name)
+          ),
+          defaultMemberValues: [],
+          export: false,
+          extern: EExternLanguage.None,
+          opaque: false,
+          plain: false,
+          refByDefault: false,
+          nocopy: false,
+          pub: false,
+          noemit: false,
+          lexicalScope: -1 as Collect.ScopeId,
+          fieldScope: -1 as Collect.ScopeId,
+          parentScope: args.currentParentScope,
+          sourceloc: item.sourceloc,
+          originalSourcecode: "",
+          collectedTypeDefSymbol: -1 as Collect.SymbolId,
+          annotations: [],
+        }
+      );
+
+      // A TypeDefSymbol is created but deliberately never added to any scope:
+      // the struct is anonymous, so nothing may find it by name -- but the
+      // member-elaboration path reaches a struct's fields THROUGH its symbol
+      // (StructDatatype.originalCollectedSymbol), so one has to exist.
+      const structSymbolId = Collect.makeSymbol<Collect.TypeDefSymbol>(cc, {
+        variant: Collect.ENode.TypeDefSymbol,
+        inScope: args.currentParentScope,
+        name: "",
+        export: false,
+        typeDef: structId,
+        sourceloc: item.sourceloc,
+      })[1];
+      struct.collectedTypeDefSymbol = structSymbolId;
+
+      // The field scope hangs off the scope the type was WRITTEN in, so member
+      // types resolve there -- an anonymous struct introduces no scope of its
+      // own for names to hide in.
+      const lexicalScopeId = Collect.makeScope<Collect.StructLexicalScope>(cc, {
+        variant: Collect.ENode.StructLexicalScope,
+        owningSymbol: structSymbolId,
+        parentScope: args.currentParentScope,
+        sourceloc: item.sourceloc,
+        symbols: new Set(),
+      })[1];
+      struct.lexicalScope = lexicalScopeId;
+      const fieldScopeId = Collect.makeScope<Collect.StructFieldScope>(cc, {
+        variant: Collect.ENode.StructFieldScope,
+        owningSymbol: structSymbolId,
+        parentScope: lexicalScopeId,
+        sourceloc: item.sourceloc,
+        symbols: new Set(),
+      })[1];
+      struct.fieldScope = fieldScopeId;
+
+      for (const m of item.members) {
+        if (m.defaultValue) {
+          struct.defaultMemberValues.push({
+            name: m.name,
+            value: collectExpr(cc, m.defaultValue, {
+              currentParentScope: fieldScopeId,
+            }),
+          });
+        } else if (m.optional) {
+          struct.defaultMemberValues.push({
+            name: m.name,
+            value: Collect.makeExpr(cc, {
+              variant: Collect.ENode.SymbolValueExpr,
+              genericArgs: [],
+              name: "none",
+              sourceloc: m.sourceloc,
+            })[1],
+          });
+        }
+        collectSymbol(cc, m, { currentParentScope: fieldScopeId });
+      }
+
+      return Collect.makeExpr(cc, {
+        variant: Collect.ENode.AnonStructTypeExpr,
+        structTypeDef: structId,
         sourceloc: item.sourceloc,
       })[1];
     }
@@ -3573,7 +3918,7 @@ export function CollectImmediate(
       decl.variant === "CInjectDirective" ||
       decl.variant === "ModuleImport" ||
       decl.variant === "GlobalVariableDefinition" ||
-      decl.variant === "TypeAlias" ||
+      decl.variant === "AliasDef" ||
       decl.variant === "SymbolImport"
     ) {
       collectGlobalDirective(cc, decl, {
@@ -3583,7 +3928,10 @@ export function CollectImmediate(
       const symbolId = collectSymbol(cc, decl, {
         currentParentScope: parentScope,
       });
-      parent.symbols.add(symbolId);
+      // Through the duplicate check, so a declaration colliding with a name an
+      // `import`/`from ... import` already bound in this file is reported
+      // rather than silently shadowing (or being shadowed by) it.
+      addSymbolToScope(cc, parentScope, symbolId);
     }
   }
 }
@@ -3791,6 +4139,42 @@ export function printCollectedDatatype(
       })}${type.vararg ? ", ..." : ""}) => ${printCollectedDatatype(cc, type.returnType)}${requires})`;
     }
 
+    case Collect.ENode.AnonStructTypeExpr: {
+      // Printed back out as the source that produced it, because the consumer
+      // RE-PARSES this text. That works precisely because §3.2 made the shape
+      // writable syntax: an anonymous struct's exported form is just the type
+      // the programmer wrote, and re-parsing it in the consumer produces the
+      // same shape, which interns to the same type (§3.5).
+      const struct = cc.typeDefNodes.get(type.structTypeDef);
+      assert(struct.variant === Collect.ENode.StructTypeDef);
+      const fieldScope = cc.scopeNodes.get(struct.fieldScope);
+      assert(fieldScope.variant === Collect.ENode.StructFieldScope);
+
+      const defaults = new Map(
+        struct.defaultMemberValues.map((d) => [d.name, d.value])
+      );
+      const members: string[] = [];
+      for (const symbolId of fieldScope.symbols) {
+        const member = cc.symbolNodes.get(symbolId);
+        if (member.variant !== Collect.ENode.VariableSymbol || !member.type) {
+          continue;
+        }
+        // An optional member's type already carries the `| none` the collector
+        // added, so re-emitting `?` too would double it.
+        const written = printCollectedDatatype(cc, member.type);
+        const def = defaults.get(member.name);
+        // A defaulted member's default is printed as well: two shapes with the
+        // same members but different defaults are DIFFERENT types (§3.3), so
+        // dropping it here would silently merge them across the boundary.
+        members.push(
+          `${member.name}: ${written}${
+            def === undefined ? "" : ` = ${printCollectedExpr(cc, def)}`
+          }`
+        );
+      }
+      return members.length === 0 ? "{ }" : `{ ${members.join(", ")} }`;
+    }
+
     case Collect.ENode.SymbolValueExpr:
     case Collect.ENode.TypeModifierExpr:
     case Collect.ENode.BinaryExpr:
@@ -3801,6 +4185,36 @@ export function printCollectedDatatype(
     default:
       assert(false, (type as any).variant.toString());
   }
+}
+
+/** A collected literal as source text; see the LiteralExpr case below. */
+function printCollectedLiteralValue(value: LiteralValue): string {
+  switch (value.type) {
+    case EPrimitive.str:
+    case EPrimitive.cstr:
+    case EPrimitive.ccstr:
+      return JSON.stringify(value.value);
+    case EPrimitive.bool:
+      return value.value ? "true" : "false";
+    case EPrimitive.null:
+      return "null";
+    case EPrimitive.none:
+      return "none";
+    case EPrimitive.Regex:
+      return `r"${value.pattern}"${[...value.flags].join("")}`;
+    default:
+      break;
+  }
+  if (value.type === "enum") {
+    // Unreachable from collected source, but a wrong answer here would be a
+    // silently mis-exported default rather than a visible failure.
+    throw new InternalError(
+      "an enum literal cannot appear in a collected expression"
+    );
+  }
+  // Every remaining primitive is numeric, and a bare number re-parses as
+  // whatever the member's declared type says.
+  return `${value.value}`;
 }
 
 export const printCollectedExpr = (
@@ -3819,8 +4233,17 @@ export const printCollectedExpr = (
     }
 
     case Collect.ENode.LiteralExpr: {
-      return "literal";
-      // return Semantic.serializeLiteralValue(cc, expr.literal);
+      // Used to be the literal string "literal", which was harmless while
+      // nothing re-parsed the output. An anonymous struct's DEFAULT is part of
+      // its identity -- two shapes with the same members and different defaults
+      // are different types (§3.3) -- so an exported shape has to carry its
+      // defaults as real source, and `verbose: bool = literal` does not parse.
+      //
+      // Semantic.serializeLiteralValue needs an elaborated context this side
+      // does not have; it is not needed either, because a literal at collection
+      // time is always a primitive. Enum members are member accesses here, not
+      // literals, and only become literal values after elaboration.
+      return printCollectedLiteralValue(expr.literal);
     }
 
     case Collect.ENode.FStringExpr: {
@@ -4225,7 +4648,7 @@ export const printCollectedSymbol = (
           break;
         }
 
-        case Collect.ENode.TypeAliasDef: {
+        case Collect.ENode.AliasDef: {
           print(
             `type ${typedef.name} = ${printCollectedDatatype(cc, typedef.target)};`
           );

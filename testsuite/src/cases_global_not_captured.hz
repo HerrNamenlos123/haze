@@ -1,0 +1,180 @@
+// ============================================================================
+// REGRESSION TESTS — a global variable is never a closure capture.
+//
+// A closure captures the LOCALS of the scopes it is written inside, because
+// those live in a stack frame that is gone by the time the closure runs. A
+// global has no such frame: it is one storage location for the whole program,
+// addressable by name from any function, so a lambda that mentions one must
+// read and write THAT location — exactly as the enclosing function does.
+//
+// The compiler used to decide "this is a capture" purely from "the name lookup
+// walked out through a lambda scope on its way to the declaration", which is
+// just as true for a global as for a local. Two things followed, both pinned
+// down below:
+//
+//   * a global merely READ by a lambda was copied into the lambda's env when
+//     the lambda was created, so the lambda saw a snapshot; a later write from
+//     outside was invisible to it, and warned H7190 into the bargain;
+//   * a global ASSIGNED by a lambda was rejected outright with H7189, whose
+//     advice ("declare it as a stack reference") cannot even be followed for a
+//     global. This is what made stdlib/codicons/src/Codicon.hzui fail to
+//     build: the .hzui @setup block becomes a lambda, and assigning a
+//     file-scope `rx.Computed<T> | none` from it is the ordinary way an SFC
+//     memoises an embedded resource.
+//
+// The rule: global storage is never captured, whatever the variable's type,
+// wherever it is declared (file scope or inside a namespace), and however
+// deeply nested the lambdas that mention it. The local rule is unchanged,
+// which the last two cases check from the other side so that a fix here
+// cannot quietly become "nothing is captured any more".
+// ============================================================================
+
+namespace cases_global_not_captured {
+
+    export fn register(s: mut testsuite.Suite) {
+
+        s.run(
+            "globals are read and written through, not captured, by closures",
+            """
+struct Point { x: int; y: int; }
+ref struct Node { v: int; }
+
+let counter: int = 0;
+let label: str = "start";
+let point: Point = Point { x: 1, y: 2 };
+let node: ref Node | none = none;
+let cell: rx.Computed<int> | none = none;
+
+namespace ns {
+    export let nsCounter: int = 0;
+}
+
+// ── 1. a lambda reads through the global; it does not snapshot it ──────────
+fn t1() {
+    counter = 0;
+    let read = () => { return counter; };
+    counter = 41;
+    let first = read();
+    counter = 42;
+    fmt.println(f"1: {first} {read()}");
+}
+
+// ── 2. a lambda assigns the global itself, and the outside sees it ─────────
+fn t2() {
+    counter = 0;
+    let inc = () => { counter = counter + 1; };
+    inc();
+    inc();
+    inc();
+    fmt.println(f"2: {counter}");
+}
+
+// ── 3. the type is irrelevant: str, value struct, optional ref, reactive ───
+//
+// `cell` is the Codicon.hzui shape verbatim: a file-scope
+// `rx.Computed<T> | none` filled in from inside a closure.
+fn t3() {
+    label = "start";
+    point = Point { x: 1, y: 2 };
+    node = none;
+    cell = none;
+    let write = () => {
+        label = "written";
+        point.x = 10;
+        node = Node { v: 7 };
+        cell = rx.computed(() => { return 9; });
+    };
+    write();
+    assert(node);
+    assert(cell);
+    let c: int = cell;
+    fmt.println(f"3: {label} {point.x} {point.y} {node.v} {c}");
+}
+
+// ── 4. nesting is irrelevant: three lambdas deep is still the one global ───
+fn t4() {
+    counter = 0;
+    let outer = () => {
+        counter = counter + 1;
+        let middle = () => {
+            counter = counter + 10;
+            let inner = () => { counter = counter + 100; };
+            inner();
+        };
+        middle();
+    };
+    outer();
+    fmt.println(f"4: {counter}");
+}
+
+// ── 5. a lambda that outlives its birthplace still means the one global ────
+fn makeIncrementer(): () => none {
+    return () => { counter = counter + 1; };
+}
+fn t5() {
+    counter = 0;
+    let f = makeIncrementer();
+    counter = 100;      // must be visible to a closure built before it
+    f();
+    fmt.println(f"5: {counter}");
+}
+
+// ── 6. a namespaced global is a global too ────────────────────────────────
+fn t6() {
+    ns.nsCounter = 0;
+    let f = () => { ns.nsCounter = ns.nsCounter + 5; };
+    f();
+    fmt.println(f"6: {ns.nsCounter}");
+}
+
+fn main(): int {
+    t1(); t2(); t3(); t4(); t5(); t6();
+    return 0;
+}
+""",
+            """
+1: 41 42
+2: 3
+3: written 10 2 7 9
+4: 111
+5: 101
+6: 5
+""");
+
+        // Warning side of the same rule, and the one case that discriminates
+        // the two storage kinds in a single compile: both a global and a local
+        // are read by a closure and then written from outside it. Only the
+        // LOCAL leaves a stale copy behind, so exactly one H7190 may appear —
+        // two means globals are still being copied into the env.
+        s.compileOkWithChecks(
+            "writing a global after a closure read it is not a stale-copy warning",
+            """
+let g: int = 0;
+
+fn main(): int {
+    let local = 0;
+    let readGlobal = () => { return g; };
+    let readLocal = () => { return local; };
+    g = 1;          // no warning: the closure reads the global itself
+    local = 2;      // warns: the closure holds a copy made at line 6
+    return readGlobal() + readLocal();
+}
+""",
+            [testsuite.exactCount(errorcodes.Code.WriteAfterByValueCapture, 1)]);
+
+        // The local rule, unchanged: a by-value capture is a copy, so writing
+        // it from inside the closure is still an error. A fix that made this
+        // compile would have thrown out the rule instead of scoping it.
+        s.compileFails(
+            "writing to a by-value captured local inside a closure is still rejected",
+            """
+fn main(): int {
+    let count = 0;
+    let f = () => { count = count + 1; };
+    f();
+    return count;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.WriteToByValueCapture)]);
+    }
+}

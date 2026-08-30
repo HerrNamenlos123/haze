@@ -73,7 +73,8 @@ import {
   type ASTSymbolValueExpr,
   type ASTTaggedUnionTypeExpr,
   type ASTTernaryExpr,
-  type ASTTypeAlias,
+  type ASTAliasDef,
+  type ASTAnonStructType,
   type ASTTypeOfExpr,
   type ASTTypeValueExpr,
   type ASTUnaryExpr,
@@ -183,6 +184,9 @@ import {
   type TopLevelDeclarationsContext,
   type TripleFStringContext,
   type TripleStringConstantContext,
+  type AnonStructMemberContext,
+  type AnonStructTypeContext,
+  type StructMemberInferredContext,
   type TypeAliasDirectiveContext,
   type TypeAliasStatementContext,
   type TypeExprContext,
@@ -223,6 +227,14 @@ type IfStatementCondition =
 export namespace Parser {
   class HazeErrorListener extends BaseErrorListener {
     filename: string;
+    // The parser keeps its own `numberOfSyntaxErrors`, but the *lexer* does
+    // not: a character no lexer rule matches was reported here and then
+    // silently dropped, and the parse went on to "succeed" over a token stream
+    // with a hole in it. `stdlib/hzui/src/hzui.hz` uses `^`, which is in
+    // neither grammar, and ANTLR accepted the file anyway -- while the native
+    // parser correctly rejected it. Counting lexer errors here is what makes
+    // the two agree, and what makes ANTLR usable as an oracle at all (§8.3).
+    errors = 0;
 
     constructor(filename: string) {
       super();
@@ -237,6 +249,7 @@ export namespace Parser {
       msg: string,
       _e: any
     ) {
+      this.errors++;
       printErrorMessage(
         msg,
         { filename: this.filename, start: { line: line, column: column } },
@@ -267,7 +280,7 @@ export namespace Parser {
     parser.addParseListener(listener);
 
     parser.prog();
-    if (parser.numberOfSyntaxErrors !== 0) {
+    if (parser.numberOfSyntaxErrors !== 0 || errorListener.errors !== 0) {
       throw new SyntaxError();
     }
   }
@@ -291,8 +304,9 @@ export namespace Parser {
    *   native  the hand-written parser in compiler/haze-parser (much faster)
    *   assert  both, requiring the results to be identical
    *
-   * The native parser falls back to ANTLR if its binary is unavailable, so a
-   * missing or unbuildable parser degrades performance rather than the build.
+   * `antlr` is only ever reached by an explicit `--parser antlr`: an
+   * unavailable native parser is a hard error rather than a silent, slower and
+   * differently-behaving fallback (see nativeParserAvailable).
    */
   export function parseTextToAST(
     config: ModuleConfig,
@@ -301,9 +315,10 @@ export namespace Parser {
   ) {
     const mode = getParserMode();
 
-    if (mode === "antlr" || !nativeParserAvailable()) {
+    if (mode === "antlr") {
       return parseWithANTLR(config, text, filename);
     }
+    nativeParserAvailable();
 
     if (mode === "native") {
       return parseTextNativeSync(getParserRepoRoot(), text, filename);
@@ -334,10 +349,10 @@ export namespace Parser {
   ): Promise<ASTRoot> {
     const mode = getParserMode();
 
-    if (mode === "antlr" || !nativeParserAvailable()) {
-      console.warn("Native parser not available, falling back to ANTLR parser");
+    if (mode === "antlr") {
       return parseWithANTLR(config, text, filename);
     }
+    nativeParserAvailable();
 
     if (mode === "native") {
       return await parseTextNativeAsync(text, filename);
@@ -467,6 +482,7 @@ class ASTBuilder extends HazeParserListener {
       | GlobalVariableDefinitionContext
       | VariableCreationStatementRuleContext
       | StructMemberContext
+      | StructMemberInferredContext
   ): EVariableMutability {
     if (!ctx.variableMutabilitySpecifier) {
       return EVariableMutability.Default;
@@ -969,6 +985,16 @@ class ASTBuilder extends HazeParserListener {
         literal: produced[0] as LiteralValue,
         sourceloc: this.loc(ctx),
       } satisfies ASTLiteralExpr);
+      return;
+    }
+
+    if (ctx.anonStructType()) {
+      if (produced.length !== 1) {
+        throw new InternalError(
+          "TypeExprPrimary anonStructType stack mismatch"
+        );
+      }
+      this.stack.push(produced[0]);
       return;
     }
 
@@ -1555,6 +1581,76 @@ class ASTBuilder extends HazeParserListener {
       datatype: datatype,
       expr: expr,
     } satisfies ASTGlobalVariableDefinition);
+  };
+
+  /**
+   * `name = <default>` — a named struct member whose type comes from its
+   * default. SymbolCollection turns the missing type into `typeof(<default>)`.
+   */
+  exitStructMemberInferred = (ctx: StructMemberInferredContext) => {
+    const expectedChildren = (ctx.metaAnnotation() ? 1 : 0) + 1;
+    const start = this.stack.length - expectedChildren;
+    const produced = this.stack.splice(start);
+
+    let i = 0;
+    let annotations: ASTMetaAnnotationItem[] = [];
+    if (ctx.metaAnnotation()) {
+      annotations = produced[i++] as ASTMetaAnnotationItem[];
+    }
+    const defaultValue = produced[i++] as ASTExpr;
+
+    if (i !== produced.length) {
+      throw new InternalError("StructMemberInferred stack mismatch");
+    }
+
+    this.stack.push({
+      variant: "StructMember",
+      name: ctx.TYPE()?.getText() ?? ctx.id()!.getText(),
+      type: null,
+      annotations: annotations,
+      mutability: ctx.variableMutabilitySpecifier()
+        ? this.mutability(ctx)
+        : EVariableMutability.Default,
+      optional: false,
+      defaultValue: defaultValue,
+      sourceloc: this.loc(ctx),
+    } satisfies ASTStructMemberDefinition);
+  };
+
+  exitAnonStructMember = (ctx: AnonStructMemberContext) => {
+    const expectedChildren = (ctx.typeExpr() ? 1 : 0) + (ctx.expr() ? 1 : 0);
+    const start = this.stack.length - expectedChildren;
+    const produced = this.stack.splice(start);
+
+    let i = 0;
+    const type = ctx.typeExpr() ? (produced[i++] as ASTExpr) : null;
+    const defaultValue = ctx.expr() ? (produced[i++] as ASTExpr) : null;
+
+    if (i !== produced.length) {
+      throw new InternalError("AnonStructMember stack mismatch");
+    }
+
+    this.stack.push({
+      variant: "StructMember",
+      name: ctx._name!.getText(),
+      type: type,
+      annotations: [],
+      mutability: EVariableMutability.Default,
+      optional: Boolean(ctx.QUESTIONMARK()),
+      defaultValue: defaultValue,
+      sourceloc: this.loc(ctx),
+    } satisfies ASTStructMemberDefinition);
+  };
+
+  exitAnonStructType = (ctx: AnonStructTypeContext) => {
+    const start = this.stack.length - ctx.anonStructMember().length;
+    const produced = this.stack.splice(start);
+
+    this.stack.push({
+      variant: "AnonStructType",
+      members: produced as ASTStructMemberDefinition[],
+      sourceloc: this.loc(ctx),
+    } satisfies ASTAnonStructType);
   };
 
   exitStructMember = (ctx: StructMemberContext) => {
@@ -3168,7 +3264,9 @@ class ASTBuilder extends HazeParserListener {
       .map((g) => g.getText());
 
     this.stack.push({
-      variant: "TypeAlias",
+      variant: "AliasDef",
+      // One rule, two keywords: `type` is `alias` plus the datatype check.
+      typeOnly: ctx._kw?.type === HazeLexer.TYPE,
       datatype: datatype,
       export: Boolean(ctx._export_),
       extern: this.exlang(ctx),
@@ -3180,7 +3278,7 @@ class ASTBuilder extends HazeParserListener {
       name: ctx._name.getText(),
       annotations: annotations,
       sourceloc: this.loc(ctx),
-    } satisfies ASTTypeAlias);
+    } satisfies ASTAliasDef);
   };
 
   exitTypeAliasStatement = (ctx: TypeAliasStatementContext) => {
@@ -3204,9 +3302,24 @@ class ASTBuilder extends HazeParserListener {
 
     const value = produced[0];
 
+    // A spread produces a SpreadExpr node; unwrap it and record the flag, so
+    // every consumer sees a plain element with `spread` set rather than having
+    // to know about a wrapper.
+    if (ctx.spreadExpr()) {
+      const spread = value as ASTSpreadExpr;
+      this.stack.push({
+        key: null,
+        value: spread.expr,
+        spread: true,
+        sourceloc: this.loc(ctx),
+      } satisfies ASTAggregateLiteralElement);
+      return;
+    }
+
     this.stack.push({
       key: ctx._key?.getText() ?? null,
       value: value,
+      spread: false,
       sourceloc: this.loc(ctx),
     } satisfies ASTAggregateLiteralElement);
   };

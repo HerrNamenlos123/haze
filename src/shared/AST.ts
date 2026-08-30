@@ -406,8 +406,20 @@ export type ASTWhileStatement = {
   sourceloc: SourceLoc;
 };
 
-export type ASTTypeAlias = {
-  variant: "TypeAlias";
+/**
+ * `type Foo = Bar;` and `alias foo = m.bar;` -- one node, two keywords.
+ *
+ * `alias` is the general symbol alias: its target may be a datatype, a
+ * namespace, a function overload group, a global variable or an enum member.
+ * `type` is `alias` plus one check -- that the target resolves to a datatype --
+ * and `typeOnly` is what records which keyword was written so that check can be
+ * made. Past that point the two are indistinguishable and produce byte-identical
+ * output (§1.1 of R&D/Aliases, Anonymous Structs and Spreading.md).
+ */
+export type ASTAliasDef = {
+  variant: "AliasDef";
+  /** Written as `type` rather than `alias`: the target must be a datatype. */
+  typeOnly: boolean;
   name: string;
   datatype: ASTExpr;
   generics: {
@@ -432,7 +444,7 @@ export type ASTStatement =
   | ASTContinueStatement
   | ASTVariableDefinitionStatement
   | ASTIfStatement
-  | ASTTypeAlias
+  | ASTAliasDef
   | ASTWhileStatement;
 
 export type ASTScope = {
@@ -536,6 +548,14 @@ export type ASTExprComptimeMemberAccess = {
 export type ASTAggregateLiteralElement = {
   key: string | null;
   value: ASTExpr;
+  /**
+   * `...bar` -- spread every member of `bar`'s type into the literal (§6).
+   *
+   * An explicit flag rather than inferred from a null key, because a null key
+   * ALREADY means "positional" (an array literal element), and the two are
+   * different things.
+   */
+  spread: boolean;
   sourceloc: SourceLoc;
 };
 
@@ -769,6 +789,7 @@ export type ASTExpr =
   | ASTBinaryUnionTypeExpr
   | ASTTaggedUnionTypeExpr
   | ASTTypeValueExpr
+  | ASTAnonStructType
   | ASTTypeOfExpr;
 
 export type ASTLambda = {
@@ -801,10 +822,33 @@ export type ASTMetaAnnotationItem = {
   value: LiteralValue | null;
 };
 
+/**
+ * A structurally-typed struct written inline in a type position:
+ * `fn draw(p: { x: real, y: real })`.
+ *
+ * Structural, not nominal: two of these with the same members are the SAME
+ * type, everywhere, across modules — unlike `struct Foo { }`, where two
+ * identical declarations are two types. Value only, and deliberately without
+ * methods, operators or constructors: if every structurally identical use is
+ * one type, "which methods apply here" has no answer. That restriction is
+ * exactly why `operator as` (§4) has to exist.
+ */
+export type ASTAnonStructType = {
+  variant: "AnonStructType";
+  members: ASTStructMemberDefinition[];
+  sourceloc: SourceLoc;
+};
+
 export type ASTStructMemberDefinition = {
   variant: "StructMember";
   name: string;
-  type: ASTExpr;
+  /**
+   * null when the member omitted its type and takes it from its default
+   * (`test = true`). Anonymous structs are how named structs declare interfaces
+   * to each other, so `call_foo(args: { id: int, test = true })` is a primary
+   * case rather than a convenience.
+   */
+  type: ASTExpr | null;
   defaultValue: ASTExpr | null;
   optional: boolean;
   mutability: EVariableMutability;
@@ -862,7 +906,7 @@ export type ASTTypeDef =
   | ASTStructDefinition
   | ASTNamespaceDefinition
   | ASTModuleNamespaceDefinition
-  | ASTTypeAlias
+  | ASTAliasDef
   | ASTEnumDefinition;
 
 export type ASTNamespaceDefinition = {
@@ -907,7 +951,7 @@ export type ASTSymbolDefinition =
   | ASTTypeDef
   | ASTNamespaceDefinition
   | ASTModuleNamespaceDefinition
-  | ASTTypeAlias
+  | ASTAliasDef
   | ASTGlobalVariableDefinition;
 
 export type ASTTopLevelDeclaration =

@@ -260,10 +260,21 @@ export enum HazeErrorCode {
   ImmediateOnlyOnParameters = 7194, // 'immediate' is only allowed on a parameter's type
   ImmediateOnNonCallable = 7195, // 'immediate' requires a callable (or optional callable) parameter
   ImmediateParameterEscapes = 7196, // An 'immediate' parameter may only be called, forwarded to another 'immediate' parameter, or captured by an in-place closure
+  AliasTargetIsNotADatatype = 7197, // '' is declared with 'type', but its target is not a datatype. Use 'alias' instead.
+  AliasCycleWithoutIndirection = 7198, // Alias '' is defined in terms of itself, through a chain of aliases with no type in it
+  AliasTargetIsNotAliasable = 7199, // '' cannot be aliased: only types, namespaces, functions, globals and enum members can
+  SymbolIsNotAValue = 7200, // '' cannot be used as a value here
+  ImportedSymbolNotFound = 7201, // Module '' has no exported symbol named ''
+  AmbiguousLiteralCandidates = 7202, // This literal matches more than one candidate
+  NoCandidateForLiteral = 7203, // This literal matches no candidate
+  AmbiguousCastOperator = 7204, // '' declares more than one 'operator as' producing
+  SpreadOfNonStruct = 7205, // '' is not a struct and cannot be spread
+  SpreadOfOpaqueStruct = 7206, // '' is opaque and exposes no member set to spread
   ThisDistroPackageManagerNotSupportedYetPlease = 8001, // This Distro/Package Manager is not supported yet, please report
   DeadCodeDetectedAndStripped = 9001, // Dead code detected and stripped
   EmbeddedFileSizeMBExceeds50MB = 9002, // Embedded file size ( MB) exceeds 50 MB:
   ThisMutModifierWillBeOverruledByConst = 9003, // This 'mut' modifier will be overruled by the 'const' declaration and have no effect
   PerformanceBottleneck = 9004, // Slow operation '' took over '' ms
   NullishCoalesceLeftNeverNullish = 9005, // The left operand of '??' can never be null or none; the right operand is never used
+  MemberOverwrittenHasNoEffect = 9006, // A member is overwritten later in the literal and has no effect
 }

@@ -16,7 +16,7 @@ import {
   EDatatypeMutability,
   EExternLanguage,
   type EIncrOperation,
-  type EOverloadedOperator,
+  EOverloadedOperator,
   type EUnaryOperation,
   type EVariableMutability,
   UnaryOperationToString,
@@ -355,6 +355,14 @@ export namespace Semantic {
 
   export type StructDatatypeDef = {
     variant: ENode.StructDatatype;
+    /**
+     * Written inline as `{ x: int, y: int }` rather than declared.
+     *
+     * `name` still holds something -- a content-derived identifier, so the same
+     * shape mangles identically in every module -- but that name is for C, not
+     * for the reader: an anonymous struct prints as its members (§3.1).
+     */
+    anonymous: boolean;
     name: string;
     noemit: boolean;
     generics: ExprId[];
@@ -498,6 +506,21 @@ export namespace Semantic {
     targetType: Semantic.TypeUseId;
     concrete: boolean; // For consistency, always true
     annotations: ASTMetaAnnotationItem[];
+    /**
+     * Which unrolled `for comptime` iteration produced this alias (§1.6).
+     *
+     * One `type Elem = typeof(v);` inside an unrolled loop is genuinely several
+     * different types, one per iteration -- and each emits its own C typedef.
+     * They all carry the same written name, so without something to tell them
+     * apart the C compiler sees `typedef long Elem;` followed by `typedef str
+     * Elem;` and rejects the redefinition.
+     *
+     * Deliberately part of the MANGLED name only, never the pretty one:
+     * diagnostics say `Elem`, exactly as the programmer wrote it. 0 for every
+     * alias outside an unrolling, which is the overwhelming majority, and which
+     * mangles identically to how it always did.
+     */
+    unrollIndex: number;
   };
 
   export type TypeDef =
@@ -607,10 +630,45 @@ export namespace Semantic {
     stackEnv?: boolean;
   };
 
+  /**
+   * One member of a struct literal after §6.1's spread resolution.
+   *
+   * `value` is either still a collected expression (a member the programmer
+   * wrote, elaborated later against the member's own type so inference works)
+   * or an already-elaborated one (a member a spread contributed, which is a
+   * member access on the spread source and has no target to infer against).
+   */
+  export type ResolvedLiteralElement = {
+    key: string | null;
+    value:
+      | { kind: "collect"; id: Collect.ExprId }
+      | { kind: "semantic"; id: Semantic.ExprId };
+    /** Written out by the programmer, as opposed to contributed by a spread. */
+    written: boolean;
+    sourceloc: SourceLoc;
+  };
+
   export type SymbolValueExpr = BaseExpr & {
     variant: ENode.SymbolValueExpr;
     instanceIds: InstanceId[];
     symbol: SymbolId;
+    /**
+     * The alias this reference was reached through, if any (§1.4).
+     *
+     * A type-valued alias keeps its identity in the type itself -- a
+     * TypeAliasDatatype prints as the alias and resolves to the target. A
+     * symbol-valued one cannot: it elaborates to a SymbolValueExpr pointing at
+     * a SHARED elaborated FunctionSymbol, and the same function may be reached
+     * by several aliases and by its real name. So the alias name lives on the
+     * expression instead.
+     *
+     * Read only by diagnostic construction and serializeExpr; `Lower` and
+     * `Codegen` ignore it entirely. A wrapping AliasExpr node would be more
+     * principled, but it forces every expression `switch` in an 18,000-line
+     * file to learn to unwrap it, and one missed site becomes a wrong-code bug
+     * rather than a wrong-message bug.
+     */
+    aliasedVia?: string;
   };
 
   export type IntrinsicValueExpr = BaseExpr & {
@@ -1057,14 +1115,29 @@ export namespace Semantic {
   };
   export type EnumDefCache = Map<Collect.TypeDefId, EnumDef[]>;
 
-  export type TypeAliasDef = {
+  export type AliasDef = {
     substitutionContext: Semantic.ElaborationContext;
     canonicalizedGenerics: string[];
     parentSymbolId: Semantic.SymbolId | null;
+    /**
+     * Which unrolled `for comptime` iteration this entry belongs to (§1.6).
+     *
+     * The other three key parts are all identical across the iterations of one
+     * unrolled loop -- the same collected AST node, no generics, the same
+     * enclosing function -- so without this, iteration 2 hits iteration 1's
+     * entry and gets back a type resolved under iteration 1's substitution.
+     * When the iterations' types happen to be compatible that is a silent
+     * miscompile rather than an error, which is why this ranks above the other
+     * alias bugs.
+     *
+     * 0 for every alias outside a comptime unrolling, so ordinary aliases cache
+     * exactly as before.
+     */
+    unrollGeneration: number;
     result: Semantic.TypeDefId;
     resultAsTypeDefSymbol: Semantic.SymbolId;
   };
-  export type TypeAliasDefCache = Map<Collect.TypeDefId, TypeAliasDef[]>;
+  export type AliasDefCache = Map<Collect.TypeDefId, AliasDef[]>;
 
   export type StructDef = {
     canonicalizedGenerics: string[];
@@ -1108,6 +1181,12 @@ export namespace Semantic {
 
     elaboratedStructDatatypes: StructDefCache;
     elaboratedFuncdefSymbols: FuncDefCache;
+    /**
+     * Anonymous struct shapes, by canonical structural key (§3.3). One entry
+     * per SHAPE, not per written occurrence: `{ x: int }` written in five
+     * places is one type here.
+     */
+    internedAnonymousStructs: Map<string, Semantic.TypeDefId>;
     elaboratedUntaggedUnions: Map<string, Semantic.TypeDefId>;
     elaboratedTaggedUnions: Map<string, Semantic.TypeDefId>;
     elaboratedNamespaceSymbols: {
@@ -1116,7 +1195,7 @@ export namespace Semantic {
       result: Semantic.TypeDefId;
     }[];
     elaboratedEnumSymbols: EnumDefCache;
-    elaboratedTypeAliasSymbols: TypeAliasDefCache;
+    elaboratedTypeAliasSymbols: AliasDefCache;
     elaboratedTypeDefSymbols: SymbolId[];
 
     // Those are GlobalVariableDefinitionSymbols
@@ -1197,7 +1276,17 @@ export namespace Semantic {
   ) {
     const expr = sr.exprNodes.get(exprId);
     if (expr.variant === Semantic.ENode.DatatypeAsValueExpr) {
-      return expr.type.toString();
+      // Through the alias, not at it. This string is the key the struct and
+      // alias instantiation caches dedupe on, so an alias left unresolved
+      // here makes `Box<Alias>` and `Box<Real>` two unrelated instantiations
+      // of one generic -- H4001 between a type and itself, with the two
+      // spellings printed side by side. Aliases are transparent "everywhere
+      // types are compared" (R&D/Aliases, Anonymous Structs and
+      // Spreading.md §0.1) and to generic deduction "in both directions"
+      // (§1.3); this is one of the places that has to hold it up.
+      // resolveAlias re-applies whatever `ref`/`mut` the use added on top,
+      // so `Box<ref Alias>` still keys apart from `Box<Alias>`.
+      return sr.e.resolveAlias(expr.type).toString();
     }
     if (expr.variant === Semantic.ENode.LiteralExpr) {
       if (expr.literal.type === EPrimitive.null) {
@@ -1360,7 +1449,7 @@ export namespace Semantic {
               return id;
             }
           } else if (
-            typedef.variant === Collect.ENode.TypeAliasDef &&
+            typedef.variant === Collect.ENode.AliasDef &&
             typedef.name === name
           ) {
             return id;
@@ -1926,6 +2015,7 @@ export namespace Semantic {
       elaboratedLiteralTypes: [],
       elaboratedStructDatatypes: new Map(),
       elaboratedFuncdefSymbols: new Map(),
+      internedAnonymousStructs: new Map(),
       elaboratedUntaggedUnions: new Map(),
       elaboratedTaggedUnions: new Map(),
       elaboratedEnumSymbols: new Map(),
@@ -1992,6 +2082,12 @@ export namespace Semantic {
 
     sr.e = new SemanticElaborator(sr, context);
     sr.b = new SemanticBuilder(sr);
+
+    // Before anything else: an import that names a symbol the module does not
+    // have fails the build, used or not (§2.2, §D7). Running it first means the
+    // diagnostic names the import rather than surfacing later as an
+    // unresolvable name deep inside whatever happened to use it.
+    sr.e.verifySymbolImports();
 
     sr.e.topLevelScope(cc.moduleScopeId);
 
@@ -2205,7 +2301,13 @@ export namespace Semantic {
       ];
     }
 
-    let mangledSegment = type.name.length + type.name;
+    // The unroll index rides along in the mangled segment only (see
+    // TypeAliasDatatypeDef.unrollIndex): same written name, distinct C types.
+    const mangledName =
+      type.variant === Semantic.ENode.TypeAliasDatatype && type.unrollIndex > 0
+        ? `${type.name}_u${type.unrollIndex}`
+        : type.name;
+    let mangledSegment = mangledName.length + mangledName;
     if (
       type.variant === Semantic.ENode.NamespaceDatatype &&
       type.isModuleNamespace
@@ -2225,7 +2327,15 @@ export namespace Semantic {
       type.variant === Semantic.ENode.NamespaceDatatype &&
       type.isModuleNamespace;
     const current = {
-      pretty: type.name,
+      // An anonymous struct has no name a reader or a re-parsing consumer could
+      // use -- its `name` is a content-derived C identifier. It prints as its
+      // members, which is exactly the syntax that produced it, so an exported
+      // signature containing one re-parses in the consumer and interns back to
+      // the same type (§3.5).
+      pretty:
+        type.variant === Semantic.ENode.StructDatatype && type.anonymous
+          ? serializeAnonymousStruct(sr, type)
+          : type.name,
       mangled: mangledSegment,
       wasMangled: true,
       isMonomorphized: false,
@@ -2235,9 +2345,7 @@ export namespace Semantic {
       moduleName: isModNs
         ? (type as Semantic.NamespaceDatatypeDef).moduleName
         : "",
-      moduleId: isModNs
-        ? (type as Semantic.NamespaceDatatypeDef).moduleId
-        : "",
+      moduleId: isModNs ? (type as Semantic.NamespaceDatatypeDef).moduleId : "",
       moduleVersion: isModNs
         ? (type as Semantic.NamespaceDatatypeDef).moduleVersion
         : "",
@@ -2354,6 +2462,53 @@ export namespace Semantic {
     return fragments;
   }
 
+  /**
+   * `{ x: int, y: int }` -- an anonymous struct as the programmer would write
+   * it, in DECLARED member order rather than the canonical sorted order used
+   * for interning. The sort exists so two orderings are one type; showing the
+   * reader a reordered version of what they wrote would be gratuitous.
+   */
+  /**
+   * Guards against a shape that contains itself, which is legal and common:
+   * `type Node = { value: int, next: ref Node | none }`. Printing one member at
+   * a time would recurse forever, so a re-entry prints `{ ... }`.
+   */
+  const anonymousStructsBeingSerialized = new Set<Semantic.StructDatatypeDef>();
+
+  function serializeAnonymousStruct(
+    sr: Semantic.Context,
+    struct: Semantic.StructDatatypeDef
+  ): string {
+    if (anonymousStructsBeingSerialized.has(struct)) {
+      return "{ ... }";
+    }
+    anonymousStructsBeingSerialized.add(struct);
+    try {
+      return serializeAnonymousStructMembers(sr, struct);
+    } finally {
+      anonymousStructsBeingSerialized.delete(struct);
+    }
+  }
+
+  function serializeAnonymousStructMembers(
+    sr: Semantic.Context,
+    struct: Semantic.StructDatatypeDef
+  ): string {
+    const defaults = new Map(
+      struct.memberDefaultValues.map((d) => [d.memberName, d.value])
+    );
+    const members = struct.members.map((memberId) => {
+      const member = sr.symbolNodes.get(memberId);
+      assert(member.variant === Semantic.ENode.VariableSymbol);
+      assert(member.type);
+      const def = defaults.get(member.name);
+      return `${member.name}: ${serializeTypeUse(sr, member.type)}${
+        def === undefined ? "" : ` = ${serializeExpr(sr, def)}`
+      }`;
+    });
+    return members.length === 0 ? "{ }" : `{ ${members.join(", ")} }`;
+  }
+
   export function serializeTypeDef(
     sr: Semantic.Context,
     datatypeId: Semantic.TypeDefId,
@@ -2370,6 +2525,14 @@ export namespace Semantic {
 
       case Semantic.ENode.EnumDatatype:
       case Semantic.ENode.StructDatatype:
+        if (
+          datatype.variant === Semantic.ENode.StructDatatype &&
+          datatype.anonymous
+        ) {
+          // Structural, so it prints as its members. Its `name` is a
+          // content-derived C identifier and would tell the reader nothing.
+          return serializeAnonymousStruct(sr, datatype);
+        }
         if (datatype.extern === EExternLanguage.Extern_C) {
           return datatype.name;
         }
@@ -2578,6 +2741,18 @@ export namespace Semantic {
     return names.map((n) => n.pretty).join(".");
   }
 
+  /** Is this elaborated function a `fn operator as()`? See mangleSymbol. */
+  function isCastOperator(
+    sr: Semantic.Context,
+    symbol: Semantic.FunctionSymbol
+  ): boolean {
+    const original = sr.cc.symbolNodes.get(symbol.originalCollectedFunction);
+    return (
+      original.variant === Collect.ENode.FunctionSymbol &&
+      original.overloadedOperator === EOverloadedOperator.Cast
+    );
+  }
+
   export function mangleSymbol(
     sr: Semantic.Context,
     symbolId: Semantic.SymbolId
@@ -2608,6 +2783,14 @@ export namespace Semantic {
       }
       if (ftype.vararg) {
         functionParameterPart += "V";
+      }
+      // `operator as` is the one function whose RETURN type is part of its
+      // identity: it takes no parameters, so a struct's several cast operators
+      // are otherwise indistinguishable and mangle to one C name. §4.3 requires
+      // several to be declarable, distinguished by what they produce -- so what
+      // they produce has to be in the name.
+      if (isCastOperator(sr, symbol)) {
+        functionParameterPart += `_to_${mangleTypeUse(sr, ftype.returnType).name}`;
       }
     }
 
@@ -2673,6 +2856,33 @@ export namespace Semantic {
     sr: Semantic.Context,
     typeInstanceId: Semantic.TypeUseId
   ) {
+    // An alias is not a C type of its own -- it mangles as whatever it
+    // resolves to, storage and mutability stacked on by resolveAlias.
+    //
+    // Mangling it under its OWN name instead was a hard collision, not a
+    // cosmetic one: `from m import Props` puts a FILE-scoped alias in every
+    // file that writes it, each a distinct type node, all with a namespace
+    // chain of length 1 -- so each mangled to a bare `5Props`, and any
+    // structural type built on one (`() => Props` interns a callable struct)
+    // emitted `struct _HClFE_f_5Props` once PER FILE. Two files importing one
+    // name from one module produced a C translation unit that redefined a
+    // struct. Resolved, they are one name and one definition, which is also
+    // what "resolves to the target" in R&D/Aliases, Anonymous Structs and
+    // Spreading.md §0.1 means once it reaches codegen.
+    {
+      const aliasVariant = sr.typeDefNodes.get(
+        sr.typeUseNodes.get(typeInstanceId).type
+      ).variant;
+      if (aliasVariant === Semantic.ENode.TypeAliasDatatype) {
+        const resolved = sr.e.resolveAlias(typeInstanceId);
+        // A cyclic alias resolves to itself; fall through to the branch below
+        // rather than recursing forever.
+        if (resolved !== typeInstanceId) {
+          return mangleTypeUse(sr, resolved);
+        }
+      }
+    }
+
     const typeInstance = sr.typeUseNodes.get(typeInstanceId);
 
     const def = mangleTypeDef(sr, typeInstance.type);
@@ -2697,8 +2907,10 @@ export namespace Semantic {
       def.name = "s" + def.name;
       def.wasMangled = true;
     } else if (typeDefVariant === Semantic.ENode.TypeAliasDatatype) {
-      // An alias use that adds a storage class on top of the alias target
-      // (`stackref StringWriter`) is a different C type from the plain alias.
+      // Only a cyclic alias reaches here now -- everything else was resolved
+      // at the top. An alias use that adds a storage class on top of the
+      // alias target (`stackref StringWriter`) is a different C type from the
+      // plain alias.
       const aliasDef = sr.typeDefNodes.get(typeInstance.type);
       assert(aliasDef.variant === Semantic.ENode.TypeAliasDatatype);
       const targetUse = sr.typeUseNodes.get(
@@ -2970,6 +3182,12 @@ export namespace Semantic {
       case Semantic.ENode.TypeAliasDatatype: {
         assert(type.concrete);
 
+        // NOT resolved to the target here, unlike mangleTypeUse above: a
+        // typedef name cannot carry a storage class, so an alias whose target
+        // is a `ref struct` would come back without the `p` its own target
+        // type USE has -- and `typedef Match* X;` would be emitted under the
+        // plain struct's name. The alias keeps a name of its own; nothing
+        // else refers to it, because every use resolves past it.
         const names = getNamespaceChainFromDatatype(sr, typeId);
         if (names.length === 1) {
           return {
@@ -3227,6 +3445,12 @@ export namespace Semantic {
 
       case Semantic.ENode.SymbolValueExpr: {
         const symbol = sr.symbolNodes.get(expr.symbol);
+        // Report the name the programmer actually wrote. Naming the target
+        // instead sends the reader looking for a symbol their file never
+        // mentions.
+        if (expr.aliasedVia !== undefined) {
+          return expr.aliasedVia;
+        }
         if (symbol.variant === Semantic.ENode.VariableSymbol) {
           return symbol.name;
         }

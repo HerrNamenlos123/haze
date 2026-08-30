@@ -94,6 +94,39 @@ class GenericDeductionIncompleteError extends CompilerError {}
 // name from here.
 const ARRAY_BUILTIN_METHODS = new Set(["length", "insert", "remove", "pop"]);
 
+/**
+ * What an alias's target turned out to name.
+ *
+ *   symbol   a Collect symbol -- a function overload group, a global variable,
+ *            a struct, a namespace, an enum, or a generic alias
+ *   value    an expression that is a value but not a symbol, i.e. an enum
+ *            member; elaborated as an ordinary expression
+ *   type     anything else, including real type expressions like `int | none`;
+ *            the type-valued half of the elaborator handles it
+ */
+/**
+ * A stable, content-derived C identifier for an anonymous struct shape.
+ *
+ * Hashed rather than spelled out because a shape's key can be arbitrarily long
+ * and arbitrarily nested, and C identifiers cannot be. The hash is FNV-1a over
+ * the canonical key, so every module that writes the same shape derives the
+ * same name without coordinating -- which is the whole cross-module ABI story
+ * (§3.3).
+ */
+function anonymousStructCName(key: string): string {
+  let hash = 0xcbf29ce484222325n;
+  for (let i = 0; i < key.length; i++) {
+    hash ^= BigInt(key.charCodeAt(i));
+    hash = (hash * 0x100000001b3n) & 0xffffffffffffffffn;
+  }
+  return `anon_${hash.toString(36)}`;
+}
+
+type AliasTarget =
+  | { kind: "symbol"; symbolId: Collect.SymbolId; generics: Collect.ExprId[] }
+  | { kind: "value" }
+  | { kind: "type" };
+
 export class SemanticElaborator {
   currentContext: Semantic.ElaborationContext;
   // This is a stack, when a new current context is set, the old one is pushed here, then the old one
@@ -404,6 +437,27 @@ export class SemanticElaborator {
   // resolving an implicit struct-constructor conversion. While set, the conversion
   // machinery will not attempt another implicit constructor conversion.
   disallowImplicitConstructorConversion: boolean = false;
+
+  /**
+   * Set while an `operator as` conversion is being performed, so no second one
+   * can run inside it.
+   *
+   * DELIBERATELY separate from disallowImplicitConstructorConversion. §4.1's
+   * chain is "at most one user-defined conversion out, one structural bridge,
+   * one user-defined conversion in":
+   *
+   *   Vec2 --[Vec2.operator as]--> { x: int, y: int }
+   *        --[structural, §3.4  ]--> { x: int, y: int }
+   *        --[Point.constructor ]--> Point
+   *
+   * One flag for both halves would make that whole chain impossible, because
+   * resolving Point's constructor against a Vec2 needs the `as` -- while the
+   * constructor guard is already set. Two flags let the PAIR compose while
+   * neither can recur: never two `operator as` in sequence, never a constructor
+   * feeding another constructor. Without that bound, implicit conversion
+   * becomes a graph search and the language becomes C++.
+   */
+  disallowCastOperatorConversion: boolean = false;
 
   constructor(
     public sr: Semantic.Context,
@@ -2512,6 +2566,128 @@ export class SemanticElaborator {
     );
   }
 
+  /**
+   * Are these two signatures both `operator as` producing different types?
+   *
+   * The only case in the language where a return type distinguishes two
+   * otherwise identical signatures (§4.3).
+   */
+  private differByCastOperatorTarget(
+    a: Semantic.FunctionSignature,
+    b: Semantic.FunctionSignature
+  ): boolean {
+    const isCast = (sig: Semantic.FunctionSignature): boolean => {
+      const original = this.sr.cc.symbolNodes.get(sig.originalFunction);
+      return (
+        original.variant === Collect.ENode.FunctionSymbol &&
+        original.overloadedOperator === EOverloadedOperator.Cast
+      );
+    };
+    if (!(isCast(a) && isCast(b))) {
+      return false;
+    }
+    const returnOf = (sig: Semantic.FunctionSignature) =>
+      sig.returnType === null
+        ? null
+        : this.sr.typeUseNodes.get(this.resolveAlias(sig.returnType)).type;
+    const ra = returnOf(a);
+    const rb = returnOf(b);
+    return ra !== null && rb !== null && ra !== rb;
+  }
+
+  /**
+   * The `operator as` of `structDef` whose return type is `targetTypeUseId`
+   * (§4).
+   *
+   * An anonymous struct deliberately has no methods, so a named type cannot
+   * become one -- and that is what makes `operator as` necessary rather than
+   * merely convenient. `Vec2` keeps its identity and its methods, and gains
+   * structural BEHAVIOUR by declaring a conversion out; a peer type declaring a
+   * constructor taking the same shape completes the bridge. A value is nominal
+   * while it is spelled `Vec2`, nominal while spelled `Point`, and structural
+   * in between.
+   *
+   * Selection is by target type, never by ranking: a struct may declare several
+   * `operator as` overloads distinguished by their return type, and two that
+   * both fit is an error rather than a choice.
+   */
+  findCastOperator(
+    structDef: Semantic.StructDatatypeDef,
+    targetTypeUseId: Semantic.TypeUseId,
+    sourceloc: SourceLoc
+  ): Semantic.SymbolId | null {
+    const wanted = this.resolveAlias(targetTypeUseId);
+    const wantedType = this.sr.typeUseNodes.get(wanted).type;
+
+    const matches: Semantic.SymbolId[] = [];
+    for (const methodId of structDef.methods) {
+      const method = this.sr.symbolNodes.get(methodId);
+      if (
+        method.variant !== Semantic.ENode.FunctionSymbol ||
+        method.generics.length > 0
+      ) {
+        continue;
+      }
+      const original = this.sr.cc.symbolNodes.get(
+        method.originalCollectedFunction
+      );
+      if (
+        original.variant !== Collect.ENode.FunctionSymbol ||
+        original.overloadedOperator !== EOverloadedOperator.Cast
+      ) {
+        continue;
+      }
+      const functype = this.sr.typeDefNodes.get(method.type);
+      if (functype.variant !== Semantic.ENode.FunctionDatatype) {
+        continue;
+      }
+      const returned = this.sr.typeUseNodes.get(
+        this.resolveAlias(functype.returnType)
+      );
+      if (returned.type === wantedType) {
+        matches.push(methodId);
+      }
+    }
+
+    if (matches.length > 1) {
+      throw new CompilerError(
+        `'${structDef.name}' declares more than one 'operator as' producing ${Semantic.serializeTypeUse(this.sr, targetTypeUseId)}`,
+        sourceloc,
+        HazeErrorCode.AmbiguousCastOperator
+      );
+    }
+    return matches[0] ?? null;
+  }
+
+  /**
+   * May `sourceExprId` reach `targetTypeUseId` through its own `operator as`?
+   *
+   * Bounded exactly as the constructor half is, and by the same flag, so the
+   * two compose into §4.1's chain -- at most one conversion out, one structural
+   * bridge, one conversion in -- while neither can recur. Without that bound
+   * implicit conversion becomes a graph search and the language becomes C++.
+   */
+  findCastOperatorFor(
+    sourceExprId: Semantic.ExprId,
+    targetTypeUseId: Semantic.TypeUseId,
+    sourceloc: SourceLoc
+  ): Semantic.SymbolId | null {
+    if (this.disallowCastOperatorConversion || !this.inFunction) {
+      return null;
+    }
+    const sourceUse = this.sr.typeUseNodes.get(
+      this.resolveAlias(this.sr.exprNodes.get(sourceExprId).type)
+    );
+    const sourceDef = this.sr.typeDefNodes.get(sourceUse.type);
+    if (
+      sourceDef.variant !== Semantic.ENode.StructDatatype ||
+      sourceDef.anonymous
+    ) {
+      return null;
+    }
+    return this.findCastOperator(sourceDef, targetTypeUseId, sourceloc);
+  }
+
   // Determines whether `sourceExprId` can be implicitly converted to the struct type
   // `targetTypeUseId` by calling one of the struct's constructors with the single value
   // (taking default parameter values into account). Generic constructors do not count.
@@ -2601,6 +2777,80 @@ export class SemanticElaborator {
   // Build the actual constructor call that materializes an implicit struct-constructor
   // conversion of `sourceExprId` to `targetTypeUseId`, e.g. rewriting `let a: Color = "#000"`
   // into `let a: Color = Color("#000")`.
+  /**
+   * Materialise `operator as` as what it is: an ordinary method call on the
+   * source, whose result is then reconciled with the requested target type.
+   *
+   * The chain guard is set for the duration, so a conversion needed INSIDE the
+   * operator's own call cannot reach for another user-defined conversion --
+   * never two `operator as` in sequence (§4.1).
+   */
+  buildCastOperatorConversion(
+    sourceExprId: Semantic.ExprId,
+    castOperatorId: Semantic.SymbolId,
+    targetTypeUseId: Semantic.TypeUseId,
+    sourceloc: SourceLoc
+  ): Semantic.ExprId {
+    const prev = this.disallowCastOperatorConversion;
+    this.disallowCastOperatorConversion = true;
+    try {
+      const method = this.sr.symbolNodes.get(castOperatorId);
+      assert(method.variant === Semantic.ENode.FunctionSymbol);
+      const functype = this.sr.typeDefNodes.get(method.type);
+      assert(functype.variant === Semantic.ENode.FunctionDatatype);
+
+      const sourceUse = this.sr.typeUseNodes.get(
+        this.resolveAlias(this.sr.exprNodes.get(sourceExprId).type)
+      );
+      const receiverStorage =
+        method.methodReceiverStorage === EStorageClass.Stackref
+          ? EStorageClass.Stackref
+          : EStorageClass.Ref;
+
+      const [, calleeId] = this.sr.b.callableExpr(
+        castOperatorId,
+        {
+          type: "method",
+          thisExprType: makeTypeUse(
+            this.sr,
+            sourceUse.type,
+            EDatatypeMutability.Mut,
+            receiverStorage,
+            sourceloc
+          )[1],
+        },
+        { type: "method", thisExpr: sourceExprId },
+        sourceloc
+      );
+
+      const callId = this.sr.b.addExpr(this.sr, {
+        variant: Semantic.ENode.ExprCallExpr,
+        instanceIds: [Semantic.makeInstanceId(this.sr)],
+        calledExpr: calleeId,
+        arguments: [],
+        type: functype.returnType,
+        sourceloc: sourceloc,
+        isTemporary: true,
+        flow: Semantic.FlowResult.fallthrough(),
+        writes: Semantic.WriteResult.empty(),
+      })[1];
+
+      // The operator's declared return type may differ from the requested
+      // target in mutability or storage; reconcile with the ordinary rules.
+      return Conversion.MakeConversionOrThrow(
+        this.sr,
+        callId,
+        targetTypeUseId,
+        this.currentContext.constraints,
+        sourceloc,
+        Conversion.Mode.Implicit,
+        false
+      );
+    } finally {
+      this.disallowCastOperatorConversion = prev;
+    }
+  }
+
   buildImplicitConstructorConversion(
     sourceExprId: Semantic.ExprId,
     targetTypeUseId: Semantic.TypeUseId,
@@ -3565,6 +3815,143 @@ export class SemanticElaborator {
     return [result, resultId];
   }
 
+  /**
+   * Check every `from m import a;` names something `m` actually has (§2.2).
+   *
+   * An alias is only a name bound to a member access, so a bad import creates
+   * a perfectly valid alias that simply fails when used -- and an unused one
+   * would never be noticed at all. §D7 makes this eager: the build fails even
+   * if nothing touches the import, and the message names both the symbol and
+   * the module rather than reporting an unresolvable name somewhere else.
+   */
+  verifySymbolImports(): void {
+    for (const pending of this.sr.cc.symbolImportsToVerify) {
+      // A name the importing module also declares itself. The two land in
+      // different scopes -- a `from` import goes into file scope, while a
+      // top-level declaration goes into the module's namespace, which is
+      // *inside* it -- so the declaration silently wins and the import is dead.
+      // Different scopes, but the same problem §1.5 is about: one name, two
+      // bindings, and nothing said so.
+      const shadowing = this.findInOwnModuleNamespace(pending.boundName);
+      if (shadowing !== null) {
+        throw new CompilerError(
+          `Symbol '${pending.boundName}' was already declared in this scope. Previous definition: ${
+            (shadowing.sourceloc && formatSourceLoc(shadowing.sourceloc)) || ""
+          }`,
+          pending.sourceloc,
+          HazeErrorCode.SymbolWasAlreadyDeclaredThisScopePreviousDefinition
+        );
+      }
+
+      if (this.moduleHasImportedSymbol(pending.aliasTypeDef)) {
+        continue;
+      }
+      throw new CompilerError(
+        `Module '${pending.moduleName}' has no exported symbol named '${pending.symbolName}'`,
+        pending.sourceloc,
+        HazeErrorCode.ImportedSymbolNotFound
+      );
+    }
+  }
+
+  /**
+   * Does the imported module actually have the member this import names?
+   *
+   * ONE HOP, deliberately, and not `resolveAliasTarget`. That walker answers a
+   * different question -- which half of the elaborator an alias runs through --
+   * and folds every outcome it cannot hand to the symbol half into
+   * `{kind: "type"}`: an unresolvable name and a perfectly good
+   * `type Either = Point | Tag;` are the same value to it, because both simply
+   * mean "elaborate this as a type". Reading that back as "no such symbol"
+   * rejected every import of an alias to a type EXPRESSION -- a union, an
+   * array, a callable -- and, for an alias chain, blamed the importer for a
+   * dangling re-export inside the exporting module.
+   *
+   * What §D7 asks is narrower and has an exact answer: does `m` have a member
+   * named `a`? That is the first hop of the member access this import was
+   * desugared into (see the SymbolImport case in SymbolCollection), and
+   * nothing deeper. Whatever the member turns out to be -- a type, a union
+   * alias, an overload group, another module's re-export, or something that
+   * does not resolve two hops further along -- is somebody else's diagnostic,
+   * raised where it is used and in terms the programmer can act on.
+   */
+  private moduleHasImportedSymbol(
+    aliasTypeDefId: Collect.TypeDefId
+  ): boolean {
+    const typedef = this.sr.cc.typeDefNodes.get(aliasTypeDefId);
+    assert(typedef.variant === Collect.ENode.AliasDef);
+    const access = this.sr.cc.exprNodes.get(typedef.target);
+    assert(access.variant === Collect.ENode.MemberAccessExpr);
+
+    const scope =
+      typedef.genericScope === (-1 as Collect.ScopeId)
+        ? typedef.inScope
+        : typedef.genericScope;
+    const parent = this.resolveAliasTargetExpr(access.expr, scope, new Set());
+
+    // The module namespace is generated from a declared dependency, so failing
+    // to find it is not this diagnostic's business -- say nothing rather than
+    // blame the import for it.
+    if (parent.kind !== "symbol") {
+      return true;
+    }
+    const parentSymbol = this.sr.cc.symbolNodes.get(parent.symbolId);
+    if (parentSymbol.variant !== Collect.ENode.TypeDefSymbol) {
+      return true;
+    }
+    const parentDef = this.sr.cc.typeDefNodes.get(parentSymbol.typeDef);
+    if (parentDef.variant !== Collect.ENode.NamespaceTypeDef) {
+      return true;
+    }
+
+    return (
+      this.lookupInNamespaceDirectly(
+        parentDef.sharedInstance,
+        access.memberName
+      ) !== null
+    );
+  }
+
+  /**
+   * A symbol of this module's own generated namespace, by name.
+   *
+   * Only this module's: a name that merely exists in some dependency is not a
+   * collision, and neither is one in the stdlib.
+   */
+  private findInOwnModuleNamespace(
+    name: string
+  ): { sourceloc: SourceLoc } | null {
+    for (const typeDef of this.sr.cc.typeDefNodes.getAll()) {
+      if (
+        typeDef.variant !== Collect.ENode.NamespaceTypeDef ||
+        !typeDef.isModuleNamespace ||
+        typeDef.moduleName !== this.sr.cc.config.name
+      ) {
+        continue;
+      }
+      const found = this.lookupInNamespaceDirectly(
+        typeDef.sharedInstance,
+        name
+      );
+      if (found !== null) {
+        const symbol = this.sr.cc.symbolNodes.get(found);
+        if (symbol.variant === Collect.ENode.FunctionOverloadGroupSymbol) {
+          for (const overloadId of symbol.overloads) {
+            const overload = this.sr.cc.symbolNodes.get(overloadId);
+            assert(overload.variant === Collect.ENode.FunctionSymbol);
+            return { sourceloc: overload.sourceloc };
+          }
+          return { sourceloc: null };
+        }
+        if (symbol.variant === Collect.ENode.CInjectDirective) {
+          continue;
+        }
+        return { sourceloc: symbol.sourceloc };
+      }
+    }
+    return null;
+  }
+
   topLevelScope(scopeId: Collect.ScopeId) {
     const scope = this.sr.cc.scopeNodes.get(scopeId);
     switch (scope.variant) {
@@ -4120,7 +4507,7 @@ export class SemanticElaborator {
       const r = this.resolveAlias(m);
       return r !== nullType && r !== noneType;
     });
-    return { hasNull, hasNone, remaining };
+    return { hasNull: hasNull, hasNone: hasNone, remaining: remaining };
   }
 
   // Entry point for the top of a postfix chain containing a `?.`.
@@ -4194,7 +4581,8 @@ export class SemanticElaborator {
 
     // `recv.m(args)` / `recv?.m(args)` is one unit, so that the call's
     // overload resolution (which drives the member lookup) sees the member.
-    const next = i + 1 < ops.length ? this.sr.cc.exprNodes.get(ops[i + 1]) : null;
+    const next =
+      i + 1 < ops.length ? this.sr.cc.exprNodes.get(ops[i + 1]) : null;
     const isMemberNode =
       op.variant === Collect.ENode.MemberAccessExpr ||
       op.variant === Collect.ENode.OptionalChainingMemberAccessExpr;
@@ -4233,7 +4621,11 @@ export class SemanticElaborator {
     ops: Collect.ExprId[],
     i: number,
     object: readonly [Semantic.Expression, Semantic.ExprId],
-    parts: { hasNull: boolean; hasNone: boolean; remaining: Semantic.TypeUseId[] },
+    parts: {
+      hasNull: boolean;
+      hasNone: boolean;
+      remaining: Semantic.TypeUseId[];
+    },
     inference: Semantic.Inference
   ): readonly [Semantic.Expression, Semantic.ExprId] {
     const op = this.sr.cc.exprNodes.get(ops[i]);
@@ -4724,7 +5116,6 @@ export class SemanticElaborator {
     return this.sr.b.blockScopeExpr(blockScopeId, flow, writes);
   }
 
-
   memberAccess(
     memberAccess: Collect.MemberAccessExpr,
     inference: Semantic.Inference
@@ -4844,11 +5235,18 @@ export class SemanticElaborator {
   ): Semantic.SymbolId | null {
     const typedef = this.sr.cc.typeDefNodes.get(typeDefSymbol.typeDef);
     switch (typedef.variant) {
-      case Collect.ENode.TypeAliasDef: {
+      case Collect.ENode.AliasDef: {
         if (typeDefSymbol.export) {
           this.sr.exportedTypeAliases.add(typeDefSymbol.typeDef);
         }
-        return null; // No need to pre-elaborate type aliases, they are elaborated on demand when looked up
+        // An alias is elaborated on demand, when something looks it up -- but
+        // `type Foo = m.someFunction;` is wrong the moment it is written, not
+        // the moment it is used, and an alias nobody uses would never be
+        // checked at all. Resolving the target is pure Collect-level lookup
+        // (no elaboration, nothing instantiated), so it is cheap enough to do
+        // for every alias up front. Cycles surface here for the same reason.
+        this.checkAliasTargetEagerly(typeDefSymbol.typeDef);
+        return null;
       }
 
       case Collect.ENode.StructTypeDef: {
@@ -4879,7 +5277,7 @@ export class SemanticElaborator {
 
     const typedef = this.sr.cc.typeDefNodes.get(typeDefSymbol.typeDef);
     switch (typedef.variant) {
-      case Collect.ENode.TypeAliasDef: {
+      case Collect.ENode.AliasDef: {
         return this.sr.b.typeDefSymbol(
           this.elaborateTypeDefAlias(typeDefSymbol.typeDef, genericArgs)[1]
         )[1];
@@ -5100,6 +5498,116 @@ export class SemanticElaborator {
       default:
         assert(false, "Global Symbol " + symbol.variant);
     }
+  }
+
+  /**
+   * Collapse an elaborated anonymous struct onto the canonical one for its
+   * shape (§3.3).
+   *
+   * Interning by structural key is what makes an anonymous struct *structural*
+   * rather than merely convertible: two identical shapes become one TypeDefId,
+   * so identical-shape "conversion" is free rather than a copy, and there is
+   * one C struct per shape -- which is what makes the cross-module ABI fall out
+   * automatically, provided the C name is derived from the key's CONTENT and
+   * never from a per-module counter.
+   *
+   * The key is the member names sorted canonically, each with its resolved type
+   * use, its optionality and its default. Two shapes differing only in written
+   * member order are therefore the same type; two with the same members but
+   * different defaults are different types, still trivially convertible where
+   * the semantics allow.
+   */
+  internAnonymousStruct(structId: Semantic.TypeDefId): Semantic.TypeDefId {
+    const struct = this.sr.typeDefNodes.get(structId);
+    assert(struct.variant === Semantic.ENode.StructDatatype);
+
+    // A shape that contains itself -- `type Node = { value: int, next: ref Node
+    // | none }` -- reaches this from inside its own member elaboration, where
+    // its member list is still being filled. Keying it there would produce a
+    // key for half a shape, and a second, different key once the members were
+    // complete. Leave it alone; the call that started the elaboration interns
+    // it once the members are built.
+    if (!struct.membersBuilt) {
+      return structId;
+    }
+
+    // Computed once per struct and remembered. Recomputing risks disagreeing
+    // with the key it was registered under, which would make a struct look like
+    // a duplicate of something else and get suppressed.
+    const remembered = this.anonymousStructKeysByStruct.get(structId);
+    if (remembered !== undefined) {
+      return this.sr.internedAnonymousStructs.get(remembered) ?? structId;
+    }
+
+    const key = this.anonymousStructKey(struct);
+    this.anonymousStructKeysByStruct.set(structId, key);
+
+    // The name is content-derived and carries no module, namespace or counter,
+    // so the same shape mangles to the same C identifier in every module that
+    // writes it. `parentSymbolId` is null for the same reason: nesting it in a
+    // module namespace would make one shape into several C types.
+    struct.name = anonymousStructCName(key);
+    struct.parentSymbolId = null;
+
+    const existing = this.sr.internedAnonymousStructs.get(key);
+    if (existing === structId) {
+      // The same written occurrence, elaborated again and served from the
+      // struct-def cache. Already canonical -- and marking it noemit here would
+      // delete the one definition of the shape.
+      return structId;
+    }
+    if (existing !== undefined) {
+      // A second elaboration of a shape that already exists. The canonical one
+      // is what everything gets handed; this one is left behind, named
+      // identically (so any stray reference still names the right C type) but
+      // emitting nothing -- two definitions of one C struct is a redefinition
+      // error, and a shape is by construction defined exactly once.
+      struct.noemit = true;
+      return existing;
+    }
+
+    this.sr.internedAnonymousStructs.set(key, structId);
+    return structId;
+  }
+
+  /**
+   * The canonical structural key of an anonymous struct.
+   *
+   * Member types go in alias-RESOLVED, so `type Meters = int` and `int` do not
+   * produce two shapes; the members are sorted by name, so written order is
+   * irrelevant (D3, as reversed).
+   */
+  private anonymousStructKey(struct: Semantic.StructDatatypeDef): string {
+    const defaults = new Map(
+      struct.memberDefaultValues.map((d) => [
+        d.memberName,
+        Semantic.serializeExpr(this.sr, d.value),
+      ])
+    );
+
+    const members = struct.members.map((memberId) => {
+      const member = this.sr.symbolNodes.get(memberId);
+      assert(member.variant === Semantic.ENode.VariableSymbol);
+      assert(member.type);
+      // The member's TYPE TEXT, not its TypeUseId. An id is a per-compilation
+      // counter, so keying on one gives the same shape a different key in every
+      // module -- which is precisely the failure §3.3 warns about: the C name
+      // must be derived from the key's CONTENT. With ids, `helper.area`
+      // mangled one way in the module that defined it and another way in the
+      // module that called it, and the link failed.
+      //
+      // Alias-resolved, so `type Meters = int` and `int` do not make two
+      // shapes; and serializeTypeUse names a nested anonymous struct
+      // structurally, so nesting stays content-derived all the way down.
+      const resolved = Semantic.serializeTypeUse(
+        this.sr,
+        this.resolveAlias(member.type)
+      );
+      const def = defaults.get(member.name);
+      return `${member.name}:${resolved}${def === undefined ? "" : `=${def}`}`;
+    });
+    members.sort();
+    return members.join(",");
   }
 
   instantiateAndElaborateStructWithGenerics(
@@ -5382,9 +5890,14 @@ export class SemanticElaborator {
       return substitute;
     });
 
-    const parentSymbolId = this.elaborateParentSymbolFromCache(
-      definedStructType.parentScope
-    );
+    // An anonymous struct has no parent, deliberately. Nesting one inside the
+    // namespace it happened to be written in would make a single shape into
+    // several C types and defeat the interning it depends on (§3.3) -- and the
+    // scope it was written in is often not one that names a symbol at all (a
+    // type alias's generic scope, or another struct's field scope).
+    const parentSymbolId = definedStructType.anonymous
+      ? null
+      : this.elaborateParentSymbolFromCache(definedStructType.parentScope);
 
     // This whole recursive stack and SCC business is a deep rabbit hole we must go down.
     // It is required in order to make sure complex chains of structs work, where one struct
@@ -5428,6 +5941,7 @@ export class SemanticElaborator {
       this.sr,
       {
         variant: Semantic.ENode.StructDatatype,
+        anonymous: definedStructType.anonymous,
         name: definedStructType.name,
         generics: genericArgs,
         extern: definedStructType.extern,
@@ -5773,6 +6287,198 @@ export class SemanticElaborator {
   // as a value of this type? Mirrors what structInstantiation() accepts when
   // given the type as its hint: a struct, an array, or a union whose only
   // non-nullish member is one of those.
+  /**
+   * Does this untyped `{ ... }` literal match `targetTypeUse` EXACTLY (§5.1)?
+   *
+   * Exactly means: every required member is supplied, no excess member is
+   * supplied, and every unsupplied member is optional or defaulted. Implicit
+   * conversions on the supplied VALUES are permitted and deliberately do not
+   * affect matching -- this decides which shape the literal takes, not whether
+   * the values fit, which the ordinary rules settle afterwards.
+   *
+   * Returns null when the question does not apply: the target is not a struct,
+   * or the literal is positional (an array literal), so the caller can fall
+   * through to whatever it did before.
+   */
+  literalMatchesExactly(
+    elements: readonly Semantic.ResolvedLiteralElement[],
+    targetTypeUse: Semantic.TypeUseId
+  ): boolean | null {
+    const resolved = this.resolveAlias(targetTypeUse);
+    const def = this.sr.typeDefNodes.get(
+      this.sr.typeUseNodes.get(resolved).type
+    );
+    if (def.variant !== Semantic.ENode.StructDatatype) {
+      return null;
+    }
+    if (elements.some((e) => e.key === null)) {
+      return null;
+    }
+
+    const supplied = new Set(elements.map((e) => e.key as string));
+    const defaulted = new Set(def.memberDefaultValues.map((d) => d.memberName));
+
+    let anyMember = false;
+    for (const memberId of def.members) {
+      const member = this.sr.symbolNodes.get(memberId);
+      if (member.variant !== Semantic.ENode.VariableSymbol) {
+        continue;
+      }
+      anyMember = true;
+      if (supplied.has(member.name)) {
+        supplied.delete(member.name);
+        continue;
+      }
+      // Not supplied: only fine if the struct can fill it in itself. An
+      // optional member is given a `none` default at collection, so `defaulted`
+      // covers both.
+      if (!defaulted.has(member.name)) {
+        return false;
+      }
+    }
+    if (!anyMember && elements.length > 0) {
+      return false;
+    }
+    // Anything left over is an excess member, which disqualifies the candidate
+    // rather than being dropped: dropping is for a conversion between two
+    // KNOWN types (§3.4), while here the excess member is the evidence that
+    // this is not the shape the programmer meant.
+    return supplied.size === 0;
+  }
+
+  /**
+   * Which candidate an error should blame when nothing matched (§5.2).
+   *
+   * "First discriminating member wins": scan the literal's members in WRITTEN
+   * order and take the first that exists on exactly one candidate. This is
+   * reporting, not selection -- `{ a1: 0, b2: 0 }` and `{ b2: 0, a1: 0 }` both
+   * select nothing, and differ only in whom they blame.
+   *
+   * Null when no member discriminates, so the caller lists candidates instead.
+   */
+  discriminatingCandidate(
+    elements: readonly Semantic.ResolvedLiteralElement[],
+    candidates: readonly Semantic.TypeUseId[]
+  ): Semantic.TypeUseId | null {
+    for (const element of elements) {
+      if (element.key === null) {
+        continue;
+      }
+      const owning = candidates.filter((candidate) =>
+        this.structHasMember(candidate, element.key as string)
+      );
+      if (owning.length === 1) {
+        return owning[0];
+      }
+    }
+    return null;
+  }
+
+  private structHasMember(
+    typeUseId: Semantic.TypeUseId,
+    name: string
+  ): boolean {
+    const def = this.sr.typeDefNodes.get(
+      this.sr.typeUseNodes.get(this.resolveAlias(typeUseId)).type
+    );
+    if (def.variant !== Semantic.ENode.StructDatatype) {
+      return false;
+    }
+    return def.members.some((memberId) => {
+      const member = this.sr.symbolNodes.get(memberId);
+      return (
+        member.variant === Semantic.ENode.VariableSymbol && member.name === name
+      );
+    });
+  }
+
+  /**
+   * The type an untyped literal would actually be built as.
+   *
+   * `Foo | none` builds a `Foo`; the nullish part is not a candidate for a
+   * literal. Mirrors canBuildUntypedAggregateLiteralAs, which accepts such a
+   * union for exactly that reason.
+   */
+  /**
+   * Why this parameter cannot take the untyped `{ ... }` passed at this
+   * position, or null if it can (or nothing untyped was passed).
+   *
+   * Two reasons, in order. The parameter may not be able to take an aggregate
+   * literal at ALL -- `real` cannot -- which is what stops `p({})` against
+   * `p(real)` and `p(Full)` from matching both. And per §5.1 the parameter's
+   * shape may simply not be the one written: a required member missing, or an
+   * excess member supplied, puts the candidate out.
+   */
+  untypedLiteralRejects(
+    passed:
+      | {
+          index: number;
+          exprId: Semantic.ExprId | null;
+          collectExprId?: Collect.ExprId;
+        }
+      | undefined,
+    signatureParam:
+      | { kind: "normal"; type: Semantic.TypeUseId | null }
+      | { kind: "param-pack" },
+    index: number
+  ): string | null {
+    if (
+      !passed ||
+      passed.exprId !== null ||
+      passed.collectExprId === undefined ||
+      signatureParam.kind === "param-pack" ||
+      signatureParam.type === null ||
+      !isTypeConcrete(this.sr, signatureParam.type)
+    ) {
+      return null;
+    }
+    const literalId = this.untypedAggregateLiteralBehind(passed.collectExprId);
+    if (literalId === null) {
+      return null;
+    }
+    const paramText = Semantic.serializeTypeUse(this.sr, signatureParam.type);
+
+    if (!this.canBuildUntypedAggregateLiteralAs(signatureParam.type)) {
+      return `Parameter #${index + 1} of type ${paramText} cannot be built from an aggregate literal`;
+    }
+
+    const literal = this.sr.cc.exprNodes.get(literalId);
+    assert(literal.variant === Collect.ENode.AggregateLiteralExpr);
+    // Spreads are resolved first, so overload matching sees the post-spread
+    // member set and needs to know nothing about spreading (§6.3). If the
+    // spread source's type cannot be resolved here, the candidate simply does
+    // not participate rather than being wrongly rejected.
+    let resolved: Semantic.ResolvedLiteralElement[];
+    try {
+      resolved = this.resolveLiteralElements(literal.elements, {});
+    } catch {
+      return null;
+    }
+    const exactly = this.literalMatchesExactly(
+      resolved,
+      this.untypedLiteralTargetOf(signatureParam.type)
+    );
+    if (exactly === false) {
+      return `Parameter #${index + 1} of type ${paramText} does not match the members of this literal`;
+    }
+    return null;
+  }
+
+  untypedLiteralTargetOf(typeUseId: Semantic.TypeUseId): Semantic.TypeUseId {
+    const resolved = this.resolveAlias(typeUseId);
+    const def = this.sr.typeDefNodes.get(
+      this.sr.typeUseNodes.get(resolved).type
+    );
+    if (def.variant === Semantic.ENode.UntaggedUnionDatatype) {
+      const parts = this.nullishPartsOf(resolved);
+      const candidates = parts ? parts.remaining : def.members;
+      if (candidates.length === 1) {
+        return this.untypedLiteralTargetOf(candidates[0]);
+      }
+    }
+    return resolved;
+  }
+
   canBuildUntypedAggregateLiteralAs(typeUseId: Semantic.TypeUseId): boolean {
     const resolved = this.resolveAlias(typeUseId);
     const def = this.sr.typeDefNodes.get(
@@ -5941,27 +6647,14 @@ export class SemanticElaborator {
             !(passed && passed.exprId) ||
             signatureParam.kind === "param-pack"
           ) {
-            // An untyped aggregate literal (`p({})`) is deferred because its
-            // type comes from the parameter -- but it can only ever become a
-            // struct or an array, so a parameter that is neither (e.g. `real`)
-            // cannot take it. Without this, `p({})` against `p(real)` and
-            // `p(Full)` matched both and was reported as ambiguous.
-            if (
-              passed &&
-              passed.exprId === null &&
-              passed.collectExprId !== undefined &&
-              signatureParam.kind !== "param-pack" &&
-              signatureParam.type !== null &&
-              this.untypedAggregateLiteralBehind(passed.collectExprId) !==
-                null &&
-              isTypeConcrete(this.sr, signatureParam.type) &&
-              !this.canBuildUntypedAggregateLiteralAs(signatureParam.type)
-            ) {
+            const literalRejection = this.untypedLiteralRejects(
+              passed,
+              signatureParam,
+              i
+            );
+            if (literalRejection !== null) {
               matches = false;
-              reason = `Parameter #${i + 1} of type ${Semantic.serializeTypeUse(
-                this.sr,
-                signatureParam.type
-              )} cannot be built from an aggregate literal`;
+              reason = literalRejection;
               return;
             }
             // This parameter is not passed or is not concrete, so hope that the others are enough for a match
@@ -6196,6 +6889,21 @@ export class SemanticElaborator {
           for (const [i, signatureParam] of signature.parameters.entries()) {
             const passed = calledWithArgs!.find((a) => a.index === i);
             if (!passed?.exprId || signatureParam.kind === "param-pack") {
+              // A deferred literal is checked here too, not only in the exact
+              // tier. This tier used to skip it entirely, so a literal that
+              // matched NO candidate exactly still matched every one of them
+              // implicitly, and the call was reported as ambiguous rather than
+              // as having no candidate at all.
+              const literalRejection = this.untypedLiteralRejects(
+                passed,
+                signatureParam,
+                i
+              );
+              if (literalRejection !== null) {
+                matches = false;
+                reason = literalRejection;
+                break;
+              }
               continue;
             }
             // Only closure signatures ever have a null parameter type, and closures
@@ -7988,13 +8696,415 @@ export class SemanticElaborator {
     }
   }
 
+  /**
+   * Bumped once per unrolled `for comptime` iteration.
+   *
+   * Nothing about a local alias's cache key varies between the iterations of an
+   * unrolled loop -- same collected node, no generics, same enclosing function
+   * -- so iteration 2 would otherwise be handed iteration 1's already-resolved
+   * type. This is the part of the key that does vary (§1.6). It never resets:
+   * two different unrollings must never share a value, and monotonic is the
+   * cheapest way to guarantee that, nesting included.
+   */
+  comptimeUnrollGeneration = 0;
+
+  /**
+   * The structural key each anonymous struct was interned under.
+   *
+   * Memoised rather than recomputed: a shape's key depends on its members'
+   * types, and a struct that is re-interned after anything downstream has been
+   * elaborated could otherwise produce a slightly different key and be mistaken
+   * for a duplicate of a different shape.
+   */
+  anonymousStructKeysByStruct = new Map<Semantic.TypeDefId, string>();
+
+  /**
+   * The generation an alias should be cached under.
+   *
+   * Only aliases declared inside a function body can be affected: a `for
+   * comptime` unrolls statements, and only a block scope holds statements. A
+   * global or namespace alias always keys on 0, so it caches exactly as before.
+   * A local alias in an ordinary function also effectively keys on a constant,
+   * because nothing bumps the counter while it is elaborated.
+   */
+  aliasUnrollGeneration(typedefId: Collect.TypeDefId): number {
+    const typedef = this.sr.cc.typeDefNodes.get(typedefId);
+    assert(typedef.variant === Collect.ENode.AliasDef);
+    const scope = this.sr.cc.scopeNodes.get(typedef.inScope);
+    return scope.variant === Collect.ENode.BlockScope
+      ? this.comptimeUnrollGeneration
+      : 0;
+  }
+
+  /**
+   * The `type` keyword's one check (§1.1), made eagerly.
+   *
+   * Silent when the target cannot be resolved statically -- an unresolvable
+   * name is somebody else's diagnostic, raised where it is actually used, and
+   * guessing here would only produce a worse message.
+   */
+  checkAliasTargetEagerly(typedefId: Collect.TypeDefId): void {
+    const typedef = this.sr.cc.typeDefNodes.get(typedefId);
+    assert(typedef.variant === Collect.ENode.AliasDef);
+    if (!typedef.typeOnly) {
+      return;
+    }
+    const target = this.resolveAliasTarget(typedefId);
+    if (target.kind === "value") {
+      this.checkAliasIsTypeValued(typedefId, typedef.sourceloc);
+      return;
+    }
+    if (
+      target.kind === "symbol" &&
+      !this.aliasTargetIsTypeLike(target.symbolId)
+    ) {
+      this.checkAliasIsTypeValued(typedefId, typedef.sourceloc);
+    }
+  }
+
+  /**
+   * What an alias's target names, resolved at the Collect level.
+   *
+   * An `alias` may name a datatype, but it may equally name a function overload
+   * group, a global variable, a namespace, an enum member or another alias
+   * (§1.2). Only the first of those is a *type*, and the elaborator's two halves
+   * are completely different: a type-valued alias produces a
+   * `TypeAliasDatatype` wrapping the target type, while a symbol-valued one has
+   * to disappear entirely and let the target be elaborated exactly as if it had
+   * been written at the use site. This is what decides which half runs.
+   *
+   * Resolution happens in the alias's *definition* scope, never the use site
+   * (§1.5) -- otherwise an alias imported into another file would resolve
+   * against the importer's namespace.
+   */
+  resolveAliasTarget(
+    typedefId: Collect.TypeDefId,
+    visited: Set<Collect.TypeDefId> = new Set()
+  ): AliasTarget {
+    if (visited.has(typedefId)) {
+      const typedef = this.sr.cc.typeDefNodes.get(typedefId);
+      assert(typedef.variant === Collect.ENode.AliasDef);
+      throw new CompilerError(
+        `Alias '${typedef.name}' is defined in terms of itself, through a chain of aliases with no type in it`,
+        typedef.sourceloc,
+        HazeErrorCode.AliasCycleWithoutIndirection
+      );
+    }
+    visited.add(typedefId);
+
+    const typedef = this.sr.cc.typeDefNodes.get(typedefId);
+    assert(typedef.variant === Collect.ENode.AliasDef);
+    // A synthesised `import m;` alias has no generic scope; its target is a
+    // bare generated namespace name and resolves in the file scope.
+    const scope =
+      typedef.genericScope === (-1 as Collect.ScopeId)
+        ? typedef.inScope
+        : typedef.genericScope;
+
+    return this.resolveAliasTargetExpr(typedef.target, scope, visited);
+  }
+
+  private resolveAliasTargetExpr(
+    exprId: Collect.ExprId,
+    scope: Collect.ScopeId,
+    visited: Set<Collect.TypeDefId>
+  ): AliasTarget {
+    const expr = this.sr.cc.exprNodes.get(exprId);
+
+    if (expr.variant === Collect.ENode.SymbolValueExpr) {
+      const found = Semantic.tryLookupSymbol(this.sr, expr.name, {
+        startLookupInScope: scope,
+        sourceloc: expr.sourceloc,
+      });
+      if (!found || found.type !== "collect") {
+        return { kind: "type" };
+      }
+      return this.classifyAliasTargetSymbol(
+        found.id,
+        expr.genericArgs,
+        visited
+      );
+    }
+
+    if (expr.variant === Collect.ENode.MemberAccessExpr) {
+      const parent = this.resolveAliasTargetExpr(expr.expr, scope, visited);
+      if (parent.kind !== "symbol") {
+        return { kind: "type" };
+      }
+      const parentSymbol = this.sr.cc.symbolNodes.get(parent.symbolId);
+      if (parentSymbol.variant !== Collect.ENode.TypeDefSymbol) {
+        return { kind: "type" };
+      }
+      const parentDef = this.sr.cc.typeDefNodes.get(parentSymbol.typeDef);
+
+      if (parentDef.variant === Collect.ENode.NamespaceTypeDef) {
+        const member = this.lookupInNamespaceDirectly(
+          parentDef.sharedInstance,
+          expr.memberName
+        );
+        if (member === null) {
+          return { kind: "type" };
+        }
+        return this.classifyAliasTargetSymbol(
+          member,
+          expr.genericArgs,
+          visited
+        );
+      }
+
+      if (parentDef.variant === Collect.ENode.EnumTypeDef) {
+        // An enum member is a value, not a symbol -- there is nothing to
+        // delegate to, so the target is elaborated as an ordinary expression.
+        // §1.2 predicted this one falls out of symbol delegation, and it does.
+        if (parentDef.values.some((v) => v.name === expr.memberName)) {
+          return { kind: "value" };
+        }
+        return { kind: "type" };
+      }
+
+      return { kind: "type" };
+    }
+
+    return { kind: "type" };
+  }
+
+  /** Where a resolved target symbol lands: a type, a value, or a chained alias. */
+  private classifyAliasTargetSymbol(
+    symbolId: Collect.SymbolId,
+    generics: Collect.ExprId[],
+    visited: Set<Collect.TypeDefId>
+  ): AliasTarget {
+    const symbol = this.sr.cc.symbolNodes.get(symbolId);
+
+    if (symbol.variant === Collect.ENode.TypeDefSymbol) {
+      const def = this.sr.cc.typeDefNodes.get(symbol.typeDef);
+      if (def.variant === Collect.ENode.AliasDef) {
+        // A chain resolves transitively to whatever it ends at (§1.2). An
+        // alias with its own generic parameters is a real type constructor and
+        // stops the walk: `alias BI<T> = Boxed<T>` has to be elaborated, not
+        // delegated to.
+        if (def.generics.length > 0 || generics.length > 0) {
+          return { kind: "symbol", symbolId: symbolId, generics: generics };
+        }
+        return this.resolveAliasTarget(symbol.typeDef, visited);
+      }
+      return { kind: "symbol", symbolId: symbolId, generics: generics };
+    }
+
+    return { kind: "symbol", symbolId: symbolId, generics: generics };
+  }
+
+  /**
+   * Look a name up in one namespace and nowhere else.
+   *
+   * `tryLookupSymbol` on a namespace scope falls through to the enclosing scope
+   * when it finds nothing, which is right for an unqualified name and wrong for
+   * a qualified one: `m.foo` must not quietly resolve to an outer `foo`. A
+   * namespace can also be reopened in several files, so all the scopes of its
+   * shared instance have to be consulted.
+   */
+  private lookupInNamespaceDirectly(
+    sharedInstanceId: Collect.NSSharedInstanceId,
+    name: string
+  ): Collect.SymbolId | null {
+    const instance = this.sr.cc.nsSharedInstances.get(sharedInstanceId);
+    assert(instance.variant === Collect.ENode.NamespaceSharedInstance);
+    for (const scopeId of instance.namespaceScopes) {
+      const scope = this.sr.cc.scopeNodes.get(scopeId);
+      assert(scope.variant === Collect.ENode.NamespaceScope);
+      for (const symbolId of scope.symbols) {
+        const symbol = this.sr.cc.symbolNodes.get(symbolId);
+        if (
+          symbol.variant !== Collect.ENode.CInjectDirective &&
+          symbol.name === name
+        ) {
+          return symbolId;
+        }
+      }
+    }
+    return null;
+  }
+
+  /** Does this Collect symbol name a type, rather than a value? */
+  private aliasTargetIsTypeLike(symbolId: Collect.SymbolId): boolean {
+    const symbol = this.sr.cc.symbolNodes.get(symbolId);
+    if (symbol.variant === Collect.ENode.GenericTypeParameterSymbol) {
+      return true;
+    }
+    if (symbol.variant !== Collect.ENode.TypeDefSymbol) {
+      return false;
+    }
+    const def = this.sr.cc.typeDefNodes.get(symbol.typeDef);
+    return (
+      def.variant === Collect.ENode.StructTypeDef ||
+      def.variant === Collect.ENode.NamespaceTypeDef ||
+      def.variant === Collect.ENode.EnumTypeDef ||
+      def.variant === Collect.ENode.AliasDef
+    );
+  }
+
+  /**
+   * `type` is `alias` plus this check. Raised where the target is known, which
+   * is the earliest point the keyword can be validated at all.
+   */
+  private checkAliasIsTypeValued(
+    typedefId: Collect.TypeDefId,
+    sourceloc: SourceLoc
+  ): void {
+    const typedef = this.sr.cc.typeDefNodes.get(typedefId);
+    assert(typedef.variant === Collect.ENode.AliasDef);
+    if (!typedef.typeOnly) {
+      return;
+    }
+    throw new CompilerError(
+      `'${typedef.name}' is declared with 'type', but its target is not a datatype. Use 'alias' instead.`,
+      typedef.sourceloc ?? sourceloc,
+      HazeErrorCode.AliasTargetIsNotADatatype
+    );
+  }
+
+  /**
+   * Elaborate an alias's target as a plain value expression, in the alias's own
+   * definition scope. The path for a target that is a value but not a symbol --
+   * in practice an enum member.
+   */
+  elaborateAliasTargetAsValue(
+    typedefId: Collect.TypeDefId,
+    inference: Semantic.Inference
+  ): readonly [Semantic.Expression, Semantic.ExprId] {
+    const typedef = this.sr.cc.typeDefNodes.get(typedefId);
+    assert(typedef.variant === Collect.ENode.AliasDef);
+    const scope =
+      typedef.genericScope === (-1 as Collect.ScopeId)
+        ? typedef.inScope
+        : typedef.genericScope;
+
+    const context = Semantic.isolateElaborationContext(this.currentContext, {
+      currentScope: scope,
+      genericsScope: scope,
+      constraints: this.currentContext.constraints,
+      instanceDeps: {
+        instanceDependsOn: new Map(),
+        structMembersDependOn: new Map(),
+        symbolDependsOn: new Map(),
+      },
+    });
+
+    return this.withContext(
+      {
+        context: context,
+        inFunction: this.inFunction,
+        inAttemptExpr: this.inAttemptExpr,
+      },
+      () => this.expr(typedef.target, inference)
+    );
+  }
+
+  /**
+   * The forwarding half of §1.3: hand the use site's generic arguments to the
+   * alias's target, which was written with none of its own.
+   *
+   * Returns null when the target is not something that takes generics at all,
+   * so the caller can fall through to the ordinary arity error rather than
+   * report something confusing.
+   */
+  elaborateForwardedGenericAlias(
+    typedefId: Collect.TypeDefId,
+    genericArgs: Semantic.ExprId[]
+  ): [Semantic.TypeDef, Semantic.TypeDefId] | null {
+    const typedef = this.sr.cc.typeDefNodes.get(typedefId);
+    assert(typedef.variant === Collect.ENode.AliasDef);
+
+    const target = this.resolveAliasTarget(typedefId);
+    if (target.kind !== "symbol" || target.generics.length > 0) {
+      return null;
+    }
+    const targetSymbol = this.sr.cc.symbolNodes.get(target.symbolId);
+    if (targetSymbol.variant !== Collect.ENode.TypeDefSymbol) {
+      return null;
+    }
+    const targetDef = this.sr.cc.typeDefNodes.get(targetSymbol.typeDef);
+
+    let aliasedTypeDefId: Semantic.TypeDefId;
+    if (targetDef.variant === Collect.ENode.StructTypeDef) {
+      const instantiated = this.instantiateAndElaborateStructWithGenerics(
+        targetSymbol.typeDef,
+        genericArgs,
+        typedef.sourceloc
+      );
+      assert(instantiated);
+      aliasedTypeDefId = instantiated;
+    } else if (targetDef.variant === Collect.ENode.AliasDef) {
+      aliasedTypeDefId = this.elaborateTypeDefAlias(
+        targetSymbol.typeDef,
+        genericArgs
+      )[1];
+    } else {
+      return null;
+    }
+
+    const parent = this.elaborateParentSymbolFromCache(typedef.inScope);
+    const cached = getFromAliasDefCache(this.sr, typedefId, {
+      genericArgs: genericArgs,
+      parentSymbolId: parent,
+      unrollGeneration: this.aliasUnrollGeneration(typedefId),
+    });
+    if (cached) {
+      return [this.sr.typeDefNodes.get(cached), cached];
+    }
+
+    const [t, tId] = this.sr.b.addType<Semantic.TypeAliasDatatypeDef>(this.sr, {
+      variant: Semantic.ENode.TypeAliasDatatype,
+      targetType: makeTypeUse(
+        this.sr,
+        aliasedTypeDefId,
+        EDatatypeMutability.Default,
+        EStorageClass.Value,
+        typedef.sourceloc
+      )[1],
+      generics: genericArgs,
+      name: typedef.name,
+      parentSymbolId: parent,
+      concrete: true,
+      annotations: typedef.annotations,
+      unrollIndex: this.aliasUnrollGeneration(typedefId),
+    });
+    insertIntoAliasDefCache(this.sr, typedefId, {
+      genericArgs: genericArgs,
+      parentSymbolId: parent,
+      unrollGeneration: this.aliasUnrollGeneration(typedefId),
+      result: tId,
+      resultAsTypeDefSymbol: this.sr.b.typeDefSymbol(tId)[1],
+      substitutionContext: this.currentContext,
+    });
+    return [t, tId];
+  }
+
   elaborateTypeDefAlias(
     typedefId: Collect.TypeDefId,
     genericArgs: Semantic.ExprId[]
   ): [Semantic.TypeDef, Semantic.TypeDefId] {
     const typedef = this.sr.cc.typeDefNodes.get(typedefId);
-    assert(typedef.variant === Collect.ENode.TypeAliasDef);
+    assert(typedef.variant === Collect.ENode.AliasDef);
     if (typedef.generics.length !== genericArgs.length) {
+      // Generic forwarding (§1.3): an alias that declares no parameters of its
+      // own, whose target is written without arguments, passes the use site's
+      // generics straight to the target. `alias F = G;` then `F<int>`.
+      //
+      // This is load-bearing rather than a convenience: `from m import
+      // someGenericFn` generates its alias at collection time, when the
+      // target's arity lives in another module and is not yet known. It also
+      // removes a standing annoyance, namely that a `type` alias used to
+      // require the arity up front.
+      if (typedef.generics.length === 0 && genericArgs.length > 0) {
+        const forwarded = this.elaborateForwardedGenericAlias(
+          typedefId,
+          genericArgs
+        );
+        if (forwarded) {
+          return forwarded;
+        }
+      }
       throw new CompilerError(
         `Type ${typedef.name} expects ${typedef.generics.length} type parameters but got ${genericArgs.length}`,
         typedef.sourceloc,
@@ -8005,9 +9115,10 @@ export class SemanticElaborator {
     const parent = this.elaborateParentSymbolFromCache(typedef.inScope);
 
     // Find in cache
-    const cached = getFromTypeAliasDefCache(this.sr, typedefId, {
+    const cached = getFromAliasDefCache(this.sr, typedefId, {
       genericArgs: genericArgs,
       parentSymbolId: parent,
+      unrollGeneration: this.aliasUnrollGeneration(typedefId),
     });
     if (cached) {
       return [this.sr.typeDefNodes.get(cached), cached];
@@ -8050,11 +9161,13 @@ export class SemanticElaborator {
             parentSymbolId: parent,
             concrete: true,
             annotations: typedef.annotations,
+            unrollIndex: this.aliasUnrollGeneration(typedefId),
           }
         );
-        insertIntoTypeAliasDefCache(this.sr, typedefId, {
+        insertIntoAliasDefCache(this.sr, typedefId, {
           genericArgs: genericArgs,
           parentSymbolId: parent,
+          unrollGeneration: this.aliasUnrollGeneration(typedefId),
           result: tId,
           resultAsTypeDefSymbol: this.sr.b.typeDefSymbol(tId)[1],
           substitutionContext: context,
@@ -8149,6 +9262,25 @@ export class SemanticElaborator {
       case Collect.ENode.TypeOfExpr: {
         const [expr] = this.expr(type.expr, {});
         return expr.type;
+      }
+
+      case Collect.ENode.AnonStructTypeExpr: {
+        // Elaborate the written shape exactly as a named struct would be, then
+        // hand it to the intern table: two `{ x: int, y: int }` written in
+        // different places -- or in different modules -- are one type, not two
+        // convertible ones (§3.3).
+        const written = this.instantiateAndElaborateStructWithGenerics(
+          type.structTypeDef,
+          [],
+          type.sourceloc
+        );
+        return makeTypeUse(
+          this.sr,
+          this.internAnonymousStruct(written),
+          EDatatypeMutability.Default,
+          EStorageClass.Value,
+          type.sourceloc
+        )[1];
       }
 
       case Collect.ENode.TypeModifierExpr: {
@@ -9965,7 +11097,15 @@ export class SemanticElaborator {
             );
           }
           return signature.parameters[i].type === p.type;
-        })
+        }) &&
+        // `operator as` is the one place a return type is part of the
+        // signature. It takes NO parameters, so two of them on one struct are
+        // identical by the ordinary rule -- yet §4.3 requires a struct to be
+        // able to declare several, distinguished by what they produce, since
+        // that is the only thing that can distinguish them. Selection is by
+        // target type, so the return type is exactly what makes them different
+        // functions rather than a redefinition.
+        !this.differByCastOperatorTarget(sig, signature)
       ) {
         const ori = this.sr.cc.symbolNodes.get(sig.originalFunction);
         assert(ori.variant === Collect.ENode.FunctionSymbol);
@@ -10124,10 +11264,34 @@ export class SemanticElaborator {
         return this.sr.b.symbolValue(typeDefSymbol, sourceloc);
       }
 
+      case Collect.ENode.VariableSymbol: {
+        // A global declared inside a namespace, reached as `m.counter`.
+        //
+        // This case did not exist: a namespace-scoped global fell straight into
+        // the assert(false) below, so `m.counter` was an internal crash rather
+        // than either a value or a diagnostic -- while the identical
+        // declaration at file scope worked fine. explicitSymbolValue already
+        // knows how to elaborate a global from its Collect symbol (it elaborates
+        // the top-level symbol on demand and then looks it up), and the
+        // namespace it happens to live in changes nothing about that, so this
+        // hands straight over to it.
+        return this.explicitSymbolValue(
+          symbolId,
+          generics,
+          inference,
+          null,
+          sourceloc
+        );
+      }
+
       default:
         break;
     }
-    assert(false);
+    throw new CompilerError(
+      `'${(symbol as { name?: string }).name ?? "symbol"}' cannot be used as a value here`,
+      sourceloc,
+      HazeErrorCode.SymbolIsNotAValue
+    );
   }
 
   resolveMemberAccessInStruct(
@@ -12668,7 +13832,7 @@ export class SemanticElaborator {
 
   makeStructLiteral(
     typeUseId: Semantic.TypeUseId,
-    elements: Collect.AggregateLiteralElement[],
+    elements: readonly Semantic.ResolvedLiteralElement[],
     allocator: Semantic.ExprId | null,
     sourceloc: SourceLoc,
     inference: Semantic.Inference
@@ -12742,6 +13906,14 @@ export class SemanticElaborator {
       });
 
       if (!variableId) {
+        // A member a SPREAD contributed that this target does not have is
+        // dropped, not an error (§6.3): `let p: Vec2 = { ...bigThing }` takes
+        // x and y. Dropping costs nothing because the result is always copied
+        // into a known layout. A member the programmer WROTE stays an error --
+        // they named something that does not exist.
+        if (!m.written) {
+          continue;
+        }
         const options = struct.members.map((mmId) => {
           const mm = this.sr.symbolNodes.get(mmId);
           assert(mm.variant === Semantic.ENode.VariableSymbol);
@@ -12761,17 +13933,24 @@ export class SemanticElaborator {
       const variable = this.sr.symbolNodes.get(variableId);
       assert(variable.variant === Semantic.ENode.VariableSymbol);
 
-      if (assignedMembers.includes(m.key)) {
-        throw new CompilerError(
-          `Cannot assign member ${m.key} twice`,
-          sourceloc,
-          HazeErrorCode.CannotAssignMemberTwice
-        );
-      }
+      // A member cannot be assigned twice HERE any more, because §6.1's
+      // resolution collapsed repeats before this point: last write wins, and
+      // the discarded one produced the §6.2 warning. Reaching this with a
+      // duplicate would be an internal error.
+      assert(
+        !assignedMembers.includes(m.key),
+        `member '${m.key}' survived resolution twice`
+      );
 
-      const [_, eId] = this.expr(m.value, {
-        gonnaInstantiateStructWithType: variable.type || undefined,
-      });
+      // A written member elaborates against the member's own type, so an
+      // untyped nested literal still infers. A spread-contributed one is
+      // already elaborated -- it is a member access on the spread source.
+      const eId =
+        m.value.kind === "semantic"
+          ? m.value.id
+          : this.expr(m.value.id, {
+              gonnaInstantiateStructWithType: variable.type || undefined,
+            })[1];
 
       assert(variable.type);
       const convertedExprId = Conversion.MakeConversionOrThrow(
@@ -12919,6 +14098,7 @@ export class SemanticElaborator {
     const [metaFieldStruct, metaFieldStructId] =
       this.sr.b.addType<Semantic.StructDatatypeDef>(this.sr, {
         variant: Semantic.ENode.StructDatatype,
+        anonymous: false,
         name: "hzstd_meta_field_t",
         noemit: true,
         generics: [],
@@ -12988,6 +14168,7 @@ export class SemanticElaborator {
       this.sr,
       {
         variant: Semantic.ENode.StructDatatype,
+        anonymous: false,
         name: "hzstd_meta_type_t",
         noemit: true,
         generics: [],
@@ -13038,6 +14219,7 @@ export class SemanticElaborator {
     const [metaTaggedMemberStruct, structId] =
       this.sr.b.addType<Semantic.StructDatatypeDef>(this.sr, {
         variant: Semantic.ENode.StructDatatype,
+        anonymous: false,
         name: "hzstd_meta_tagged_member_t",
         noemit: true,
         generics: [],
@@ -14868,6 +16050,10 @@ export class SemanticElaborator {
             assert(paramValue.variant === Semantic.ENode.VariableSymbol);
             assert(paramValue.type);
 
+            // Each iteration is a distinct scope with distinct bindings, so
+            // anything cached per-scope inside the body must not be shared
+            // with the previous one (§1.6).
+            this.comptimeUnrollGeneration++;
             syntheticMap.set(s.loopVariable, semanticParamId);
             const crossedLambda = this.packAccessCrossedLambda.get(valueId);
             if (crossedLambda) {
@@ -15367,10 +16553,337 @@ export class SemanticElaborator {
     }
   }
 
+  /**
+   * Build a fresh anonymous struct type from an untyped `{ ... }` literal.
+   *
+   * Every element must be named: a positional element has no member name to
+   * give the shape, and there is no declared type here to take one from.
+   */
+  anonymousStructFromLiteral(
+    elements: readonly Semantic.ResolvedLiteralElement[],
+    sourceloc: SourceLoc,
+    inference: Semantic.Inference
+  ): Semantic.TypeUseId {
+    const [struct, structId] = this.sr.b.addType<Semantic.StructDatatypeDef>(
+      this.sr,
+      {
+        variant: Semantic.ENode.StructDatatype,
+        anonymous: true,
+        name: "",
+        noemit: false,
+        generics: [],
+        opaque: false,
+        plain: false,
+        reactiveClone: false,
+        refByDefault: false,
+        nocopy: false,
+        export: false,
+        extern: EExternLanguage.None,
+        members: [],
+        membersBuilt: true,
+        membersFinalized: true,
+        memberDefaultValues: [],
+        methods: [],
+        methodsInProgress: false,
+        methodsFinalized: true,
+        nestedStructs: [],
+        parentSymbolId: null,
+        sourceloc: sourceloc,
+        concrete: true,
+        originalCollectedDefinition: -1 as Collect.TypeDefId,
+        originalCollectedSymbol: -1 as Collect.SymbolId,
+        annotations: [],
+      }
+    );
+
+    for (const element of elements) {
+      if (element.key === null) {
+        throw new CompilerError(
+          "A struct literal with no inferable type must name every member: there is nothing here to take the names from.",
+          element.sourceloc ?? sourceloc,
+          HazeErrorCode.ThisStructAnonymousAndMustBeTypeInferred
+        );
+      }
+      const [valueExpr] =
+        element.value.kind === "semantic"
+          ? [this.sr.exprNodes.get(element.value.id)]
+          : this.expr(element.value.id, inference);
+      const memberId = this.sr.b.addSymbol(this.sr, {
+        variant: Semantic.ENode.VariableSymbol,
+        comptime: false,
+        comptimeValue: null,
+        concrete: true,
+        export: false,
+        extern: EExternLanguage.None,
+        requiresHoisting: false,
+        memberOfStruct: structId,
+        mutability: EVariableMutability.Default,
+        name: element.key,
+        parentSymbolId: null,
+        sourceloc: element.sourceloc ?? sourceloc,
+        type: valueExpr.type,
+        variableContext: EVariableContext.MemberOfStruct,
+      } satisfies Semantic.VariableSymbol)[1];
+      struct.members.push(memberId);
+    }
+
+    return makeTypeUse(
+      this.sr,
+      this.internAnonymousStruct(structId),
+      EDatatypeMutability.Default,
+      EStorageClass.Value,
+      sourceloc
+    )[1];
+  }
+
+  /**
+   * §6.1: process a literal's elements left to right into an ordered map.
+   *
+   *   a named element `b: 0`   sets `b`
+   *   a spread `...bar`        sets every member of bar's TYPE, in that type's
+   *                            declared order, each to `bar.<member>`
+   *   a later element setting the same name REPLACES the earlier one
+   *
+   * Last write wins, exactly as in JavaScript. The accumulated map is then the
+   * literal's member set and the ordinary rules take over -- constructed as the
+   * inferred target, or materialised as an anonymous struct when nothing is
+   * inferable (§3.4). Because the member set is computed here, §5's
+   * discrimination sees the post-spread members and needs to know nothing about
+   * spreading at all.
+   *
+   * A spread desugars completely: `{ ...bar, b: 0 }` becomes `{ a: bar.a, b: 0 }`,
+   * so `Lower` and `Codegen` need no changes -- there is no runtime spread,
+   * exactly as pack spread already desugars to `pack[i]`.
+   */
+  resolveLiteralElements(
+    elements: readonly Collect.AggregateLiteralElement[],
+    inference: Semantic.Inference,
+    /**
+     * Filled with one `let <temp> = <source>;` per spread. The caller must
+     * execute these before the literal: §6.3 requires the source to be
+     * evaluated EXACTLY ONCE, in position, even if every one of its members is
+     * later overwritten -- `{ ...f(), a: 0, b: 0 }` still calls f(). Without a
+     * temporary the call is duplicated once per member, and a fully shadowed
+     * spread disappears entirely along with its side effects.
+     */
+    spreadBindings?: Semantic.StatementId[]
+  ): Semantic.ResolvedLiteralElement[] {
+    // Positional elements (an array literal) have no member names to build a
+    // map out of, and no spread to resolve. Left exactly as written.
+    if (elements.every((e) => !e.spread && e.key === null)) {
+      return elements.map((e) => ({
+        key: e.key,
+        value: { kind: "collect", id: e.value },
+        written: true,
+        sourceloc: e.sourceloc,
+      }));
+    }
+
+    const resolved: Semantic.ResolvedLiteralElement[] = [];
+    const indexByKey = new Map<string, number>();
+
+    const set = (element: Semantic.ResolvedLiteralElement) => {
+      if (element.key === null) {
+        resolved.push(element);
+        return;
+      }
+      const existing = indexByKey.get(element.key);
+      if (existing !== undefined) {
+        // §6.2: overwriting a member the programmer WROTE OUT discards their
+        // value, so writing it was pointless. Overwriting one a spread
+        // contributed is the entire point of spreading and never warns --
+        // `{ ...defaults, ...overrides }` is its most common use, and warning
+        // there would make the feature unusable.
+        if (resolved[existing].written) {
+          printWarningMessage(
+            `'${element.key}' is overwritten later in this literal and has no effect.${
+              element.written
+                ? " Remove it, or keep only the one you meant."
+                : " Remove it, or move it after the spread if it was meant as the override."
+            }`,
+            resolved[existing].sourceloc,
+            HazeErrorCode.MemberOverwrittenHasNoEffect
+          );
+        }
+        resolved[existing] = element;
+        return;
+      }
+      indexByKey.set(element.key, resolved.length);
+      resolved.push(element);
+    };
+
+    for (const element of elements) {
+      if (!element.spread) {
+        set({
+          key: element.key,
+          value: { kind: "collect", id: element.value },
+          written: true,
+          sourceloc: element.sourceloc,
+        });
+        continue;
+      }
+
+      // The source is elaborated ONCE, here, in position -- even if every one
+      // of its members is later overwritten. `{ ...f(), a: 0, b: 0 }` still
+      // calls f(); eliding a fully shadowed spread would drop its side effects.
+      const [sourceExpr, sourceExprId] = this.expr(element.value, inference);
+      const sourceUse = this.sr.typeUseNodes.get(
+        this.resolveAlias(sourceExpr.type)
+      );
+      const sourceDef = this.sr.typeDefNodes.get(sourceUse.type);
+
+      if (sourceDef.variant !== Semantic.ENode.StructDatatype) {
+        throw new CompilerError(
+          `Only a struct can be spread into a literal; '${Semantic.serializeTypeUse(this.sr, sourceExpr.type)}' is not one. (Array spreading is a separate feature.)`,
+          element.sourceloc,
+          HazeErrorCode.SpreadOfNonStruct
+        );
+      }
+      if (sourceDef.opaque) {
+        throw new CompilerError(
+          `'${Semantic.serializeTypeDef(this.sr, sourceUse.type)}' is opaque and exposes no member set to spread.`,
+          element.sourceloc,
+          HazeErrorCode.SpreadOfOpaqueStruct
+        );
+      }
+
+      // Bind the source to a temporary and read the members off THAT, so it is
+      // evaluated exactly once however many members it contributes and however
+      // many of them are later overwritten (§6.3, §6.5).
+      let readFromId = sourceExprId;
+      if (spreadBindings) {
+        const tempName = makeTempName();
+        const [, tempVariableId] = this.sr.b.addSymbol(this.sr, {
+          variant: Semantic.ENode.VariableSymbol,
+          comptime: false,
+          comptimeValue: null,
+          concrete: false,
+          export: false,
+          extern: EExternLanguage.None,
+          memberOfStruct: null,
+          mutability: EVariableMutability.Default,
+          requiresHoisting: false,
+          name: tempName,
+          sourceloc: element.sourceloc,
+          parentSymbolId: null,
+          type: sourceExpr.type,
+          variableContext: EVariableContext.FunctionLocal,
+        });
+        spreadBindings.push(
+          this.sr.b.addStatement(this.sr, {
+            variant: Semantic.ENode.VariableStatement,
+            name: tempName,
+            comptime: false,
+            sourceloc: element.sourceloc,
+            value: sourceExprId,
+            intrinsicTakeAddrOfValue: false,
+            stackrefInit: null,
+            variableSymbol: tempVariableId,
+          })[1]
+        );
+        readFromId = this.sr.b.symbolValue(
+          tempVariableId,
+          element.sourceloc
+        )[1];
+      }
+      const readFrom = this.sr.exprNodes.get(readFromId);
+
+      for (const memberId of sourceDef.members) {
+        const member = this.sr.symbolNodes.get(memberId);
+        if (member.variant !== Semantic.ENode.VariableSymbol) {
+          continue;
+        }
+        assert(member.type);
+        const accessId = this.sr.b.addExpr(this.sr, {
+          variant: Semantic.ENode.MemberAccessExpr,
+          instanceIds: [...readFrom.instanceIds],
+          expr: readFromId,
+          memberName: member.name,
+          type: member.type,
+          sourceloc: element.sourceloc,
+          isTemporary: true,
+          flow: readFrom.flow,
+          writes: readFrom.writes,
+        })[1];
+        set({
+          key: member.name,
+          value: { kind: "semantic", id: accessId },
+          // Contributed by a spread, not written out: a later element may
+          // replace it silently.
+          written: false,
+          sourceloc: element.sourceloc,
+        });
+      }
+    }
+
+    return resolved;
+  }
+
+  /**
+   * `[...arr]` is a separate feature and out of scope (§6.3), so a spread that
+   * turns out to be building an ARRAY is rejected rather than silently ignored.
+   */
+  rejectSpreadIntoArray(structInst: Collect.AggregateLiteralExpr): void {
+    const spread = structInst.elements.find((e) => e.spread);
+    if (spread) {
+      throw new CompilerError(
+        "'...' cannot spread into an array literal; only a struct literal accepts a spread.",
+        spread.sourceloc,
+        HazeErrorCode.SpreadOfNonStruct
+      );
+    }
+  }
+
   structInstantiation(
     structInst: Collect.AggregateLiteralExpr,
     inference: Semantic.Inference
+  ): readonly [Semantic.Expression, Semantic.ExprId] {
+    const [expr, exprId] = this.structInstantiationInner(structInst, inference);
+    const bindings = this.pendingSpreadBindings.pop();
+    if (bindings === undefined || bindings.length === 0) {
+      return [expr, exprId];
+    }
+    // The spread sources have to be evaluated before the literal is built, and
+    // exactly once (§6.3). A block scope is the vehicle: `{ let t = f(); <the
+    // literal, reading t> }`. There is still no runtime spread -- the literal
+    // itself is the same per-member struct literal it would have been.
+    const [, blockId] = this.sr.b.blockScope(
+      bindings,
+      exprId,
+      structInst.sourceloc
+    );
+    const [blockExpr, blockExprId] = this.sr.b.blockScopeExpr(
+      blockId,
+      expr.flow,
+      expr.writes
+    );
+    blockExpr.type = expr.type;
+    blockExpr.instanceIds = [
+      ...expr.instanceIds,
+    ] as typeof blockExpr.instanceIds;
+    return [blockExpr, blockExprId];
+  }
+
+  /** Spread bindings collected by the structInstantiation currently running. */
+  private pendingSpreadBindings: Semantic.StatementId[][] = [];
+
+  private structInstantiationInner(
+    structInst: Collect.AggregateLiteralExpr,
+    inference: Semantic.Inference
   ) {
+    // §6.1 first: the literal's member set is what everything below decides
+    // against -- which candidate it discriminates to (§5), which members the
+    // target still needs, and, with nothing to infer from, what shape it makes
+    // for itself. Spreading is resolved before any of that, so none of it has
+    // to know spreading exists.
+    const spreadBindings: Semantic.StatementId[] = [];
+    this.pendingSpreadBindings.push(spreadBindings);
+    const elements = this.resolveLiteralElements(
+      structInst.elements,
+      inference,
+      spreadBindings
+    );
+
     let structId = undefined as Semantic.TypeUseId | undefined;
     if (structInst.structType) {
       structId = this.withContext(
@@ -15395,10 +16908,19 @@ export class SemanticElaborator {
     }
 
     if (!structId) {
-      throw new CompilerError(
-        "This struct is anonymous and must be type-inferred, but there is not enough context to infer it. Either it is not directly passed to something that expects a specific type, or it is being passed to an overloaded function.",
+      // Nothing to infer from, so the literal makes its own type: a fresh
+      // anonymous struct built from the members it actually has (§3.4). This
+      // is what turns `let foo = { x: 0, y: 0 };` from an error into a
+      // perfectly ordinary declaration.
+      //
+      // Only when there is genuinely NO context. An inferred target that
+      // cannot be satisfied stays an error rather than silently falling back
+      // to a different type -- falling back there would replace a precise
+      // "this member does not exist" with a mystifying type mismatch later.
+      structId = this.anonymousStructFromLiteral(
+        elements,
         structInst.sourceloc,
-        HazeErrorCode.ThisStructAnonymousAndMustBeTypeInferred
+        inference
       );
     }
 
@@ -15408,7 +16930,7 @@ export class SemanticElaborator {
     if (struct.variant === Semantic.ENode.StructDatatype) {
       return this.makeStructLiteral(
         structId,
-        structInst.elements,
+        elements,
         structInst.allocator
           ? this.expr(structInst.allocator, undefined)[1]
           : null,
@@ -15432,6 +16954,72 @@ export class SemanticElaborator {
 
       const nonNullMembers = struct.members.filter((m) => !isNullOrNone(m));
 
+      // §5.1: with more than one struct member in the union, the literal's own
+      // members decide which one it is. Unions and overload sets are treated
+      // identically at this level -- the same exactly-one-match rule, and the
+      // same hard ambiguity error rather than any kind of tie-break.
+      if (nonNullMembers.length > 1) {
+        const structMembers = nonNullMembers.filter((m) =>
+          Conversion.isStruct(
+            this.sr,
+            this.sr.typeUseNodes.get(this.resolveAlias(m)).type
+          )
+        );
+        const matching = structMembers.filter(
+          (m) => this.literalMatchesExactly(elements, m) === true
+        );
+
+        if (matching.length === 1) {
+          return this.makeStructLiteral(
+            matching[0],
+            elements,
+            structInst.allocator
+              ? this.expr(structInst.allocator, undefined)[1]
+              : null,
+            structInst.sourceloc,
+            inference
+          );
+        }
+
+        if (matching.length > 1) {
+          // No tie-breaking, deliberately. If it is 100% unambiguous what the
+          // user meant, do exactly that; if it is not, never guess.
+          throw new CompilerError(
+            `This literal matches more than one member of '${Semantic.serializeTypeUse(this.sr, structId)}' (${matching
+              .map((m) => Semantic.serializeTypeUse(this.sr, m))
+              .join(
+                ", "
+              )}). Write the type explicitly to say which one is meant.`,
+            structInst.sourceloc,
+            HazeErrorCode.AmbiguousLiteralCandidates
+          );
+        }
+
+        if (structMembers.length > 0) {
+          // Nothing matched. §5.2 picks who to blame: the first member of the
+          // literal that exists on exactly one candidate.
+          const blamed = this.discriminatingCandidate(elements, structMembers);
+          if (blamed !== null) {
+            return this.makeStructLiteral(
+              blamed,
+              elements,
+              structInst.allocator
+                ? this.expr(structInst.allocator, undefined)[1]
+                : null,
+              structInst.sourceloc,
+              inference
+            );
+          }
+          throw new CompilerError(
+            `This literal matches no member of '${Semantic.serializeTypeUse(this.sr, structId)}' (${structMembers
+              .map((m) => Semantic.serializeTypeUse(this.sr, m))
+              .join(", ")}).`,
+            structInst.sourceloc,
+            HazeErrorCode.NoCandidateForLiteral
+          );
+        }
+      }
+
       if (
         nonNullMembers.length === 1 &&
         nonNullMembers.length < struct.members.length
@@ -15443,7 +17031,7 @@ export class SemanticElaborator {
         if (Conversion.isStruct(this.sr, pickedUse.type)) {
           return this.makeStructLiteral(
             picked,
-            structInst.elements,
+            elements,
             structInst.allocator
               ? this.expr(structInst.allocator, undefined)[1]
               : null,
@@ -15456,6 +17044,7 @@ export class SemanticElaborator {
           pickedDef.variant === Semantic.ENode.FixedArrayDatatype ||
           pickedDef.variant === Semantic.ENode.DynamicArrayDatatype
         ) {
+          this.rejectSpreadIntoArray(structInst);
           return this.makeArrayLiteral(
             picked,
             structInst.elements,
@@ -15473,6 +17062,7 @@ export class SemanticElaborator {
       struct.variant === Semantic.ENode.FixedArrayDatatype ||
       struct.variant === Semantic.ENode.DynamicArrayDatatype
     ) {
+      this.rejectSpreadIntoArray(structInst);
       return this.makeArrayLiteral(
         structId,
         structInst.elements,
@@ -15568,6 +17158,23 @@ export class SemanticElaborator {
     const capturedVariable = this.sr.symbolNodes.get(capturedVariableId);
     assert(capturedVariable.variant === Semantic.ENode.VariableSymbol);
     assert(capturedVariable.type);
+
+    // A global is never a capture. Name lookup reports "this crossed a lambda
+    // scope" for a global exactly as it does for a local -- the walk out to the
+    // declaration passes through the same LambdaScope either way -- but only a
+    // local needs an env slot: it lives in a frame the closure can outlive,
+    // whereas a global is one storage location that the generated C addresses
+    // by name from any function, the lambda body included. Giving one an env
+    // slot copied it in at closure creation, so the closure read a snapshot
+    // that went stale the moment anyone wrote the global, and an assignment
+    // from inside the closure was rejected with H7189 -- whose advice, "declare
+    // it as a stack reference", does not exist at global scope. It also must
+    // not record capturedByValueAt, or an ordinary write to the global further
+    // down the enclosing function would warn H7190 about a copy that is not
+    // there. See testsuite/src/cases_global_not_captured.hz.
+    if (capturedVariable.variableContext === EVariableContext.Global) {
+      return;
+    }
 
     const resultingExpr = this.sr.exprNodes.get(resultingExprId);
 
@@ -15773,8 +17380,71 @@ export class SemanticElaborator {
     if (
       symbol.variant === Collect.ENode.TypeDefSymbol &&
       this.sr.cc.typeDefNodes.get(symbol.typeDef).variant ===
-        Collect.ENode.TypeAliasDef
+        Collect.ENode.AliasDef
     ) {
+      // The symbol-valued half of the alias elaborator (§1.1).
+      //
+      // A type-valued alias becomes a TypeAliasDatatype wrapping its target, so
+      // it keeps its own identity in diagnostics. A symbol-valued one must do
+      // the opposite and vanish: the alias resolves to the target's OWN
+      // overload group / variable and is elaborated through the target's normal
+      // path, so that generic deduction and overload selection see exactly what
+      // they would have seen had the target been written here (§1.3). A wrapper
+      // signature would sit between callExpr's deduction and the target and
+      // break inference in both directions.
+      const target = this.resolveAliasTarget(symbol.typeDef);
+
+      if (
+        target.kind === "symbol" &&
+        !this.aliasTargetIsTypeLike(target.symbolId)
+      ) {
+        const targetSymbol = this.sr.cc.symbolNodes.get(target.symbolId);
+        if (
+          targetSymbol.variant === Collect.ENode.VariableSymbol &&
+          targetSymbol.variableContext !== EVariableContext.Global
+        ) {
+          // A local or a parameter is a reference binding wearing an alias
+          // costume, and a separate feature (§1.2).
+          throw new CompilerError(
+            `'${targetSymbol.name}' is a local variable or parameter and cannot be aliased`,
+            sourceloc,
+            HazeErrorCode.AliasTargetIsNotAliasable
+          );
+        }
+        this.checkAliasIsTypeValued(symbol.typeDef, sourceloc);
+        // Generics written at the use site forward to the target when the
+        // target itself was written without any: `alias id = m.identity;`
+        // then `id<int>(9)` (§1.3).
+        const [delegated, delegatedId] = this.explicitSymbolValue(
+          target.symbolId,
+          target.generics.length > 0 ? target.generics : generics,
+          inference,
+          crossedLambdaScope,
+          sourceloc
+        );
+        // The alias name rides on the expression so diagnostics can report the
+        // name the programmer wrote rather than the target's (§1.4). Nothing
+        // below the semantic layer reads it.
+        if (delegated.variant === Semantic.ENode.SymbolValueExpr) {
+          const aliasDef = this.sr.cc.typeDefNodes.get(symbol.typeDef);
+          assert(aliasDef.variant === Collect.ENode.AliasDef);
+          delegated.aliasedVia = aliasDef.name;
+        }
+        return [delegated, delegatedId];
+      }
+
+      if (target.kind === "value") {
+        // An enum member: a value with no symbol behind it, so the target
+        // expression is elaborated as an ordinary expression, in the alias's
+        // own definition scope.
+        this.checkAliasIsTypeValued(symbol.typeDef, sourceloc);
+        const [valueExpr, valueExprId] = this.elaborateAliasTargetAsValue(
+          symbol.typeDef,
+          inference
+        );
+        return [valueExpr, valueExprId];
+      }
+
       return this.sr.b.datatypeDefAsValue(
         this.elaborateTypeDefAlias(symbol.typeDef, genericArgs)[1],
         sourceloc
@@ -18024,6 +19694,14 @@ function getFromFuncDefCache(
   const canonicalizedGenerics = args.genericArgs.map((g) =>
     Semantic.canonicalizeGenericExpr(sr, g)
   );
+  // Pack types compared THROUGH aliases, for the same reason
+  // canonicalizeGenericExpr resolves: two spellings of one type must not
+  // instantiate the function twice. They mangle identically now, so a second
+  // instantiation is not a second symbol -- it is the same C function defined
+  // twice in one translation unit.
+  const resolvedPackTypes = args.paramPackTypes.map((t) =>
+    sr.e.resolveAlias(t)
+  );
 
   for (const entry of entries) {
     if (
@@ -18032,8 +19710,10 @@ function getFromFuncDefCache(
       entry.canonicalizedGenerics.every(
         (g, index) => g === canonicalizedGenerics[index]
       ) &&
-      entry.paramPackTypes.length === args.paramPackTypes.length &&
-      entry.paramPackTypes.every((g, index) => g === args.paramPackTypes[index])
+      entry.paramPackTypes.length === resolvedPackTypes.length &&
+      entry.paramPackTypes.every(
+        (g, index) => sr.e.resolveAlias(g) === resolvedPackTypes[index]
+      )
     ) {
       return entry.result;
     }
@@ -18134,12 +19814,13 @@ export function insertIntoStructDefCache(
   });
 }
 
-export function getFromTypeAliasDefCache(
+export function getFromAliasDefCache(
   sr: Semantic.Context,
   symbolId: Collect.TypeDefId,
   args: {
     genericArgs: Semantic.ExprId[];
     parentSymbolId: Semantic.SymbolId | null;
+    unrollGeneration: number;
   }
 ) {
   const entries = sr.elaboratedTypeAliasSymbols.get(symbolId);
@@ -18154,6 +19835,7 @@ export function getFromTypeAliasDefCache(
   for (const entry of entries) {
     if (
       entry.parentSymbolId === args.parentSymbolId &&
+      entry.unrollGeneration === args.unrollGeneration &&
       entry.canonicalizedGenerics.length === canonicalizedGenerics.length &&
       entry.canonicalizedGenerics.every(
         (g, index) => g === canonicalizedGenerics[index]
@@ -18166,7 +19848,7 @@ export function getFromTypeAliasDefCache(
   return;
 }
 
-export function insertIntoTypeAliasDefCache(
+export function insertIntoAliasDefCache(
   sr: Semantic.Context,
   symbolId: Collect.TypeDefId,
   args: {
@@ -18175,6 +19857,7 @@ export function insertIntoTypeAliasDefCache(
     result: Semantic.TypeDefId;
     resultAsTypeDefSymbol: Semantic.SymbolId;
     parentSymbolId: Semantic.SymbolId | null;
+    unrollGeneration: number;
   }
 ) {
   const canonicalizedGenerics = args.genericArgs.map((g) =>
@@ -18190,6 +19873,7 @@ export function insertIntoTypeAliasDefCache(
   entries.push({
     canonicalizedGenerics: canonicalizedGenerics,
     parentSymbolId: args.parentSymbolId,
+    unrollGeneration: args.unrollGeneration,
     result: args.result,
     substitutionContext: args.substitutionContext,
     resultAsTypeDefSymbol: args.resultAsTypeDefSymbol,
@@ -18512,6 +20196,7 @@ export function makeDeepDatatypeAvailable(
     sr,
     {
       variant: Semantic.ENode.StructDatatype,
+      anonymous: false,
       export: false,
       extern: EExternLanguage.None,
       generics: wrappedTypeDef.generics,

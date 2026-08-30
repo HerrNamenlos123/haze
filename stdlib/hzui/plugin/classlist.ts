@@ -96,11 +96,11 @@ function wrapUnit(expr: string, unit: string, raw: string): string {
     case "":
       return expr;
     case "px":
-      return `ui_styling.Px { value: (${expr}) }`;
+      return `Px { value: (${expr}) }`;
     case "em":
-      return `ui_styling.Em { value: (${expr}) }`;
+      return `Em { value: (${expr}) }`;
     case "rem":
-      return `ui_styling.Rem { value: (${expr}) }`;
+      return `Rem { value: (${expr}) }`;
     case "%":
       throw new ClassListError(
         `'%' in token '${raw}': percent sizes are not supported yet (ui_styling.Size has no percent variant)`

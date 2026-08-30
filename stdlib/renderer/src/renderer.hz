@@ -172,6 +172,11 @@ export ref struct TextRenderer {
         // reporting anything.
         let fs = fontstash.FontStash(fontAtlasSize, fontAtlasSize);
 
+        // ProggyClean is MIT, by Tristan Grimmer -- and embed.binary bakes it
+        // into every binary this compiler produces, so every shipped Haze app
+        // redistributes it and inherits MIT's notice requirement. The renderer
+        // is pulled in unconditionally, so this is the one asset no Haze app
+        // can opt out of. See THIRD-PARTY-NOTICES.md at the repo root.
         let fontBytes = embed.binary("resources/ProggyClean.ttf");
         let defaultFont = fs.addFont("default", fontBytes);
 

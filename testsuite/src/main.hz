@@ -59,6 +59,15 @@ fn main(): int {
     cases_optional_chaining.register(suite);
     cases_overload_aggregate_literal.register(suite);
     cases_watch.register(suite);
+    cases_multimodule_smoke.register(suite);
+    cases_aliases.register(suite);
+    cases_comptime_alias_scoping.register(suite);
+    cases_symbol_imports.register(suite);
+    cases_anon_structs.register(suite);
+    cases_literal_discrimination.register(suite);
+    cases_operator_as.register(suite);
+    cases_struct_spread.register(suite);
+    cases_global_not_captured.register(suite);
 
     return testsuite.runAll(config, suite);
 }

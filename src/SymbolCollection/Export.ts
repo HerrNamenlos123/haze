@@ -72,7 +72,7 @@ export function ExportCollectedTypeDefAlias(
   nested: boolean
 ) {
   const typedef = sr.cc.typeDefNodes.get(typedefId);
-  assert(typedef.variant === Collect.ENode.TypeAliasDef);
+  assert(typedef.variant === Collect.ENode.AliasDef);
   const generics = typedef.generics.map((g) => {
     const symbol = sr.cc.symbolNodes.get(g);
     assert(symbol.variant === Collect.ENode.GenericTypeParameterSymbol);
@@ -129,8 +129,18 @@ export function ExportCollectedTypeDefAlias(
     }
   }
 
+  // Which keyword the alias was written with is load-bearing across the
+  // boundary, not cosmetic: the consumer re-parses this text, and `type`
+  // carries the check that the target is a datatype. Emitting `type` for an
+  // alias to a function or a global would make the consumer reject a
+  // declaration the producer accepted.
   alias.writeLine(
-    "type " + typedef.name + genericsString + " = " + aliasBody + ";"
+    (typedef.typeOnly ? "type " : "alias ") +
+      typedef.name +
+      genericsString +
+      " = " +
+      aliasBody +
+      ";"
   );
 
   if (typedef.sourceloc) {
@@ -283,6 +293,13 @@ export function ExportTypeDef(
             method.overloadedOperator === EOverloadedOperator.Subscript
           ) {
             methodName = "operator[]";
+          } else if (method.overloadedOperator === EOverloadedOperator.Cast) {
+            // `operator as` has to cross the boundary like any other: a
+            // consumer converting FROM this struct needs to know the conversion
+            // exists, and the interface is the only place it can learn that
+            // (§4.3). The return type carries which target it produces, so
+            // nothing else has to be encoded.
+            methodName = "operator as";
           } else {
             assert(false);
           }
@@ -605,7 +622,7 @@ function getNamespacesFromTypeDefSymbol(
   current: string[] = []
 ) {
   const typedef = cc.typeDefNodes.get(typedefId);
-  assert(typedef.variant === Collect.ENode.TypeAliasDef);
+  assert(typedef.variant === Collect.ENode.AliasDef);
   return getNamespacesFromScope(cc, typedef.inScope, [
     typedef.name,
     ...current,
@@ -682,6 +699,36 @@ export function ExportCollectedSymbols(sr: Semantic.Context) {
         )};`
       );
     }
+    // The same trap, one level finer. `from n import helper;` binds `helper`
+    // in ONE FILE of this module -- and a generic exported function whose body
+    // calls `helper(...)` is re-emitted as raw source and re-elaborated in the
+    // consumer, where that file (and its import) do not exist. Without these
+    // lines the consumer fails with "Symbol 'helper' was not declared in this
+    // scope", pointing into a generated interface file. No single-module test
+    // can catch it (§2.3).
+    //
+    // Hoisting a per-file binding to module scope is the same trade-off the
+    // dependency aliases above already make. It does mean two files importing
+    // DIFFERENT symbols under the same name cannot both be re-emitted, so a
+    // conflicting name is dropped rather than resolved arbitrarily: dropping it
+    // leaves the consumer exactly where it is today, while guessing would
+    // silently bind the wrong function.
+    const importedByName = new Map<string, string | null>();
+    for (const imported of sr.cc.symbolImportsToVerify) {
+      const line = `alias ${imported.boundName} = ${imported.importedNamespace}.${imported.symbolName};`;
+      const existing = importedByName.get(imported.boundName);
+      if (existing === undefined) {
+        importedByName.set(imported.boundName, line);
+      } else if (existing !== line) {
+        importedByName.set(imported.boundName, null);
+      }
+    }
+    for (const line of importedByName.values()) {
+      if (line !== null) {
+        aliases.push(line);
+      }
+    }
+
     if (aliases.length > 0) {
       file
         .writeLine(

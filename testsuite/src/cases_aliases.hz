@@ -1,0 +1,422 @@
+// ============================================================================
+// `alias` — the general symbol alias (§1 of
+// R&D/Aliases, Anonymous Structs and Spreading.md).
+//
+// `type` and `alias` are ONE node with two keywords. `type` is `alias` plus a
+// single check: the target must resolve to a datatype. Where both are legal
+// they produce byte-identical output. So `alias` is a strict superset, and the
+// interesting cases are the ones `type` cannot express: a function overload
+// group, a global variable, an enum member.
+//
+// The property that makes this more than sugar is TRANSPARENCY. An alias to a
+// function must not become a barrier between the call site and the target's
+// signature: generic arguments have to forward through it, generic parameters
+// have to deduce through it from the call's arguments, and closure parameter
+// types have to be inferred back OUT of the substituted signature. That is what
+// `generic`, `deduce` and `infer` below are for, and it is why a symbol-valued
+// alias resolves to the target's own overload group and elaborates through the
+// target's normal path rather than producing a wrapper signature of its own.
+//
+// Two pre-existing bugs are pinned here as well:
+//
+//   * `type F<T> = G<T>;` in a FUNCTION BODY was H7076 "Type F expects 0 type
+//     parameters but got 1". collectScope's alias case hardcoded `generics: []`
+//     and never read the generics, and collected the target in the block scope
+//     rather than in a generic scope — so the alias's own type parameters were
+//     not in scope for its own right-hand side. The global path always did this
+//     correctly; only the local one did not. See `local`.
+//
+//   * A global declared inside a NAMESPACE (`m.counter`) was an internal
+//     assertion failure, not a value and not a diagnostic:
+//     elaborateSymbolInNamespace handled overload groups and typedefs and let
+//     everything else fall into assert(false). The identical declaration at
+//     file scope worked fine. Aliasing a global is in the §1.2 table, so this
+//     had to work before that could. See `global` and `globalwrite`.
+// ============================================================================
+
+namespace cases_aliases {
+
+    export fn register(s: mut testsuite.Suite) {
+
+        // One compile, sixteen checks. Everything here must succeed, so it can
+        // all share a program; the failure cases below cannot, because each one
+        // must be the only error in its own build.
+        s.run(
+            "alias: types, namespaces, overload groups, globals, enum members, generics",
+            """
+struct Point { x: int = 0; y: int = 0; }
+struct Boxed<T> { value: T; }
+enum Color { Red, Green, Blue }
+
+let counter: int = 10;
+
+namespace geo {
+    export fn area(p: Point): int { return p.x * p.y; }
+    export fn area(a: int, b: int): int { return a * b; }
+    export fn identity<T>(v: T): T { return v; }
+    export fn applyTo(v: int, f: (x: int) => int): int { return f(v); }
+    export struct Nested { tag: int = 0; }
+    export let scale: int = 3;
+}
+
+alias P = Point;                 // a datatype -- exactly what `type` does
+alias G = geo;                   // a namespace
+alias area = geo.area;           // a whole overload group, not one overload
+alias id = geo.identity;         // a generic function
+alias applyTo = geo.applyTo;     // inference has to run back out of this one
+alias N = geo.Nested;            // a type reached through a namespace
+alias scale = geo.scale;         // a global living in a namespace
+alias red = Color.Red;           // an enum member: a value with no symbol
+alias B = Boxed;                 // forwarding: no parameters declared here
+alias BI<T> = Boxed<T>;          // a generic alias with a parameter of its own
+alias P2 = P;                    // a chain, which must resolve transitively
+
+namespace wrap {
+    export alias Inner = Point;  // and aliases nest in namespaces
+}
+
+// Writing through an alias must hit the target's single C global, not a copy.
+fn writeThroughAlias(): int {
+    scale = 5;
+    return geo.scale;
+}
+
+fn localAliases(): int {
+    alias L = Point;             // a local alias, non-generic: always worked
+    alias LB<T> = Boxed<T>;      // a local GENERIC alias: bug 3 of §0.2
+    type TB<T> = Boxed<T>;       // the `type` spelling of the same thing
+    let a: L = L { x: 2, y: 3 };
+    let b: LB<int> = LB<int> { value: 7 };
+    let c: TB<int> = TB<int> { value: 1 };
+    return a.x * a.y + b.value + c.value;
+}
+
+fn main(): int {
+    let p: P = P { x: 4, y: 5 };
+    fmt.println(f"type {p.x} {p.y}");
+    fmt.println(f"chain {P2 { x: 1, y: 2 }.x}");
+    fmt.println(f"namespace {G.area(p)}");
+
+    // Both overloads are reachable through the one alias -- it binds the
+    // group, not whichever overload happened to be found first.
+    fmt.println(f"overload1 {area(p)}");
+    fmt.println(f"overload2 {area(6, 7)}");
+
+    // Generic arguments written at the use site forward to a target that was
+    // written with none; and deduction from the argument still works.
+    fmt.println(f"generic {id<int>(9)}");
+    fmt.println(f"deduce {id("hi")}");
+
+    // The other direction: the closure's parameter type is inferred out of the
+    // target's signature, through the alias.
+    fmt.println(f"infer {applyTo(4, (x) => x + 1)}");
+
+    let n: N = N { tag: 8 };
+    fmt.println(f"nested {n.tag}");
+    let w: wrap.Inner = wrap.Inner { x: 1, y: 1 };
+    fmt.println(f"innamespace {w.x}");
+
+    fmt.println(f"global {scale}");
+    fmt.println(f"globalwrite {writeThroughAlias()}");
+    fmt.println(f"enum {red == Color.Red}");
+
+    let bi: BI<int> = BI<int> { value: 2 };
+    let bf: B<int> = B<int> { value: 3 };
+    fmt.println(f"generics {bi.value} {bf.value}");
+
+    fmt.println(f"local {localAliases()}");
+
+    counter = counter + 1;
+    fmt.println(f"filescope {counter}");
+    return 0;
+}
+""",
+            """
+type 4 5
+chain 1
+namespace 20
+overload1 20
+overload2 42
+generic 9
+deduce hi
+infer 5
+nested 8
+innamespace 1
+global 3
+globalwrite 5
+enum true
+generics 2 3
+local 14
+filescope 11
+""");
+
+        // ── The `type` keyword's one check ──────────────────────────────────
+        //
+        // Eagerly, not on use: `type Foo = someFunction;` is wrong the moment
+        // it is written, and an alias nobody uses would otherwise never be
+        // checked at all. Resolving the target is pure symbol lookup -- nothing
+        // is elaborated or instantiated -- so it is cheap enough to do up front.
+        s.compileFails(
+            "alias: `type` rejects a non-datatype target, even unused",
+            """
+namespace m { export fn f(): int { return 1; } }
+type F = m.f;
+fn main(): int { return 0; }
+""",
+            [testsuite.mustHave(errorcodes.Code.AliasTargetIsNotADatatype)]);
+
+        s.compileFails(
+            "alias: `type` rejects an enum member as a target",
+            """
+enum Color { Red, Green }
+type C = Color.Red;
+fn main(): int { return 0; }
+""",
+            [testsuite.mustHave(errorcodes.Code.AliasTargetIsNotADatatype)]);
+
+        // A local or a parameter is a reference binding wearing an alias
+        // costume, and that is a separate feature (§1.2).
+        s.compileFails(
+            "alias: a local variable cannot be aliased",
+            """
+fn main(): int {
+    let x = 1;
+    alias a = x;
+    return a;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.AliasTargetIsNotAliasable)]);
+
+        s.compileFails(
+            "alias: a parameter cannot be aliased",
+            """
+fn take(v: int): int {
+    alias a = v;
+    return a;
+}
+fn main(): int { return take(1); }
+""",
+            [testsuite.mustHave(errorcodes.Code.AliasTargetIsNotAliasable)]);
+
+        // The rejection rule is not "the alias graph has a cycle" -- it is
+        // "the cycle contains no indirection". This one has none at all.
+        s.compileFails(
+            "alias: a cycle with no type in it is rejected",
+            """
+alias a = b;
+alias b = a;
+fn main(): int { let v: a = 0; return 0; }
+""",
+            [testsuite.mustHave(errorcodes.Code.AliasCycleWithoutIndirection)]);
+
+        // ...and the guard in the other direction. A self-referential type
+        // reached through an alias is VALID and must keep working: the cycle
+        // goes through `ref` and `| none`, so the type has a finite size and a
+        // fixed point. Getting this distinction wrong breaks every recursive
+        // data structure in the language, so it is worth its own case.
+        s.run(
+            "alias: a recursive type through ref and none is legal",
+            """
+struct Node {
+    value: int = 0;
+    next: ref Node | none = none;
+}
+type List = Node;
+
+fn sum(n: ref List): int {
+    let total = 0;
+    let cursor: ref List | none = n;
+    while cursor {
+        total = total + cursor.value;
+        cursor = cursor.next;
+    }
+    return total;
+}
+
+fn main(): int {
+    // Constructed in the `ref` slot directly: a value never silently becomes
+    // a heap object.
+    let third: ref Node = { value: 3 };
+    let second: ref Node = { value: 2, next: third };
+    let first: ref Node = { value: 1, next: second };
+    fmt.println(f"sum {sum(first)}");
+    return 0;
+}
+""",
+            "sum 6");
+
+        // ── Transparency in type IDENTITY, not just in lookup (§0.1) ────────
+        //
+        // "Sees through it everywhere types are compared" is the whole claim,
+        // and two places did not: the generic instantiation cache keyed on the
+        // raw type-use id, so `Box<Alias>` and `Box<Real>` were two unrelated
+        // instantiations of one generic -- H4001 between a type and itself,
+        // printing the two spellings side by side and looking like nonsense.
+        //
+        // Reached in real code through a re-export: an SFC writes
+        // `elementRef<DivElement>()` with the name hzui re-exports, while
+        // ui_components declares the field it flows into as
+        // `ElementRef<ui_elements.DivElement>`.
+        s.run(
+            "alias: a generic argument written through an alias is the same instantiation",
+            """
+struct Real { x: int = 0; }
+ref struct RefReal { x: int = 0; }
+struct Box<T> { v: T; fn get(): T { return this.v; } }
+struct Pair<A, B> { a: A; b: B; }
+
+type Alias = Real;
+type Chain = Alias;
+type RefAlias = RefReal;
+type BoxAlias<T> = Box<T>;
+
+namespace n { export type Nested = Real; }
+
+// Every one of these is declared with the TARGET; every call below hands it
+// something written through an alias instead.
+fn takeBox(b: Box<Real>): int { return b.v.x; }
+fn takeNested(b: Box<Box<Real>>): int { return b.v.v.x; }
+fn takePair(p: Pair<Real, int>): int { return p.a.x + p.b; }
+fn takeRef(b: Box<ref RefReal>): int { return b.v.x; }
+fn takeOpt(b: Box<Real> | none): int { if b { return b.v.x; } return -1; }
+
+// And the other direction: declared with the alias, called with the target.
+fn takeAliasBox(b: Box<Alias>): int { return b.v.x; }
+
+fn main(): int {
+    fmt.println(f"1: {takeBox(Box<Alias> { v: Real { x: 1 } })}");
+    fmt.println(f"2: {takeBox(Box<Chain> { v: Real { x: 2 } })}");
+    fmt.println(f"3: {takeBox(Box<n.Nested> { v: Real { x: 3 } })}");
+    fmt.println(f"4: {takeAliasBox(Box<Real> { v: Real { x: 4 } })}");
+    fmt.println(f"5: {takeBox(BoxAlias<Alias> { v: Real { x: 5 } })}");
+    fmt.println(f"6: {takeNested(Box<Box<Alias>> { v: Box<Real> { v: Real { x: 6 } } })}");
+    fmt.println(f"7: {takePair(Pair<Alias, int> { a: Real { x: 7 }, b: 0 })}");
+    fmt.println(f"8: {takeRef(Box<ref RefAlias> { v: RefReal { x: 8 } })}");
+    fmt.println(f"9: {takeOpt(Box<Alias> { v: Real { x: 9 } })}");
+    // Not merely convertible -- the SAME type: a plain binding, no conversion
+    // in sight, and the method reached through either spelling is one method.
+    let viaAlias = Box<Alias> { v: Real { x: 10 } };
+    let viaReal: Box<Real> = viaAlias;
+    fmt.println(f"10: {viaReal.get().x + viaAlias.get().x}");
+    return 0;
+}
+""",
+            """
+1: 1
+2: 2
+3: 3
+4: 4
+5: 5
+6: 6
+7: 7
+8: 8
+9: 9
+10: 20
+""");
+
+        // The same rule, one layer down: a structural type BUILT on an alias.
+        //
+        // `from m import Props` puts a FILE-scoped alias in each file that
+        // writes it, so two files importing one name from one module held two
+        // distinct alias nodes for one struct. `() => Props` then interned a
+        // FunctionDatatype per file, each wrapped in its own CallableDatatype,
+        // each emitting its own C struct -- under one mangled name, because a
+        // file-scoped alias has a namespace chain of length 1 and mangled to a
+        // bare `5Props`. The C compiler rejected the translation unit outright:
+        // "redefinition of '_HClFE_f_5Props'".
+        //
+        // Two files are the whole point of this case; it cannot be written in
+        // one, because one file has only one alias node.
+        s.runWithFiles(
+            "alias: two files importing one name build one type, not one per file",
+            [
+                testsuite.TestModule {
+                    name: "shapes",
+                    source: """
+export struct Props { x: int = 0; }
+export struct Box<T> { v: T; }
+""",
+                },
+            ],
+            """
+fn main(): int {
+    // Built in a.hz, consumed in b.hz, through neither file's alias.
+    fmt.println(f"1: {makeA()().x} {makeB()().x}");
+    fmt.println(f"2: {boxB(boxA())}");
+    fmt.println(f"3: {roundTrip(makeA())().x}");
+    return 0;
+}
+""",
+            [
+                testsuite.TestFile {
+                    name: "a.hz",
+                    source: """
+from shapes import Props, Box;
+fn makeA(): () => Props { return () => { return Props { x: 1 }; }; }
+fn boxA(): Box<Props> { return Box<Props> { v: Props { x: 3 } }; }
+""",
+                },
+                testsuite.TestFile {
+                    name: "b.hz",
+                    source: """
+from shapes import Props, Box;
+fn makeB(): () => Props { return () => { return Props { x: 2 }; }; }
+// Takes what a.hz produced: one file's callable type has to BE the other's,
+// not merely convert to it.
+fn roundTrip(f: () => Props): () => Props { return f; }
+fn boxB(b: Box<Props>): int { return b.v.x; }
+""",
+                },
+            ],
+            """
+1: 1 2
+2: 3
+3: 1
+""");
+
+        // ── Collisions (§1.5) ───────────────────────────────────────────────
+        //
+        // The collector used to insert blind and lookupDirect returned whichever
+        // hit it saw first, so two declarations of one name in one scope quietly
+        // resolved to an arbitrary one of them. Rare while the only way to
+        // introduce a name was to declare it; routine once `import` and
+        // `from ... import` can bring one in without the reader seeing it.
+        s.compileFails(
+            "alias: a name already taken in the scope is a collision",
+            """
+struct Foo { x: int = 0; }
+alias Foo = int;
+fn main(): int { return 0; }
+""",
+            [testsuite.mustHave(errorcodes.Code.SymbolWasAlreadyDeclaredThisScopePreviousDefinition)]);
+
+        s.compileFails(
+            "alias: two aliases of the same name collide",
+            """
+alias A = int;
+alias A = bool;
+fn main(): int { return 0; }
+""",
+            [testsuite.mustHave(errorcodes.Code.SymbolWasAlreadyDeclaredThisScopePreviousDefinition)]);
+
+        // Reopening a namespace is not a redeclaration, and must not be caught
+        // by the collision check. This is the guard that keeps the check from
+        // being too aggressive to ship.
+        s.run(
+            "alias: reopening a namespace is not a collision",
+            """
+namespace parts {
+    export fn one(): int { return 1; }
+}
+namespace parts {
+    export fn two(): int { return 2; }
+}
+alias p = parts;
+fn main(): int {
+    fmt.println(f"reopened {p.one() + p.two()}");
+    return 0;
+}
+""",
+            "reopened 3");
+    }
+}

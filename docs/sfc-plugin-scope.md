@@ -41,6 +41,7 @@ marker ends it. No closing markers, no brace counting — splitting is a single 
 `@setup`, then `@template`:
 
 ```
+@export       optional, first line: the component function is declared `export`
 <prelude>     plain haze, verbatim: imports, exported types (Vue's plain <script>)
 @props        struct-body syntax: fields with defaults
 @slot         name: { payload fields }   (payload struct; `name: ();` = no fields)
@@ -49,6 +50,14 @@ marker ends it. No closing markers, no brace counting — splitting is a single 
 @setup        plain haze, verbatim (Vue's <script setup>)
 @template     template syntax (§3.2) — the only section with its own (token-level) grammar
 ```
+
+`@export` is a file-level directive rather than a section: at most one, on its own line, ahead of
+every other declaration (a licence header or blank lines above it are fine). It makes the generated
+component function `export fn NameComponent(...)`, so the component crosses the module boundary.
+Without it the function is module-local — a component is private to its module unless it says
+otherwise. The generated types around it (the `Args` struct, slot payloads, the `@expose` struct)
+are exported either way: those are names a caller in another *file* of the same module already has
+to write.
 
 `@template` takes an element head — the component's own **root element**, minus the tag:
 `@template [w-fit grow?w-grow h-fit] ref=rootRef @pointerdown=onDown focusable=true`. It wraps
@@ -193,7 +202,8 @@ Dialog [] ref=dialog
 ```
 
 - **The exposed struct takes the component's bare name; the generated function is suffixed.**
-  `Dialog.hzui` produces `export ref struct Dialog` and `export fn DialogComponent(...)`. The bare
+  `Dialog.hzui` produces `export ref struct Dialog` and `fn DialogComponent(...)` (`export fn`, with
+  `@export`). The bare
   name goes to the type, because that is the one a human writes by hand — the call is emitted by
   the transformer. A hand-written parent mounting an SFC component calls `DialogComponent(...)`.
 - **`ref=` means different things by tag case.** On a builtin element it binds `elementRef` (an
@@ -251,18 +261,28 @@ of scope for now.
   via `for comptime field in T.fields` (pattern already used in
   [reactive.hz:53](../stdlib/core/src/reactive.hz#L53)) — no core feature needed.
 - **Dialect vocabulary** (`computed`, `reactive`, `shallowReactive`, `elementRef`, `props.`,
-  `slots.`, `emits`) is reserved by the SFC dialect and forwarded by fixed **textual rewrite**
-  (`computed(` → `rx.computed(`, `elementRef` → `ui.elementRef`): haze has no generic function
-  values (`let computed = rx.computed;` fails with "expects 1 type parameters"), so forwarding by
-  variable assignment is not possible. Users cannot shadow these names in SFC files.
-- **Dialect types.** The types a component names constantly are written bare — `(e: PointerEvent)`,
-  `elementRef<DivElement>()`, `text: Reactive<str>`, `SizeMode.Grow` — and the transformer
-  qualifies them. **Qualified textually, not aliased**: `type PointerEvent =
-  ui_components.PointerEvent;` per file fails as a *generic argument* (a distinct instantiation
-  that will not convert) and in an *exported declaration* (`@props` is an exported struct, so a
-  file-local name escapes into the module's `import.hz`). Writing the qualified name into the
-  source has neither problem — the compiler sees exactly what hand-written `.hz` would say. The
-  pass skips string literals and comments explicitly. These names are **reserved** inside an
+  `slots.`, `emits`) is reserved by the SFC dialect. `props.`/`slots.` are forwarded by fixed
+  **textual rewrite**, and so is `elementRef` (`elementRef` → `ui.elementRef`) — it is a method on
+  the `UIContext`, not a free symbol, so nothing else can reach it. `computed`, `reactive` and
+  `shallowReactive` are *imported*, not rewritten: haze has no generic function values
+  (`let computed = rx.computed;` fails with "expects 1 type parameters"), so an import is the only
+  way to give them a bare name. Users cannot shadow any of them in SFC files.
+- **The dialect surface arrives as one import, from `hzui`.** The types a component names
+  constantly are written bare — `(e: PointerEvent)`, `elementRef<DivElement>()`,
+  `text: Reactive<str>`, `SizeMode.Grow` — as are the names the *generated* code uses
+  (`InstanceData`, `DivProps`, `mergeDivStyle`, `Px`, `presets`, `keyId`). Every generated file
+  therefore opens with a single `from hzui import PointerEvent, DivElement, computed, presets, …`,
+  listing the whole dialect surface (`DIALECT_IMPORTS` in `compose.ts`), and `hzui` re-exports the
+  lot. **A component's module depends on `hzui` and on nothing else the framework is built out
+  of** — an `.hzui` never spells `ui_components.`/`ui_styling.`/`ui_elements.` and its `haze.toml`
+  never has to list them. **Imported, not re-declared per file**: a `type PointerEvent =
+  ui_components.PointerEvent;` in each file puts a file-local name in the two positions where only
+  the real symbol will do — as a *generic argument* (`elementRef<DivElement>()` must yield the same
+  `ElementRef` instantiation hand-written haze gets) and in an *exported declaration* (`@props`
+  becomes an exported struct, so the name escapes into the module's `import.hz`). A `from` import
+  introduces no new name: what the file holds IS `hzui`'s symbol. The list is emitted whole rather
+  than filtered to what a component happens to use — an unused import costs nothing, and "happens
+  to use" is not a question a textual pass can answer. These names are **reserved** inside an
   `.hzui`.
 
 ---

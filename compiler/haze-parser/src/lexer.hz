@@ -266,6 +266,7 @@ export ref struct Lexer {
         }
         if n == 5 {
             if s.startsWith("const", start) { return TK.Const; }
+            if s.startsWith("alias", start) { return TK.Alias; }
             if s.startsWith("false", start) { return TK.False; }
             if s.startsWith("while", start) { return TK.While; }
             if s.startsWith("break", start) { return TK.Break; }

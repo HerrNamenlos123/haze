@@ -23,12 +23,37 @@
 // an install because the Bun binary has no `stdlib/` beside it.
 
 import { existsSync, realpathSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 /** Marker that identifies a directory as a deployed Haze payload root. */
 function isInstallRoot(dir: string): boolean {
   return existsSync(join(dir, "stdlib", "core", "haze.toml"));
+}
+
+/**
+ * Which payload root a compiler binary sitting in `execDir` belongs to.
+ *
+ * Order matters, and so does the `bin` guard on the first branch. `dist/haze`
+ * lives one directory below a checkout that is *itself* a valid payload root --
+ * `<repo>/stdlib/core/haze.toml` exists just as `<repo>/dist/stdlib/core/haze.toml`
+ * does. Without the guard, the "<root>/bin/haze" branch matched on the checkout
+ * and handed `dist/haze` the whole repository as its payload: it then looked for
+ * its native parser in `<repo>/libexec/` and never saw `<repo>/dist/libexec/`,
+ * so deploying the parser there fixed nothing (§8).
+ *
+ * Exported for `scripts/parser-bootstrap.test.ts`, which pins both layouts.
+ */
+export function detectPayloadRoot(execDir: string): string | null {
+  // <root>/bin/haze -- the layout `bun run install` deploys.
+  if (basename(execDir) === "bin" && isInstallRoot(dirname(execDir))) {
+    return dirname(execDir);
+  }
+  // <root>/haze with <root>/stdlib beside it -- the flat dist/ layout.
+  if (isInstallRoot(execDir)) {
+    return execDir;
+  }
+  return null;
 }
 
 function detectInstallRoot(): string | null {
@@ -50,16 +75,7 @@ function detectInstallRoot(): string | null {
     return null;
   }
 
-  // <root>/bin/haze -- the layout `bun run install` deploys.
-  const parent = dirname(execDir);
-  if (isInstallRoot(parent)) {
-    return parent;
-  }
-  // <root>/haze with <root>/stdlib beside it -- the older flat dist/ layout.
-  if (isInstallRoot(execDir)) {
-    return execDir;
-  }
-  return null;
+  return detectPayloadRoot(execDir);
 }
 
 let installRoot: string | null | undefined;

@@ -700,7 +700,7 @@ function lowerRootPropsInto(
   em.indented(() => {
     fields.forEach((f) => em.emit(`${f},`));
     if (ops.length > 0) {
-      em.emit(`style: ui_styling.mergeDivStyle(${styleExpr},`);
+      em.emit(`style: mergeDivStyle(${styleExpr},`);
       em.indented(() =>
         ops.forEach((o, i) => em.emit(o + (i < ops.length - 1 ? "," : "")))
       );
@@ -854,7 +854,7 @@ function lowerElementInner(
         node.line
       );
     }
-    idExpr = `hzui.keyId(${staticId}, ${ctx.rewriteExpr(node.keyExpr)})`;
+    idExpr = `keyId(${staticId}, ${ctx.rewriteExpr(node.keyExpr)})`;
   }
 
   const rw = ctx.rewriteExpr;
