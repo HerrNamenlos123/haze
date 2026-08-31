@@ -1735,86 +1735,103 @@ export class ModuleCompiler {
     const printer = this.printer;
     let failed = false;
 
+    const capture = (chunk: Buffer | string) => {
+      logChunks.push(
+        Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk)
+      );
+    };
+
+    // Runs fn with every global output channel redirected into logChunks:
+    // process.stdout.write AND printLine (via withCapturedOutput). Both are
+    // needed -- a failing command deep inside the nested build (e.g. a linker
+    // error) reports through printLine straight to the live CLIPrinter, which
+    // would otherwise stop its bars mid-build for unrelated, still-running
+    // modules and never make it into logChunks.
+    //
+    // Both channels are process-wide singletons, so this must be serialized
+    // against every other generator -- hence the mutex around each use.
+    const withOutputCaptured = async (fn: () => Promise<void>) => {
+      const origWrite = process.stdout.write.bind(process.stdout);
+      (process.stdout as any).write = (
+        chunk: Buffer | string,
+        _encodingOrCb?: unknown,
+        _cb?: unknown
+      ): boolean => {
+        capture(chunk);
+        return true;
+      };
+      try {
+        await withCapturedOutput(capture, fn);
+      } finally {
+        (process.stdout as any).write = origWrite;
+      }
+    };
+
     try {
-      // Capture generator build output to a buffer so it stays off the terminal.
-      // The captured log is written to disk and shown only on failure. This has
-      // to intercept both process.stdout.write AND printLine (via
-      // withCapturedOutput) -- a failing command deep inside the nested build
-      // (e.g. a linker error) reports through printLine straight to the live
-      // CLIPrinter, which would otherwise stop its bars mid-build for
-      // unrelated, still-running modules and never make it into logChunks.
-      //
-      // The failure report itself (dumping the log + the summary message) is
-      // also produced *inside* this same mutex-held section, immediately and
-      // synchronously once the outcome is known -- not via the normal
+      // Phase 1: build the generator's own executable, with its output
+      // captured to a buffer so it stays off the terminal. The captured log is
+      // written to disk and shown only on failure.
+      let failureMessage: string | null = null;
+      await generatorOutputMutex.run(() =>
+        withOutputCaptured(async () => {
+          const built = await project.build(
+            this.resolveExec(gen.exec),
+            undefined,
+            sourceloc,
+            false
+          );
+          if (!built) {
+            failureMessage = `Generator "${gen.name}" failed to build — see ${logPath}`;
+          }
+        })
+      );
+
+      // Phase 2: run it. Deliberately OUTSIDE the capture mutex. The child's
+      // output comes back on its own pipes rather than through the global
+      // stdout/printLine channels, so it needs no hijack -- and a generator
+      // can run for minutes, during which holding the hijack would swallow
+      // every concurrently-building module's output into this generator's log
+      // and keep any other generator from even starting to build.
+      if (!failureMessage) {
+        // The environment is passed straight to the child rather than set on
+        // process.env for the duration of the call (what withEnv did): the run
+        // is asynchronous, so a global mutation would be visible to every
+        // other module building concurrently, and the restore would land
+        // whenever this generator happened to finish.
+        const ran = await project.runCaptured(
+          this.resolveExec(gen.exec),
+          undefined,
+          sourceloc,
+          [],
+          {
+            HAZE_WORKSPACE_DIR: this.hazeWorkspaceDirectory,
+            HAZE_MODULE_SOURCE_DIR: moduleRootDir,
+            HAZE_MODULE_BUILD_DIR: this.moduleDir + "/build",
+            HAZE_MODULE_BINARY_DIR: this.moduleDir + "/bin",
+            HAZE_MODULE_TMP_DIR: this.moduleDir + "/tmp",
+            HAZE_MODULE_AUTOGEN_DIR: this.moduleDir + "/autogen",
+            HAZE_GLOBAL_DIR: HAZE_GLOBAL_DIR,
+            HAZE_C_COMPILER: HAZE_C_COMPILER,
+            HAZE_CXX_COMPILER: HAZE_CXX_COMPILER,
+          }
+        );
+        logChunks.push(ran.output);
+
+        if (ran.exitCode !== 0) {
+          failureMessage = `Generator "${gen.name}" failed with exit code ${ran.exitCode} — see ${logPath}`;
+        }
+      }
+
+      // Phase 3: write the log and, on failure, report it immediately and
+      // synchronously while holding the mutex -- not via the normal
       // GeneralError-thrown-and-caught-elsewhere path. That path unwinds
       // through Promise.all and an unrelated catchErrors() several stack
-      // frames up, crossing enough await boundaries for another queued
-      // generator to acquire the capture in between, which would attribute
-      // this report to the wrong generator's log. Reporting inline instead,
-      // then throwing a SilentError so nothing re-prints it, keeps the whole
-      // "capture output -> decide -> report" sequence atomic under the mutex.
+      // frames up, crossing enough await boundaries for another generator to
+      // acquire the capture in between, which would attribute this report to
+      // the wrong generator's log. Holding the mutex here guarantees no
+      // generator has the output channels hijacked while this prints.
+      // A SilentError is thrown afterwards so nothing re-prints it.
       failed = await generatorOutputMutex.run(async () => {
-        const capture = (chunk: Buffer | string) => {
-          logChunks.push(
-            Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk)
-          );
-        };
-        const origWrite = process.stdout.write.bind(process.stdout);
-        (process.stdout as any).write = (
-          chunk: Buffer | string,
-          _encodingOrCb?: unknown,
-          _cb?: unknown
-        ): boolean => {
-          capture(chunk);
-          return true;
-        };
-
-        let failureMessage: string | null = null;
-        try {
-          await withCapturedOutput(capture, async () => {
-            const built = await project.build(
-              this.resolveExec(gen.exec),
-              undefined,
-              sourceloc,
-              false
-            );
-
-            if (!built) {
-              failureMessage = `Generator "${gen.name}" failed to build — see ${logPath}`;
-              return;
-            }
-
-            const ran = await withEnv(
-              {
-                HAZE_WORKSPACE_DIR: this.hazeWorkspaceDirectory,
-                HAZE_MODULE_SOURCE_DIR: moduleRootDir,
-                HAZE_MODULE_BUILD_DIR: this.moduleDir + "/build",
-                HAZE_MODULE_BINARY_DIR: this.moduleDir + "/bin",
-                HAZE_MODULE_TMP_DIR: this.moduleDir + "/tmp",
-                HAZE_MODULE_AUTOGEN_DIR: this.moduleDir + "/autogen",
-                HAZE_GLOBAL_DIR: HAZE_GLOBAL_DIR,
-                HAZE_C_COMPILER: HAZE_C_COMPILER,
-                HAZE_CXX_COMPILER: HAZE_CXX_COMPILER,
-              },
-              () =>
-                project.runCaptured(
-                  this.resolveExec(gen.exec),
-                  undefined,
-                  sourceloc,
-                  []
-                )
-            );
-            logChunks.push(ran.output);
-
-            if (ran.exitCode !== 0) {
-              failureMessage = `Generator "${gen.name}" failed with exit code ${ran.exitCode} — see ${logPath}`;
-            }
-          });
-        } finally {
-          (process.stdout as any).write = origWrite;
-        }
-
         // Strip ANSI escape codes before writing to the log file so it is
         // readable in any text editor.
         const rawLog = logChunks.join("");

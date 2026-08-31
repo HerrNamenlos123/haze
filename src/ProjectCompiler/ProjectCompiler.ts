@@ -501,12 +501,25 @@ export class ProjectCompiler {
   /**
    * Run the built executable with all stdout+stderr captured and returned.
    * The caller is responsible for displaying or logging the output.
+   *
+   * This spawns *asynchronously* on purpose. A generator program can run for
+   * many seconds (fetching sources, invoking cmake, ...), and spawnSync would
+   * block the compiler's only thread for all of it: the CLIPrinter's spinner
+   * interval stops and every other module building concurrently makes no
+   * progress until the generator exits, so the whole compiler looks frozen.
+   *
+   * `extraEnv` is merged over the inherited environment for the child only.
+   * It is passed here rather than assigned into process.env around the call
+   * (as withEnv does) because the await now spans real time: a global mutation
+   * would be visible to everything else running concurrently, and the restore
+   * would land long after other work had already read the wrong values.
    */
   async runCaptured(
     singleFilename?: string,
     explicitDir?: string,
     sourceloc?: boolean,
-    args?: string[]
+    args?: string[],
+    extraEnv?: Record<string, string>
   ): Promise<{ exitCode: number; output: string }> {
     const config = await this.getConfig(singleFilename, explicitDir, sourceloc);
     if (!config) {
@@ -522,15 +535,60 @@ export class ProjectCompiler {
       moduleExecutable += ".exe";
     }
 
-    const result = child_process.spawnSync(moduleExecutable, args ?? [], {
-      stdio: "pipe",
-      env: process.env,
-    });
+    // Snapshot the environment now, while it is still the one this call was
+    // set up with -- the child gets its own copy and is unaffected by any
+    // later process.env change made while it runs.
+    const childEnv = { ...process.env, ...extraEnv };
 
-    const stdout = result.stdout ? result.stdout.toString("utf8") : "";
-    const stderr = result.stderr ? result.stderr.toString("utf8") : "";
-    const output = stderr ? stdout + stderr : stdout;
-    return { exitCode: result.status ?? -1, output: output };
+    return await new Promise<{ exitCode: number; output: string }>(
+      (resolvePromise) => {
+        const proc = spawn(moduleExecutable, args ?? [], {
+          stdio: ["ignore", "pipe", "pipe"],
+          env: childEnv,
+        });
+
+        // Kept apart and joined at the end so the result matches what the
+        // previous spawnSync-based implementation produced: all of stdout,
+        // then all of stderr.
+        const stdoutChunks: Buffer[] = [];
+        const stderrChunks: Buffer[] = [];
+        proc.stdout?.on("data", (chunk: Buffer) => {
+          stdoutChunks.push(chunk);
+        });
+        proc.stderr?.on("data", (chunk: Buffer) => {
+          stderrChunks.push(chunk);
+        });
+
+        let settled = false;
+        const finish = (exitCode: number, extra?: string) => {
+          if (settled) {
+            return;
+          }
+          settled = true;
+          const stdout = Buffer.concat(stdoutChunks).toString("utf8");
+          const stderr = Buffer.concat(stderrChunks).toString("utf8");
+          resolvePromise({
+            exitCode: exitCode,
+            output: (stderr ? stdout + stderr : stdout) + (extra ?? ""),
+          });
+        };
+
+        // 'error' fires instead of 'close' when the program cannot be started
+        // at all (missing, not executable). spawnSync signalled that with a
+        // null status; report the reason too, since this is the only place it
+        // exists.
+        proc.on("error", (err: Error) => {
+          finish(-1, `Failed to run ${moduleExecutable}: ${err.message}\n`);
+        });
+
+        // 'close' rather than 'exit': it waits for the stdio streams to end as
+        // well, so no trailing output is dropped. A signal-killed child has a
+        // null code, which becomes -1 as before.
+        proc.on("close", (code: number | null) => {
+          finish(code ?? -1);
+        });
+      }
+    );
   }
 
   /**
