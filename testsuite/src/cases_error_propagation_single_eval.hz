@@ -1,0 +1,194 @@
+// ============================================================================
+// REGRESSION TEST — `?!` evaluates its operand EXACTLY ONCE.
+//
+// `expr?!` means "unwrap the Ok payload, or return the Err from the enclosing
+// function". Outside an `attempt` block that is lowered to a block scope:
+//
+//     { let __temp = expr; if (__temp.tag == Err) { return __temp.Err; } __temp.Ok }
+//
+// The whole point of the temporary is that `expr` runs once and everything
+// afterwards reads the temporary. The `if` condition used to test `expr`
+// itself rather than `__temp`, so the operand was emitted a SECOND time into
+// the generated C and every side effect happened twice.
+//
+// This is the worst possible kind of bug to leave untested:
+//
+//   * It is completely silent. Nothing warns, nothing crashes, the value is
+//     still correct -- the duplicate result is computed and thrown away. Only
+//     the side effects, and the cost, are doubled.
+//   * It scales with how expensive the operand is, so it hides in cheap code
+//     and hurts exactly where `?!` is most idiomatic: fallible resource
+//     acquisition. It was found in a real application where
+//     `instance.requestAdapterSync({})?!` created two WGPU adapters and
+//     `adapter.requestDeviceSync({})?!` created two devices -- ~150ms of
+//     wasted startup plus an adapter and a device that leaked, because the
+//     duplicate was never bound to anything that could release it.
+//   * Reading the elaborator does not give it away. The temporary IS created,
+//     the Err return DOES read it, and the Ok tail DOES read it. Exactly one
+//     of the four uses was wrong.
+//
+// So the invariant has to be pinned by COUNTING, not by checking the result:
+// every case below runs the operand through a counter and asserts the counter
+// is exactly 1. Asserting only on the returned value passes happily while the
+// operand runs twice.
+//
+// Four axes matter, and a fix can get some right and others wrong:
+//
+//   1. THE Ok PATH AND THE Err PATH. These are different branches of the
+//      generated code. The condition is what was doubled, so it is evaluated
+//      on BOTH paths -- but a fix that only reads the temporary in the Ok tail
+//      still passes any test that never makes `?!` actually fail.
+//   2. OUTSIDE vs INSIDE `attempt`. These are two entirely separate lowerings:
+//      inside an `attempt` the operator becomes an AttemptErrorPropagationExpr
+//      that has always been single-evaluation, outside it becomes the block
+//      scope above. Only the second was broken, which makes the `attempt`
+//      cases here a control group: if they ever start doubling, the good
+//      lowering has regressed.
+//   3. THE SHAPE OF THE OPERAND. A plain call, a method call on a receiver, a
+//      call whose payload is a struct rather than a scalar, and a bare
+//      `expr?!;` whose unwrapped value is discarded all take the same path,
+//      but a re-emission bug can be masked by an operand the C compiler is
+//      free to fold. A call with an observable side effect cannot be folded.
+//   4. SEVERAL `?!` IN SEQUENCE. A later `?!` failing must not re-run the
+//      earlier ones: two statements each containing one `?!` must total 2,
+//      not 3 or 4. Pre-fix this case counted 4.
+//
+// Per framework.hz's batching guidance this is ONE compiled program.
+// ============================================================================
+
+namespace cases_error_propagation_single_eval {
+
+    export fn register(s: mut testsuite.Suite) {
+
+        s.run(
+            "?!: the operand is evaluated exactly once, on the Ok and the Err path, in and out of attempt",
+            """
+struct Big { a: int = 0; b: int = 0; c: int = 0; }
+
+// Every fallible helper bumps this. It is the whole test: the value a case
+// returns is not evidence of anything, the call count is.
+let calls: int = 0;
+
+fn okv(v: int): Result<int, str> { calls += 1; return Result<int, str>.Ok(v); }
+fn errv(m: str): Result<int, str> { calls += 1; return Result<int, str>.Err(m); }
+fn okBig(v: int): Result<Big, str> {
+    calls += 1;
+    return Result<Big, str>.Ok(Big { a: v, b: v * 2, c: v * 3 });
+}
+
+struct Source {
+    base: int = 0;
+    fn get(): Result<int, str> { calls += 1; return Result<int, str>.Ok(this.base); }
+}
+
+// -- 1. Outside an attempt block: the broken lowering ------------------------
+
+fn out_ok(): Result<int, str> {
+    let x = okv(7)?!;
+    return Result<int, str>.Ok(x);
+}
+
+// The Err path runs the same condition, so it doubled too. The propagated
+// error must be the one from the single evaluation.
+fn out_err(): Result<int, str> {
+    let x = errv("e1")?!;
+    return Result<int, str>.Ok(x + 100);
+}
+
+// A method call: the receiver is part of the operand and must not be
+// re-evaluated either.
+fn out_method(s: Source): Result<int, str> {
+    let x = s.get()?!;
+    return Result<int, str>.Ok(x);
+}
+
+// A struct payload rather than a scalar -- the temporary holds a bigger union.
+fn out_big(): Result<int, str> {
+    let b = okBig(5)?!;
+    return Result<int, str>.Ok(b.a + b.b + b.c);
+}
+
+// `?!` as a statement, with the unwrapped value discarded. Nothing reads the
+// result, so only the count can catch a second evaluation here at all.
+fn out_bare(): Result<int, str> {
+    okv(1)?!;
+    return Result<int, str>.Ok(0);
+}
+
+// Two `?!` in sequence where the SECOND fails: exactly two calls total. The
+// first must not be re-run by the second's condition. This counted 4 pre-fix.
+fn out_err_after_ok(): Result<int, str> {
+    let a = okv(3)?!;
+    let b = errv("e2")?!;
+    return Result<int, str>.Ok(a + b);
+}
+
+// -- 2. Inside an attempt block: the control group ---------------------------
+// This lowering was already correct and must stay that way.
+
+fn in_ok(): int { return attempt { okv(7)?! } else { -1 }; }
+
+fn in_err(): int { return attempt { errv("e3")?! } else { -1 }; }
+
+fn in_err_after_ok(): int {
+    return attempt {
+        let a = okv(3)?!;
+        let b = errv("e4")?!;
+        a + b
+    } else { -1 };
+}
+
+fn main(): int {
+    // -- outside attempt ----------------------------------------------------
+    calls = 0;
+    let a = out_ok();
+    assert(calls == 1, "out_ok evaluated its operand more than once");
+    if a is int { assert(a == 7, "out_ok value"); } else { assert(false, "out_ok should be Ok"); }
+
+    calls = 0;
+    let b = out_err();
+    assert(calls == 1, "out_err evaluated its operand more than once");
+    if b is str { assert(b == "e1", "out_err propagated the wrong error"); } else { assert(false, "out_err should be Err"); }
+
+    calls = 0;
+    let c = out_method(Source { base: 9 });
+    assert(calls == 1, "out_method evaluated its receiver/call more than once");
+    if c is int { assert(c == 9, "out_method value"); } else { assert(false, "out_method should be Ok"); }
+
+    calls = 0;
+    let d = out_big();
+    assert(calls == 1, "out_big evaluated its operand more than once");
+    if d is int { assert(d == 30, "out_big value"); } else { assert(false, "out_big should be Ok"); }
+
+    calls = 0;
+    out_bare();
+    assert(calls == 1, "out_bare evaluated its discarded operand more than once");
+
+    calls = 0;
+    let e = out_err_after_ok();
+    assert(calls == 2, "out_err_after_ok re-ran an earlier ?! operand");
+    if e is str { assert(e == "e2", "out_err_after_ok propagated the wrong error"); } else { assert(false, "out_err_after_ok should be Err"); }
+
+    // -- inside attempt (control) -------------------------------------------
+    calls = 0;
+    let f = in_ok();
+    assert(calls == 1, "in_ok evaluated its operand more than once");
+    assert(f == 7, "in_ok value");
+
+    calls = 0;
+    let g = in_err();
+    assert(calls == 1, "in_err evaluated its operand more than once");
+    assert(g == -1, "in_err should have taken the else handler");
+
+    calls = 0;
+    let h = in_err_after_ok();
+    assert(calls == 2, "in_err_after_ok re-ran an earlier ?! operand");
+    assert(h == -1, "in_err_after_ok should have taken the else handler");
+
+    fmt.println("ok");
+    return 0;
+}
+""",
+            "ok");
+    }
+}

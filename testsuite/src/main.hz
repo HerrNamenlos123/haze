@@ -69,6 +69,7 @@ fn main(): int {
     cases_struct_spread.register(suite);
     cases_global_not_captured.register(suite);
     cases_do_block_emit.register(suite);
+    cases_error_propagation_single_eval.register(suite);
 
     return testsuite.runAll(config, suite);
 }
