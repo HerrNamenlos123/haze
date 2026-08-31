@@ -23,14 +23,18 @@ import { beforeAll, describe, expect, test } from "bun:test";
 // reads Config's top-level `PLATFORM` while Config is still evaluating.
 // Importing ModuleCompiler first orders it the way src/main.ts does.
 import "../ModuleCompiler/ModuleCompiler";
-import { ConfigParser } from "./Config";
+import { ConfigParser, ModuleType } from "./Config";
 
 const HAZE_CONFIG_FILE = "haze.toml";
 
 let root: string;
 
-/** Writes a module dir with the given haze.toml body and parses it. */
-function parse(name: string, body: string) {
+/**
+ * Writes a module dir with the given haze.toml body and parses it. `type` is
+ * written out only when given -- passing undefined omits the line entirely,
+ * which is what exercises the default.
+ */
+function parse(name: string, body: string, type: string | undefined = "lib") {
   const dir = join(root, name);
   mkdirSync(dir, { recursive: true });
   writeFileSync(
@@ -41,7 +45,7 @@ function parse(name: string, body: string) {
       `description = "config test"\n` +
       `license = "MIT"\n` +
       `authors = []\n` +
-      `type = "lib"\n` +
+      (type === undefined ? "" : `type = "${type}"\n`) +
       body
   );
   return new ConfigParser(HAZE_CONFIG_FILE, undefined, dir).parseConfig();
@@ -118,5 +122,28 @@ describe("[plugins] requires a matching [dependencies] entry", () => {
       `\n[dependencies]\nplug = { path = "../plug" }\n`
     );
     expect(config.plugins).toEqual([]);
+  });
+});
+
+describe("a module is an executable unless it opts into being a library", () => {
+  test("no 'type' field at all means executable", async () => {
+    const config = await parse("type_absent", "", undefined);
+    expect(config.moduleType).toBe(ModuleType.Executable);
+  });
+
+  test('type = "lib" is the opt-in', async () => {
+    const config = await parse("type_lib", "", "lib");
+    expect(config.moduleType).toBe(ModuleType.Library);
+  });
+
+  test('type = "exe" still spells out the default', async () => {
+    const config = await parse("type_exe", "", "exe");
+    expect(config.moduleType).toBe(ModuleType.Executable);
+  });
+
+  test("any other value is rejected rather than silently defaulted", async () => {
+    await expect(parse("type_bogus", "", "shared")).rejects.toThrow(
+      /Field 'type'.*must be any of/s
+    );
   });
 });

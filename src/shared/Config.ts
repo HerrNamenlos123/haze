@@ -748,9 +748,11 @@ export class ConfigParser {
     const content = await readFile(this.configPath, "utf-8");
     const toml = parse(content, { bigint: false });
 
+    // Absent 'type' means executable: a project is an app unless it opts into
+    // being a library with type = "lib".
     const type = this.getOptionalStringAnyOf(toml, "type", ["lib", "exe"]);
     const moduleType =
-      type === "exe" ? ModuleType.Executable : ModuleType.Library;
+      type === "lib" ? ModuleType.Library : ModuleType.Executable;
 
     // Parsed before the config literal below: getPlugins cross-checks every
     // [plugins] entry against these.
