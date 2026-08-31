@@ -30,11 +30,11 @@ const HAZE_CONFIG_FILE = "haze.toml";
 let root: string;
 
 /**
- * Writes a module dir with the given haze.toml body and parses it. `type` is
- * written out only when given -- passing undefined omits the line entirely,
- * which is what exercises the default.
+ * Writes a module dir with the given haze.toml body and parses it. Passing
+ * null for `type` omits the line entirely, which is what exercises the
+ * default. (Not undefined -- that would just re-select the default argument.)
  */
-function parse(name: string, body: string, type: string | undefined = "lib") {
+function parse(name: string, body: string, type: string | null = "lib") {
   const dir = join(root, name);
   mkdirSync(dir, { recursive: true });
   writeFileSync(
@@ -45,7 +45,7 @@ function parse(name: string, body: string, type: string | undefined = "lib") {
       `description = "config test"\n` +
       `license = "MIT"\n` +
       `authors = []\n` +
-      (type === undefined ? "" : `type = "${type}"\n`) +
+      (type === null ? "" : `type = "${type}"\n`) +
       body
   );
   return new ConfigParser(HAZE_CONFIG_FILE, undefined, dir).parseConfig();
@@ -127,7 +127,7 @@ describe("[plugins] requires a matching [dependencies] entry", () => {
 
 describe("a module is an executable unless it opts into being a library", () => {
   test("no 'type' field at all means executable", async () => {
-    const config = await parse("type_absent", "", undefined);
+    const config = await parse("type_absent", "", null);
     expect(config.moduleType).toBe(ModuleType.Executable);
   });
 
