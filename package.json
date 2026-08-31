@@ -49,7 +49,7 @@
     "dev": "npx cross-env NODE_ENV=development bun run src/main.ts",
     "build": "npx cross-env NODE_ENV=production bun build --production --compile ./src/main.ts --outfile dist/haze && bun run copylib && bun run scripts/deploy-parser.ts",
     "install": "bun run scripts/install.ts",
-    "copylib": "rm -rf ./dist/stdlib ./dist/tools ./dist/resources ./dist/libexec && mkdir -p ./dist/stdlib && cp -r ./stdlib/* ./dist/stdlib && cp -r ./tools ./dist/tools && cp -r ./resources ./dist/resources",
+    "copylib": "rm -rf ./dist/stdlib ./dist/tools ./dist/resources ./dist/libexec && mkdir -p ./dist/stdlib && cp -R ./stdlib/* ./dist/stdlib && cp -R ./tools ./dist/tools && cp -R ./resources ./dist/resources",
     "generate-parser": "cd src/Parser/grammar && npx antlr4ng-cli -Dlanguage=TypeScript -visitor HazeLexer.g4 HazeParser.g4 -o autogen && cd ../../..",
     "postinstall": "bun run generate-parser",
     "test": "./scripts/run-tests.sh",

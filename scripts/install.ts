@@ -20,17 +20,18 @@
 
 import { spawnSync } from "node:child_process";
 import {
+  appendFileSync,
   chmodSync,
   cpSync,
   existsSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   readlinkSync,
   realpathSync,
   renameSync,
   rmSync,
-  symlinkSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -90,6 +91,35 @@ function run(
     encoding: "utf8",
   });
   return result.status === 0;
+}
+
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/**
+ * A Windows virus scanner holds a freshly written .exe open for a moment, and
+ * the next link into that same path dies with "permission denied" — which looks
+ * exactly like a compile error but clears itself in under a second. Give the
+ * lock a few chances to disappear before concluding the build is broken.
+ */
+function runWithRetry(
+  command: string,
+  args: string[],
+  options: { cwd?: string; env?: Record<string, string>; quiet?: boolean } = {},
+  attempts = 3
+): boolean {
+  for (let attempt = 1; ; attempt++) {
+    if (run(command, args, options)) {
+      return true;
+    }
+    if (attempt >= attempts) {
+      return false;
+    }
+    const delay = 500 * attempt;
+    warn(`build failed; retrying in ${delay}ms (${attempt + 1}/${attempts})`);
+    sleepSync(delay);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -186,11 +216,11 @@ function buildNativeParser(): string {
   let built = false;
   if (existsSync(binary)) {
     info("building with the existing native parser...");
-    built = run("bun", [...args, "--parser", "native"], { env });
+    built = runWithRetry("bun", [...args, "--parser", "native"], { env });
   }
   if (!built) {
     info("bootstrapping through the ANTLR parser...");
-    built = run("bun", [...args, "--parser", "antlr"], { env });
+    built = runWithRetry("bun", [...args, "--parser", "antlr"], { env });
   }
   if (!(built && existsSync(binary))) {
     fail("Could not build the native Haze parser (compiler/haze-parser).");
@@ -297,20 +327,106 @@ function swapIn(staging: string, prefix: string): void {
   ok(prefix);
 }
 
-/** Point a `haze` symlink at the installed binary, replacing whatever is there. */
-function linkIntoPath(prefix: string): string {
+/**
+ * Put `<prefix>/bin` on the user's PATH.
+ *
+ * There is deliberately no `haze` link in ~/.local/bin. The compiler finds its
+ * payload through `realpathSync(process.execPath)` (src/shared/InstallPaths.ts),
+ * so whatever the shell runs has to resolve back into `<prefix>/bin`: a copy
+ * resolves to its own directory and finds no stdlib beside it, and a hardlink
+ * does the same, having no original to resolve to. Only a symlink survives that
+ * resolution — and creating one on Windows needs SeCreateSymbolicLinkPrivilege,
+ * which an ordinary user account does not have. So the real directory goes on
+ * PATH instead, the way rustup and bun do it.
+ */
+function ensureOnPath(prefix: string): string {
   heading("PATH");
-  const binDir = join(homedir(), ".local/bin");
-  const link = join(binDir, `haze${EXE}`);
-  const target = join(prefix, "bin", `haze${EXE}`);
-
-  mkdirSync(binDir, { recursive: true });
-  if (existsSync(link) || isSymlink(link)) {
-    unlinkSync(link);
+  const binDir = join(prefix, "bin");
+  if (IS_WINDOWS) {
+    addToWindowsPath(binDir);
+  } else {
+    addToUnixPath(binDir);
   }
-  symlinkSync(target, link);
-  ok(`${link} -> ${target}`);
-  return link;
+  return binDir;
+}
+
+// Read/modify/write HKCU\Environment directly. `setx` truncates PATH at 1024
+// characters, and $env:PATH is the machine and user values already merged —
+// writing that back would copy every machine entry into the user's PATH. The
+// registry value is the only safe source. Its type is preserved so a PATH
+// containing %USERPROFILE% stays expandable, and the WM_SETTINGCHANGE broadcast
+// lets Explorer pick the change up without a logout.
+const WINDOWS_PATH_SCRIPT = String.raw`
+$ErrorActionPreference = 'Stop'
+$dir = $env:HAZE_BIN_DIR
+$key = Get-Item 'HKCU:\Environment'
+$current = $key.GetValue('Path', $null, 'DoNotExpandEnvironmentNames')
+if ($null -eq $current) { $current = ''; $kind = 'ExpandString' } else { $kind = $key.GetValueKind('Path') }
+$entries = @($current -split ';' | Where-Object { $_ -ne '' })
+if ($entries -contains $dir) { Write-Output 'present'; exit 0 }
+$updated = ($entries + $dir) -join ';'
+New-ItemProperty -Path 'HKCU:\Environment' -Name Path -Value $updated -PropertyType $kind -Force | Out-Null
+Add-Type -Namespace HazeInstall -Name Native -MemberDefinition @'
+[DllImport("user32.dll", SetLastError=true, CharSet=CharSet.Unicode)]
+public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint Msg, UIntPtr wParam, string lParam, uint fuFlags, uint uTimeout, out UIntPtr lpdwResult);
+'@
+$result = [UIntPtr]::Zero
+[HazeInstall.Native]::SendMessageTimeout([IntPtr]0xffff, 0x1A, [UIntPtr]::Zero, 'Environment', 2, 5000, [ref]$result) | Out-Null
+Write-Output 'added'
+`;
+
+function addToWindowsPath(binDir: string): void {
+  const result = spawnSync(
+    "powershell",
+    ["-NoProfile", "-NonInteractive", "-Command", WINDOWS_PATH_SCRIPT],
+    { env: { ...process.env, HAZE_BIN_DIR: binDir }, encoding: "utf8" }
+  );
+  if (result.status !== 0) {
+    warn(
+      `could not update your PATH automatically:\n` +
+        `      ${(result.stderr ?? "").trim()}\n` +
+        `      Add this directory to your PATH by hand: ${binDir}`
+    );
+    return;
+  }
+  if ((result.stdout ?? "").trim().endsWith("present")) {
+    ok(`${binDir} is already on your PATH`);
+    return;
+  }
+  ok(`added ${binDir} to your user PATH`);
+  info("open a new shell to pick it up");
+}
+
+// One guarded block per startup file, keyed off the directory itself so that
+// reinstalling does not stack up duplicate exports.
+function addToUnixPath(binDir: string): void {
+  const block = `\n# added by haze install\nexport PATH="${binDir}:$PATH"\n`;
+  const startupFiles = [".profile", ".bashrc", ".zshrc"]
+    .map((name) => join(homedir(), name))
+    .filter((file) => existsSync(file));
+
+  if (startupFiles.length === 0) {
+    warn(
+      `no shell startup file found. Add this to yours by hand:\n` +
+        `      export PATH="${binDir}:$PATH"`
+    );
+    return;
+  }
+
+  let touched = false;
+  for (const file of startupFiles) {
+    if (readFileSync(file, "utf8").includes(binDir)) {
+      continue;
+    }
+    appendFileSync(file, block);
+    ok(`added ${binDir} to ${file}`);
+    touched = true;
+  }
+  if (touched) {
+    info("open a new shell to pick it up");
+  } else {
+    ok(`${binDir} is already in your shell startup files`);
+  }
 }
 
 function isSymlink(path: string): boolean {
@@ -356,20 +472,19 @@ function firstHazeOnPath(): string | null {
   return null;
 }
 
-function checkShadowing(link: string, prefix: string): void {
+function checkShadowing(binDir: string, prefix: string): void {
   const found = firstHazeOnPath();
   if (!found) {
-    warn(
-      `${dirname(link)} is not on your PATH. Add it:\n` +
-        `      export PATH="${dirname(link)}:$PATH"`
-    );
+    // Expected after a first install: this process inherited its PATH before
+    // the entry existed, so only a new shell can see it.
+    info("'haze' is not on this shell's PATH yet — open a new shell");
     return;
   }
   const expected = realpathSync(join(prefix, "bin", `haze${EXE}`));
   if (realpathSync(found) !== expected) {
     warn(
       `'haze' on your PATH resolves to ${found}, not the new install.\n` +
-        `      Remove it, or put ${dirname(link)} earlier in PATH.`
+        `      Remove it, or put ${binDir} earlier in PATH.`
     );
     return;
   }
@@ -469,9 +584,9 @@ function main(): void {
     throw error;
   }
 
-  const link = linkIntoPath(options.prefix);
+  const binDir = ensureOnPath(options.prefix);
   removeBunLink();
-  checkShadowing(link, options.prefix);
+  checkShadowing(binDir, options.prefix);
 
   if (options.verify) {
     verifyInstall(options.prefix);
