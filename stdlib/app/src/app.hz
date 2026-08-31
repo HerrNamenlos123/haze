@@ -147,6 +147,29 @@ export opaque ref struct App {
     pointerInside: bool = false;
     resized: bool = false;
 
+    // ── Deferred first appearance ────────────────────────────────────
+    //
+    // The window is created hidden (see the constructor) and mapped by
+    // nextFrame() only once a frame has actually been presented into it.
+    //
+    // Everything a frame needs -- the WGPU instance, the adapter, the
+    // device, the swapchain, the render pipelines, the font atlas -- is
+    // built after the window exists, and on a cold start that is a few
+    // hundred milliseconds of work. A window that is on screen for all of
+    // it has nothing to show but an empty surface, which the compositor
+    // paints black: the flash between launching an application and seeing
+    // it. Waiting costs nothing (the window simply appears a moment later,
+    // already drawn) and it is what makes the first painted pixels the UI's
+    // rather than the compositor's fallback.
+    //
+    // `framePresented` is set by nextFrame() itself rather than by the
+    // presenting code: nextFrame() returning a second time means the caller
+    // has been all the way around its loop, which is precisely "a frame was
+    // rendered and presented". No caller has to remember to say so, and a
+    // loop that presents through some other path still gets it right.
+    windowShown: bool = false;
+    framePresented: bool = false;
+
     // ── OS window focus ──────────────────────────────────────────────
     //
     // `focused` is the live state; the two edges beside it are true for
@@ -188,6 +211,8 @@ export opaque ref struct App {
             title: options.title,
             noApi: true,
             borderless: !options.nativeTitlebar,
+            // Not on screen yet -- see windowShown below.
+            hidden: true,
         });
         if !window { return f"Window creation failed: {window}"; }
 
@@ -239,6 +264,7 @@ export opaque ref struct App {
             size: windowState,
             surface: surface,
         });
+
 
         let pointerButtons = AppPointerButtons {};
         let frame = renderer.gfx.Frame(gfx);
@@ -454,6 +480,18 @@ export opaque ref struct App {
     mut fn nextFrame(): mut renderer.gfx.Frame | none {
         if this.window.shouldClose() {
             return none;
+        }
+
+        // Second time around the caller's loop: frame 0 is rendered and
+        // presented, so the window has something to show. See windowShown.
+        if !this.windowShown {
+            if this.framePresented {
+                this.window.show();
+                this.windowShown = true;
+            }
+            else {
+                this.framePresented = true;
+            }
         }
 
         // Cleared *before* polling so this call's pollEvents() accumulates

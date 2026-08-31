@@ -7,7 +7,8 @@ namespace ffi {
 
 	extern C fn haze_sdl_init(): bool :: final;
 	extern C fn haze_sdl_terminate(): void :: final;
-	extern C fn haze_sdl_createWindow(width: i32, height: i32, title: ccstr, noApi: bool, borderless: bool): SDL_Window | none :: final;
+	extern C fn haze_sdl_createWindow(width: i32, height: i32, title: ccstr, noApi: bool, borderless: bool, hidden: bool): SDL_Window | none :: final;
+	extern C fn haze_sdl_showWindow(window: SDL_Window): void :: final;
 	extern C fn haze_sdl_destroyWindow(window: SDL_Window): void :: final;
 	extern C fn haze_sdl_windowShouldClose(window: SDL_Window): bool :: final;
 	extern C fn haze_sdl_setWindowShouldClose(window: SDL_Window, value: bool): void :: final;
@@ -109,8 +110,12 @@ namespace ffi {
 		haze_sdl_terminate();
 	}
 
-	export fn createWindow(width: i32, height: i32, title: ccstr, noApi: bool, borderless: bool): SDL_Window | none {
-		return haze_sdl_createWindow(width, height, title, noApi, borderless);
+	export fn createWindow(width: i32, height: i32, title: ccstr, noApi: bool, borderless: bool, hidden: bool): SDL_Window | none {
+		return haze_sdl_createWindow(width, height, title, noApi, borderless, hidden);
+	}
+
+	export fn showWindow(window: SDL_Window) {
+		haze_sdl_showWindow(window);
 	}
 
 	export fn destroyWindow(window: SDL_Window) {
@@ -522,6 +527,12 @@ export ref struct Window {
 	// The real platform operations, not an emulation of them, so a custom
 	// titlebar's buttons behave (and animate) like the ones they replace.
 
+	// Map a window created with WindowConfig.hidden. Idempotent, and a no-op
+	// on a window that is already on screen.
+	fn show() {
+		ffi.showWindow(this.handle);
+	}
+
 	fn minimize() {
 		ffi.minimizeWindow(this.handle);
 	}
@@ -886,6 +897,18 @@ export ref struct WindowConfig {
 	// own. See Window.enableHitTest, which is what gives such a window its
 	// dragging, resizing, snapping and double-click-to-maximize back.
 	borderless: bool = false;
+	// Create the window without mapping it, leaving it invisible until
+	// Window.show() is called.
+	//
+	// A window is on screen from the moment it is created, and the
+	// compositor paints it from that moment -- but nothing can have been
+	// rendered into it yet, since the GPU device and swapchain are built
+	// afterwards. The gap between the two is what shows as a black
+	// rectangle before an application appears. Deferring the mapping until
+	// the first frame has been presented removes it: the window's first
+	// painted pixels are the application's first frame. See App's
+	// windowShown, which does exactly this.
+	hidden: bool = false;
 }
 
 export fn init() {
@@ -899,7 +922,7 @@ export fn terminate() {
 export fn createWindow(config: WindowConfig): Result<mut Window, str> {
 	assert(config.size.width >= i32.min && config.size.width <= i32.max);
 	assert(config.size.height >= i32.min && config.size.height <= i32.max);
-	const handle = ffi.createWindow(config.size.width, config.size.height, config.title, config.noApi, config.borderless);
+	const handle = ffi.createWindow(config.size.width, config.size.height, config.title, config.noApi, config.borderless, config.hidden);
 	if !handle {
 		return Result<mut Window, str>.Err(ffi.getError());
 	}

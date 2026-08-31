@@ -17984,8 +17984,11 @@ export class SemanticElaborator {
         this.sr.b.addStatement(this.sr, {
           variant: Semantic.ENode.IfStatement,
           isLetBinding: false,
+          // Must test the TEMP, not `leftExprId`: the operand is already
+          // evaluated by the VariableStatement above, and re-using its expr
+          // here emits it a second time (every side effect twice).
           condition: this.sr.b.unionTagCheckTypeIs(
-            leftExprId,
+            symbolValue(),
             srcErrTag.type
           )[1],
           elseIfs: [],
