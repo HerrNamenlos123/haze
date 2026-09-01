@@ -1,0 +1,48 @@
+@export
+
+// A drag handle between two panes. It owns no size: it reports where the
+// pointer is and the owner decides what that means, which is what lets the
+// same component sit on either side of the thing being resized.
+//
+// The pointer is polled rather than tracked with @pointermove, because move is
+// dispatched along the current hit path -- the drag would freeze the moment it
+// left this four-pixel strip.
+
+@props
+thickness: real = 4.0;
+vertical: bool = true;
+color: str = "#00000000";
+activeColor: str = "#0078D4";
+
+@emit
+drag: (real,);
+
+@setup
+let rootRef = elementRef<DivElement>();
+let dragging = reactive<bool>(false);
+
+let down = (event: PointerEvent) => {
+    event.stopPropagation();
+    dragging := true;
+};
+
+let tint = computed((): Color =>
+    rx.get(dragging) || (rootRef?.hover() ?? false) ? props.activeColor as Color : props.color as Color);
+
+ui.onFrame(() => {
+    if !rx.get(dragging) { return; }
+    if !ui.leftMouseHeld() {
+        dragging := false;
+        return;
+    }
+    emits.drag(props.vertical ? ui.mousePos.x : ui.mousePos.y);
+});
+
+@template [
+        [props.vertical]?w-[props.thickness]px [props.vertical]?h-grow
+        [!props.vertical]?h-[props.thickness]px [!props.vertical]?w-grow
+        [props.vertical]?cursor-resize-e-w [!props.vertical]?cursor-resize-n-s
+        bg-[tint]
+    ]
+    ref=rootRef
+    @pointerdown=down

@@ -46,6 +46,11 @@ ref struct Cache {
     // the same reason the two above are: a key missing from an existing
     // cache would otherwise fail the whole parse and wipe the open tabs.
     indentWidth: int | none = none;
+
+    // Side panel layout. Optional for the same reason as everything above it.
+    treeOpen: bool | none = none;
+    treeWidth: real | none = none;
+    agentWidth: real | none = none;
 }
 
 extern C let g_cache: json.CacheFile<Cache> | none = none;

@@ -1,0 +1,63 @@
+@export
+
+import claude
+
+// The change an Edit / MultiEdit / Write is proposing, as a patch. Hunks are
+// already trimmed to their context by claude.toolDiff, so this draws all of
+// them.
+
+@props
+[[hzui.untracked]]
+diff: claude.FileDiff;
+revision: int = 0;
+collapsed: bool = false;
+
+addedBg: str = "#1B3A24";
+removedBg: str = "#4B1F22";
+textColor: str = "#DDDDDD";
+mutedColor: str = "#8A8A8A";
+gutterColor: str = "#6A6A6A";
+fontFamily: str = "default";
+fontSize: real = 12.0;
+
+@setup
+let open = reactive<bool>(false);
+let toggle = (event: PointerEvent) => { open := !rx.get(open); };
+let shown = computed(() => !props.collapsed || rx.get(open));
+
+let headline = computed((): str => {
+    let diff = props.diff;
+    let what = diff.isNewFile ? "new file" : (diff.isUnanchored ? "stale edit" : diff.summary());
+    return f"{what}  {diff.path}";
+});
+
+let bgFor = (kind: claude.DiffLineKind): Color => {
+    if kind == claude.DiffLineKind.Added { return props.addedBg as Color; }
+    if kind == claude.DiffLineKind.Removed { return props.removedBg as Color; }
+    return "#00000000" as Color;
+};
+let signFor = (kind: claude.DiffLineKind): str => {
+    if kind == claude.DiffLineKind.Added { return "+"; }
+    if kind == claude.DiffLineKind.Removed { return "-"; }
+    return " ";
+};
+@template [col w-grow h-fit gap-1 font-size-[props.fontSize]]
+
+div [row w-fit h-fit gap-1 items-center cursor-pointer text-color-[props.mutedColor]]
+    @pointerdown=toggle
+{
+    text [text-nowrap] [headline]
+}
+
+div if=shown [col w-grow h-fit gap-0 overflow-hidden
+    font-family-[props.fontFamily]]
+{
+    div for=[hunk, hunkIndex in props.diff.hunks] key=[hunkIndex] [col w-grow h-fit gap-0] {
+        div for=[line, lineIndex in hunk.lines] key=[lineIndex]
+            [row w-grow h-fit gap-2 no-wrap bg-[bgFor(line.kind)]]
+        {
+            text [text-nowrap text-color-[props.gutterColor]] [signFor(line.kind)]
+            text [text-nowrap text-color-[props.textColor]] [line.text]
+        }
+    }
+}

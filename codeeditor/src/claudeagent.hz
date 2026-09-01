@@ -1,0 +1,75 @@
+import claude
+import claude_ui
+
+// The one agent session, held process-wide for the same reason the workspace
+// is: closing the panel must not kill a turn that is still running, and
+// re-opening it must not spawn a second CLI.
+ref struct AgentState {
+    chat: claude_ui.Chat | none = none;
+    login: claude_ui.Login | none = none;
+    error: str = "";
+    prompt: rx.Reactive<str>;
+    code: rx.Reactive<str>;
+    // 0 not started, 1 failed, 2 live. Reactive because it is what the panel
+    // switches on.
+    ready: rx.Reactive<int>;
+
+    fn constructor(): mut AgentState {
+        return AgentState {
+            prompt: rx.reactive<str>(""),
+            code: rx.reactive<str>(""),
+            ready: rx.reactive<int>(0),
+        };
+    }
+
+    mut fn boot(root: str) {
+        if rx.get(this.ready) != 0 {
+            return;
+        }
+        let result = claude.start({
+            cwd: root.length > 0 ? root : ".",
+            entrypoint: "haze-codeeditor",
+            appendSystemPrompt: claude.editorContextSystemPrompt("Haze CodeEditor"),
+        });
+        if !result {
+            this.error = result.message;
+            this.ready := 1;
+            return;
+        }
+        let session: mut claude.Session = result;
+        this.chat = claude_ui.Chat(session, this.prompt);
+        this.login = claude_ui.Login(claude.LoginFlow(session, true), this.code);
+        this.ready := 2;
+    }
+
+    // Pumped by the shell, not by the panel: a turn keeps running while the
+    // panel is closed.
+    mut fn poll() {
+        let chat = this.chat;
+        if chat {
+            chat.poll();
+        }
+    }
+
+    fn signedOut(): bool {
+        let chat = this.chat;
+        if !chat {
+            return false;
+        }
+        rx.get(chat.handshake);
+        let result = chat.session.initializeResult;
+        return result ? result.account is none : false;
+    }
+}
+
+extern C let g_agent: mut AgentState | none = none;
+
+fn agent(): mut AgentState {
+    let existing = g_agent;
+    if existing {
+        return existing;
+    }
+    let created = AgentState();
+    g_agent = created;
+    return created;
+}

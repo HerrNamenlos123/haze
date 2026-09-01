@@ -1,0 +1,67 @@
+ref struct TreeRow {
+    path: str;
+    name: str;
+    depth: int;
+    isDir: bool;
+    open: bool;
+}
+
+fn treeNameBefore(a: str, b: str): bool {
+    let shared = a.length < b.length ? a.length : b.length;
+    for (let i = 0; i < shared; i++) {
+        if a[i] != b[i] {
+            return a[i] < b[i];
+        }
+    }
+    return a.length < b.length;
+}
+
+fn treeBefore(a: fs.DirEntry, b: fs.DirEntry): bool {
+    if a.isDirectory != b.isDirectory {
+        return a.isDirectory;
+    }
+    return treeNameBefore(a.name, b.name);
+}
+
+fn treeExpanded(expanded: []str, path: str): bool {
+    for entry in expanded {
+        if entry == path {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn treeRows(dir: str, depth: int, expanded: []str, out: mut []TreeRow): void :: final {
+    let listed = fs.listDir(dir);
+    if !listed {
+        return;
+    }
+    let sorted: []fs.DirEntry = [];
+    for entry in listed {
+        if quickOpenSkips(entry.name) || sorted.length >= 2000 {
+            continue;
+        }
+        let at = sorted.length;
+        while at > 0 {
+            // Bound to a local: passing an indexed element of a value-struct
+            // array straight into a call generates C that will not compile.
+            let previous = sorted[at - 1];
+            if !treeBefore(entry, previous) {
+                break;
+            }
+            at = at - 1;
+        }
+        sorted.insert(at, entry);
+    }
+    for entry in sorted {
+        let open = entry.isDirectory && treeExpanded(expanded, entry.path);
+        out.push(TreeRow {
+            path: entry.path, name: entry.name, depth: depth,
+            isDir: entry.isDirectory, open: open,
+        });
+        if open {
+            treeRows(entry.path, depth + 1, expanded, out);
+        }
+    }
+}

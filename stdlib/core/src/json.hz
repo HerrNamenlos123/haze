@@ -851,8 +851,18 @@ namespace json {
         }
 
         fn _writeToDisk() {
-            if (this._disableDiskWriteTemporarily) { return; }
+            // Serialize FIRST, and unconditionally. This runs inside
+            // _flushComputed, and reading every field is the only thing that
+            // subscribes that computed to them. Returning before these reads
+            // -- which the reload path below asks for -- re-runs the computed
+            // with no field reads at all, so it comes back subscribed to
+            // nothing but `data` itself and NO later write ever marks it
+            // dirty again. The file is then frozen for the life of the
+            // process: the reload fires on this cache's own first write (the
+            // host pumps fs.pollEvents every frame), so it costs one
+            // serialization to avoid losing every save after the first.
             let jsonData = json.stringify(this.data);
+            if (this._disableDiskWriteTemporarily) { return; }
             if !fs.writeText(this._path, jsonData) {
                 if this._args.panicOnFailure {
                     sys.panic(f"Cache file at '{this._path}' could not be written to");

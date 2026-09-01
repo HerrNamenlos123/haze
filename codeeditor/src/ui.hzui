@@ -2,7 +2,7 @@ import ui_widgets
 import ui_components
 import filedialog
 
-from ui_widgets import TabsComponent
+from ui_widgets import TabsComponent, SplitterComponent
 
 // The application shell: the tab list, and one editor per tab.
 
@@ -133,6 +133,54 @@ let selectTab = (key: int) => {
     persist();
 };
 
+// The two side panels. Widths are dragged, so they live in reactive cells and
+// are written back to the cache whenever they settle.
+let treeOpen = reactive<bool>((cache.data.treeOpen ?? true) as bool);
+let agentOpen = reactive<bool>(false);
+let treeWidth = reactive<real>((cache.data.treeWidth ?? 240.0) as real);
+let agentWidth = reactive<real>((cache.data.agentWidth ?? 380.0) as real);
+
+let clampWidth = (value: real): real => {
+    let limit = rx.get(rootSize).x - 320.0;
+    if value > limit { value = limit; }
+    return value < 160.0 ? 160.0 : value;
+};
+let dragTree = (x: real) => {
+    treeWidth := clampWidth(x);
+    cache.data.treeWidth := rx.get(treeWidth);
+};
+let dragAgent = (x: real) => {
+    agentWidth := clampWidth(rx.get(rootSize).x - x);
+    cache.data.agentWidth := rx.get(agentWidth);
+};
+let toggleTree = () => {
+    treeOpen := !rx.get(treeOpen);
+    cache.data.treeOpen := rx.get(treeOpen);
+};
+let toggleAgent = () => {
+    agentOpen := !rx.get(agentOpen);
+    if rx.get(agentOpen) { agent().boot(rx.get(workspace().path)); }
+};
+
+let quickOpen = reactive<bool>(false);
+// The folder Ctrl+P searches: the workspace when one is open, otherwise the
+// active file's own folder -- a file opened without a folder still gets a
+// picker over its siblings rather than an empty list.
+let quickOpenRoot = computed((): str => {
+    let folder: str = rx.get(workspace().path);
+    return folder.length > 0 ? folder : quickOpenParent(pathForKey(rx.get(activeKey)));
+});
+let closeQuickOpen = () => {
+    quickOpen := false;
+    documents().requestEditorFocus();
+};
+let pickQuickOpen = (path: str) => {
+    closeQuickOpen();
+    openFile(path);
+};
+
+let pickWorkspace = () => { promptForWorkspace(); };
+
 let promptForFile = () => {
     if let picked = filedialog.pickFile(); picked is filedialog.DialogSuccess {
         openFile(picked.path);
@@ -186,6 +234,9 @@ registerWorkbenchCommands(keybindings(), WorkbenchCommands {
     // Every dirty tab, not just the visible one, which is why this is a shell
     // command while plain Save is an editor one.
     saveAll: () => { documents().saveAllDirty(); },
+    quickOpen: () => { quickOpen := true; },
+    toggleFileTree: () => { toggleTree(); },
+    toggleAgent: () => { toggleAgent(); },
 });
 
 // Restore the previous session, falling back to asking for a file.
@@ -193,7 +244,9 @@ let restored = false;
 let savedFiles = cache.data.openFiles as str;
 if savedFiles.length > 0 {
     for path in savedFiles.split("\n") {
-        if path.length > 0 {
+        // A remembered file that has since been deleted or moved must not come
+        // back as a tab over a path that no longer reads.
+        if path.length > 0 && pathExists(path) {
             openFile(path);
             restored = true;
         }
@@ -241,6 +294,8 @@ let tabsFingerprint = computed((): int => {
     return sum;
 });
 
+let activeFilePath = computed((): str => pathForKey(rx.get(activeKey)));
+
 let windowTitle = computed((): str => {
     let name = fileNameOf(pathForKey(rx.get(activeKey)));
     return name.length > 0 ? f"{name} - Haze CodeEditor" : "Haze CodeEditor";
@@ -273,7 +328,7 @@ let onKeyDownCapture = (event: ui_components.KeyboardEvent) => {
     // What makes the dialog MODAL rather than merely on top: while it is up no
     // binding resolves, so ctrl+s cannot save the very file whose fate is being
     // asked about. The dialog has focus, so the keys it wants still reach it.
-    if modalIsOpen() {
+    if modalIsOpen() || rx.get(quickOpen) {
         return;
     }
     if keybindings().dispatch(event).handled() {
@@ -306,6 +361,11 @@ ui.onFrame(() => {
     if bridge {
         bridge.loop();
     }
+    // Only while the panel is hidden: it does its own polling, and a session
+    // nobody drains stalls behind a full pipe once its turn fills it.
+    if !rx.get(agentOpen) {
+        agent().poll();
+    }
     rx.get(followNavigation);
 
     let count = rx.get(openTabs).length;
@@ -327,27 +387,44 @@ ui.onFrame(() => {
 // restating main.hz's constant, so the two cannot drift apart.
 TitleBar if=[!ui.window.hasNativeTitlebar()] [] title=[windowTitle] {}
 
-Tabs if=[tabItems.length > 0] [] items=[tabItems] revision=[tabsFingerprint]
-    activeKey=[activeKey] @select=selectTab @close=closeTab {}
+div [row w-grow h-grow gap-0] {
+    div if=[rx.get(treeOpen)] [col h-grow w-[rx.get(treeWidth)]px] {
+        FileTree [] root=[rx.get(workspace().path)] activePath=[activeFilePath]
+            @open=openFile @open-folder=pickWorkspace {}
+    }
+    Splitter if=[rx.get(treeOpen)] [] @drag=dragTree {}
 
-div if=[tabItems.length == 0] [w-grow h-grow col items-center justify-center]
-    focusable=true autofocus=true
-{
-    text [text-color-["#7A7A7A"]] ["No file open  --  Ctrl+O to open one"]
+    div [col w-grow h-grow gap-0] {
+        Tabs if=[tabItems.length > 0] [] items=[tabItems] revision=[tabsFingerprint]
+            activeKey=[activeKey] @select=selectTab @close=closeTab {}
+
+        div if=[tabItems.length == 0] [w-grow h-grow col items-center justify-center]
+            focusable=true autofocus=true
+        {
+            text [text-color-["#7A7A7A"]] ["No file open  --  Ctrl+P to search, Ctrl+O to open one"]
+        }
+
+        // Every tab stays MOUNTED and merely hides itself when it is not the
+        // active one, which is what makes switching tabs mean "look somewhere
+        // else" instead of "throw this away and rebuild it": scroll offset,
+        // caret, undo history and cached tokens all live inside the editor
+        // component. A hidden subtree is not laid out, painted or hit-tested.
+        //
+        // `key=` sits on the component itself rather than on a wrapper div,
+        // because a component nested INSIDE a loop body is not keyed by the
+        // loop -- every iteration would ask for the same component id, and
+        // they would all share one instance.
+        EditorView for=[tab in openTabs] key=[tab.key] [] tabKey=[tab.key]
+            filePath=[tab.path] active=[tab.key == activeKey] {}
+    }
+
+    Splitter if=[rx.get(agentOpen)] [] @drag=dragAgent {}
+    div if=[rx.get(agentOpen)] [col h-grow w-[rx.get(agentWidth)]px] {
+        ClaudePanel [] codeFontFamily=[editorFontFamily()] {}
+    }
 }
 
-// Every tab stays MOUNTED and merely hides itself when it is not the active
-// one, which is what makes switching tabs mean "look somewhere else" instead of
-// "throw this away and rebuild it": scroll offset, caret, undo history and
-// cached tokens all live inside the editor component. A hidden subtree is not
-// laid out, painted or hit-tested.
-//
-// `key=` sits on the component itself rather than on a wrapper div, because a
-// component nested INSIDE a loop body is not keyed by the loop -- every
-// iteration would ask for the same component id, and they would all share one
-// instance.
-EditorView for=[tab in openTabs] key=[tab.key] [] tabKey=[tab.key]
-    filePath=[tab.path] active=[tab.key == activeKey] {}
+QuickOpen [] open=[rx.get(quickOpen)] root=[quickOpenRoot] @close=closeQuickOpen @pick=pickQuickOpen {}
 
 // Last, because hit-testing walks children in reverse declaration order and
 // ignores z-index: a modal declared earlier would be painted over the editor

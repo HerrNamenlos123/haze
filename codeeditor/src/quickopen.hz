@@ -1,0 +1,101 @@
+import fuzzymatch
+
+struct QuickRun {
+    text: str = "";
+    hit: bool = false;
+    dim: bool = false;
+}
+
+ref struct QuickRow {
+    path: str;
+    runs: []QuickRun;
+}
+
+fn quickOpenLimit(): int { return 14; }
+
+fn quickOpenSkips(name: str): bool {
+    return name.startsWith(".") || name == "node_modules" || name == "dist" || name == "target";
+}
+
+fn quickOpenScan(dir: str, prefix: str, out: mut []str): void :: final {
+    let listed = fs.listDir(dir);
+    if !listed {
+        return;
+    }
+    for entry in listed {
+        if out.length >= 20000 {
+            return;
+        }
+        if quickOpenSkips(entry.name) {
+            continue;
+        }
+        let rel = prefix.length > 0 ? f"{prefix}/{entry.name}" : entry.name;
+        if entry.isDirectory {
+            quickOpenScan(entry.path, rel, out);
+        } else {
+            out.push(rel);
+        }
+    }
+}
+
+fn quickOpenParent(path: str): str {
+    for (let i = path.length - 1; i >= 0; i--) {
+        if path[i] == b"/" || path[i] == b"\\" {
+            return path.slice(0, i);
+        }
+    }
+    return "";
+}
+
+fn quickOpenItems(root: str): []fuzzymatch.Item {
+    let paths: mut []str = [];
+    if root.length > 0 {
+        quickOpenScan(root, "", paths);
+    }
+    return fuzzymatch.itemsFromPaths(paths);
+}
+
+fn quickOpenRuns(out: mut []QuickRun, text: str, spans: []fuzzymatch.Span, dim: bool): void {
+    let at = 0;
+    for span in spans {
+        let end = span.end < text.length ? span.end : text.length;
+        if end <= span.start {
+            continue;
+        }
+        if span.start > at {
+            out.push(QuickRun { text: text.slice(at, span.start), dim: dim });
+        }
+        out.push(QuickRun { text: text.slice(span.start, end), hit: true, dim: dim });
+        at = end;
+    }
+    if at < text.length {
+        out.push(QuickRun { text: text.slice(at, text.length), dim: dim });
+    }
+}
+
+fn quickOpenRow(item: fuzzymatch.Item, label: []fuzzymatch.Span, detail: []fuzzymatch.Span): QuickRow {
+    let runs: mut []QuickRun = [];
+    quickOpenRuns(runs, item.label, label, false);
+    if item.description.length > 0 {
+        runs.push(QuickRun { text: "   ", dim: true });
+        quickOpenRuns(runs, item.description, detail, true);
+    }
+    return QuickRow { path: item.path, runs: runs };
+}
+
+fn quickOpenRows(items: []fuzzymatch.Item, query: str): []QuickRow {
+    let rows: []QuickRow = [];
+    let unmatched: []fuzzymatch.Span = [];
+    if query.length == 0 {
+        for (let i = 0; i < items.length && i < quickOpenLimit(); i++) {
+            rows.push(quickOpenRow(items[i], unmatched, unmatched));
+        }
+        return rows;
+    }
+    let hits = fuzzymatch.rank(items, fuzzymatch.prepareQuery(query),
+        fuzzymatch.Options { limit: quickOpenLimit() });
+    for hit in hits {
+        rows.push(quickOpenRow(items[hit.index], hit.labelSpans, hit.descriptionSpans));
+    }
+    return rows;
+}

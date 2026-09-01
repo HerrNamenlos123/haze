@@ -32,6 +32,8 @@ textedit_behavior = { path = "../stdlib/textedit_behavior" }
 vim_behavior = { path = "../stdlib/vim_behavior" }
 language_server_protocol = { path = "../stdlib/language_server_protocol" }
 unicode = { path = "../stdlib/unicode" }
+fuzzymatch = { path = "../stdlib/fuzzymatch" }
+claude = { path = "../stdlib/claude" }
 # Chat, tool permissions, model selection and sign-in, over stdlib/claude.
 # Declared but not yet mounted anywhere -- see stdlib/claude_ui/README.md.
 claude_ui = { path = "../stdlib/claude_ui" }

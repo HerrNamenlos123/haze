@@ -1,0 +1,32 @@
+from claude_ui import ClaudeChatComponent, ClaudeSignInComponent
+
+@props
+bg: str = "#181818";
+mutedColor: str = "#8A8A8A";
+fontSize: real = 13.0;
+codeFontFamily: str = "default";
+
+@setup
+let state = agent();
+let ready = computed((): int => rx.get(state.ready));
+let signedOut = computed((): bool => state.signedOut());
+let restart = () => { state.ready := 0; };
+
+@template [col w-grow h-grow gap-0 bg-[props.bg] font-size-[props.fontSize]]
+
+div if=[ready == 1] [p-3 w-grow h-fit] {
+    text [text-color-[props.mutedColor]] [state.error]
+}
+
+div else-if=[ready != 2] [p-3 w-grow h-fit] {
+    text [text-color-[props.mutedColor]] ["Starting Claude…"]
+}
+
+div else-if=signedOut [p-3 w-grow h-fit] {
+    ClaudeSignIn [] login=[do { let handle = state.login; assert(handle); handle }]
+        fontSize=[props.fontSize] @finished=restart {}
+}
+
+ClaudeChat else [] chat=[do { let handle = state.chat; assert(handle); handle }]
+    bg=[props.bg] fontSize=[props.fontSize] codeFontFamily=[props.codeFontFamily]
+    remoteName="Haze CodeEditor" {}

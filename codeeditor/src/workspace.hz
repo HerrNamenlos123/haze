@@ -67,6 +67,14 @@ fn pathIsInsideFolder(filepath: str, folder: str): bool {
     return next == "/" || next == "\\";
 }
 
+// `fs.exists` answers with a Result, and a bare `if fs.exists(p)` tests only
+// that the CALL succeeded -- it is true for a path that is definitely absent.
+// Every "is it still there?" check needs the bool inside.
+fn pathExists(path: str): bool {
+    let result = fs.exists(path);
+    return result ? result as bool : false;
+}
+
 // Last path segment, minus any trailing separator -- "/home/me/proj/" and
 // "/home/me/proj" are both "proj". Distinct from codeui's fileNameOf(),
 // which does not have to care about trailing separators because a file
@@ -181,7 +189,7 @@ fn restoreWorkspaceFromCache() {
             // become the open workspace: the servers would be initialized
             // against a root that is not there, which fails in exactly the
             // confusing way this whole file exists to avoid.
-            if fs.exists(path) {
+            if pathExists(path) {
                 workspace().path := path;
                 workspace().name := folderNameOf(path);
             } else {
@@ -271,7 +279,7 @@ fn openWorkspace(path: str) {
         // nothing.
         return;
     }
-    if !fs.exists(path) {
+    if !pathExists(path) {
         fmt.println("[workspace] no such folder: ", path);
         return;
     }

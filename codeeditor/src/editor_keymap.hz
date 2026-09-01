@@ -62,6 +62,9 @@ fn installDefaultKeymap(keys: mut Keybindings): void {
         // its two-stroke bindings behind this same ctrl+k prefix.
         { key: "ctrl+k ctrl+o", command: "workbench.action.files.openFolder" },
         { key: "ctrl+r", command: "workbench.action.openRecent" },
+        { key: "ctrl+p", command: "workbench.action.quickOpen" },
+        { key: "ctrl+b", command: "workbench.action.toggleSidebar" },
+        { key: "alt+v", command: "workbench.action.toggleAgent" },
         // Save. Deliberately WITHOUT a `when`, unlike ctrl+o above: there
         // is no vim meaning of ctrl+s to protect (vim's own `:w` reaches
         // the same code through Vim.onExCommand), and a save that only
@@ -126,6 +129,9 @@ struct WorkbenchCommands {
     openFolder: CommandFn;
     closeFolder: CommandFn;
     openRecent: CommandFn;
+    quickOpen: CommandFn;
+    toggleFileTree: CommandFn;
+    toggleAgent: CommandFn;
     closeActiveEditor: CommandFn;
     closeAllEditors: CommandFn;
     nextEditor: CommandFn;
@@ -141,6 +147,9 @@ fn registerWorkbenchCommands(keys: mut Keybindings, handlers: WorkbenchCommands)
     keys.commands.register("workbench.action.files.openFolder", handlers.openFolder);
     keys.commands.register("workbench.action.closeFolder", handlers.closeFolder);
     keys.commands.register("workbench.action.openRecent", handlers.openRecent);
+    keys.commands.register("workbench.action.quickOpen", handlers.quickOpen);
+    keys.commands.register("workbench.action.toggleSidebar", handlers.toggleFileTree);
+    keys.commands.register("workbench.action.toggleAgent", handlers.toggleAgent);
     keys.commands.register("workbench.action.closeActiveEditor", handlers.closeActiveEditor);
     keys.commands.register("workbench.action.closeAllEditors", handlers.closeAllEditors);
     keys.commands.register("workbench.action.files.saveAll", handlers.saveAll);

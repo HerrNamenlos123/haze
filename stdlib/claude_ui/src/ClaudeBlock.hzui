@@ -17,6 +17,7 @@ textColor: str = "#DDDDDD";
 mutedColor: str = "#8A8A8A";
 errorColor: str = "#F48771";
 toolBg: str = "#1F1F1F";
+codeFontFamily: str = "default";
 rounded: real = 4.0;
 fontSize: real = 13.0;
 // Thinking opens while it streams and closes when done, unless the reader
@@ -47,6 +48,16 @@ let summary = computed((): claude.ToolSummary => {
         return bare;
     }
     return claude.describeTool(props.block.name, input);
+});
+
+// Only once the call's input has finished streaming: toolDiff reads the file
+// off disk, and a partial input would do that per token.
+let diff = computed((): claude.FileDiff | none => {
+    let block = props.block;
+    if block.partial { return none; }
+    let input = block.input;
+    if !input { return none; }
+    return claude.toolDiff(block.name, input, {});
 });
 
 // One line: a tool's output is often thousands. strippedDenialReason turns
@@ -85,7 +96,14 @@ div else-if=isTool [col w-grow h-fit gap-1 p-2 rounded-[props.rounded]px
         text if=[summary.detail.length > 0] [text-color-[props.mutedColor]]
             [summary.detail]
     }
-    text if=[resultLine.length > 0]
+    ClaudeDiff if=diff [] diff=[do { let value = rx.get(diff); assert(value); value }]
+        revision=[props.revision] collapsed=[true] textColor=[props.textColor]
+        mutedColor=[props.mutedColor] fontFamily=[props.codeFontFamily]
+        fontSize=[props.fontSize - 1.0] {}
+
+    // A diff already says what happened; Edit's own result restates the whole
+    // file back at the reader.
+    text if=[resultLine.length > 0 && (props.block.failed() || diff is none)]
         [text-color-[props.block.failed() ? props.errorColor : props.mutedColor]]
         [resultLine]
 }

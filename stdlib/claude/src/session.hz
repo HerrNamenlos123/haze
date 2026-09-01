@@ -823,6 +823,20 @@ export ref struct Session {
         this.conversation.permissionMode = mode;
     }
 
+    // Hands this conversation to Claude on the web, so it can be driven from
+    // a browser or a phone while the CLI keeps running here. The reply carries
+    // `session_url` -- the address to open -- plus `connect_url`,
+    // `environment_id`, `bridge_epoch` and `bridge_session_id`.
+    mut fn enableRemoteControl(enabled: bool, name: str, onSuccess: ControlResultCallback | none) {
+        let request = newObject();
+        setStr(request, "subtype", "remote_control");
+        setBool(request, "enabled", enabled);
+        if name.length > 0 {
+            setStr(request, "name", name);
+        }
+        this.sendControl(request, onSuccess, none);
+    }
+
     mut fn setModel(model: str) {
         let request = newObject();
         setStr(request, "subtype", "set_model");

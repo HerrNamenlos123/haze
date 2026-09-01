@@ -35,6 +35,10 @@ export struct Chat {
     // model list is then built once instead of per frame.
     handshake: rx.Reactive<int>;
 
+    // The address to open when this conversation is also being driven from
+    // the web; empty when it is not, and a placeholder while connecting.
+    remote: rx.Reactive<str>;
+
     // Refilled by visibleMessages(), never rebuilt. Do not hold across a call.
     _visible: []claude.Message = [];
     _noModels: []claude.ModelInfo = [];
@@ -45,6 +49,7 @@ export struct Chat {
             prompt: prompt,
             revision: rx.reactive<int>(0),
             handshake: rx.reactive<int>(0),
+            remote: rx.reactive<str>(""),
         };
     }
 
@@ -154,6 +159,27 @@ export struct Chat {
 
     fn setModel(model: str) {
         this.session.setModel(model);
+    }
+
+    fn remoteUrl(): str {
+        return rx.get(this.remote);
+    }
+
+    // Hands the conversation to Claude on the web and back. The reply carries
+    // the address to open; until it lands there is nothing to show but that
+    // something is happening.
+    fn toggleRemote(name: str) {
+        let handle = this.remote;
+        if rx.get(handle).length > 0 {
+            this.session.enableRemoteControl(false, "", none);
+            handle := "";
+            return;
+        }
+        handle := "connecting…";
+        let onSuccess: claude.ControlResultCallback = (response: json.Node) => {
+            handle := claude.getStringOr(response, "session_url", "");
+        };
+        this.session.enableRemoteControl(true, name, onSuccess);
     }
 }
 

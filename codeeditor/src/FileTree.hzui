@@ -1,0 +1,118 @@
+from ui_widgets import ButtonComponent, ButtonSlotContent, TextInput,
+    TextInputComponent, ScrollViewComponent, ScrollViewSlotContent
+from codicons import CodiconComponent
+
+@props
+root: str = "";
+activePath: str = "";
+bg: str = "#1F1F1F";
+textColor: str = "#CCCCCC";
+mutedColor: str = "#8A8A8A";
+fontSize: real = 13.0;
+
+@emit
+open: (str,);
+openFolder: ();
+
+@setup
+let noPaths: []str = [];
+let expanded = shallowReactive<[]str>(noPaths);
+let revision = reactive<int>(0);
+let creating = reactive<bool>(false);
+let draft = reactive<str>("");
+let activeDir = reactive<str>("");
+let armed = reactive<bool>(false);
+let inputRef = ui.componentRef<TextInput>();
+
+// The box only exists while creating, and autofocus fires once per element for
+// the life of the process -- so focus is asked for by hand, each time.
+ui.onFrame(() => {
+    if !rx.get(armed) { return; }
+    let input = rx.get(inputRef);
+    if !input { return; }
+    input.focus();
+    armed := false;
+});
+
+let rows = computed((): []TreeRow => {
+    rx.get(revision);
+    let out: mut []TreeRow = [];
+    let root = props.root;
+    if root.length > 0 {
+        treeRows(root, 0, rx.get(expanded), out);
+    }
+    return out;
+});
+
+let title = computed((): str => props.root.length > 0 ? folderNameOf(props.root) : "No folder");
+let hasRoot = computed((): bool => props.root.length > 0);
+let pickFolder = () => { emits.openFolder(); };
+
+let toggle = (row: TreeRow) => {
+    if !row.isDir {
+        emits.open(row.path);
+        return;
+    }
+    activeDir := row.path;
+    let list: []str = rx.get(expanded);
+    let at = -1;
+    for (let i = 0; i < list.length; i++) {
+        if list[i] == row.path { at = i; }
+    }
+    if at >= 0 { list.remove(at); } else { list.push(row.path); }
+    expanded := list;
+};
+
+let refresh = () => { revision := rx.get(revision) + 1; };
+let startCreate = () => { draft := ""; creating := true; armed := true; };
+
+let create = (name: str) => {
+    creating := false;
+    let typed = name.trim();
+    if typed.length == 0 || props.root.length == 0 {
+        return;
+    }
+    let dir = rx.get(activeDir);
+    if dir.length == 0 { dir = props.root; }
+    let path = f"{dir}/{typed}";
+    fs.createDirectory(quickOpenParent(path));
+    if !pathExists(path) {
+        fs.writeText(path, "");
+    }
+    refresh();
+    emits.open(path);
+};
+
+@template [col w-grow h-grow gap-0 bg-[props.bg] font-size-[props.fontSize]]
+
+div [row w-grow h-fit gap-1 items-center px-2 py-1] {
+    text [text-color-[props.mutedColor] text-nowrap] [title]
+    div [w-grow h-fit]
+    Button [] icon="folder-opened" paddingX=[4.0] paddingY=[2.0] focusRing=[0.0] @click=pickFolder {}
+    Button if=hasRoot [] icon="new-file" paddingX=[4.0] paddingY=[2.0] focusRing=[0.0] @click=startCreate {}
+    Button if=hasRoot [] icon="refresh" paddingX=[4.0] paddingY=[2.0] focusRing=[0.0] @click=refresh {}
+}
+
+div if=[!hasRoot] [col w-grow h-fit gap-1 p-2] {
+    Button [] label="Open Folder" icon="folder-opened" grow=[true] @click=pickFolder {}
+}
+
+div if=[rx.get(creating)] [px-2 pb-1 w-grow h-fit] {
+    TextInput [] ref=inputRef text=[draft] placeholder="New file"
+        fontSize=[props.fontSize] focusRing=[0.0] @submit=create {}
+}
+
+ScrollView [] padding=[0.0] {
+    #content {
+        Button for=[row, index in rows] key=[index] [] label=[row.path] grow=[true]
+            rounded=[0.0] paddingX=[4.0] paddingY=[2.0] focusRing=[0.0]
+            selected=[row.path == props.activePath] @click=[() => { toggle(row); }]
+        {
+            #content {
+                div [w-[row.depth as real * 12.0]px h-fit]
+                Codicon [] icon=[row.isDir ? (row.open ? "chevron-down" : "chevron-right") : "file"] {}
+                text [text-nowrap text-color-[props.textColor]] [row.name]
+            }
+        }
+    }
+}
