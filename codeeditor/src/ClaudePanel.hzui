@@ -12,7 +12,7 @@ let ready = computed((): int => rx.get(state.ready));
 let signedOut = computed((): bool => state.signedOut());
 let restart = () => { state.ready := 0; };
 
-@template [col w-grow h-grow gap-0 bg-[props.bg] font-size-[props.fontSize]]
+@template [col w-grow h-grow gap-0 bg-[props.bg] font-size-[props.fontSize] border-l-2 border-color-["#FFF"]]
 
 div if=[ready == 1] [p-3 w-grow h-fit] {
     text [text-color-[props.mutedColor]] [state.error]
