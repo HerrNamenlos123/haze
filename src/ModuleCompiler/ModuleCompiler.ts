@@ -26,6 +26,7 @@ import { version } from "../../package.json";
 import { generateCode } from "../Codegen/CodeGenerator";
 import { LowerModule } from "../Lower/Lower";
 import { Parser } from "../Parser/Parser";
+import { releaseNativeParserBinary } from "../Parser/ParserMode";
 import { PluginHost } from "../Plugins/PluginInterface";
 import type { ASTRoot } from "../shared/AST";
 import { Semantic } from "../Semantic/SemanticTypes";
@@ -2151,6 +2152,10 @@ export class ModuleCompiler {
       await execAsync(compileCmd);
 
       this.advancePhase(EModulePrintCompilerPhase.Linking);
+
+      // Self-hosting: when the thing being linked is the native parser this
+      // build parsed through, the running parser holds the output path locked.
+      releaseNativeParserBinary(paths.moduleExecutable);
 
       const linkCmd = `"${HAZE_C_COMPILER}" "${paths.moduleOFile}" -o "${paths.moduleExecutable}" ${linkFlags}`;
       if (this.verbose) {

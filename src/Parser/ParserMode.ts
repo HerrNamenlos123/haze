@@ -10,7 +10,7 @@
 // with it parses every file twice and fails loudly, with the exact JSON path of
 // the first difference, if they ever diverge.
 
-import { existsSync } from "node:fs";
+import fs, { existsSync } from "node:fs";
 import * as path from "node:path";
 import type { ASTRoot } from "../shared/AST";
 import { getInstalledParserBinary } from "../shared/InstallPaths";
@@ -19,6 +19,7 @@ import {
   NativeParserServer,
   ensureNativeParser,
   nativeParserBuildFailure,
+  parserBinaryPath,
   warmupNativeParserSync,
 } from "./NativeParser";
 import { shutdownAllBridges } from "./SyncBridge";
@@ -147,6 +148,84 @@ export function shutdownNativeParser(): void {
   server?.stop();
   server = null;
   shutdownAllBridges();
+}
+
+/**
+ * Let a link overwrite the parser binary the compiler is itself running.
+ *
+ * Building compiler/haze-parser with `--parser native` is the self-hosting
+ * case: the parser process the build parses through was launched from exactly
+ * the path the linker is about to write. Windows keeps an exclusive lock on the
+ * image of a running process, so the link dies with
+ *
+ *   lld-link: error: failed to write output '...haze-parser.exe': permission denied
+ *
+ * every single time -- deterministically, not as the scanner race it looks
+ * like. Retrying cannot help: each retry starts a fresh compiler that takes the
+ * lock again. So the parser is shut down before the link and the lock is waited
+ * out; parsing is over by then, and anything that still needs the parser
+ * afterwards restarts it (through the freshly linked binary).
+ *
+ * A no-op when the output is not the parser binary, which is every other build.
+ */
+export function releaseNativeParserBinary(outputPath: string): void {
+  const binary = parserBinaryPath(repoRoot);
+  if (!isSamePath(outputPath, binary)) {
+    return;
+  }
+  shutdownNativeParser();
+  waitUntilWritable(binary);
+}
+
+/** Same file on disk? Resolved through symlinks, and case-blind on Windows. */
+function isSamePath(a: string, b: string): boolean {
+  const canonical = (p: string) => {
+    let resolved = path.resolve(p);
+    try {
+      resolved = fs.realpathSync(resolved);
+    } catch {
+      // Not there yet (a first link) -- the resolved path is close enough.
+    }
+    return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+  };
+  return canonical(a) === canonical(b);
+}
+
+/**
+ * Block until the file can be opened for writing, or give up after a moment.
+ *
+ * The parser exits on its own when its stdin closes, but the lock outlives the
+ * `__quit__` write by however long the process takes to go away. Giving up
+ * silently is deliberate: the link runs either way and reports the real error
+ * if the lock somehow survives.
+ */
+function waitUntilWritable(file: string, timeoutMs = 5000): void {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    try {
+      fs.closeSync(fs.openSync(file, "r+"));
+      return;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      // Gone entirely is as good as writable; anything but a lock is the
+      // linker's problem to report.
+      if (
+        code === "ENOENT" ||
+        (code !== "EBUSY" && code !== "EPERM" && code !== "EACCES")
+      ) {
+        return;
+      }
+    }
+    if (Date.now() >= deadline) {
+      return;
+    }
+    sleepSync(25);
+  }
+}
+
+/** Sleep on the main thread: the compile pipeline here is not async. */
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
 /**
