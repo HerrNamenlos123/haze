@@ -1,0 +1,146 @@
+import sha256
+
+__c__("#include \"ffi/haze_single_instance.c\"");
+export __c__("#include \"ffi/public/haze_single_instance.h\"");
+
+namespace ffi {
+    export extern C noemit struct haze_si_acquire_result_t {
+        role: i32;
+        error: str;
+    }
+
+    export extern C noemit struct haze_si_send_result_t {
+        status: i32;
+        exitCode: i32;
+        message: str;
+    }
+
+    export extern C noemit struct haze_si_take_result_t {
+        hasRequest: bool;
+        value: cptr;
+    }
+
+    export extern C fn haze_si_user_key(): str :: final;
+    export extern C fn haze_si_set_parser(parser: (text: str) -> cptr): void :: final;
+    export extern C fn haze_si_acquire(key: str, mangledName: str, fingerprint: int, prettyName: str): haze_si_acquire_result_t :: final;
+    export extern C fn haze_si_send(json: str): haze_si_send_result_t :: final;
+    export extern C fn haze_si_take(): haze_si_take_result_t :: final;
+    export extern C fn haze_si_respond(exitCode: int): void :: final;
+    export extern C fn haze_si_release(): void :: final;
+}
+
+export enum unscoped Status {
+    Primary = 0,
+    Secondary = 1,
+    Error = 2,
+}
+
+export enum unscoped SendStatus {
+    Delivered = 0,
+    Rejected = 1,
+    Failed = 2,
+}
+
+export struct Args {
+    appId: str;
+}
+
+export struct SendResult {
+    status: SendStatus = SendStatus.Failed;
+    exitCode: int = 1;
+    message: str = "";
+}
+
+export fn _parsePayload<T>(text: str): cptr {
+    let parsed = json.parse<T>(text);
+    if !parsed {
+        return none as cptr;
+    }
+
+    let boxed: ref Box<T> = { value: parsed };
+    let raw = none as cptr;
+    __c__("raw = boxed;");
+    return raw;
+}
+
+export fn _unboxPayload<T>(raw: cptr): T {
+    do unsafe {
+        let boxed: ref Box<T> = uninitialized;
+        __c__("boxed = raw;");
+        return boxed.value;
+    };
+}
+
+export struct Instance<T> {
+    status: Status = Status.Error;
+    error: str = "";
+    onActivate: (data: T) => int;
+
+    fn poll() {
+        if this.status != Status.Primary {
+            return;
+        }
+
+        let taken = ffi.haze_si_take();
+        if !taken.hasRequest {
+            return;
+        }
+
+        let value = _unboxPayload<T>(taken.value);
+        let exitCode = this.onActivate(value);
+        ffi.haze_si_respond(exitCode);
+    }
+
+    fn send(data: T): SendResult {
+        if this.status != Status.Secondary {
+            return SendResult { message: "send() is only valid for a secondary instance" };
+        }
+
+        let encoded = json.stringify<T>(data);
+        let raw = ffi.haze_si_send(encoded);
+
+        let status = SendStatus.Failed;
+        if raw.status == 0 {
+            status = SendStatus.Delivered;
+        }
+        else if raw.status == 1 {
+            status = SendStatus.Rejected;
+        }
+
+        return SendResult {
+            status: status,
+            exitCode: raw.exitCode as int,
+            message: raw.message,
+        };
+    }
+
+    fn release() {
+        if this.status == Status.Primary {
+            ffi.haze_si_release();
+            this.status = Status.Error;
+        }
+    }
+}
+
+export fn init<T>(args: Args, onActivate: (data: T) => int): Instance<T> {
+    let userKey = ffi.haze_si_user_key();
+    let key = sha256.hex(f"{userKey}|{args.appId}");
+
+    ffi.haze_si_set_parser(_parsePayload<T>);
+
+    let acquired = ffi.haze_si_acquire(key, T.mangledName, T.fingerprint, T.prettyName);
+
+    let status = Status.Error;
+    if acquired.role == 0 {
+        status = Status.Primary;
+    }
+    else if acquired.role == 1 {
+        status = Status.Secondary;
+    }
+
+    return Instance<T> {
+        status: status,
+        error: acquired.error,
+        onActivate: onActivate,
+    };
+}

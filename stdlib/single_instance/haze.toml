@@ -1,0 +1,13 @@
+name = "single_instance"
+id = "S1nGiXk4"
+version = "1.0.0"
+description = "Single-instance application support -- exactly one live process per (application, user), with command handoff from later launches"
+license = "MIT"
+authors = ["HerrNamenlos123"]
+type = "lib"
+
+[dependencies]
+sha256 = { path = "../sha256" }
+
+[linker.win32]
+flags = ["-ladvapi32", "-luser32"]
