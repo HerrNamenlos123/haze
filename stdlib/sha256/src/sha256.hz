@@ -1,0 +1,198 @@
+let K: [64]u32 = [
+    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+];
+
+fn band(a: u32, b: u32): u32 :: final {
+    let r: u32 = 0;
+    __c__("r = a & b;");
+    return r;
+}
+
+fn bxor(a: u32, b: u32): u32 :: final {
+    let r: u32 = 0;
+    __c__("r = a ^ b;");
+    return r;
+}
+
+fn bnot(a: u32): u32 :: final {
+    let r: u32 = 0;
+    __c__("r = ~a;");
+    return r;
+}
+
+fn shr(x: u32, n: int): u32 :: final {
+    let r: u32 = 0;
+    __c__("r = x >> n;");
+    return r;
+}
+
+fn rotr(x: u32, n: int): u32 :: final {
+    let r: u32 = 0;
+    __c__("r = (x >> n) | (x << (32 - n));");
+    return r;
+}
+
+fn wadd(a: u32, b: u32): u32 :: final {
+    let r: u32 = 0;
+    __c__("r = a + b;");
+    return r;
+}
+
+fn pack(a: u8, b: u8, c: u8, d: u8): u32 :: final {
+    let r: u32 = 0;
+    __c__("r = ((hzstd_u32_t)a << 24) | ((hzstd_u32_t)b << 16) | ((hzstd_u32_t)c << 8) | (hzstd_u32_t)d;");
+    return r;
+}
+
+fn toByte(v: int): u8 :: final {
+    let r: u8 = 0;
+    __c__("r = (hzstd_u8_t)(v & 0xFF);");
+    return r;
+}
+
+fn byteOf(x: u32, i: int): u8 :: final {
+    let r: u8 = 0;
+    __c__("r = (hzstd_u8_t)((x >> (24 - 8 * i)) & 0xFFu);");
+    return r;
+}
+
+export fn hash(data: Bytes): Bytes {
+    let h: [8]u32 = [
+        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
+        0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
+    ];
+
+    let w: [64]u32 = [
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    ];
+
+    let buf: [64]u8 = [
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    ];
+
+    let lenBytes: [8]u8 = [0, 0, 0, 0, 0, 0, 0, 0];
+
+    let total = data.length;
+    let remaining = total * 8;
+    for (let m = 0; m < 8; m++) {
+        lenBytes[7 - m] = toByte(remaining);
+        remaining = remaining / 256;
+    }
+
+    let paddedLen = ((total + 9 + 63) / 64) * 64;
+    let lenStart = paddedLen - 8;
+    let blocks = paddedLen / 64;
+
+    for (let j = 0; j < blocks; j++) {
+        let base = j * 64;
+
+        for (let k = 0; k < 64; k++) {
+            let idx = base + k;
+            if idx < total {
+                buf[k] = data.getAt(idx);
+            }
+            else if idx == total {
+                buf[k] = 0x80 as u8;
+            }
+            else if idx >= lenStart {
+                buf[k] = lenBytes[idx - lenStart];
+            }
+            else {
+                buf[k] = 0 as u8;
+            }
+        }
+
+        for (let t = 0; t < 16; t++) {
+            w[t] = pack(buf[t * 4], buf[t * 4 + 1], buf[t * 4 + 2], buf[t * 4 + 3]);
+        }
+
+        for (let t = 16; t < 64; t++) {
+            let x = w[t - 15];
+            let y = w[t - 2];
+            let s0 = bxor(bxor(rotr(x, 7), rotr(x, 18)), shr(x, 3));
+            let s1 = bxor(bxor(rotr(y, 17), rotr(y, 19)), shr(y, 10));
+            w[t] = wadd(wadd(w[t - 16], s0), wadd(w[t - 7], s1));
+        }
+
+        let a = h[0];
+        let b = h[1];
+        let c = h[2];
+        let d = h[3];
+        let e = h[4];
+        let f = h[5];
+        let g = h[6];
+        let hv = h[7];
+
+        for (let t = 0; t < 64; t++) {
+            let S1 = bxor(bxor(rotr(e, 6), rotr(e, 11)), rotr(e, 25));
+            let ch = bxor(band(e, f), band(bnot(e), g));
+            let t1 = wadd(wadd(wadd(hv, S1), wadd(ch, K[t])), w[t]);
+            let S0 = bxor(bxor(rotr(a, 2), rotr(a, 13)), rotr(a, 22));
+            let maj = bxor(bxor(band(a, b), band(a, c)), band(b, c));
+            let t2 = wadd(S0, maj);
+
+            hv = g;
+            g = f;
+            f = e;
+            e = wadd(d, t1);
+            d = c;
+            c = b;
+            b = a;
+            a = wadd(t1, t2);
+        }
+
+        h[0] = wadd(h[0], a);
+        h[1] = wadd(h[1], b);
+        h[2] = wadd(h[2], c);
+        h[3] = wadd(h[3], d);
+        h[4] = wadd(h[4], e);
+        h[5] = wadd(h[5], f);
+        h[6] = wadd(h[6], g);
+        h[7] = wadd(h[7], hv);
+    }
+
+    let out = ByteBuffer(32);
+    for (let i = 0; i < 8; i++) {
+        for (let n = 0; n < 4; n++) {
+            out.push(Bytes(byteOf(h[i], n)));
+        }
+    }
+    out.commit();
+    return out.bytes();
+}
+
+export fn hash(data: str): Bytes {
+    return hash(Bytes(data));
+}
+
+export fn hex(data: Bytes): str {
+    let digest = hash(data);
+    let digits = Bytes("0123456789abcdef");
+    let out = ByteBuffer(64);
+
+    for (let i = 0; i < digest.length; i++) {
+        let value = digest.getAt(i) as int;
+        out.push(Bytes(digits.getAt(value / 16)));
+        out.push(Bytes(digits.getAt(value % 16)));
+    }
+
+    out.commit();
+    return out.string();
+}
+
+export fn hex(data: str): str {
+    return hex(Bytes(data));
+}

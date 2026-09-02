@@ -1,0 +1,7 @@
+name = "sha256"
+id = "Sh7kQ2Vx"
+version = "1.0.0"
+description = "SHA-256 (FIPS 180-4) for Haze -- digest arbitrary bytes into 32 raw bytes or a 64-character lowercase hex string"
+license = "MIT"
+authors = ["HerrNamenlos123"]
+type = "lib"
