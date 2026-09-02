@@ -581,7 +581,9 @@ export ref struct Window {
 	// may substitute a demand for attention of its own (a flashing taskbar
 	// button, say) rather than doing nothing.
 	//
-	// A hidden window cannot be raised on most backends -- show() first.
+	// A hidden window cannot come to the front -- show() first. Raising one
+	// is not an error (Windows reports success), it simply has nothing to
+	// raise.
 	fn focus(): bool {
 		return ffi.raiseWindow(this.handle);
 	}
