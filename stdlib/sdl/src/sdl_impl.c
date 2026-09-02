@@ -843,6 +843,54 @@ void haze_sdl_showWindow(SDL_Window *window) {
   SDL_ShowWindow(window);
 }
 
+/* Unmaps the window without destroying it: the surface, the GL context and
+   the swapchain all survive, so a later haze_sdl_showWindow puts the window
+   back with its contents (and its size and position) intact. This is what a
+   close-to-tray or hide-to-background application wants -- destroying the
+   window and recreating it would throw the whole GPU device away and pay for
+   it again on the way back.
+
+   Not the same thing as minimizing: a minimized window is still a window the
+   platform knows about, with a taskbar/dock entry and a thumbnail; a hidden
+   one is gone from the desktop entirely until it is shown again. */
+void haze_sdl_hideWindow(SDL_Window *window) {
+  if (!window) {
+    return;
+  }
+  SDL_HideWindow(window);
+}
+
+/* False while the window is unmapped -- whether because it was created with
+   WindowConfig.hidden and not yet shown, or because haze_sdl_hideWindow put
+   it away. A MINIMIZED window is still visible by this measure: it is mapped,
+   the platform just isn't showing it to anyone right now. */
+bool haze_sdl_windowIsVisible(SDL_Window *window) {
+  if (!window) {
+    return false;
+  }
+  return (SDL_GetWindowFlags(window) & SDL_WINDOW_HIDDEN) == 0;
+}
+
+/* Asks for the window to come to the front and take the keyboard focus.
+
+   A REQUEST, not a command: every desktop platform reserves the right to
+   refuse it, because an application that can focus itself at will is an
+   application that can steal the keystrokes someone is typing into another
+   one. What a refusal looks like differs -- Windows tends to flash the
+   taskbar button instead, Wayland compositors may do nothing at all -- so
+   the boolean says whether SDL accepted the request, not whether the window
+   ended up focused. The one reliable answer to that is the
+   SDL_EVENT_WINDOW_FOCUS_GAINED that follows a request the platform honored.
+
+   Raising an unmapped window does nothing on most backends: show it first
+   (see haze_sdl_showWindow), then raise. */
+bool haze_sdl_raiseWindow(SDL_Window *window) {
+  if (!window) {
+    return false;
+  }
+  return SDL_RaiseWindow(window);
+}
+
 void haze_sdl_destroyWindow(SDL_Window *window) {
   if (!window) {
     return;

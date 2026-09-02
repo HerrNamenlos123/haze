@@ -9,6 +9,9 @@ namespace ffi {
 	extern C fn haze_sdl_terminate(): void :: final;
 	extern C fn haze_sdl_createWindow(width: i32, height: i32, title: ccstr, noApi: bool, borderless: bool, hidden: bool): SDL_Window | none :: final;
 	extern C fn haze_sdl_showWindow(window: SDL_Window): void :: final;
+	extern C fn haze_sdl_hideWindow(window: SDL_Window): void :: final;
+	extern C fn haze_sdl_windowIsVisible(window: SDL_Window): bool :: final;
+	extern C fn haze_sdl_raiseWindow(window: SDL_Window): bool :: final;
 	extern C fn haze_sdl_destroyWindow(window: SDL_Window): void :: final;
 	extern C fn haze_sdl_windowShouldClose(window: SDL_Window): bool :: final;
 	extern C fn haze_sdl_setWindowShouldClose(window: SDL_Window, value: bool): void :: final;
@@ -116,6 +119,18 @@ namespace ffi {
 
 	export fn showWindow(window: SDL_Window) {
 		haze_sdl_showWindow(window);
+	}
+
+	export fn hideWindow(window: SDL_Window) {
+		haze_sdl_hideWindow(window);
+	}
+
+	export fn windowIsVisible(window: SDL_Window): bool {
+		return haze_sdl_windowIsVisible(window);
+	}
+
+	export fn raiseWindow(window: SDL_Window): bool {
+		return haze_sdl_raiseWindow(window);
 	}
 
 	export fn destroyWindow(window: SDL_Window) {
@@ -531,6 +546,44 @@ export ref struct Window {
 	// on a window that is already on screen.
 	fn show() {
 		ffi.showWindow(this.handle);
+	}
+
+	// Take the window off the desktop without tearing it down: the GPU
+	// device, the swapchain and the window's size and position all survive,
+	// so show() brings back the same window rather than building a new one.
+	// This is the close-to-tray / hide-to-background operation.
+	//
+	// Not minimize(): a minimized window still exists on the desktop, with
+	// its taskbar entry and thumbnail. A hidden one is gone until shown.
+	fn hide() {
+		ffi.hideWindow(this.handle);
+	}
+
+	// Is the window currently mapped? False before the first show() of a
+	// window created with WindowConfig.hidden, and false after hide().
+	// A minimized window still counts as visible here -- it is mapped, the
+	// platform just isn't showing it.
+	fn isVisible(): bool {
+		return ffi.windowIsVisible(this.handle);
+	}
+
+	// Bring the window to the front and ask for the keyboard focus
+	// (SDL_RaiseWindow). The natural partner of show(): a window that has
+	// just been unhidden is mapped, but not necessarily on top of whatever
+	// the user has been looking at meanwhile, and not necessarily typed
+	// into -- so a bring-it-back gesture is show() then focus().
+	//
+	// A request the platform is free to refuse, since self-focusing at will
+	// is how an application steals someone's keystrokes from another one.
+	// The bool reports whether SDL accepted the request, NOT that the window
+	// is now focused; hasFocus() is what actually answers that, once the
+	// platform has had an event loop turn to act. On a refusal a platform
+	// may substitute a demand for attention of its own (a flashing taskbar
+	// button, say) rather than doing nothing.
+	//
+	// A hidden window cannot be raised on most backends -- show() first.
+	fn focus(): bool {
+		return ffi.raiseWindow(this.handle);
 	}
 
 	fn minimize() {
