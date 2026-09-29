@@ -12,9 +12,12 @@
     and anything that fits the criteria compiles into a concrete function without runtime polymorphism and without 
     compiler errors, and what doesn't fit is a good compiler error. Accessing members through the interface is perfectly
     valid because of Haze's paradigm and hiding them behind a getter is bad practice unless there is a good reason.
-- Unions of structs: `u.x` works on `u: A | B | C` when every variant declares `x` with the exact same type (field) or
-    signature (method), and dispatches on the runtime tag -- runtime polymorphism over plain data, no interfaces and
-    no vtables. Fields are lvalues (`u.count += 1` writes the active variant), a called method is dispatched directly
-    (no allocation), and `let f = u.method` binds the active variant's method (ref structs only, like any binding).
+- Unions of structs: `u.x` works on `u: A | B | C` and does on each variant what `.x` does on that struct, dispatched
+    on the runtime tag -- runtime polymorphism over plain data, no interfaces and no vtables. Differing field types give
+    the union of the types (`int | real`), a method is called per variant with the given arguments (implicit
+    conversions per variant, e.g. a `str` into a `Color` parameter), and the results are combined into a union. A
+    variant without `x` yields `none` -- Haze's `undefined` -- which is where Haze improves on TypeScript: TS rejects
+    reading a property that only some members of a union have, although reading it is perfectly type-safe once the
+    missing case is `none` in the result type. Writes (`u.count += 1`) reach the active variant in place.
     Explain it next to the Generics/Interfaces point above: generics give compile-time polymorphism over the same
     structural members, unions give the runtime kind.

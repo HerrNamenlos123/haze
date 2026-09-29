@@ -271,12 +271,10 @@ export enum HazeErrorCode {
   SpreadOfNonStruct = 7205, // '' is not a struct and cannot be spread
   SpreadOfOpaqueStruct = 7206, // '' is opaque and exposes no member set to spread
   UnionMemberAccessNonStructVariant = 7207, // Accessing a member across a union requires every variant to be a struct
-  UnionMemberMissingInVariant = 7208, // Accessing a member across a union: some variant does not have it
-  UnionMemberKindMismatch = 7209, // Accessing a member across a union: it is a field in one variant and a method in another
-  UnionMemberTypeMismatch = 7210, // Accessing a field across a union: its type differs between the variants
-  UnionMethodSignatureMismatch = 7211, // Accessing a method across a union: its signature differs between the variants
+  UnionMemberMissingInVariant = 7208, // Accessing a member across a union: no variant has it (or, for a write, some variant lacks it)
   UnionMemberNotFieldOrMethod = 7212, // Accessing a member across a union: only fields and methods can be accessed
   UnionMemberAccessOutsideFunction = 7213, // Accessing a member across a union is only possible inside a function body
+  UnionMemberNotCallable = 7214, // Calling a member across a union: in some variant it is a field that cannot be called
   ThisDistroPackageManagerNotSupportedYetPlease = 8001, // This Distro/Package Manager is not supported yet, please report
   DeadCodeDetectedAndStripped = 9001, // Dead code detected and stripped
   EmbeddedFileSizeMBExceeds50MB = 9002, // Embedded file size ( MB) exceeds 50 MB:
