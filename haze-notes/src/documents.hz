@@ -229,6 +229,11 @@ struct StrokeConstructArgs {
   shape: LineShape;
 }
 
+// The stroke's outline polygon, in the same mm as its points. perfect_freehand
+// runs on points scaled up by accuracyScaling, and its outline comes back in
+// that scaled space -- scaled down again here, so no caller has to know about
+// it. getBBox once used it unscaled, which put every bbox 10x further out than
+// the stroke: the tile cull then dropped nearly every stroke from its own tile.
 fn constructStrokeOutline(args: StrokeConstructArgs): []Vec2 {
     let pf = perfect_freehand.PerfectFreehand({
         size: args.shape.penThickness * args.accuracyScaling,
@@ -249,10 +254,13 @@ fn constructStrokeOutline(args: StrokeConstructArgs): []Vec2 {
     let outline = pf.compute();
     pf.destroy();
 
+    let result: []Vec2 = [];
     if outline {
-      return outline;
+      for p in outline {
+        result.push(Vec2(p.x / args.accuracyScaling, p.y / args.accuracyScaling));
+      }
     }
-    return [];
+    return result;
 }
 
 struct TesselationResult {
@@ -299,16 +307,12 @@ fn tesselateStroke(args: StrokeTesselateArgs): TesselationResult {
     let first = outline[0];
     let tess = tesselate.Tesselator();
     tess.beginPath();
-    tess.moveTo(Vec2(first.x / args.accuracyScaling, first.y / args.accuracyScaling));
+    tess.moveTo(first);
     for (let p = 0; p < n; p++) {
         let cur = outline[p];
         let next = outline[(p + 1) % n];
-        let control = Vec2(cur.x / args.accuracyScaling, cur.y / args.accuracyScaling);
-        let to = Vec2(
-            (cur.x + next.x) / 2.0 / args.accuracyScaling,
-            (cur.y + next.y) / 2.0 / args.accuracyScaling
-        );
-        tess.quadraticBezierTo(control, to);
+        let to = Vec2((cur.x + next.x) / 2.0, (cur.y + next.y) / 2.0);
+        tess.quadraticBezierTo(cur, to);
     }
     tess.closePath();
     if let t = tess.tessellate(args.tolerance) { 
