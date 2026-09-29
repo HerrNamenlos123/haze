@@ -1,0 +1,887 @@
+// ============================================================================
+// Member access across a union.
+//
+// `u.x` on `u: A | B | C`, where every variant is a struct that declares `x`,
+// is resolved on each variant and dispatched on the runtime tag:
+//
+//   u.field      the field of the active variant. An lvalue: reads, writes,
+//                compound assignment, `++`, and mutating calls on a value
+//                field all reach the union's own storage.
+//   u.m(args)    the active variant's method, called directly -- one call per
+//                variant in a branch on the tag, no method value in between,
+//                no allocation.
+//   u.m          a method value: the active variant's method bound to it.
+//
+// The requirement is exactness: a field must have the exact same type in
+// every variant, a method the exact same signature -- parameter types, which
+// parameters are optional or have a default, `immediate`, variadics, the
+// return type, and the receiver (`mut fn`, `ref fn`, ...). Parameter names and
+// the default VALUES may differ; a call through the union uses each variant's
+// own defaults, exactly as calling that variant's method would. Any mismatch
+// is a hard error naming the variants and the difference.
+//
+// Generic structs need nothing special (their variants are concrete by the
+// time a member is accessed), and a generic method is instantiated per
+// variant, so it is the instantiated signatures that have to agree.
+//
+// The implementation lives in src/Semantic/Elaborate.ts
+// (resolveUnionMemberAccess) and the UnionMemberSelectExpr lowering in
+// src/Lower/Lower.ts.
+// ============================================================================
+
+namespace cases_union_member_access {
+
+    export fn register(s: mut testsuite.Suite) {
+
+        // ── Fields ──────────────────────────────────────────────────────────
+        s.run(
+            "union member access: fields are read and written in the active variant, in place",
+            """
+struct Vec2 {
+    x: real = 0.0;
+    y: real = 0.0;
+    mut fn scale(f: real) { this.x *= f; this.y *= f; }
+}
+struct Circle { name: str = "circle"; count: int = 1; pos: Vec2 = Vec2 {}; radius: real = 1.0; }
+struct Square { name: str = "square"; count: int = 2; pos: Vec2 = Vec2 { x: 5.0, y: 5.0 }; side: real = 2.0; }
+struct Tri { name: str = "tri"; count: int = 3; pos: Vec2 = Vec2 { x: 1.0, y: 2.0 }; }
+type Shape = Circle | Square | Tri;
+
+ref struct Scene {
+    main: Shape = Square {};
+    mut fn nudge() {
+        this.main.pos.x += 1.0;
+        this.main.count++;
+    }
+}
+
+struct Left { inner: Circle | Square = Circle {}; }
+struct Right { inner: Circle | Square = Square {}; }
+
+type Tagged = union { First: Circle, Second: Square };
+// Both tags hold the same type: only the tag tells them apart.
+type Twin = union { Left: Vec2, Right: Vec2 };
+
+// A field whose type is spelled through an alias is still the same type.
+type Meters = real;
+struct Near { dist: Meters = 1.5; }
+struct Far { dist: real = 1000.0; }
+
+let evaluations: int = 0;
+fn make(which: int): Shape {
+    evaluations += 1;
+    if which == 0 { return Circle {}; }
+    if which == 1 { return Square {}; }
+    return Tri {};
+}
+
+fn main(): int {
+    // 1. Read on every variant.
+    let shapes: []Shape = [Circle {}, Square {}, Tri {}];
+    for sh in shapes {
+        fmt.println(f"read {sh.name} {sh.count} {sh.pos.x}");
+    }
+
+    // 2. The result has the field's type.
+    let u: Shape = Square {};
+    static_assert(typeof(u.count).prettyName == "int", typeof(u.count).prettyName);
+    static_assert(typeof(u.name).prettyName == "str", typeof(u.name).prettyName);
+
+    // 3. Writes land in the active variant.
+    u.count = 40;
+    u.count += 2;
+    u.count++;
+    ++u.count;
+    u.count--;
+    u.name = u.name + "!";
+    fmt.println(f"write {u.name} {u.count}");
+
+    // 4. A value field is written through, and mutated in place.
+    u.pos.y = 0.5;
+    u.pos.scale(4.0);
+    fmt.println(f"nested {u.pos.x} {u.pos.y}");
+    u.pos = Vec2 { x: 7.0, y: 8.0 };
+    fmt.println(f"replaced {u.pos.x} {u.pos.y}");
+
+    // 5. Switching the variant switches what is read.
+    u = Tri {};
+    fmt.println(f"switched {u.name} {u.count}");
+
+    // 6. Array elements, by index.
+    for (let i = 0; i < shapes.length; i++) {
+        shapes[i].count *= 10;
+    }
+    fmt.println(f"array {shapes[0].count} {shapes[1].count} {shapes[2].count}");
+    let fixed: [2]Shape = [Circle {}, Tri {}];
+    fixed[1].count = 99;
+    fmt.println(f"fixed {fixed[0].count} {fixed[1].count}");
+
+    // 7. Through `this` of a ref struct.
+    let scene: mut Scene = Scene {};
+    scene.nudge();
+    fmt.println(f"scene {scene.main.pos.x} {scene.main.count}");
+
+    // 8. A receiver that is not a place is evaluated exactly once.
+    let n = make(1).count;
+    fmt.println(f"temporary {n} evaluations {evaluations}");
+
+    // 9. After an `is` check only the possible variants are dispatched, and
+    //    a write still lands in place.
+    let w: Shape = Circle {};
+    if w is Tri {
+        return 1;
+    }
+    w.count = 5;
+    fmt.println(f"narrowed {w.name} {w.count}");
+
+    // 10. Optional chaining reaches into a nullable union.
+    let maybe: Circle | Square | Tri | none = Square {};
+    let nothing: Circle | Square | Tri | none = none;
+    fmt.println(f"optional {maybe?.count ?? -1} {nothing?.count ?? -1}");
+
+    // 11. A union-typed field of a union: nested dispatch, read and write.
+    let lr: Left | Right = Right {};
+    lr.inner.count = 77;
+    fmt.println(f"nested union {lr.inner.name} {lr.inner.count}");
+    lr.inner = Circle {};
+    fmt.println(f"nested union replaced {lr.inner.name} {lr.inner.count}");
+
+    // 12. Tagged unions, including two tags of the same type.
+    let t: Tagged = Tagged.Second(Square {});
+    t.count += 1;
+    fmt.println(f"tagged {t.name} {t.count}");
+    let twin: Twin = Twin.Right(Vec2 { x: 3.0 });
+    twin.x += 1.0;
+    let twinLeft: Twin = Twin.Left(Vec2 { x: 30.0 });
+    fmt.println(f"twin {twin.x} {twinLeft.x}");
+
+    // 13. A closure reads through the union it captured.
+    let captured: Shape = Circle {};
+    let reader = () => { return captured.count * 2; };
+    fmt.println(f"closure {reader()}");
+
+    // 14. Alias-equal field types are the same type.
+    let d: Near | Far = Far {};
+    fmt.println(f"alias {d.dist}");
+    return 0;
+}
+""",
+            """
+read circle 1 0
+read square 2 5
+read tri 3 1
+write square! 43
+nested 20 2
+replaced 7 8
+switched tri 3
+array 10 20 30
+fixed 1 99
+scene 6 3
+temporary 2 evaluations 1
+narrowed circle 5
+optional 2 -1
+nested union square 77
+nested union replaced circle 1
+tagged square 3
+twin 4 30
+closure 2
+alias 1000
+""");
+
+        // ── Methods, called ─────────────────────────────────────────────────
+        s.run(
+            "union member access: methods are called directly on the active variant",
+            """
+struct Circle {
+    r: real = 1.0;
+    fn area(): real { return this.r * this.r * 3.0; }
+    fn describe(prefix: str, width: int = 1): str { return f"{prefix}circle/{width}"; }
+    mut fn grow(by: real) { this.r += by; }
+    fn visit(f: (area: real) => real): real { return f(this.area()); }
+    fn tryDiv(d: real): Result<real, str> {
+        if d == 0.0 { return Result<real, str>.Err("circle: zero"); }
+        return Result<real, str>.Ok(this.r / d);
+    }
+    fn log() { fmt.println(f"log circle {this.r}"); }
+}
+struct Square {
+    s: real = 2.0;
+    fn area(): real { return this.s * this.s; }
+    // Parameter names and default values may differ between the variants.
+    fn describe(label: str, w: int = 2): str { return f"{label}square/{w}"; }
+    mut fn grow(by: real) { this.s += by * 2.0; }
+    fn visit(g: (area: real) => real): real { return g(this.area()) + 1000.0; }
+    fn tryDiv(d: real): Result<real, str> {
+        if d == 0.0 { return Result<real, str>.Err("square: zero"); }
+        return Result<real, str>.Ok(this.s / d);
+    }
+    fn log() { fmt.println(f"log square {this.s}"); }
+}
+type Shape = Circle | Square;
+
+fn halve(sh: Shape): Result<real, str> {
+    let v = sh.tryDiv(2.0)?!;
+    return Result<real, str>.Ok(v);
+}
+fn fail(sh: Shape): Result<real, str> {
+    let v = sh.tryDiv(0.0)?!;
+    return Result<real, str>.Ok(v + 1.0);
+}
+
+let argEvaluations: int = 0;
+fn arg(v: real): real {
+    argEvaluations += 1;
+    return v;
+}
+fn makeShape(): Shape { return Square { s: 3.0 }; }
+
+// A tree walked through a union of its node types: the recursive case.
+struct Leaf {
+    n: int = 0;
+    fn sum(): int :: final { return this.n; }
+}
+struct Branch {
+    kids: [](Leaf | Branch) = [];
+    fn sum(): int :: final {
+        let total = 0;
+        for k in this.kids { total += k.sum(); }
+        return total;
+    }
+}
+
+fn main(): int {
+    let sh: Shape = Square {};
+    fmt.println(f"area {sh.area()}");
+
+    // A mutating method mutates the union's own storage.
+    sh.grow(1.0);
+    fmt.println(f"grown {sh.area()}");
+
+    // Each variant supplies its own defaults.
+    fmt.println(sh.describe("> "));
+    fmt.println(sh.describe("> ", 7));
+    sh = Circle {};
+    fmt.println(sh.describe("> "));
+
+    // The arguments are evaluated once, in the branch that is taken.
+    sh.grow(arg(1.0));
+    fmt.println(f"args {argEvaluations} {sh.area()}");
+
+    // A closure as an argument, capturing a local.
+    let bonus = 0.5;
+    fmt.println(f"visit {sh.visit((a) => a + bonus)}");
+
+    // A method without a result.
+    sh.log();
+
+    // Results, and `?!` propagation out of a dispatched call.
+    let h = halve(sh);
+    if h is real { fmt.println(f"halve {h}"); }
+    let f = fail(Square {});
+    if f is str { fmt.println(f"fail {f}"); }
+
+    // Array elements.
+    let shapes: []Shape = [Circle {}, Square {}, Circle { r: 2.0 }];
+    let total = 0.0;
+    for each in shapes { total += each.area(); }
+    fmt.println(f"total {total}");
+    for (let i = 0; i < shapes.length; i++) { shapes[i].grow(1.0); }
+    fmt.println(f"grown all {shapes[0].area()} {shapes[1].area()} {shapes[2].area()}");
+
+    // A temporary receiver.
+    fmt.println(f"temporary {makeShape().area()}");
+
+    // Recursion through the union.
+    let tree: Leaf | Branch = Branch { kids: [Leaf { n: 1 }, Branch { kids: [Leaf { n: 2 }, Leaf { n: 3 }] }] };
+    fmt.println(f"tree {tree.sum()}");
+
+    // Optional chaining into a call.
+    let maybe: Circle | Square | none = Circle {};
+    let nothing: Circle | Square | none = none;
+    fmt.println(f"optional {maybe?.area() ?? -1.0} {nothing?.area() ?? -1.0}");
+    return 0;
+}
+""",
+            """
+area 4
+grown 16
+> square/2
+> square/7
+> circle/1
+args 1 12
+visit 12.5
+log circle 2
+halve 1
+fail square: zero
+total 19
+grown all 12 16 27
+temporary 9
+tree 6
+optional 3 -1
+""");
+
+        // A dispatched call binds no method value and copies nothing, so it
+        // must not touch the heap. Measured with the collector's own counter.
+        s.run(
+            "union member access: dispatched calls and field writes allocate nothing",
+            """
+__c__("size_t GC_get_total_bytes(void);");
+
+fn allocatedBytes(): int {
+    let n = 0;
+    __c__("n = (hzstd_int_t)GC_get_total_bytes();");
+    return n;
+}
+
+struct A {
+    value: real = 1.0;
+    mut fn bump(by: real) { this.value += by; }
+    fn area(k: real): real { return this.value * k; }
+}
+struct B {
+    value: real = 3.0;
+    mut fn bump(by: real) { this.value += by * 2.0; }
+    fn area(k: real): real { return this.value * k + 1.0; }
+}
+
+fn main(): int {
+    let items: [](A | B) = [A {}, B {}, A {}, B {}];
+    let sum = 0.0;
+    let before = allocatedBytes();
+    for (let round = 0; round < 1000; round++) {
+        for (let i = 0; i < items.length; i++) {
+            items[i].bump(0.5);
+            items[i].value -= 0.25;
+            sum += items[i].area(2.0) + items[i].value;
+        }
+    }
+    let after = allocatedBytes();
+    fmt.println(f"allocated {after - before}");
+    fmt.println(f"values {items[0].value} {items[1].value}");
+    return 0;
+}
+""",
+            """
+allocated 0
+values 251 753
+""");
+
+        // ── Methods, as values ──────────────────────────────────────────────
+        s.run(
+            "union member access: a method taken as a value binds the active variant",
+            """
+ref struct Counter {
+    n: int = 0;
+    fn get(): int { return this.n; }
+    mut fn add(k: int): int { this.n += k; return this.n; }
+}
+ref struct Doubler {
+    n: int = 0;
+    fn get(): int { return this.n * 2; }
+    mut fn add(k: int): int { this.n += k * 2; return this.n; }
+}
+ref struct Loud {
+    n: int = 5;
+    fn get(): int { fmt.println("loud"); return this.n; }
+}
+
+fn apply(f: () => int): int { return f() + 100; }
+
+fn main(): int {
+    let c: mut Counter | mut Doubler = Doubler { n: 3 };
+    let get = c.get;
+    let add = c.add;
+    fmt.println(f"bound {get()}");
+    fmt.println(f"add {add(2)}");
+    fmt.println(f"after add {get()}");
+
+    // The value keeps the object it was bound to.
+    c = Counter { n: 1 };
+    fmt.println(f"still bound {get()} now {c.get()}");
+
+    // Parenthesised, the method is a value first, then called.
+    fmt.println(f"parenthesised {(c.get)()}");
+
+    // A method value converts to a matching function type.
+    fmt.println(f"as argument {apply(c.get)}");
+
+    // A method the compiler infers pure and one it does not still have a
+    // common callable type.
+    let p: Counter | Loud = Loud {};
+    let pg = p.get;
+    fmt.println(f"pure and impure {pg()}");
+    return 0;
+}
+""",
+            """
+bound 6
+add 7
+after add 14
+still bound 14 now 1
+parenthesised 1
+as argument 101
+loud
+pure and impure 5
+""");
+
+        // ── Generics ────────────────────────────────────────────────────────
+        s.run(
+            "union member access: generic structs, generic methods, and a union as a type argument",
+            """
+struct Box<T> {
+    value: T;
+    fn get(): T { return this.value; }
+    fn echo<U>(u: U): U { return u; }
+    fn map<U>(f: (v: T) => U): U { return f(this.value); }
+}
+struct Crate<T> {
+    value: T;
+    stamp: int = 0;
+    fn get(): T { return this.value; }
+    fn echo<U>(u: U): U { return u; }
+    fn map<U>(f: (v: T) => U): U { return f(this.value); }
+}
+
+// Elaborated per T: the variants are concrete when the body is.
+fn unwrap<T>(c: Box<T> | Crate<T>): T { return c.get(); }
+fn peek<T>(c: Box<T> | Crate<T>): T { return c.value; }
+
+// T is itself a union: `.area()` dispatches across it.
+struct Sq { s: real = 2.0; fn area(): real { return this.s * this.s; } }
+struct Ci { r: real = 1.0; fn area(): real { return this.r * 3.0; } }
+fn areaOf<T>(shape: T): real { return shape.area(); }
+fn sumAreas<T>(shapes: []T): real {
+    let t = 0.0;
+    for sh in shapes { t += sh.area(); }
+    return t;
+}
+
+fn main(): int {
+    let bi: Box<int> | Crate<int> = Crate<int> { value: 42 };
+    fmt.println(f"{bi.value} {bi.get()} {unwrap<int>(bi)} {peek<int>(bi)}");
+    bi.value = 43;
+    fmt.println(f"{bi.get()}");
+    let bs: Box<str> | Crate<str> = Box<str> { value: "hi" };
+    fmt.println(f"{unwrap<str>(bs)} {bs.get()}");
+
+    // Generic methods: explicit type arguments, and deduced ones.
+    fmt.println(f"{bi.echo<real>(2.5)} {bi.echo(7)} {bi.echo("s")}");
+    fmt.println(f"{bi.map<str>((v) => f"<{v}>")} {bi.map<int>((v) => v * 2)}");
+
+    let shape: Sq | Ci = Ci {};
+    fmt.println(f"{areaOf(shape)} {areaOf<Sq | Ci>(Sq {})}");
+    let list: [](Sq | Ci) = [Sq {}, Ci {}];
+    fmt.println(f"{sumAreas(list)}");
+    return 0;
+}
+""",
+            """
+42 42 42 42
+43
+hi hi
+2.5 7 s
+<43> 86
+3 4
+7
+""");
+
+        // ── Through a reactive ──────────────────────────────────────────────
+        // A member access reads the reactive first, exactly as on a struct, so
+        // a computed that reads a union's field depends on the union.
+        s.run(
+            "union member access: reading through a reactive union tracks it",
+            """
+struct A { value: int = 1; fn twice(): int { return this.value * 2; } }
+struct B { value: int = 5; fn twice(): int { return this.value * 20; } }
+
+fn main(): int {
+    let r = rx.shallowReactive<A | B>(B {});
+    fmt.println(f"reactive {r.value} {r.twice()}");
+    let c = rx.computed(() => { return r.value + 1; });
+    fmt.println(f"computed {c}");
+    let a: A | B = A {};
+    r := a;
+    fmt.println(f"after set {r.value} {r.twice()} {c}");
+    return 0;
+}
+""",
+            """
+reactive 5 100
+computed 6
+after set 1 2 2
+""");
+
+        // ── Across a module boundary ────────────────────────────────────────
+        // The union, its variants and the functions using them live in a
+        // dependency. A generic exported function is re-elaborated in the
+        // consumer from its exported source, where the dispatch happens again.
+        s.runWithModules(
+            "union member access: across a module boundary",
+            [
+                testsuite.TestModule {
+                    name: "shapes",
+                    source: """
+export struct Circle {
+    r: real = 1.0;
+    label: str = "circle";
+    fn area(): real { return this.r * this.r * 3.0; }
+    mut fn grow(by: real) { this.r += by; }
+}
+export struct Square {
+    s: real = 2.0;
+    label: str = "square";
+    fn area(): real { return this.s * this.s; }
+    mut fn grow(by: real) { this.s += by; }
+}
+export type Shape = Circle | Square;
+
+export fn describe(shape: Shape): str { return f"{shape.label}:{shape.area()}"; }
+
+export fn totalArea<T>(items: []T): real {
+    let total = 0.0;
+    for item in items { total += item.area(); }
+    return total;
+}
+
+export fn labelOf<T>(item: T): str { return item.label; }
+""",
+                },
+            ],
+            """
+import shapes;
+
+fn main(): int {
+    let sh: shapes.Shape = shapes.Square {};
+    sh.grow(1.0);
+    fmt.println(f"{sh.label} {sh.area()} {shapes.describe(sh)}");
+    let items: []shapes.Shape = [shapes.Circle {}, shapes.Square {}];
+    fmt.println(f"total {shapes.totalArea<shapes.Shape>(items)}");
+    fmt.println(f"label {shapes.labelOf<shapes.Shape>(items[0])}");
+    return 0;
+}
+""",
+            """
+square 9 square:9
+total 7
+label circle
+""");
+
+        // ── Errors ──────────────────────────────────────────────────────────
+
+        s.compileFails(
+            "union member access: a variant that is not a struct",
+            """
+struct A { value: real = 1.0; }
+struct B { value: real = 2.0; }
+fn main(): int {
+    let u: A | B | int = 1;
+    fmt.println(f"{u.value}");
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.UnionMemberAccessNonStructVariant)]);
+
+        s.compileFails(
+            "union member access: a nullable union needs `?.`",
+            """
+struct A { value: real = 1.0; }
+struct B { value: real = 2.0; }
+fn main(): int {
+    let u: A | B | null = null;
+    fmt.println(f"{u.value}");
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.UnionMemberAccessNonStructVariant)]);
+
+        s.compileFails(
+            "union member access: a variant without the member",
+            """
+struct A { value: real = 1.0; }
+struct B { other: real = 1.0; }
+struct C { value: real = 1.0; }
+fn main(): int {
+    let u: A | B | C = A {};
+    fmt.println(f"{u.value}");
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.UnionMemberMissingInVariant)]);
+
+        s.compileFails(
+            "union member access: a variant without the method",
+            """
+struct A { fn go() { } }
+struct B { fn stop() { } }
+fn main(): int {
+    let u: A | B = A {};
+    u.go();
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.UnionMemberMissingInVariant)]);
+
+        s.compileFails(
+            "union member access: a field in one variant, a method in another",
+            """
+struct A { value: real = 1.0; }
+struct B { fn value(): real { return 1.0; } }
+fn main(): int {
+    let u: A | B = A {};
+    fmt.println(f"{u.value}");
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.UnionMemberKindMismatch)]);
+
+        s.compileFails(
+            "union member access: a field whose type differs",
+            """
+struct A { value: real = 1.0; }
+struct B { value: int = 1; }
+fn main(): int {
+    let u: A | B = A {};
+    fmt.println(f"{u.value}");
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.UnionMemberTypeMismatch)]);
+
+        s.compileFails(
+            "union member access: a field whose type differs only in mutability",
+            """
+ref struct Inner { n: int = 0; }
+struct A { inner: mut Inner = Inner {}; }
+struct B { inner: Inner = Inner {}; }
+fn main(): int {
+    let u: A | B = A {};
+    fmt.println(f"{u.inner.n}");
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.UnionMemberTypeMismatch)]);
+
+        s.compileFails(
+            "union member access: instantiations of one generic struct with different arguments",
+            """
+struct Box<T> { value: T; }
+fn main(): int {
+    let u: Box<int> | Box<str> = Box<int> { value: 1 };
+    fmt.println(f"{u.value}");
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.UnionMemberTypeMismatch)]);
+
+        s.compileFails(
+            "union member access: a generic method whose instantiations disagree",
+            """
+struct Box<T> { value: T; fn get(): T { return this.value; } }
+fn main(): int {
+    let u: Box<int> | Box<real> = Box<int> { value: 1 };
+    fmt.println(f"{u.get()}");
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.UnionMethodSignatureMismatch)]);
+
+        s.compileFails(
+            "union member access: a parameter type that differs, even when the argument would fit both",
+            """
+struct A { fn f(x: real): real { return x; } }
+struct B { fn f(x: int): real { return 1.0; } }
+fn main(): int {
+    let u: A | B = A {};
+    u.f(1);
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.UnionMethodSignatureMismatch)]);
+
+        s.compileFails(
+            "union member access: a different number of parameters",
+            """
+struct A { fn f(x: int): int { return x; } }
+struct B { fn f(x: int, y: int): int { return x + y; } }
+fn main(): int {
+    let u: A | B = A {};
+    u.f(1);
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.UnionMethodSignatureMismatch)]);
+
+        s.compileFails(
+            "union member access: a return type that differs",
+            """
+struct A { fn f(): int { return 1; } }
+struct B { fn f(): str { return "b"; } }
+fn main(): int {
+    let u: A | B = A {};
+    u.f();
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.UnionMethodSignatureMismatch)]);
+
+        s.compileFails(
+            "union member access: a default value in only one variant",
+            """
+struct A { fn f(x: int = 1): int { return x; } }
+struct B { fn f(x: int): int { return x; } }
+fn main(): int {
+    let u: A | B = A {};
+    u.f(1);
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.UnionMethodSignatureMismatch)]);
+
+        s.compileFails(
+            "union member access: an optional parameter in only one variant",
+            """
+struct A { fn f(x?: int): int { return 1; } }
+struct B { fn f(x: int): int { return 2; } }
+fn main(): int {
+    let u: A | B = A {};
+    u.f(1);
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.UnionMethodSignatureMismatch)]);
+
+        s.compileFails(
+            "union member access: `mut fn` in only one variant",
+            """
+struct A { v: int = 0; mut fn reset() { this.v = 0; } }
+struct B { v: int = 0; fn reset() { } }
+fn main(): int {
+    let u: A | B = A {};
+    u.reset();
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.UnionMethodSignatureMismatch)]);
+
+        s.compileFails(
+            "union member access: an `immediate` parameter in only one variant",
+            """
+struct A { fn each(f: immediate (x: int) => void) { f(1); } }
+struct B { fn each(f: (x: int) => void) { f(2); } }
+fn main(): int {
+    let u: A | B = A {};
+    u.each((x) => { });
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.UnionMethodSignatureMismatch)]);
+
+        s.compileFails(
+            "union member access: a method that never returns in one variant has no common method value",
+            """
+ref struct A { fn stop(): void { sys.panic("a"); } }
+ref struct B { fn stop(): void { fmt.println("b"); } }
+fn main(): int {
+    let u: A | B = B {};
+    let f = u.stop;
+    f();
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.UnionMethodSignatureMismatch)]);
+
+        s.compileFails(
+            "union member access: a nested type is not a field or a method",
+            """
+struct A { struct Inner { } }
+struct B { struct Inner { } }
+fn main(): int {
+    let u: A | B = A {};
+    let x = u.Inner;
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.UnionMemberNotFieldOrMethod)]);
+
+        s.compileFails(
+            "union member access: a static method cannot be reached through the union",
+            """
+struct A { static fn make(): int { return 1; } }
+struct B { static fn make(): int { return 2; } }
+fn main(): int {
+    let u: A | B = A {};
+    u.make();
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.MethodStaticButCalledThroughObject)]);
+
+        s.compileFails(
+            "union member access: a method of a value variant cannot be taken as a value",
+            """
+struct A { value: int = 1; fn get(): int { return this.value; } }
+struct B { value: int = 2; fn get(): int { return this.value; } }
+fn main(): int {
+    let u: A | B = A {};
+    let f = u.get;
+    fmt.println(f"{f()}");
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.BoundMethodOnValueReceiver)]);
+
+        s.compileFails(
+            "union member access: a mutating method needs mutable variants",
+            """
+ref struct RA { v: int = 1; mut fn inc() { this.v += 1; } }
+ref struct RB { v: int = 2; mut fn inc() { this.v += 1; } }
+fn main(): int {
+    let u: RA | RB = RA {};
+    u.inc();
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.MethodCanMutateObjectButNotCalledObject)]);
+
+        s.compileFails(
+            "union member access: a temporary union cannot be written through",
+            """
+struct A { v: int = 1; }
+struct B { v: int = 2; }
+fn make(): A | B { return A {}; }
+fn main(): int {
+    make().v = 5;
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.CannotAssignTemporaryType)]);
+
+        s.compileFails(
+            "union member access: a union captured by value cannot be written through in the closure",
+            """
+struct A { value: real = 1.0; }
+struct B { value: real = 3.0; }
+fn main(): int {
+    let cap: A | B = A {};
+    let f = () => { cap.value = 5.0; };
+    f();
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.WriteToByValueCapture)]);
+
+        s.compileFails(
+            "union member access: the dispatch needs a function body",
+            """
+struct A { v: int = 1; }
+struct B { v: int = 2; }
+let g: A | B = B {};
+let h: int = g.v;
+fn main(): int {
+    fmt.println(f"{h}");
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.UnionMemberAccessOutsideFunction)]);
+    }
+}

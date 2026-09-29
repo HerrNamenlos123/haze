@@ -131,6 +131,7 @@ export namespace Semantic {
     UnionToValueCastExpr,
     UnionToUnionCastExpr,
     UnionTagCheckExpr,
+    UnionMemberSelectExpr,
     MemberAccessExpr,
     CallableExpr,
     AddressOfExpr,
@@ -778,6 +779,10 @@ export namespace Semantic {
     expr: ExprId;
     canBeUnwrappedForLHS: boolean; // This is if the cast originates from a constrained symbol value access
     tag: number;
+    // The tag was already tested by the surrounding code (a union member
+    // dispatch branch), so no refinement assertion is needed and the cast
+    // stays an lvalue when its operand is one.
+    tagProven?: boolean;
   };
 
   export type UnionToUnionCastExpr = BaseExpr & {
@@ -793,6 +798,27 @@ export namespace Semantic {
     expr: ExprId;
     comparisonTypesAnd: TypeUseId[];
     invertCheck: boolean;
+    // Explicit tag indices to test, parallel to comparisonTypesAnd. Needed
+    // for a tagged union whose tags share a type, where the type alone does
+    // not identify the tag.
+    tagIndices?: number[];
+  };
+
+  // `u.field` where `u` is a union whose every variant is a struct declaring
+  // `field` with the same type (Elaborate.ts, resolveUnionMemberAccess). It
+  // is an lvalue: it lowers to a pointer to the field of whichever variant
+  // the tag selects, so reads, writes and mutating method calls all reach
+  // the union's own storage.
+  export type UnionMemberSelectExpr = BaseExpr & {
+    variant: ENode.UnionMemberSelectExpr;
+    instanceIds: InstanceId[];
+    memberName: string;
+    // The union the member is selected from. Each branch holds its own copy
+    // of this expression; this one is for diagnostics and root walks only.
+    union: ExprId;
+    // Tested in order. The last branch has no condition: it is taken when
+    // no earlier one matched.
+    branches: { condition: ExprId | null; value: ExprId }[];
   };
 
   export type AttemptErrorPropagationExpr = BaseExpr & {
@@ -947,6 +973,7 @@ export namespace Semantic {
     | ComputedReadExpr
     | UnionToUnionCastExpr
     | UnionTagCheckExpr
+    | UnionMemberSelectExpr
     | AttemptErrorPropagationExpr
     | TernaryExpr
     | ExprCallExpr
@@ -1091,6 +1118,11 @@ export namespace Semantic {
         // parameter: it runs synchronously inside the call, so the
         // creation-point narrowings are valid inside its body.
         immediateCallable?: boolean;
+        // The callee node of the call being elaborated. A member access that
+        // IS this node is called immediately, which lets a method access
+        // across a union dispatch the call itself instead of building a
+        // method value first (Elaborate.ts, resolveUnionMemberAccess).
+        directCallee?: Collect.Expressions;
       };
 
   export type RegexData = {
@@ -3424,6 +3456,10 @@ export namespace Semantic {
 
       case Semantic.ENode.UnionToUnionCastExpr: {
         return `(${serializeExpr(sr, expr.expr)} as (${serializeTypeUse(sr, expr.type)}))`;
+      }
+
+      case Semantic.ENode.UnionMemberSelectExpr: {
+        return `${serializeExpr(sr, expr.union)}.${expr.memberName}`;
       }
 
       case Semantic.ENode.UnaryExpr:

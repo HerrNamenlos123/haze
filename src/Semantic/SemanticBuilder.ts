@@ -1300,6 +1300,16 @@ export class SemanticBuilder {
         return this.updateLHSDependencies(lhs.expr, dependencies);
       }
 
+      // A write to `u.field` writes the field of whichever variant is
+      // active: each branch is an ordinary member access of one variant.
+      case Semantic.ENode.UnionMemberSelectExpr: {
+        const writes = Semantic.WriteResult.empty();
+        for (const branch of lhs.branches) {
+          writes.addAll(this.updateLHSDependencies(branch.value, dependencies));
+        }
+        return writes;
+      }
+
       case Semantic.ENode.StructLiteralExpr:
       case Semantic.ENode.ValueToUnionCastExpr:
       case Semantic.ENode.StringConstructExpr:
@@ -1631,7 +1641,11 @@ export class SemanticBuilder {
       narrowing.constrainFromConstraints(constraints, resultExprId);
 
       assert(narrowing.possibleVariants.size <= members.length);
-      if (narrowing.possibleVariants.size === 1) {
+      const singleTag = Conversion.narrowedSingleTag(
+        members,
+        narrowing.possibleVariants
+      );
+      if (singleTag !== null) {
         // Only one value remains: Union to Value
         const tag = members.findIndex(
           (m) => m === [...narrowing.possibleVariants][0]
@@ -1652,7 +1666,7 @@ export class SemanticBuilder {
         });
         return [result, resultId] as const;
       }
-      if (narrowing.possibleVariants.size !== members.length) {
+      if (Conversion.narrowsToSubset(members, narrowing.possibleVariants)) {
         // If multiple values remain but they are not equal: Union to Union (e.g. A | B | null to A | B)
 
         // We do not need type checking since the source is the same union and narrowing can only remove members

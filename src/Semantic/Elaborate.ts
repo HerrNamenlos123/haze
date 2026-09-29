@@ -127,6 +127,39 @@ type AliasTarget =
   | { kind: "value" }
   | { kind: "type" };
 
+// One variant of a union a member is accessed across
+// (SemanticElaborator.resolveUnionMemberAccess).
+type UnionDispatchVariant = {
+  // Index of the variant in the union.
+  tag: number;
+  // The variant's type as the union stores it (what a tag check compares
+  // against), and with aliases resolved.
+  memberType: Semantic.TypeUseId;
+  resolvedType: Semantic.TypeUseId;
+  // The tag's name in a tagged union, null in an untagged one.
+  label: string | null;
+};
+
+// The union value a member is accessed across, bound so that it is
+// evaluated once however many branches refer to it.
+type UnionDispatchReceiver = {
+  // Runs before the dispatch: binds a receiver that is not an lvalue path
+  // to a temporary. Empty for an lvalue path, which is re-read instead.
+  prelude: Semantic.StatementId[];
+  // A fresh expression of the union value, one per use.
+  ref: () => Semantic.ExprId;
+  // The dispatch works on a copy, so a write through it would be lost.
+  isTemporary: boolean;
+  source: Semantic.Expression;
+  variants: UnionDispatchVariant[];
+};
+
+type UnionMethodCallDispatch = {
+  receiver: UnionDispatchReceiver;
+  // Each variant's bound method, parallel to receiver.variants.
+  callees: Semantic.ExprId[];
+};
+
 export class SemanticElaborator {
   currentContext: Semantic.ElaborationContext;
   // This is a stack, when a new current context is set, the old one is pushed here, then the old one
@@ -1734,6 +1767,7 @@ export class SemanticElaborator {
         ? this.sr.e.expr(callExpr.calledExpr, {
             gonnaCallFunctionWithParameterValues: decisiveArguments,
             unsafe: inference?.unsafe,
+            directCallee: collectedExpr,
           })
         : this.explicitSymbolValue(
             constructorCalleeSymbol.symbolId,
@@ -1860,15 +1894,22 @@ export class SemanticElaborator {
     }
 
     // Helper: Elaborate all calling arguments with type hints from parameter types
+    // `fresh` elaborates every argument anew instead of reusing the decisive
+    // ones, for a call that needs its own copy of each argument (the second
+    // and later variants of a union method dispatch).
     const elaborateCallingArguments = (
       parameterTypes: {
         optional: boolean;
         type: Semantic.TypeUseId;
-      }[]
+      }[],
+      functionSymbol:
+        | Semantic.FunctionSymbol
+        | undefined = calledFunctionSymbol,
+      fresh = false
     ): Semantic.ExprId[] => {
       return callExpr.arguments.map((arg, index) => {
         // Reuse already-elaborated decisive arguments
-        if (decisiveArguments[index]?.exprId) {
+        if (!fresh && decisiveArguments[index]?.exprId) {
           return decisiveArguments[index].exprId;
         }
 
@@ -1880,8 +1921,8 @@ export class SemanticElaborator {
         // A lambda literal handed to an `immediate` parameter runs inside
         // the call: narrowings at the call site hold in its body.
         const immediateCallable =
-          calledFunctionSymbol !== undefined &&
-          this.calleeParamIsImmediate(calledFunctionSymbol, index);
+          functionSymbol !== undefined &&
+          this.calleeParamIsImmediate(functionSymbol, index);
         const exprId = this.sr.e.expr(arg, {
           gonnaInstantiateStructWithType: paramType,
           unsafe: inference?.unsafe,
@@ -1943,8 +1984,20 @@ export class SemanticElaborator {
         HazeErrorCode.FunctionCallsAreNotAllowedHereStructMember
       );
     }
-    if (calledExprType.variant === Semantic.ENode.CallableDatatype) {
-      const ftype = this.sr.typeDefNodes.get(calledExprType.functionType);
+    // Call a callee of CallableDatatype (a bound method or a closure value).
+    const inFunction = this.inFunction;
+    const callThroughCallable = (
+      calleeId: Semantic.ExprId,
+      functionSymbol: Semantic.FunctionSymbol | undefined,
+      collectedFunctionSymbol: Collect.FunctionSymbol | undefined,
+      freshArguments: boolean
+    ): [Semantic.Expression, Semantic.ExprId] => {
+      const callee = this.sr.exprNodes.get(calleeId);
+      const calleeTypeDef = this.sr.typeDefNodes.get(
+        this.sr.typeUseNodes.get(this.sr.e.resolveAlias(callee.type)).type
+      );
+      assert(calleeTypeDef.variant === Semantic.ENode.CallableDatatype);
+      const ftype = this.sr.typeDefNodes.get(calleeTypeDef.functionType);
       // The callee's underlying function type can still be a placeholder here: a bound
       // method value (e.g. `this.foo`, wrapped in CallableDatatype) can reference a
       // function whose body -- and therefore whose inferred return type -- is still being
@@ -1954,9 +2007,9 @@ export class SemanticElaborator {
       // than asserting on a reachable condition.
       if (ftype.variant === Semantic.ENode.DeferredFunctionDatatype) {
         throw new CompilerError(
-          `Function ${Semantic.serializeExpr(this.sr, calledExprId)} is not fully elaborated yet. If it is part of a recursive call chain, it requires a "fn foo(): T :: final" annotation and if required an explicit return type.` +
+          `Function ${Semantic.serializeExpr(this.sr, calleeId)} is not fully elaborated yet. If it is part of a recursive call chain, it requires a "fn foo(): T :: final" annotation and if required an explicit return type.` +
             (this.buildDeferredElaborationHint(
-              this.symbolIdOfCalledExpr(calledExpr)
+              this.symbolIdOfCalledExpr(callee)
             ) ?? ""),
           callExpr.sourceloc,
           HazeErrorCode.FunctionNotFullyElaboratedYetIfItPart,
@@ -1968,14 +2021,18 @@ export class SemanticElaborator {
       const hasParameterPack = params.some((p) =>
         this.isParameterPackType(p.type)
       );
-      const elaboratedArgs = elaborateCallingArguments(params);
+      const elaboratedArgs = elaborateCallingArguments(
+        params,
+        functionSymbol,
+        freshArguments
+      );
       const preparedArgs = validateAndPrepareArguments(
         elaboratedArgs,
         params,
         ftype.vararg,
         hasParameterPack,
-        calledFunctionSymbol,
-        calledCollectedFunctionSymbol
+        functionSymbol,
+        collectedFunctionSymbol
       );
       const finalArgs = convertArguments(
         preparedArgs,
@@ -1983,13 +2040,56 @@ export class SemanticElaborator {
         ftype.vararg,
         hasParameterPack
       );
-      this.noteCallArguments(calledFunctionSymbol, finalArgs);
+      this.noteCallArguments(functionSymbol, finalArgs);
 
       return this.sr.b.callExpr(
-        calledExprId,
+        calleeId,
         finalArgs,
-        this.inFunction,
+        inFunction,
         callExpr.sourceloc
+      );
+    };
+
+    // A method accessed across a union, called right here: every variant's
+    // method is called directly in its own branch of a dispatch on the tag,
+    // so no method value is ever built (resolveUnionMemberAccess). Each
+    // branch elaborates the arguments itself -- only the first reuses the
+    // decisive ones -- so no argument expression is shared between two
+    // callees whose parameters may retain it differently.
+    const unionDispatch = this.unionMethodCallDispatches.get(calledExprId);
+    if (unionDispatch) {
+      this.unionMethodCallDispatches.delete(calledExprId);
+      const callIds = unionDispatch.callees.map((calleeId, i) => {
+        const callee = this.sr.exprNodes.get(calleeId);
+        assert(callee.variant === Semantic.ENode.CallableExpr);
+        const functionSymbol = this.sr.symbolNodes.get(callee.functionSymbol);
+        assert(functionSymbol.variant === Semantic.ENode.FunctionSymbol);
+        const collected = this.sr.cc.symbolNodes.get(
+          functionSymbol.originalCollectedFunction
+        );
+        return callThroughCallable(
+          calleeId,
+          functionSymbol,
+          collected.variant === Collect.ENode.FunctionSymbol
+            ? collected
+            : undefined,
+          i > 0
+        )[1];
+      });
+      return this.buildUnionDispatch(
+        unionDispatch.receiver,
+        callIds,
+        this.sr.exprNodes.get(callIds[0]).type,
+        callExpr.sourceloc
+      );
+    }
+
+    if (calledExprType.variant === Semantic.ENode.CallableDatatype) {
+      return callThroughCallable(
+        calledExprId,
+        calledFunctionSymbol,
+        calledCollectedFunctionSymbol,
+        false
       );
     }
 
@@ -4867,7 +4967,8 @@ export class SemanticElaborator {
       memberAccess.memberName,
       memberAccess.genericArgs,
       inference,
-      memberAccess.sourceloc
+      memberAccess.sourceloc,
+      inference?.directCallee === memberAccess
     );
   }
 
@@ -5179,7 +5280,8 @@ export class SemanticElaborator {
       memberAccess.memberName,
       memberAccess.genericArgs,
       inference,
-      memberAccess.sourceloc
+      memberAccess.sourceloc,
+      inference?.directCallee === memberAccess
     );
   }
 
@@ -5218,15 +5320,18 @@ export class SemanticElaborator {
       );
     }
 
+    const resolvedAccess: Collect.MemberAccessExpr = {
+      variant: Collect.ENode.MemberAccessExpr,
+      expr: memberAccess.expr,
+      memberName: memberLiteral.value,
+      genericArgs: [],
+      sourceloc: memberAccess.sourceloc,
+    };
     return this.memberAccess(
-      {
-        variant: Collect.ENode.MemberAccessExpr,
-        expr: memberAccess.expr,
-        memberName: memberLiteral.value,
-        genericArgs: [],
-        sourceloc: memberAccess.sourceloc,
-      },
-      inference
+      resolvedAccess,
+      inference?.directCallee === memberAccess
+        ? { ...inference, directCallee: resolvedAccess }
+        : inference
     );
   }
 
@@ -10189,6 +10294,12 @@ export class SemanticElaborator {
         cur = this.sr.exprNodes.get(cur.expr);
         continue;
       }
+      // A field selected across a union's variants is written in place,
+      // exactly like a member of the variant itself.
+      if (cur.variant === Semantic.ENode.UnionMemberSelectExpr) {
+        cur = this.sr.exprNodes.get(cur.branches[0].value);
+        continue;
+      }
       break;
     }
     if (cur.variant !== Semantic.ENode.SymbolValueExpr) {
@@ -11765,7 +11876,10 @@ export class SemanticElaborator {
     name: string,
     generics: Collect.ExprId[],
     inference: Semantic.Inference,
-    sourceloc: SourceLoc
+    sourceloc: SourceLoc,
+    // The access is the callee of the call being elaborated (see
+    // Inference.directCallee). Only a method accessed across a union cares.
+    isDirectCallee = false
   ): [Semantic.Expression, Semantic.ExprId] {
     let expr: Semantic.Expression;
     [expr, exprId] = this.normalizeTypeDefValueExpr(exprId, sourceloc);
@@ -12481,7 +12595,11 @@ export class SemanticElaborator {
           this.currentContext.constraints,
           exprId
         );
-        if (narrowing.possibleVariants.size === 1) {
+        const singleTag = Conversion.narrowedSingleTag(
+          members,
+          narrowing.possibleVariants
+        );
+        if (singleTag !== null) {
           const tag = members.findIndex(
             (m) => m === [...narrowing.possibleVariants][0]
           );
@@ -12499,7 +12617,9 @@ export class SemanticElaborator {
             writes: expr.writes,
           })[1];
           expr = this.sr.exprNodes.get(exprId);
-        } else if (narrowing.possibleVariants.size !== members.length) {
+        } else if (
+          Conversion.narrowsToSubset(members, narrowing.possibleVariants)
+        ) {
           const newUnion = this.sr.b.untaggedUnionTypeUse(
             [...narrowing.possibleVariants],
             sourceloc
@@ -13377,10 +13497,832 @@ export class SemanticElaborator {
       );
     }
 
+    if (
+      exprType.variant === Semantic.ENode.UntaggedUnionDatatype ||
+      exprType.variant === Semantic.ENode.TaggedUnionDatatype
+    ) {
+      return this.resolveUnionMemberAccess(
+        exprId,
+        name,
+        generics,
+        inference,
+        sourceloc,
+        isDirectCallee
+      );
+    }
+
     throw new CompilerError(
       `Expression of type '${Semantic.serializeTypeUseWithAliasAKA(this.sr, expr.type)}' does not have a member called ${name}`,
       sourceloc,
       HazeErrorCode.ExpressionTypeDoesNotHaveMemberCalled
+    );
+  }
+
+  // ── Member access across a union ────────────────────────────────────────
+  //
+  // `u.x` where every variant of `u` is a struct declaring `x`: a field of
+  // the exact same type in every variant, or a method with the exact same
+  // signature. Nothing is looked up on the union itself: `x` is resolved on
+  // each variant through the ordinary struct member path, and the results
+  // are dispatched on the runtime tag:
+  //
+  //   u.field     an lvalue selecting the active variant's field
+  //               (UnionMemberSelectExpr): reads, writes, `+=`, `++` and
+  //               mutating calls on the field all reach the union's storage
+  //   u.m(args)   if (u is A) { A.m(&u.A, args) } else if ... -- one direct
+  //               call per variant, no method value in between (callExpr)
+  //   u.m         a callable holding the active variant's bound method
+  //
+  // Generic structs need nothing special: when a member is accessed, the
+  // variants are concrete instantiations. A generic method is instantiated
+  // per variant -- with the explicit type arguments, or deduced from the
+  // call's arguments -- and the instantiated signatures are what must agree.
+  //
+  // Any disagreement between the variants is a hard error.
+
+  // Methods accessed across a union as the direct callee of a call, keyed by
+  // the placeholder resolveUnionMemberAccess returns for them. callExpr()
+  // takes the entry right after resolving its callee.
+  unionMethodCallDispatches = new Map<
+    Semantic.ExprId,
+    UnionMethodCallDispatch
+  >();
+
+  resolveUnionMemberAccess(
+    receiverId: Semantic.ExprId,
+    name: string,
+    generics: Collect.ExprId[],
+    inference: Semantic.Inference,
+    sourceloc: SourceLoc,
+    isDirectCallee: boolean
+  ): [Semantic.Expression, Semantic.ExprId] {
+    const receiverExpr = this.sr.exprNodes.get(receiverId);
+    const unionText = Semantic.serializeTypeUseWithAliasAKA(
+      this.sr,
+      receiverExpr.type
+    );
+
+    // A union narrowed to some of its variants by an `is` check dispatches
+    // on the original union, over the variants still possible: the
+    // narrowing cast would build a new union value, and a write through
+    // that copy would be lost.
+    let unionId = receiverId;
+    let possible: Set<Semantic.TypeUseId> | null = null;
+    if (
+      receiverExpr.variant === Semantic.ENode.UnionToUnionCastExpr &&
+      receiverExpr.castComesFromNarrowingAndMayBeUnwrapped
+    ) {
+      const narrowed = this.typeDefOf(receiverExpr.type);
+      assert(narrowed.variant === Semantic.ENode.UntaggedUnionDatatype);
+      possible = new Set(narrowed.members.map((m) => this.resolveAlias(m)));
+      unionId = receiverExpr.expr;
+    }
+    const unionExpr = this.sr.exprNodes.get(unionId);
+    const unionDef = this.typeDefOf(unionExpr.type);
+    assert(
+      unionDef.variant === Semantic.ENode.UntaggedUnionDatatype ||
+        unionDef.variant === Semantic.ENode.TaggedUnionDatatype
+    );
+    const members =
+      unionDef.variant === Semantic.ENode.UntaggedUnionDatatype
+        ? unionDef.members.map((m) => ({ type: m, label: null }))
+        : unionDef.members.map((m) => ({ type: m.type, label: m.tag }));
+    const variants: UnionDispatchVariant[] = [];
+    members.forEach((m, tag) => {
+      const resolvedType = this.resolveAlias(m.type);
+      if (possible === null || possible.has(resolvedType)) {
+        variants.push({
+          tag: tag,
+          memberType: m.type,
+          resolvedType: resolvedType,
+          label: m.label,
+        });
+      }
+    });
+    assert(variants.length > 0);
+
+    // Every variant must be a struct.
+    const nonStructs = variants.filter(
+      (v) =>
+        this.typeDefOf(v.resolvedType).variant !== Semantic.ENode.StructDatatype
+    );
+    if (nonStructs.length > 0) {
+      const onlyNullish = nonStructs.every(
+        (v) =>
+          v.resolvedType === this.sr.b.nullType() ||
+          v.resolvedType === this.sr.b.noneType()
+      );
+      throw new CompilerError(
+        `Cannot access '${name}' on a value of type '${unionText}': accessing a member across a union requires every variant to be a struct, but ${this.listUnionVariants(nonStructs)} ${nonStructs.length === 1 ? "is" : "are"} not. ` +
+          (onlyNullish
+            ? `Use '?.' to access '${name}' only when the value is not null or none.`
+            : `Narrow the value with 'is' first.`),
+        sourceloc,
+        HazeErrorCode.UnionMemberAccessNonStructVariant
+      );
+    }
+
+    // ...and declare the member, as the same kind of member.
+    const kinds = variants.map((v) =>
+      this.unionVariantMemberKind(v.resolvedType, name)
+    );
+    const missing = variants.filter((_, i) => kinds[i] === null);
+    if (missing.length > 0) {
+      const having = variants.filter((_, i) => kinds[i] !== null);
+      throw new CompilerError(
+        `Cannot access '${name}' on a value of type '${unionText}': ${this.listUnionVariants(missing)} ${missing.length === 1 ? "does" : "do"} not have a member named '${name}'` +
+          (having.length > 0
+            ? ` (only ${this.listUnionVariants(having)} ${having.length === 1 ? "does" : "do"})`
+            : "") +
+          ". Accessing a member across a union requires every variant to have it.",
+        sourceloc,
+        HazeErrorCode.UnionMemberMissingInVariant
+      );
+    }
+    const typeIndex = kinds.indexOf("type");
+    if (typeIndex !== -1) {
+      throw new CompilerError(
+        `Cannot access '${name}' on a value of type '${unionText}': in ${this.unionVariantName(variants[typeIndex])} it is a nested type, and only fields and methods can be accessed across a union.`,
+        sourceloc,
+        HazeErrorCode.UnionMemberNotFieldOrMethod
+      );
+    }
+    if (kinds.some((k) => k !== kinds[0])) {
+      const fields = variants.filter((_, i) => kinds[i] === "field");
+      const methods = variants.filter((_, i) => kinds[i] === "method");
+      throw new CompilerError(
+        `Cannot access '${name}' on a value of type '${unionText}': it is a field in ${this.listUnionVariants(fields)} but a method in ${this.listUnionVariants(methods)}. Accessing a member across a union requires it to be the same kind of member in every variant.`,
+        sourceloc,
+        HazeErrorCode.UnionMemberKindMismatch
+      );
+    }
+
+    // A union with a single possible variant (a one-tag union) needs no
+    // dispatch at all.
+    if (variants.length === 1) {
+      return this.resolveMemberAccess(
+        this.sr.b.addExpr(this.sr, {
+          variant: Semantic.ENode.UnionToValueCastExpr,
+          instanceIds: [],
+          expr: unionId,
+          tag: variants[0].tag,
+          tagProven: true,
+          canBeUnwrappedForLHS: false,
+          isTemporary: unionExpr.isTemporary,
+          sourceloc: sourceloc,
+          type: variants[0].resolvedType,
+          flow: unionExpr.flow,
+          writes: unionExpr.writes,
+        })[1],
+        name,
+        generics,
+        inference,
+        sourceloc,
+        isDirectCallee
+      );
+    }
+
+    // The dispatch is a branch on the runtime tag: it needs a function body
+    // to live in (a global initializer is a constant expression in C).
+    if (!this.inFunction) {
+      throw new CompilerError(
+        `Cannot access '${name}' on a value of type '${unionText}' here: accessing a member across a union dispatches on the runtime tag, which is only possible inside a function body.`,
+        sourceloc,
+        HazeErrorCode.UnionMemberAccessOutsideFunction
+      );
+    }
+
+    const receiver = this.bindUnionDispatchReceiver(
+      unionId,
+      variants,
+      sourceloc
+    );
+    const results = variants.map((v) =>
+      this.resolveMemberAccess(
+        this.unionVariantValue(receiver, v, sourceloc),
+        name,
+        generics,
+        inference,
+        sourceloc
+      )
+    );
+
+    if (kinds[0] === "field") {
+      const types = results.map(([e]) => e.type);
+      const resolvedTypes = types.map((t) => this.resolveAlias(t));
+      if (resolvedTypes.some((t) => t !== resolvedTypes[0])) {
+        throw new CompilerError(
+          `Cannot access field '${name}' on a value of type '${unionText}': its type differs between the variants (${variants
+            .map(
+              (v, i) =>
+                `'${name}' is '${Semantic.serializeTypeUse(this.sr, types[i])}' in ${this.unionVariantName(v)}`
+            )
+            .join(
+              ", "
+            )}). Accessing a field across a union requires the exact same type in every variant.`,
+          sourceloc,
+          HazeErrorCode.UnionMemberTypeMismatch
+        );
+      }
+      const resultType = types.every((t) => t === types[0])
+        ? types[0]
+        : resolvedTypes[0];
+
+      // A field access narrowed by a constraint, or folded at compile time,
+      // is no plain member access and cannot be selected by address: read
+      // it as a value instead.
+      if (
+        results.some(([e]) => e.variant !== Semantic.ENode.MemberAccessExpr)
+      ) {
+        return this.buildUnionDispatch(
+          receiver,
+          results.map(([_, id]) => id),
+          resultType,
+          sourceloc
+        );
+      }
+
+      const [select, selectId] = this.sr.b.addExpr(this.sr, {
+        variant: Semantic.ENode.UnionMemberSelectExpr,
+        instanceIds: [...new Set(results.flatMap(([e]) => e.instanceIds))],
+        memberName: name,
+        union: unionId,
+        branches: variants.map((v, i) => ({
+          condition:
+            i === variants.length - 1
+              ? null
+              : this.unionDispatchCondition(receiver, v),
+          value: results[i][1],
+        })),
+        type: resultType,
+        isTemporary: receiver.isTemporary,
+        sourceloc: sourceloc,
+        flow: Semantic.FlowResult.fallthrough(),
+        writes: Semantic.WriteResult.empty(),
+      });
+      if (receiver.prelude.length === 0) {
+        return [select, selectId];
+      }
+      return this.sr.b.blockScopeExpr(
+        this.sr.b.blockScope(receiver.prelude, selectId, sourceloc)[1],
+        receiver.source.flow,
+        receiver.source.writes
+      );
+    }
+
+    // A method.
+    const callees = results.map(([e, id]) => {
+      assert(
+        e.variant === Semantic.ENode.CallableExpr,
+        "a method accessed through an object must bind to a callable"
+      );
+      return id;
+    });
+    const signatures = callees.map((id) => {
+      const callee = this.sr.exprNodes.get(id);
+      assert(callee.variant === Semantic.ENode.CallableExpr);
+      const method = this.sr.symbolNodes.get(callee.functionSymbol);
+      assert(method.variant === Semantic.ENode.FunctionSymbol);
+      const type = this.sr.typeDefNodes.get(method.type);
+      assert(
+        type.variant === Semantic.ENode.FunctionDatatype ||
+          type.variant === Semantic.ENode.DeferredFunctionDatatype
+      );
+      return { method: method, type: type };
+    });
+    for (let i = 1; i < variants.length; i++) {
+      const difference = this.unionMethodSignatureDifference(
+        signatures[0],
+        signatures[i],
+        variants[0],
+        variants[i]
+      );
+      if (difference !== null) {
+        throw new CompilerError(
+          `Cannot use method '${name}' on a value of type '${unionText}': its signature differs between the variants, '${this.describeUnionMethodSignature(variants[0], signatures[0])}' vs '${this.describeUnionMethodSignature(variants[i], signatures[i])}' (${difference}). Accessing a method across a union requires the exact same signature in every variant.`,
+          sourceloc,
+          HazeErrorCode.UnionMethodSignatureMismatch
+        );
+      }
+    }
+
+    if (isDirectCallee) {
+      this.unionMethodCallDispatches.set(callees[0], {
+        receiver: receiver,
+        callees: callees,
+      });
+      return [this.sr.exprNodes.get(callees[0]), callees[0]];
+    }
+
+    // Taken as a value: the bound methods agree in everything but what the
+    // compiler infers from their bodies. A pure method converts to an impure
+    // callable; one that never returns has no common type with one that does.
+    const functionTypes = signatures.map(({ type }) => {
+      if (type.variant !== Semantic.ENode.FunctionDatatype) {
+        throw new CompilerError(
+          `Method '${name}' is not fully elaborated yet, so it cannot be taken as a value across '${unionText}'. If it is part of a recursive call chain, it requires a "fn foo(): T :: final" annotation and if required an explicit return type.`,
+          sourceloc,
+          HazeErrorCode.FunctionNotFullyElaboratedYetIfItPart
+        );
+      }
+      return type;
+    });
+    const noreturn = functionTypes[0].requires.noreturn;
+    if (functionTypes.some((t) => t.requires.noreturn !== noreturn)) {
+      const never = variants.filter(
+        (_, i) => functionTypes[i].requires.noreturn
+      );
+      const returning = variants.filter(
+        (_, i) => !functionTypes[i].requires.noreturn
+      );
+      throw new CompilerError(
+        `Cannot take method '${name}' as a value across '${unionText}': it never returns in ${this.listUnionVariants(never)} but does return in ${this.listUnionVariants(returning)}, so the methods have no common callable type. Call it directly instead.`,
+        sourceloc,
+        HazeErrorCode.UnionMethodSignatureMismatch
+      );
+    }
+    const callableType = makeCallableDatatypeAvailable(this.sr, {
+      functionType: makeRawFunctionDatatypeAvailable(this.sr, {
+        parameters: functionTypes[0].parameters,
+        returnType: functionTypes[0].returnType,
+        vararg: functionTypes[0].vararg,
+        requires: {
+          final: true,
+          pure: functionTypes.every((t) => t.requires.pure),
+          noreturn: noreturn,
+          noreturnIf: null,
+        },
+        sourceloc: sourceloc,
+      }),
+      sourceloc: sourceloc,
+    });
+    return this.buildUnionDispatch(receiver, callees, callableType, sourceloc);
+  }
+
+  private typeDefOf(typeUseId: Semantic.TypeUseId): Semantic.TypeDef {
+    return this.sr.typeDefNodes.get(
+      this.sr.typeUseNodes.get(this.resolveAlias(typeUseId)).type
+    );
+  }
+
+  // What `name` is on a struct: a field, a method, a nested type, or
+  // nothing.
+  private unionVariantMemberKind(
+    structTypeUseId: Semantic.TypeUseId,
+    name: string
+  ): "field" | "method" | "type" | null {
+    const struct = this.typeDefOf(structTypeUseId);
+    assert(struct.variant === Semantic.ENode.StructDatatype);
+    const isField = struct.members.some((memberId) => {
+      const member = this.sr.symbolNodes.get(memberId);
+      return (
+        member.variant === Semantic.ENode.VariableSymbol && member.name === name
+      );
+    });
+    if (isField) {
+      return "field";
+    }
+    if (struct.originalCollectedDefinition === (-1 as Collect.TypeDefId)) {
+      return null;
+    }
+    const collected = this.sr.cc.typeDefNodes.get(
+      struct.originalCollectedDefinition
+    );
+    assert(collected.variant === Collect.ENode.StructTypeDef);
+    const scope = this.sr.cc.scopeNodes.get(collected.lexicalScope);
+    assert(scope.variant === Collect.ENode.StructLexicalScope);
+    for (const symbolId of scope.symbols) {
+      const symbol = this.sr.cc.symbolNodes.get(symbolId);
+      if (
+        symbol.variant === Collect.ENode.FunctionOverloadGroupSymbol &&
+        symbol.name === name
+      ) {
+        return "method";
+      }
+      if (
+        symbol.variant === Collect.ENode.TypeDefSymbol &&
+        symbol.name === name
+      ) {
+        return "type";
+      }
+    }
+    return null;
+  }
+
+  private unionVariantName(variant: UnionDispatchVariant): string {
+    const typeText = Semantic.serializeTypeUse(this.sr, variant.memberType);
+    return variant.label === null
+      ? `'${typeText}'`
+      : `'${variant.label}' (${typeText})`;
+  }
+
+  private listUnionVariants(variants: UnionDispatchVariant[]): string {
+    const names = variants.map((v) => this.unionVariantName(v));
+    if (names.length <= 1) {
+      return names.join("");
+    }
+    return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+  }
+
+  private describeUnionMethodSignature(
+    variant: UnionDispatchVariant,
+    signature: {
+      method: Semantic.FunctionSymbol;
+      type: Semantic.FunctionDatatypeDef | Semantic.DeferredFunctionDatatypeDef;
+    }
+  ): string {
+    const { method, type } = signature;
+    const params = type.parameters
+      .map(
+        (p, i) =>
+          `${method.parameterNames[i] ?? `p${i}`}${p.optional ? "?" : ""}: ${Semantic.serializeTypeUse(this.sr, p.type)}${this.methodParameterHasDefault(method, i) ? " = ..." : ""}`
+      )
+      .join(", ");
+    const returnType =
+      type.variant === Semantic.ENode.FunctionDatatype
+        ? Semantic.serializeTypeUse(this.sr, type.returnType)
+        : "?";
+    return `${this.unionMethodReceiverKind(method)} ${Semantic.serializeTypeUse(this.sr, variant.memberType)}.${method.name}(${params}${type.vararg ? ", ..." : ""}): ${returnType}`;
+  }
+
+  private unionMethodReceiverKind(method: Semantic.FunctionSymbol): string {
+    let kind = "fn";
+    if (method.methodReceiverStorage === EStorageClass.Stackref) {
+      kind = `stackref ${kind}`;
+    } else if (method.methodReceiverStorage === EStorageClass.Ref) {
+      kind = `ref ${kind}`;
+    }
+    if (method.methodRequiredMutability === EDatatypeMutability.Mut) {
+      kind = `mut ${kind}`;
+    } else if (method.methodRequiredMutability === EDatatypeMutability.Const) {
+      kind = `const ${kind}`;
+    }
+    return kind;
+  }
+
+  // The first way two variants' methods disagree, or null when they have
+  // the exact same signature. Parameter names and default values may differ:
+  // neither is part of a callable's type, and a call through the union uses
+  // each variant's own defaults, exactly as a call of its method would.
+  private unionMethodSignatureDifference(
+    a: {
+      method: Semantic.FunctionSymbol;
+      type: Semantic.FunctionDatatypeDef | Semantic.DeferredFunctionDatatypeDef;
+    },
+    b: {
+      method: Semantic.FunctionSymbol;
+      type: Semantic.FunctionDatatypeDef | Semantic.DeferredFunctionDatatypeDef;
+    },
+    variantA: UnionDispatchVariant,
+    variantB: UnionDispatchVariant
+  ): string | null {
+    const inA = `in ${this.unionVariantName(variantA)}`;
+    const inB = `in ${this.unionVariantName(variantB)}`;
+    const pa = a.type.parameters;
+    const pb = b.type.parameters;
+    if (pa.length !== pb.length) {
+      return `it takes ${pa.length} parameter${pa.length === 1 ? "" : "s"} ${inA} but ${pb.length} ${inB}`;
+    }
+    for (let i = 0; i < pa.length; i++) {
+      if (this.resolveAlias(pa[i].type) !== this.resolveAlias(pb[i].type)) {
+        return `parameter ${i + 1} is '${Semantic.serializeTypeUse(this.sr, pa[i].type)}' ${inA} but '${Semantic.serializeTypeUse(this.sr, pb[i].type)}' ${inB}`;
+      }
+      if (pa[i].optional !== pb[i].optional) {
+        return `parameter ${i + 1} is ${pa[i].optional ? "optional" : "required"} ${inA} but ${pb[i].optional ? "optional" : "required"} ${inB}`;
+      }
+      const defaultA = this.methodParameterHasDefault(a.method, i);
+      const defaultB = this.methodParameterHasDefault(b.method, i);
+      if (defaultA !== defaultB) {
+        return `parameter ${i + 1} has ${defaultA ? "a" : "no"} default value ${inA} but ${defaultB ? "a" : "no"} default value ${inB}`;
+      }
+      const immediateA = this.calleeParamIsImmediate(a.method, i);
+      const immediateB = this.calleeParamIsImmediate(b.method, i);
+      if (immediateA !== immediateB) {
+        return `parameter ${i + 1} is ${immediateA ? "" : "not "}'immediate' ${inA} but ${immediateB ? "" : "not "}'immediate' ${inB}`;
+      }
+    }
+    if (a.type.vararg !== b.type.vararg) {
+      return `it is ${a.type.vararg ? "" : "not "}variadic ${inA} but ${b.type.vararg ? "" : "not "}variadic ${inB}`;
+    }
+    if (
+      a.type.variant === Semantic.ENode.FunctionDatatype &&
+      b.type.variant === Semantic.ENode.FunctionDatatype &&
+      this.resolveAlias(a.type.returnType) !==
+        this.resolveAlias(b.type.returnType)
+    ) {
+      return `it returns '${Semantic.serializeTypeUse(this.sr, a.type.returnType)}' ${inA} but '${Semantic.serializeTypeUse(this.sr, b.type.returnType)}' ${inB}`;
+    }
+    if (
+      a.method.methodRequiredMutability !== b.method.methodRequiredMutability ||
+      a.method.methodReceiverStorage !== b.method.methodReceiverStorage
+    ) {
+      return `it is declared '${this.unionMethodReceiverKind(a.method)}' ${inA} but '${this.unionMethodReceiverKind(b.method)}' ${inB}`;
+    }
+    return null;
+  }
+
+  // Same sources as prepareCallArguments: the elaborated defaults, falling
+  // back to the declaration.
+  private methodParameterHasDefault(
+    method: Semantic.FunctionSymbol,
+    index: number
+  ): boolean {
+    const name = method.parameterNames[index];
+    if (method.parameterDefaultValues.some((d) => d.parameterName === name)) {
+      return true;
+    }
+    const collected = this.sr.cc.symbolNodes.get(
+      method.originalCollectedFunction
+    );
+    if (collected.variant !== Collect.ENode.FunctionSymbol) {
+      return false;
+    }
+    const param = collected.parameters[index];
+    return (
+      param !== undefined &&
+      param.kind === "normal" &&
+      param.defaultParameterValue !== null
+    );
+  }
+
+  // Bind the union a member is accessed across. An lvalue path made of
+  // variables, fields, dereferences and constant subscripts is re-read by
+  // every branch, so a write or a mutating call reaches the union's own
+  // storage. Anything else is evaluated once into a temporary.
+  private bindUnionDispatchReceiver(
+    unionId: Semantic.ExprId,
+    variants: UnionDispatchVariant[],
+    sourceloc: SourceLoc
+  ): UnionDispatchReceiver {
+    const source = this.sr.exprNodes.get(unionId);
+    if (this.isStableLvaluePath(unionId)) {
+      return {
+        prelude: [],
+        ref: () => this.cloneStableLvaluePath(unionId),
+        isTemporary: source.isTemporary,
+        source: source,
+        variants: variants,
+      };
+    }
+
+    const [tempVariable, tempVariableId] = this.sr.b.addSymbol(this.sr, {
+      variant: Semantic.ENode.VariableSymbol,
+      comptime: false,
+      comptimeValue: null,
+      concrete: false,
+      export: false,
+      extern: EExternLanguage.None,
+      memberOfStruct: null,
+      mutability: EVariableMutability.Default,
+      requiresHoisting: false,
+      name: makeTempName(),
+      sourceloc: sourceloc,
+      parentSymbolId: null,
+      // Resolved so that the tag checks see the union itself, not an alias.
+      type: this.resolveAlias(source.type),
+      consumed: false,
+      variableContext: EVariableContext.FunctionLocal,
+    });
+    const binding = this.sr.b.addStatement(this.sr, {
+      variant: Semantic.ENode.VariableStatement,
+      name: tempVariable.name,
+      comptime: false,
+      sourceloc: sourceloc,
+      value: unionId,
+      intrinsicTakeAddrOfValue: false,
+      stackrefInit: null,
+      variableSymbol: tempVariableId,
+    })[1];
+    return {
+      prelude: [binding],
+      ref: () => this.sr.b.symbolValue(tempVariableId, sourceloc)[1],
+      isTemporary: true,
+      source: source,
+      variants: variants,
+    };
+  }
+
+  // An lvalue that evaluates without side effects, so re-reading it once
+  // per branch is the same as reading it once.
+  private isStableLvaluePath(exprId: Semantic.ExprId): boolean {
+    const expr = this.sr.exprNodes.get(exprId);
+    switch (expr.variant) {
+      case Semantic.ENode.SymbolValueExpr:
+        return true;
+      case Semantic.ENode.MemberAccessExpr:
+        return !expr.isTemporary && this.isStableLvaluePath(expr.expr);
+      case Semantic.ENode.DereferenceExpr:
+        return this.isStableLvaluePath(expr.expr);
+      // A checked union cast lowers to an rvalue (see its codegen); only a
+      // proven one keeps the path addressable.
+      case Semantic.ENode.UnionToValueCastExpr:
+        return expr.tagProven === true && this.isStableLvaluePath(expr.expr);
+      case Semantic.ENode.ArraySubscriptExpr:
+        return (
+          this.isStableLvaluePath(expr.expr) &&
+          expr.indices.every((i) => {
+            const index = this.sr.exprNodes.get(i);
+            return (
+              index.variant === Semantic.ENode.SymbolValueExpr ||
+              index.variant === Semantic.ENode.LiteralExpr
+            );
+          })
+        );
+      // A field selected across a union of a stable path (`u.inner` in
+      // `u.inner.value`): its branches re-read that path, so it is one too.
+      case Semantic.ENode.UnionMemberSelectExpr:
+        return (
+          !expr.isTemporary &&
+          expr.branches.every((b) => this.isStableLvaluePath(b.value))
+        );
+      default:
+        return false;
+    }
+  }
+
+  // A copy of a stable lvalue path, so that no expression node has two
+  // parents.
+  private cloneStableLvaluePath(exprId: Semantic.ExprId): Semantic.ExprId {
+    const expr = this.sr.exprNodes.get(exprId);
+    switch (expr.variant) {
+      case Semantic.ENode.SymbolValueExpr:
+      case Semantic.ENode.LiteralExpr:
+        return this.sr.b.addExpr(this.sr, { ...expr })[1];
+      case Semantic.ENode.MemberAccessExpr:
+      case Semantic.ENode.DereferenceExpr:
+      case Semantic.ENode.UnionToValueCastExpr:
+        return this.sr.b.addExpr(this.sr, {
+          ...expr,
+          expr: this.cloneStableLvaluePath(expr.expr),
+        })[1];
+      case Semantic.ENode.ArraySubscriptExpr:
+        return this.sr.b.addExpr(this.sr, {
+          ...expr,
+          expr: this.cloneStableLvaluePath(expr.expr),
+          indices: expr.indices.map((i) => this.cloneStableLvaluePath(i)),
+        })[1];
+      case Semantic.ENode.UnionTagCheckExpr:
+        return this.sr.b.addExpr(this.sr, {
+          ...expr,
+          expr: this.cloneStableLvaluePath(expr.expr),
+        })[1];
+      case Semantic.ENode.UnionMemberSelectExpr:
+        return this.sr.b.addExpr(this.sr, {
+          ...expr,
+          branches: expr.branches.map((b) => ({
+            condition:
+              b.condition === null
+                ? null
+                : this.cloneStableLvaluePath(b.condition),
+            value: this.cloneStableLvaluePath(b.value),
+          })),
+        })[1];
+      default:
+        assert(false, "not a stable lvalue path");
+    }
+  }
+
+  // The union's value as one of its variants. The dispatch has tested the
+  // tag already, so the cast carries no check of its own.
+  private unionVariantValue(
+    receiver: UnionDispatchReceiver,
+    variant: UnionDispatchVariant,
+    sourceloc: SourceLoc
+  ): Semantic.ExprId {
+    return this.sr.b.addExpr(this.sr, {
+      variant: Semantic.ENode.UnionToValueCastExpr,
+      instanceIds: [],
+      expr: receiver.ref(),
+      tag: variant.tag,
+      tagProven: true,
+      canBeUnwrappedForLHS: false,
+      isTemporary: false,
+      sourceloc: sourceloc,
+      type: variant.resolvedType,
+      flow: Semantic.FlowResult.fallthrough(),
+      writes: Semantic.WriteResult.empty(),
+    })[1];
+  }
+
+  private unionDispatchCondition(
+    receiver: UnionDispatchReceiver,
+    variant: UnionDispatchVariant
+  ): Semantic.ExprId {
+    const checkId = this.sr.b.unionTagCheckTypeIs(
+      receiver.ref(),
+      variant.memberType
+    )[1];
+    const check = this.sr.exprNodes.get(checkId);
+    assert(check.variant === Semantic.ENode.UnionTagCheckExpr);
+    check.tagIndices = [variant.tag];
+    return checkId;
+  }
+
+  // One value per variant, chosen by the tag:
+  //
+  //   { <prelude>; let r: T;
+  //     if (u is V0) { r = values[0]; } else if ... else { r = values[n-1]; }
+  //     r }
+  //
+  // A void T needs no result variable.
+  buildUnionDispatch(
+    receiver: UnionDispatchReceiver,
+    values: Semantic.ExprId[],
+    resultType: Semantic.TypeUseId,
+    sourceloc: SourceLoc
+  ): [Semantic.Expression, Semantic.ExprId] {
+    const variants = receiver.variants;
+    assert(values.length === variants.length && values.length >= 2);
+
+    const statements = [...receiver.prelude];
+    let resultVariableId: Semantic.SymbolId | null = null;
+    if (!Conversion.isVoidById(this.sr, resultType)) {
+      const [resultVariable, id] = this.sr.b.addSymbol(this.sr, {
+        variant: Semantic.ENode.VariableSymbol,
+        comptime: false,
+        comptimeValue: null,
+        concrete: false,
+        export: false,
+        extern: EExternLanguage.None,
+        memberOfStruct: null,
+        mutability: EVariableMutability.Default,
+        requiresHoisting: false,
+        name: makeTempName(),
+        sourceloc: sourceloc,
+        parentSymbolId: null,
+        type: resultType,
+        consumed: false,
+        variableContext: EVariableContext.FunctionLocal,
+      });
+      resultVariableId = id;
+      statements.push(
+        this.sr.b.addStatement(this.sr, {
+          variant: Semantic.ENode.VariableStatement,
+          name: resultVariable.name,
+          comptime: false,
+          sourceloc: sourceloc,
+          value: null,
+          intrinsicTakeAddrOfValue: false,
+          stackrefInit: null,
+          variableSymbol: id,
+        })[1]
+      );
+    }
+
+    const branch = (valueId: Semantic.ExprId) =>
+      this.sr.b.blockScope(
+        [
+          this.sr.b.exprStatement(
+            resultVariableId === null
+              ? valueId
+              : this.sr.b.assignment(
+                  this.sr.b.symbolValue(resultVariableId, sourceloc)[1],
+                  EAssignmentOperation.Rebind,
+                  valueId,
+                  this.currentContext.constraints,
+                  sourceloc,
+                  undefined
+                )[1]
+          )[1],
+        ],
+        this.sr.b.noneExpr()[1],
+        sourceloc
+      )[1];
+
+    const last = variants.length - 1;
+    statements.push(
+      this.sr.b.addStatement(this.sr, {
+        variant: Semantic.ENode.IfStatement,
+        isLetBinding: false,
+        condition: this.unionDispatchCondition(receiver, variants[0]),
+        thenBlock: branch(values[0]),
+        elseIfs: variants.slice(1, last).map((v, i) => ({
+          condition: this.unionDispatchCondition(receiver, v),
+          thenBlock: branch(values[i + 1]),
+        })),
+        else: branch(values[last]),
+        sourceloc: sourceloc,
+      })[1]
+    );
+
+    const flow = Semantic.FlowResult.empty();
+    flow.addExitFlows(receiver.source.flow);
+    let writes = receiver.source.writes;
+    for (const valueId of values) {
+      const value = this.sr.exprNodes.get(valueId);
+      flow.addAll(value.flow);
+      writes = writes.withAll(value.writes);
+    }
+    return this.sr.b.blockScopeExpr(
+      this.sr.b.blockScope(
+        statements,
+        resultVariableId === null
+          ? this.sr.b.noneExpr()[1]
+          : this.sr.b.symbolValue(resultVariableId, sourceloc)[1],
+        sourceloc
+      )[1],
+      flow,
+      writes
     );
   }
 
@@ -17563,7 +18505,11 @@ export class SemanticElaborator {
           );
 
           assert(narrowing.possibleVariants.size <= members.length);
-          if (narrowing.possibleVariants.size === 1) {
+          const singleTag = Conversion.narrowedSingleTag(
+            members,
+            narrowing.possibleVariants
+          );
+          if (singleTag !== null) {
             // Only one value remains: Union to Value
             const tag = members.findIndex(
               (m) => m === [...narrowing.possibleVariants][0]
@@ -17582,7 +18528,9 @@ export class SemanticElaborator {
               flow: resultingExpr.flow,
               writes: resultingExpr.writes,
             })[1];
-          } else if (narrowing.possibleVariants.size !== members.length) {
+          } else if (
+            Conversion.narrowsToSubset(members, narrowing.possibleVariants)
+          ) {
             // If multiple values remain but they are not equal: Union to Union (e.g. A | B | null to A | B)
 
             // We do not need type checking since the source is the same union and narrowing can only remove members
@@ -17635,7 +18583,11 @@ export class SemanticElaborator {
               unwrappedId
             );
             assert(narrowing.possibleVariants.size <= members.length);
-            if (narrowing.possibleVariants.size === 1) {
+            const singleTag = Conversion.narrowedSingleTag(
+              members,
+              narrowing.possibleVariants
+            );
+            if (singleTag !== null) {
               const tag = members.findIndex(
                 (m) => m === [...narrowing.possibleVariants][0]
               );
@@ -17652,7 +18604,9 @@ export class SemanticElaborator {
                 flow: unwrappedExpr.flow,
                 writes: unwrappedExpr.writes,
               })[1];
-            } else if (narrowing.possibleVariants.size !== members.length) {
+            } else if (
+              Conversion.narrowsToSubset(members, narrowing.possibleVariants)
+            ) {
               const newUnion = this.sr.b.untaggedUnionTypeUse(
                 [...narrowing.possibleVariants],
                 sourceloc
