@@ -721,6 +721,12 @@ export class SemanticElaborator {
   }
 
   unwrapReactiveOrComputedIfPossible(exprId: Semantic.ExprId): Semantic.ExprId {
+    // A type used as a value (`typeof(r)`, `rx.Reactive<str>`) can have a
+    // reactive TYPE, but it is not a reactive cell: there is nothing to read.
+    // Unwrapping it turned `typeof(r) == str` into `rx.get(r) == str`.
+    if (this.isTypeValueExpr(exprId)) {
+      return exprId;
+    }
     const expr = this.sr.exprNodes.get(exprId);
     const resolvedTypeUse = this.sr.typeUseNodes.get(
       this.sr.e.resolveAlias(expr.type)
@@ -916,18 +922,28 @@ export class SemanticElaborator {
       const _right2 = this.sr.exprNodes.get(rightId);
 
       // Compile-time type equality: typeof(x) == typeof(y) where both are type-as-values.
-      // Resolves to a bool literal by comparing canonical TypeDefIds.
+      // Resolves to a bool literal by comparing canonical TypeDefIds. A type
+      // named directly (`rx.Reactive<str>`) arrives as a SymbolValueExpr, so
+      // both sides are normalized first.
       if (
         (binaryExpr.operation === EBinaryOperation.Equal ||
           binaryExpr.operation === EBinaryOperation.NotEqual) &&
-        left.variant === Semantic.ENode.DatatypeAsValueExpr &&
-        _right2.variant === Semantic.ENode.DatatypeAsValueExpr
+        this.isTypeValueExpr(leftId) &&
+        this.isTypeValueExpr(rightId)
       ) {
+        const [leftType] = this.normalizeTypeDefValueExpr(
+          leftId,
+          binaryExpr.sourceloc
+        );
+        const [rightType] = this.normalizeTypeDefValueExpr(
+          rightId,
+          binaryExpr.sourceloc
+        );
         const leftTypeDefId = this.sr.typeUseNodes.get(
-          this.sr.e.resolveAlias(left.type)
+          this.sr.e.resolveAlias(leftType.type)
         ).type;
         const rightTypeDefId = this.sr.typeUseNodes.get(
-          this.sr.e.resolveAlias(_right2.type)
+          this.sr.e.resolveAlias(rightType.type)
         ).type;
         const equal = leftTypeDefId === rightTypeDefId;
         return this.sr.b.literal(
@@ -11727,6 +11743,30 @@ export class SemanticElaborator {
         thisExpr: exprId,
       },
       sourceloc
+    );
+  }
+
+  // Whether an expression denotes a TYPE rather than a runtime value: exactly
+  // the forms normalizeTypeDefValueExpr() below turns into a
+  // DatatypeAsValueExpr, plus that node itself.
+  isTypeValueExpr(exprId: Semantic.ExprId): boolean {
+    const expr = this.sr.exprNodes.get(exprId);
+    if (expr.variant === Semantic.ENode.DatatypeAsValueExpr) {
+      return true;
+    }
+    if (expr.variant !== Semantic.ENode.SymbolValueExpr) {
+      return false;
+    }
+    const symbol = this.sr.symbolNodes.get(expr.symbol);
+    if (symbol.variant === Semantic.ENode.TypeDefSymbol) {
+      return true;
+    }
+    return (
+      symbol.variant === Semantic.ENode.VariableSymbol &&
+      symbol.comptime &&
+      symbol.comptimeValue !== null &&
+      this.sr.exprNodes.get(symbol.comptimeValue).variant ===
+        Semantic.ENode.DatatypeAsValueExpr
     );
   }
 

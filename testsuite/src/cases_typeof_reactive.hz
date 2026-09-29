@@ -1,0 +1,125 @@
+// ============================================================================
+// REGRESSION TEST — this is a real, load-bearing test, not a placeholder.
+//
+// Bug: comparing a TYPE with `==`/`!=` stopped being a type comparison as
+// soon as one side was the type of a reactive. Comparison operators
+// auto-unwrap reactive operands (so `r == "a"` reads the reactive), and that
+// unwrap was applied to type-as-value operands too: `typeof(r)` is the type
+// rx.Reactive<str>, and it was turned into a runtime read `rx.get(r)`. The
+// "type comparison" then became a value comparison against a type:
+//
+//   let r = rx.reactive<str | none>("a");
+//   fmt.format(r);
+//   // BUG: H4005 No safe comparison is available between types
+//   // '(str | none)' and 'str'   (at fmt.format's
+//   // `typeof(values[0]) == str` short-circuit)
+//
+// `typeof(r) == str` compares two different types and is simply false.
+//
+// Depending on the types involved it:
+//   - failed with H4005 inside the stdlib, for any fmt.format/fmt.println of
+//     a reactive or computed whose value is not a str (a union, an int),
+//   - passed the checker and emitted invalid C (`== hzstd_str_t`) for a
+//     plain `typeof(r) == str` in user code,
+//   - crashed the compiler (assertion in Lower) for
+//     `typeof(r) == rx.Reactive<str>`, where BOTH sides were unwrapped.
+//
+// Root cause (src/Semantic/Elaborate.ts, unwrapReactiveOrComputedIfPossible):
+// it unwrapped any expression whose type is reactive, without checking that
+// the expression is a runtime value at all. A type-as-value expression is
+// never a reactive cell to read.
+//
+// The last two lines are guards in the other direction: plain types must
+// keep comparing as before, and VALUE comparisons must keep auto-unwrapping
+// reactives.
+// ============================================================================
+
+namespace cases_typeof_reactive {
+
+    export fn register(s: mut testsuite.Suite) {
+        s.run(
+            "typeof of a reactive compares as a type, never as its value",
+            """
+fn isStr<T>(v: T): bool {
+    return typeof(v) == str;
+}
+
+fn isNotStr<T>(v: T): bool {
+    return typeof(v) != str;
+}
+
+fn isInt<T>(v: T): bool {
+    return typeof(v) == int;
+}
+
+fn isReactiveStr<T>(v: T): bool {
+    return typeof(v) == rx.Reactive<str>;
+}
+
+fn sameType<A, B>(a: A, b: B): bool {
+    return typeof(a) == typeof(b);
+}
+
+fn kind<T>(v: T): str {
+    if comptime typeof(v) == str {
+        return "str";
+    }
+    return "other";
+}
+
+fn main(): int {
+    let ps: str = "x";
+    let pi: int = 1;
+    let r = rx.reactive<str>("a");
+    let ru = rx.reactive<str | none>("u");
+    let rn = rx.reactive<str | none>(none);
+    let ri = rx.reactive<int>(5);
+    let sr = rx.shallowReactive<str>("s");
+    let c = rx.computed(() => rx.get(ri) + 1);
+
+    // Formatting a reactive -- where it was actually hit: fmt.format and
+    // fmt.println both check `typeof(values[0]) == str`.
+    fmt.println(fmt.format(ru));
+    fmt.println(fmt.format(rn));
+    fmt.println(fmt.format(r));
+    fmt.println(ri);
+    fmt.println(f"{r}");
+    fmt.println(fmt.format(r, "!"));
+    fmt.println(fmt.format(sr));
+    fmt.println(fmt.format(c));
+
+    // typeof of a reactive / shallow reactive / computed against plain types.
+    fmt.println(f"typeof reactive: {isStr(r)} {isNotStr(r)} {isInt(ri)} {isInt(c)} {isStr(sr)}");
+    // ...against its own reactive type (both sides used to be unwrapped).
+    fmt.println(f"typeof reactive type: {isReactiveStr(r)} {isReactiveStr(ps)}");
+    // ...against another typeof.
+    fmt.println(f"typeof both: {sameType(r, ps)} {sameType(r, r)} {sameType(ri, c)}");
+    // ...in a comptime condition.
+    fmt.println(f"comptime: {kind(r)} {kind(ps)}");
+
+    // Guard: plain types, unchanged.
+    fmt.println(f"plain: {isStr(ps)} {isStr(pi)} {isNotStr(ps)} {sameType(ps, ps)} {sameType(ps, pi)}");
+    // Guard: value comparisons still read the reactive.
+    fmt.println(f"values: {r == "a"} {r != "a"} {ri == 5} {ri > 4} {c == 6}");
+    return 0;
+}
+""",
+            """
+u
+none
+a
+5
+a
+a!
+s
+6
+typeof reactive: false true false false false
+typeof reactive type: true false
+typeof both: false true false
+comptime: other str
+plain: true false false true false
+values: true false true true true
+"""
+        );
+    }
+}

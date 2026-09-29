@@ -49,6 +49,7 @@ fn main(): int {
     cases_break_continue.register(suite);
     cases_union_alias_dedup.register(suite);
     cases_union_alias_flatten.register(suite);
+    cases_typeof_reactive.register(suite);
     cases_storage_classes.register(suite);
     cases_parameter_packs.register(suite);
     cases_immediate.register(suite);
