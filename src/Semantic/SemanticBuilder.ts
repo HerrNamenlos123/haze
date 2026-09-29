@@ -1873,15 +1873,22 @@ export class SemanticBuilder {
     >();
 
     const processMember = (mId: Semantic.TypeUseId) => {
-      const mUse = this.sr.typeUseNodes.get(mId);
-      const mDef = this.sr.typeDefNodes.get(mUse.type);
+      // Resolved BEFORE looking for a nested union: an alias of a union
+      // (`type Maybe = str | none`) is a union too, and has to be flattened
+      // into this one like a union written out in place. Checking the
+      // spelled typedef instead registered the whole aliased union as a
+      // single member, so `Maybe | none` came out as the nested
+      // `(str | none) | none` rather than `str | none`.
+      const resolved = this.sr.e.resolveAlias(mId);
+      const resolvedDef = this.sr.typeDefNodes.get(
+        this.sr.typeUseNodes.get(resolved).type
+      );
 
-      if (mDef.variant === Semantic.ENode.UntaggedUnionDatatype) {
-        for (const i of mDef.members) {
+      if (resolvedDef.variant === Semantic.ENode.UntaggedUnionDatatype) {
+        for (const i of resolvedDef.members) {
           processMember(i);
         }
       } else {
-        const resolved = this.sr.e.resolveAlias(mId);
         if (spellingByResolvedMember.has(resolved)) {
           return;
         }

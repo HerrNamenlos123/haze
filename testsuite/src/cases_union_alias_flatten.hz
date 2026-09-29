@@ -1,0 +1,237 @@
+// ============================================================================
+// REGRESSION TEST — this is a real, load-bearing test, not a placeholder.
+//
+// Bug: a union member that is a `type` alias OF ANOTHER UNION was not
+// flattened into the outer union. The alias was resolved and then kept as
+// ONE member, so the outer union ended up with a union nested inside it:
+//
+//   type Maybe = str | none;
+//
+//   fn take(x: str | none) {}
+//   let a: Maybe | none = none;
+//   take(a);
+//   // BUG: H4001 No suitable conversion from (none | Maybe) to (str | none)
+//
+// `Maybe | none` is `str | none | none`, i.e. `str | none`. Written out
+// directly (`(str | none) | none`) it always flattened; only the
+// alias-spelled form stayed nested.
+//
+// Where it was hit: rx.watch<T> keeps its old value in a
+// WatchState<rx.UnwrapReactive<T>>, whose field is `V | none`. With a getter
+// returning a union (`() => rx.get(cache.data.dir) ?? none`, T = `str |
+// none`), that field became `rx.UnwrapReactive<str | none> | none`, and
+// `hasChanged(newValue, state.oldValue)` inside the stdlib failed to
+// compile. rx.UnwrapReactive itself was fine: for a non-reactive T it is T.
+//
+// It was not only a conversion error. Depending on the direction, the
+// nested union:
+//   - refused conversions both ways (variations A-E, G, G2, H),
+//   - COMPILED and then corrupted the value at runtime: a plain
+//     `str | none` passed into a `Maybe | none` parameter panicked with
+//     "union refinement invalidated ... active variant '<garbage>'"
+//     (variation F),
+//   - made `is` reject a real member as "always false" (H7156, variation J),
+//   - silently gave comptime `T.variants` the wrong member count
+//     (IntOrStr | bool reported 2 instead of 3, variation N).
+//
+// Root cause (src/Semantic/SemanticBuilder.ts, untaggedUnionTypeUse):
+// processMember() recursed into a member only when the member's typedef was
+// literally an UntaggedUnionDatatype. An alias member's typedef is a
+// TypeAliasDatatype, so it fell through to the leaf branch, got
+// alias-resolved there, and was registered whole.
+//
+// Variations I and K are controls that always worked: a nested union
+// written without an alias, and a parameter typed by the alias alone (no
+// outer union built). They are what prove a fix did not simply bypass union
+// construction.
+// ============================================================================
+
+namespace cases_union_alias_flatten {
+
+    export fn register(s: mut testsuite.Suite) {
+        s.run(
+            "a union flattens a member that is an alias of another union",
+            """
+type Maybe = str | none;
+// Two hops, so the fix has to resolve a CHAIN before looking for a union.
+type MaybeChain = Maybe;
+type IntOrStr = int | str;
+type StrOrBool = str | bool;
+
+fn takePlain(x: str | none): str {
+    if x is none {
+        return "none";
+    }
+    return x;
+}
+
+fn takeThree(x: int | str | bool): str {
+    if x is int {
+        return f"int {x}";
+    }
+    if x is str {
+        return f"str {x}";
+    }
+    return f"bool {x}";
+}
+
+fn countVariants<T>(): int {
+    let n = 0;
+    for comptime V in T.variants {
+        n = n + 1;
+    }
+    return n;
+}
+
+// The WatchState shape: a generic field `V | none`.
+struct Holder<V> {
+    value: V | none = none;
+}
+
+fn orNone<T>(x: T | none): T | none {
+    return x;
+}
+
+// Variation A -- THE REPORTED SHAPE. An alias of a union, plus none.
+fn variation_a(x: Maybe | none): str {
+    return takePlain(x);
+}
+
+// Variation B -- same, alias second, so member order cannot matter.
+fn variation_b(x: none | Maybe): str {
+    return takePlain(x);
+}
+
+// Variation C -- a two-hop alias chain to the union.
+fn variation_c(x: MaybeChain | none): str {
+    return takePlain(x);
+}
+
+// Variation D -- the alias contributes members the outer union does not
+// already have, so flattening has to ADD them, not just dedupe.
+fn variation_d(x: IntOrStr | bool): str {
+    return takeThree(x);
+}
+
+// Variation E -- two aliased unions that overlap (`str` in both).
+fn variation_e(x: IntOrStr | StrOrBool): str {
+    return takeThree(x);
+}
+
+// Variation F -- the reverse direction: a plainly-spelled value passed INTO
+// an alias-spelled union. This one compiled before and corrupted the value
+// at runtime, so it is checked by running it, not just by compiling it.
+fn variation_f(x: str | none): str {
+    return variation_a(x);
+}
+
+// Variation G -- the exact rx.watch path: V = rx.UnwrapReactive<str | none>.
+fn variation_g(x: str | none): str {
+    let h = Holder<rx.UnwrapReactive<str | none>> { value: x };
+    return takePlain(h.value);
+}
+
+// Variation G2 -- the same generic field with a user alias as V.
+fn variation_g2(x: Maybe): str {
+    let h = Holder<Maybe> { value: x };
+    return takePlain(h.value);
+}
+
+// Variation H -- a generic function's `T | none` with T = alias of a union.
+fn variation_h(x: Maybe): str {
+    return takePlain(orNone<Maybe>(x));
+}
+
+// Variation I -- control: the same nesting written without an alias.
+fn variation_i(x: (str | none) | none): str {
+    return takePlain(x);
+}
+
+// Variation J -- `is` has to see every member the alias contributed.
+fn variation_j(x: IntOrStr | bool): str {
+    if x is int {
+        return "int";
+    }
+    else if x is str {
+        return "str";
+    }
+    return "bool";
+}
+
+// Variation K -- control: a parameter typed by the alias alone.
+fn variation_k(x: Maybe): str {
+    if x is none {
+        return "none";
+    }
+    return x;
+}
+
+fn main(): int {
+    fmt.println(f"variation_a: {variation_a("x")} {variation_a(none)}");
+    fmt.println(f"variation_b: {variation_b("x")} {variation_b(none)}");
+    fmt.println(f"variation_c: {variation_c("x")} {variation_c(none)}");
+    fmt.println(f"variation_d: {variation_d(1)} | {variation_d("y")} | {variation_d(true)}");
+    fmt.println(f"variation_e: {variation_e(2)} | {variation_e("z")} | {variation_e(false)}");
+    fmt.println(f"variation_f: {variation_f("x")} {variation_f(none)}");
+    fmt.println(f"variation_g: {variation_g("w")} {variation_g(none)}");
+    fmt.println(f"variation_g2: {variation_g2("w")} {variation_g2(none)}");
+    fmt.println(f"variation_h: {variation_h("v")} {variation_h(none)}");
+    fmt.println(f"variation_i: {variation_i("x")} {variation_i(none)}");
+    fmt.println(f"variation_j: {variation_j(3)} {variation_j("u")} {variation_j(true)}");
+    fmt.println(f"variation_k: {variation_k("x")} {variation_k(none)}");
+
+    // Variation N -- the flattened member count, as comptime reflection
+    // sees it. Written plainly these are 2 3 3 2.
+    fmt.println(f"variation_n: {countVariants<Maybe | none>()} {countVariants<IntOrStr | bool>()} {countVariants<IntOrStr | StrOrBool>()} {countVariants<MaybeChain | none>()}");
+
+    // Variation W -- where it was actually hit: rx.watch with a getter
+    // returning a union, and with a reactive union as the source. A sync
+    // scheduler, so every write delivers its callback before the next one.
+    let syncScheduler: (job: rx.WatchJob) => none = (job: rx.WatchJob): none => {
+        job.run();
+    };
+    let r = rx.reactive<str | none>(none);
+
+    let log: ref Box<str> = { value: "" };
+    let hw = rx.watch(() => rx.get(r) ?? none, (v, old) => {
+        log.value = f"{log.value}[{takePlain(v)}<-{takePlain(old)}]";
+    }, { immediate: true, scheduler: syncScheduler });
+    r := "a";
+    r := "b";
+    r := none;
+    r := "c";
+    hw.stop();
+    fmt.println(f"variation_w getter: {log.value}");
+
+    let log2: ref Box<str> = { value: "" };
+    let hw2 = rx.watch(() => r, (v, old) => {
+        log2.value = f"{log2.value}[{takePlain(v)}<-{takePlain(old)}]";
+    }, { scheduler: syncScheduler });
+    r := "d";
+    r := none;
+    hw2.stop();
+    fmt.println(f"variation_w reactive: {log2.value}");
+
+    return 0;
+}
+""",
+            """
+variation_a: x none
+variation_b: x none
+variation_c: x none
+variation_d: int 1 | str y | bool true
+variation_e: int 2 | str z | bool false
+variation_f: x none
+variation_g: w none
+variation_g2: w none
+variation_h: v none
+variation_i: x none
+variation_j: int str bool
+variation_k: x none
+variation_n: 2 3 3 2
+variation_w getter: [none<-none][a<-none][b<-a][none<-b][c<-none]
+variation_w reactive: [d<-c][none<-d]
+"""
+        );
+    }
+}
