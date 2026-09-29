@@ -248,18 +248,22 @@ macro was never a full inline: it calls into `hzstd_array.c` either way).
 
 ## Member access across a union
 
-`u.x` on `u: A | B | C` works when every variant is a struct declaring `x`
-with the exact same type (a field) or the exact same signature (a method).
-Nothing is looked up on the union: when `resolveMemberAccess` falls through
-with a union, `resolveUnionMemberAccess` (`src/Semantic/Elaborate.ts`)
-resolves `x` on each variant through the ordinary struct path, compares the
-results, and dispatches on the tag:
+`u.x` on `u: A | B | C` (every variant a struct) does on each variant exactly
+what `.x` does on that struct alone, and combines the results. Nothing is
+looked up on the union: when `resolveMemberAccess` falls through with a union,
+`resolveUnionMemberAccess` (`src/Semantic/Elaborate.ts`) resolves `x` on each
+variant through the ordinary struct path and dispatches on the tag:
 
 ```
-u.field      UnionMemberSelectExpr -> *({ T* p; if (tag==0) p = &u.as_tag_0.field; ... p; })
-u.m(args)    if (u is A) { A.m(&u.as_tag_0, args) } else if ...   (callExpr)
-u.m          a block yielding the active variant's bound method
+u.field      same type everywhere: UnionMemberSelectExpr -> *({ T* p; if (tag==0) p = &u.as_tag_0.field; ... p; })
+             otherwise:           { R r; if (u is A) r = u.A.field; ... r }   with R the union of the types
+u.m(args)    if (u is A) { r = A.m(&u.as_tag_0, args) } else if ...           (callExpr)
+u.m          the same block, yielding the active variant's bound method
 ```
+
+A variant without `x` yields `none` (a call is skipped, arguments included).
+Only a member that no variant declares, a non-struct variant, or a write to a
+field some variant lacks is an error.
 
 Things to know before touching it:
 
@@ -270,13 +274,20 @@ Things to know before touching it:
   of the checked rvalue `({ __v = u; HZ_GET_UNION_TAG(...) })`. A receiver
   that is not a side-effect-free lvalue path (`isStableLvaluePath`) is bound
   to a temporary first, which makes the result a temporary too.
+- **Differing field types stay distributable.** Their combined value is a
+  copy, so it is registered in `unionFieldDispatches` with the per-variant
+  results. A member access on it (`fuseUnionMemberAccess`), a write or `++`
+  (`distributeUnionWrite`) or a `?.` chain (`fuseUnionOptionalChain`) is then
+  pushed into every variant's own field instead of the copy.
 - **A called method never becomes a method value.** `callExpr` passes its
   callee node as `Inference.directCallee`; a member access that *is* that node
-  registers the per-variant callees in `unionMethodCallDispatches`, and
-  `callExpr` builds one direct call per branch. Branches after the first
-  elaborate the arguments again (`fresh`), so no argument expression is shared
-  between two callees whose parameters may retain it differently. The result
-  allocates nothing (asserted in the testsuite).
+  registers the per-variant callees in `unionMethodCallDispatches` under a
+  placeholder, and `callExpr` builds one direct call per branch, recursing
+  into nested dispatches and unions of callables. Every callee but the first
+  elaborates the arguments again (`fresh`), so each converts them for its own
+  parameters and no argument expression is shared between callees whose
+  parameters may retain it differently. It allocates nothing (asserted in the
+  testsuite).
 - **Tagged unions whose tags share a type** (`union { Left: P, Right: P }`)
   are dispatched by tag index (`UnionTagCheckExpr.tagIndices`). Narrowing is
   type-based, so it must never collapse such a union to one tag:
