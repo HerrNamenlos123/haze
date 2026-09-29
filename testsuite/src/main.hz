@@ -82,6 +82,7 @@ fn main(): int {
     cases_computed_narrowing.register(suite);
     cases_narrowed_recheck.register(suite);
     cases_narrowing_inverse.register(suite);
+    cases_cache_file.register(suite);
 
     return testsuite.runAll(config, suite);
 }

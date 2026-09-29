@@ -832,6 +832,11 @@ namespace json {
         _path: str;
         _flushComputed: rx.Computed<none>;
         _disableDiskWriteTemporarily: bool = false;
+        // The file as this cache's own last write left it. The watch below
+        // polls the modification date, so it fires for that write too, and
+        // this is how the echo is told apart from another program's write
+        // without reading the file: see _isOwnWrite.
+        _writtenState: fs.FileState | none = none;
 
         fn constructor(path: str, args: CacheFileArgs = {}) {
             let rawData = CacheFile<T>._read(path);
@@ -856,12 +861,23 @@ namespace json {
             });
 
             fs.watch(path, (event: fs.FileChangeEvent): void => {
+                // Our own write coming back: the file holds exactly what
+                // `data` does, so there is nothing to read.
+                if cache._isOwnWrite() {
+                    return;
+                }
+
                 let rawData = CacheFile<T>._read(path);
 
                 if rawData {
                     // Set this to avoid infinite recursion between loading and saving the file and trigger itself
                     cache._disableDiskWriteTemporarily = true;
-                    cache.data := rx.reactive<T>(rawData);
+                    // In place, never `cache.data := rx.reactive<T>(rawData)`:
+                    // that gives every field a new cell, and whatever held
+                    // the old one -- a computed subscribed to it, a component
+                    // given it as a prop -- would read a cell nothing writes
+                    // to again.
+                    rx.assign<T>(cache.data, rawData);
                     cache.flush();
                     cache._disableDiskWriteTemporarily = false;
                 }
@@ -884,20 +900,38 @@ namespace json {
             // Serialize FIRST, and unconditionally. This runs inside
             // _flushComputed, and reading every field is the only thing that
             // subscribes that computed to them. Returning before these reads
-            // -- which the reload path below asks for -- re-runs the computed
-            // with no field reads at all, so it comes back subscribed to
-            // nothing but `data` itself and NO later write ever marks it
-            // dirty again. The file is then frozen for the life of the
-            // process: the reload fires on this cache's own first write (the
-            // host pumps fs.pollEvents every frame), so it costs one
-            // serialization to avoid losing every save after the first.
+            // -- which the reload path asks for -- re-runs the computed with
+            // no field reads at all, so it comes back subscribed to nothing
+            // but `data` itself and NO later write ever marks it dirty again.
+            // The file is then frozen for the life of the process. A reload
+            // only happens for another program's write, so this costs one
+            // serialization per external change.
             let jsonData = json.stringify(this.data);
             if (this._disableDiskWriteTemporarily) { return; }
             if !fs.writeText(this._path, jsonData) {
                 if this._args.panicOnFailure {
                     sys.panic(f"Cache file at '{this._path}' could not be written to");
                 }
+                return;
             }
+            this._writtenState = fs.statFile(this._path);
+        }
+
+        // Whether the file is still exactly as this cache's own last write
+        // left it. Taken right after the write, so another program writing
+        // in the moment between the two would be mistaken for this one; the
+        // modification date has nanosecond resolution, and the watch this
+        // serves cannot tell such writes apart any better.
+        fn _isOwnWrite(): bool {
+            let written = this._writtenState;
+            if written is none {
+                return false;
+            }
+            let current = fs.statFile(this._path);
+            if current is none {
+                return false;
+            }
+            return current.mtime == written.mtime && current.size == written.size;
         }
 
         static fn _read(path: str): T | none {

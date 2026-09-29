@@ -10,6 +10,11 @@ if props.cache.data.lastOpenedFile {
     currentDocumentPath := props.cache.data.lastOpenedFile;
 }
 
+let openFile = (path: str) => {
+    currentDocumentPath := path;
+    props.cache.data.lastOpenedFile := path;
+}
+
 let currentDocument = computed<DocumentFile | null>(() => {
     if currentDocumentPath {
         if let doc = loadDocument(currentDocumentPath) {
@@ -122,7 +127,7 @@ div if=sidepanelOpen [absolute col top-0 left-0 h-grow w-[props.cache.data.sidep
         }
     }
 
-    FileTree if=[props.cache.data.vault] [] expandedEntries=[props.cache.data.expandedFolders] entries=[props.cache.data.vault.entries] {}
+    FileTree if=[props.cache.data.vault] [] expandedEntries=[props.cache.data.expandedFolders] entries=[props.cache.data.vault.entries] @select=openFile {}
 }
 
 div else [absolute top-0 left-0 p-4] {

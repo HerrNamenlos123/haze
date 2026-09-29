@@ -49,7 +49,6 @@ let visible = computed((): FileTreeWindow => windowOf(entryChildren(props.entry)
     props.layout, props.windowStart - 1, props.windowEnd - 1));
 
 let onRowClick = (e: PointerEvent) => {
-    fmt.println("On click");
     let entry = props.entry;
     if entry is FSDirEntry {
         emits.toggle(entry.fullPath);

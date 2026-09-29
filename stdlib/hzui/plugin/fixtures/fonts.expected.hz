@@ -40,9 +40,9 @@ labelFont: Computed<Bytes>;
 #source "fonts.hzui:12:1" {
         if this.glyph != other.glyph { return true; }
 }
-        // labelFont: a reactive handle -- see PropDecl.stable. The
-        // handle does not change, and what is inside it is tracked
-        // by the reactive system, so there is nothing here to compare.
+#source "fonts.hzui:16:1" {
+        if !rx.sameHandle(this.labelFont, other.labelFont) { return true; }
+}
         return false;
     }
 }

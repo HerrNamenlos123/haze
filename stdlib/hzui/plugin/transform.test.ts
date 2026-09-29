@@ -612,22 +612,45 @@ describe("generated operator!=", () => {
     expect(out).not.toContain("__a_nonsense");
   });
 
-  test("a reactive handle prop is not compared at all", () => {
-    // The handle is stable and its contents are tracked reactively, so
-    // comparing it decides nothing -- and `!=` on an opaque builtin handle
-    // does not compile.
+  test("a reactive handle prop is compared by identity, not by contents", () => {
+    // What is inside the handle is tracked reactively, so it needs no
+    // comparing -- and `!=` on it would read through. But the handle itself
+    // can be swapped for another one, and a child that is not told keeps
+    // reading the old cell while it writes to the new one.
     for (const decl of [
       "value: Reactive<str>;",
       "value: rx.Reactive<str>;",
       "value: ShallowReactive<[]int>;",
       "value: Computed<bool>;",
     ]) {
-      expect(args(decl)).not.toContain("this.value != other.value");
+      const out = args(decl);
+      expect(out).toContain(
+        "if !rx.sameHandle(this.value, other.value) { return true; }"
+      );
+      expect(out).not.toContain("this.value != other.value");
     }
-    // ...but a plain prop whose name merely mentions one still is.
+    // ...but a plain prop whose name merely mentions one is compared by value.
     expect(args('reactiveLabel: str = "";')).toContain(
       "if this.reactiveLabel != other.reactiveLabel { return true; }"
     );
+  });
+
+  test("an optional reactive handle compares presence first, then identity", () => {
+    const out = args("value?: Reactive<str>;");
+    expect(out).toContain(
+      "if (__a_value is none) != (__b_value is none) { return true; }"
+    );
+    expect(out).toContain(
+      "if !rx.sameHandle(__a_value, __b_value) { return true; }"
+    );
+    expect(out).not.toContain("__a_value != __b_value");
+  });
+
+  test("an untracked prop is not compared at all", () => {
+    for (const decl of ["items: []int;", "value: Reactive<str>;"]) {
+      const out = args(`[[hzui.untracked]]\n${decl}`);
+      expect(out).not.toMatch(/this\.(items|value)\b/);
+    }
   });
 
   test("each comparison carries its own @props line", () => {

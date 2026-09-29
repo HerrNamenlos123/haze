@@ -213,8 +213,14 @@ type PropDecl = {
   name: string;
   line: number;
   optional: boolean;
-  /** A reactive handle: stable for the prop's life, so never worth comparing. */
-  stable: boolean;
+  /**
+   * A reactive handle, compared by identity (rx.sameHandle), never by value:
+   * what is inside is tracked by the reactive system, but a parent can pass a
+   * different handle, and the component has to re-render to read that one.
+   */
+  handle: boolean;
+  /** `[[hzui.untracked]]`: left out of the comparison entirely. */
+  untracked: boolean;
 };
 
 function parsePropNames(section: Section): PropDecl[] {
@@ -244,19 +250,22 @@ function parsePropNames(section: Section): PropDecl[] {
     const typeText = m[3]!.split("=")[0]!;
     const optional =
       m[2] === "?" || /(^|\|)\s*none\s*(\||$)/.test(typeText.trim());
-    // A Reactive/ShallowReactive/Computed prop is a HANDLE. The handle is
-    // stable for as long as the parent passes the same one, and the value
-    // inside it is tracked by the reactive system itself -- a template that
-    // reads it re-runs on its own. So comparing it decides nothing, and `!=`
-    // on an opaque builtin handle very likely does not compile anyway.
-    const stable = /(^|[^\w.])(rx\.)?(Shallow)?(Reactive|Computed)\s*</.test(
+    // A Reactive/ShallowReactive/Computed prop is a HANDLE. The value inside
+    // it is tracked by the reactive system itself -- a template that reads
+    // it re-runs on its own -- so it is compared by identity only: `!=`
+    // would read through to the value. The identity does matter. A parent
+    // can pass a different handle (json.CacheFile's reload used to give
+    // every field a new cell), and a component that is not told keeps its
+    // computeds on the old cell while `props` already hands out the new one.
+    const handle = /(^|[^\w.])(rx\.)?(Shallow)?(Reactive|Computed)\s*</.test(
       typeText
     );
     props.push({
       name: m[1]!,
       line: section.bodyStartLine + i,
       optional: optional,
-      stable: stable || nextUntracked,
+      handle: handle,
+      untracked: nextUntracked,
     });
     nextUntracked = false;
   });
@@ -480,18 +489,13 @@ export function compose(filepath: string, source: string): string {
   push(`        if this.id != other.id { return true; }`);
   push(`}`);
   for (const p of propNames) {
-    if (p.stable) {
-      push(
-        `        // ${p.name}: a reactive handle -- see PropDecl.stable. The`
-      );
-      push(
-        `        // handle does not change, and what is inside it is tracked`
-      );
-      push(
-        `        // by the reactive system, so there is nothing here to compare.`
-      );
+    if (p.untracked) {
+      push(`        // ${p.name}: [[hzui.untracked]], so not compared.`);
       continue;
     }
+    // A reactive handle is compared by identity -- see PropDecl.handle.
+    const differ = (a: string, b: string) =>
+      p.handle ? `!rx.sameHandle(${a}, ${b})` : `${a} != ${b}`;
     push(`#source "${src}:${p.line}:1" {`);
     if (p.optional) {
       // `!=` on an `T | none` has no conversion to the bare T, so an optional
@@ -505,11 +509,13 @@ export function compose(filepath: string, source: string): string {
       push(`        if (${a} is none) != (${b} is none) { return true; }`);
       push(`        if ${a} is not none {`);
       push(`            if ${b} is not none {`);
-      push(`                if ${a} != ${b} { return true; }`);
+      push(`                if ${differ(a, b)} { return true; }`);
       push(`            }`);
       push(`        }`);
     } else {
-      push(`        if this.${p.name} != other.${p.name} { return true; }`);
+      push(
+        `        if ${differ(`this.${p.name}`, `other.${p.name}`)} { return true; }`
+      );
     }
     push(`}`);
   }

@@ -297,6 +297,72 @@ namespace rx {
         watcher._cleanups.push(cleanup);
     }
 
+    // Whether `a` and `b` are the same handle -- the same cell, reactive
+    // array or computed -- and never merely two that hold equal values.
+    // It is how an hzui component compares a reactive prop: what is inside
+    // is tracked on its own, but a parent can hand over a different handle,
+    // and the component then has to re-render and read that one.
+    export fn sameHandle<T>(a: T, b: T): bool {
+        static_assert(
+            T.category == meta.TypeCategory.Reactive
+                || T.category == meta.TypeCategory.ShallowReactive
+                || T.category == meta.TypeCategory.Computed,
+            "rx.sameHandle() compares reactive handles; compare any other value with ==");
+        // Copied into plain locals: raw C can only name those. Every handle
+        // is a pointer in C (see CodeGenerator.ts), so this is identity.
+        let x = a;
+        let y = b;
+        let same = false;
+        do unsafe {
+            __c__("same = (void*)x == (void*)y;");
+        };
+        return same;
+    }
+
+    // Writes `value` into `target` IN PLACE: a struct keeps every one of its
+    // field cells, and each field is written into its own, recursively.
+    // `target := value` instead hands the struct a brand-new set of cells,
+    // and everything holding a handle to one of the old ones -- a computed
+    // subscribed to it, a component given it as a prop -- is left reading a
+    // cell that nothing writes to again.
+    //
+    // A primitive or enum that already holds the value is not written, so
+    // nothing reading it re-runs (see hasChanged). An array or union is
+    // written whole -- so a handle held INSIDE a union (`vault: VaultFS |
+    // none`, VaultFS holding an rx.Reactive) is replaced along with it.
+    export fn assign<T>(target: rx.Reactive<T>, value: T): none :: final {
+        if comptime T.baseType.category == meta.TypeCategory.Struct {
+            for comptime field in T.fields {
+                assign(target.[field.name], value.[field.name]);
+            }
+        }
+        else if comptime T.baseType.category == meta.TypeCategory.DynamicArray {
+            // `:=` into a deep array takes element cells, never a plain
+            // array (see cases_reactive.hz), so the elements get theirs first.
+            target := rx.reactive<T>(value);
+        }
+        else if comptime T.baseType.category == meta.TypeCategory.Primitive
+            || T.baseType.category == meta.TypeCategory.Enum {
+            // Read untracked: this is a write, and a computed calling it must
+            // not end up subscribed to the cell it writes.
+            let prev: cptr = none as cptr;
+            do unsafe {
+                __c__("prev = (void*)hzstd_reactive_pause_tracking();");
+            };
+            let current: T = target;
+            do unsafe {
+                __c__("hzstd_reactive_resume_tracking((hzstd_computed_node_t*)prev);");
+            };
+            if hasChanged<T>(value, current) {
+                target := value;
+            }
+        }
+        else {
+            target := value;
+        }
+        return none;
+    }
+
     // Vue's hasChanged() (Object.is). A primitive or enum compares by
     // value; anything else -- a struct, array, union -- counts as changed on
     // every run, the way a freshly built object never `is` the previous one.
