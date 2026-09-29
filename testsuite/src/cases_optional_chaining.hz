@@ -239,7 +239,9 @@ fn main(): int {
     return 0;
 }
 """,
-            [testsuite.mustHave(errorcodes.Code.ExpressionTypeDoesNotHaveMemberCalled)]);
+            // `.v` is applied to the whole `B | null`, which is not a union of
+            // structs (see cases_union_member_access.hz).
+            [testsuite.mustHave(errorcodes.Code.UnionMemberAccessNonStructVariant)]);
 
         s.compileFails(
             "optional chaining: a bare none/null receiver has nothing to access",

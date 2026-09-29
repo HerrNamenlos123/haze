@@ -246,6 +246,45 @@ export fn push<T>(items: []T, element: NoInfer<T>) {
 Measured on 5M pushes, this is the same speed as the built-in it replaced (the
 macro was never a full inline: it calls into `hzstd_array.c` either way).
 
+## Member access across a union
+
+`u.x` on `u: A | B | C` works when every variant is a struct declaring `x`
+with the exact same type (a field) or the exact same signature (a method).
+Nothing is looked up on the union: when `resolveMemberAccess` falls through
+with a union, `resolveUnionMemberAccess` (`src/Semantic/Elaborate.ts`)
+resolves `x` on each variant through the ordinary struct path, compares the
+results, and dispatches on the tag:
+
+```
+u.field      UnionMemberSelectExpr -> *({ T* p; if (tag==0) p = &u.as_tag_0.field; ... p; })
+u.m(args)    if (u is A) { A.m(&u.as_tag_0, args) } else if ...   (callExpr)
+u.m          a block yielding the active variant's bound method
+```
+
+Things to know before touching it:
+
+- **The select is an lvalue on purpose.** Writes, `+=`, `++` and mutating
+  calls (`u.pos.scale(2.0)`) reach the union's storage. That only holds
+  because each branch reads the receiver through a *proven* cast
+  (`UnionToValueCastExpr.tagProven`), which lowers to `(u).as_tag_N` instead
+  of the checked rvalue `({ __v = u; HZ_GET_UNION_TAG(...) })`. A receiver
+  that is not a side-effect-free lvalue path (`isStableLvaluePath`) is bound
+  to a temporary first, which makes the result a temporary too.
+- **A called method never becomes a method value.** `callExpr` passes its
+  callee node as `Inference.directCallee`; a member access that *is* that node
+  registers the per-variant callees in `unionMethodCallDispatches`, and
+  `callExpr` builds one direct call per branch. Branches after the first
+  elaborate the arguments again (`fresh`), so no argument expression is shared
+  between two callees whose parameters may retain it differently. The result
+  allocates nothing (asserted in the testsuite).
+- **Tagged unions whose tags share a type** (`union { Left: P, Right: P }`)
+  are dispatched by tag index (`UnionTagCheckExpr.tagIndices`). Narrowing is
+  type-based, so it must never collapse such a union to one tag:
+  `Conversion.narrowedSingleTag` / `narrowsToSubset` guard every narrowing
+  site.
+
+Tests: `testsuite/src/cases_union_member_access.hz`.
+
 ## Module System Architecture
 
 The compiler has a two-phase import/export system:

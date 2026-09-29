@@ -366,6 +366,40 @@ allocated 0
 values 251 753
 """);
 
+        // Overloads are resolved per variant from the call's arguments; the
+        // chosen overloads are what must agree. The variants may also refer to
+        // each other through the union in their own signatures.
+        s.run(
+            "union member access: overloaded methods resolve per variant",
+            """
+struct A {
+    fn f(x: int): str { return f"A.int {x}"; }
+    fn f(x: str): str { return f"A.str {x}"; }
+    fn combine(o: A | B): int { return 1 + o.n(); }
+    fn n(): int { return 10; }
+}
+struct B {
+    fn f(x: int): str { return f"B.int {x}"; }
+    fn f(x: str): str { return f"B.str {x}"; }
+    fn combine(o: A | B): int { return 2 + o.n(); }
+    fn n(): int { return 20; }
+}
+
+fn main(): int {
+    let u: A | B = B {};
+    fmt.println(u.f(1));
+    fmt.println(u.f("s"));
+    let v: A | B = A {};
+    fmt.println(f"{u.combine(v)} {v.combine(u)}");
+    return 0;
+}
+""",
+            """
+B.int 1
+B.str s
+12 21
+""");
+
         // ── Methods, as values ──────────────────────────────────────────────
         s.run(
             "union member access: a method taken as a value binds the active variant",
