@@ -98,33 +98,33 @@ let openSidepanel = () => {
     sidepanelOpen := true;
 }
 
-@template
+@template [relative]
 
 div if=[!currentDocument] [w-grow h-grow justify-center items-center] {
     text [] ["No document is selected"]
 }
 
 div else [w-grow h-grow] {
-    div [w-grow h-grow relative] ref=canvasAreaRef
+    div [w-grow h-grow] ref=canvasAreaRef
         @pointerdown=onCanvasPointerDown
         @pointerup=onCanvasPointerUp
         @wheel=onCanvasWheel
     {
         canvas [w-grow h-grow] ref=canvasRef @render=renderCanvas
+    }
+}
 
-        div if=sidepanelOpen [absolute col top-0 left-0 h-grow w-[props.cache.data.sidepanelWidth] p-4] {
-            div [justify-between w-grow] {
-                text [] ["Haze Notes"]
-                div [p-2] {
-                    Button [] icon="menu" @click=closeSidepanel {}
-                }
-            }
-
-            FileTree if=[props.cache.data.vault] [] expandedEntries=[props.cache.data.expandedFolders] entries=[props.cache.data.vault.entries] {}
-        }
-
-        div else [absolute top-0 left-0 p-4] {
-            Button [] icon="menu" @click=openSidepanel {}
+div if=sidepanelOpen [absolute col top-0 left-0 h-grow w-[props.cache.data.sidepanelWidth/4.0] p-4 bg-["#222"] border-r-2 border-color-["#FFF"]] {
+    div [justify-between w-grow] {
+        text [] ["Haze Notes"]
+        div [p-2] {
+            Button [] icon="menu" @click=closeSidepanel {}
         }
     }
+
+    FileTree if=[props.cache.data.vault] [] expandedEntries=[props.cache.data.expandedFolders] entries=[props.cache.data.vault.entries] {}
+}
+
+div else [absolute top-0 left-0 p-4] {
+    Button [] icon="menu" @click=openSidepanel {}
 }

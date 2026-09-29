@@ -49,6 +49,7 @@ let visible = computed((): FileTreeWindow => windowOf(entryChildren(props.entry)
     props.layout, props.windowStart - 1, props.windowEnd - 1));
 
 let onRowClick = (e: PointerEvent) => {
+    fmt.println("On click");
     let entry = props.entry;
     if entry is FSDirEntry {
         emits.toggle(entry.fullPath);
@@ -61,7 +62,7 @@ let onRowClick = (e: PointerEvent) => {
 
 // Built even when it is just above the viewport: it is one row, and it keeps
 // every subtree exactly `layout.rows` tall.
-div [w-grow h-[props.rowHeight]px items-center cursor-pointer] @click=onRowClick {
+div [w-grow h-[props.rowHeight]px items-center cursor-pointer bg-["#333"] m-1 rounded-3 p-2] @click=onRowClick {
     text [text-nowrap] [entryLabel(props.entry, props.layout.open)]
 }
 

@@ -29,7 +29,7 @@ struct VaultCache {
 gfx: mut renderer.gfx.Context;
 
 @setup
-let cache = json.CacheFile<GlobalCache>("~/.cache/haze-notes/cache.json");
+let cache = json.CacheFile<GlobalCache>("/home/fzachs/.cache/haze-notes/cache.json");
 
 let addToVaultDirs = (dir: str) => {
     if !cache.data.knownVaultDirs {
@@ -82,7 +82,7 @@ onFrame(() => {
 
 @template
 
-div [w-grow h-grow bg-["#333"]] {
+div [w-grow h-grow bg-["#111"] text-color-["#FFF"]] {
     div if=[!vaultCache] [w-grow h-grow items-center justify-center] {
         div [col items-center gap-4] {
             text [] ["No Vault is selected"]
