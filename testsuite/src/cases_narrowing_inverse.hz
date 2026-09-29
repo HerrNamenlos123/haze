@@ -1,0 +1,158 @@
+// ============================================================================
+// REGRESSION TEST — this is a real, load-bearing test, not a placeholder.
+//
+// Bug: the branch where a condition is false was narrowed with every one of
+// the condition's facts inverted on its own, `!A && !B`, when the inverse of
+// `A && B` is `!A || !B`. A condition with two facts about different values
+// was already left alone; two facts about the SAME value were not:
+//
+//   if n && n > 2 { return; }      // n isNot none, n > 2
+//   fmt.println(f"{n}");           // "n is none and n <= 2": for n = 1 a
+//                                  // runtime panic (union refinement)
+//
+//   if !v { if v is null { ... } } // v: A | null | none. `v` is
+//                                  // "isNot null and isNot none", inverted
+//                                  // "is null and is none": the empty union,
+//                                  // H7156 'null' is not a member of '()'
+//
+//   if n < 0 && n > 255 { return; }
+//   let x: u8 = n;                 // accepted: "n in [0, 255]"
+//
+// Fix: a constraint set is a conjunction, so a condition's facts about one
+// value invert only where the disjunction is itself one fact. One fact
+// inverts as before; several `isNot`s (a truthiness check) invert to "one of
+// them"; anything else inverts to nothing, which is sound.
+// ============================================================================
+
+namespace cases_narrowing_inverse {
+
+    fn prelude(): str {
+        return """
+ref struct Box { x: int = 0; }
+""";
+    }
+
+    export fn register(s: mut testsuite.Suite) {
+
+        s.run(
+            "narrowing inverse: an early return on two facts about one value",
+            """
+fn describe(n: int | none): str {
+    if n && n > 2 {
+        return f"big {n}";
+    }
+    return f"rest {n}";
+}
+
+fn describeElse(n: int | none): str {
+    if n && n > 2 {
+        return f"big {n}";
+    } else {
+        return f"small {n}";
+    }
+}
+
+fn main(): int {
+    fmt.println(describe(none));
+    fmt.println(describe(1));
+    fmt.println(describe(5));
+    fmt.println(describeElse(none));
+    fmt.println(describeElse(1));
+    fmt.println(describeElse(5));
+    return 0;
+}
+""",
+            """
+rest none
+rest 1
+big 5
+small none
+small 1
+big 5
+""");
+
+        s.run(
+            "narrowing inverse: a failed truthiness check leaves every nullish member",
+            prelude() + """
+fn viaBranch(v: Box | null | none): str {
+    if !v {
+        if v is null {
+            return "null";
+        }
+        return "none";
+    }
+    return f"some {v.x}";
+}
+
+fn viaEarlyReturn(v: Box | null | none): str {
+    if v {
+        return f"some {v.x}";
+    }
+    if v is null {
+        return "null";
+    }
+    return "none";
+}
+
+fn main(): int {
+    fmt.println(viaBranch(null));
+    fmt.println(viaBranch(none));
+    fmt.println(viaBranch(Box { x: 1 }));
+    fmt.println(viaEarlyReturn(null));
+    fmt.println(viaEarlyReturn(none));
+    fmt.println(viaEarlyReturn(Box { x: 2 }));
+    return 0;
+}
+""",
+            """
+null
+none
+some 1
+null
+none
+some 2
+""");
+
+        // A single fact still inverts: the one-member case is unchanged.
+        s.run(
+            "narrowing inverse: a single fact still narrows the other branch",
+            prelude() + """
+fn single(v: Box | none): str {
+    if !v {
+        return "none";
+    }
+    return f"some {v.x}";
+}
+
+fn main(): int {
+    fmt.println(single(none));
+    fmt.println(single(Box { x: 3 }));
+    return 0;
+}
+""",
+            """
+none
+some 3
+""");
+
+        // `n < 0 && n > 255` is never true, so nothing is known about n after
+        // it; the old inverse claimed [0, 255].
+        s.compileFails(
+            "narrowing inverse: a conjunction of comparisons does not narrow the fall-through",
+            """
+fn clamp(n: int): u8 {
+    if n < 0 && n > 255 {
+        return 0;
+    }
+    let x: u8 = n;
+    return x;
+}
+
+fn main(): int {
+    fmt.println(f"{clamp(-5)}");
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.NoSuitableConversionFound)]);
+    }
+}

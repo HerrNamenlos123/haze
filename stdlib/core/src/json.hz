@@ -320,53 +320,34 @@ namespace json {
 
                 let child = ffi.hzstd_json_get_object_item(allocator, node, fieldName);
 
-                // If the field allows none, and the item it missing, skip it
-                let skipWithNone = false;
+                // An absent key takes the field's declared default -- the
+                // value a struct literal that omits the field gets, so
+                // `expanded: []str = [];` reads as "absent means empty",
+                // exactly as it does in code. Failing it instead used to
+                // reject the WHOLE object, so every input written before a
+                // field existed (a cache file, a config, a theme) stopped
+                // parsing the moment the field was added.
+                //
+                // Without a default, a field that allows none is set to it,
+                // and any other field is required.
+                let absentHandled = false;
                 if !child {
-                    if comptime T[fieldName].category == meta.TypeCategory.Union {
+                    if comptime T.hasFieldDefault(fieldName) {
+                        absentHandled = true;
+                        result.[fieldName] = T.fieldDefault(fieldName);
+                    }
+                    else if comptime T[fieldName].category == meta.TypeCategory.Union {
                         for comptime Variant in T[fieldName].variants {
                             if comptime Variant is none {
-                                skipWithNone = true;
+                                absentHandled = true;
                                 result.[fieldName] = none;
                             }
                         }
                     }
                 }
 
-                if !skipWithNone {
+                if !absentHandled {
                     if !child {
-                        // TODO: a field with a DEFAULT VALUE should fall back
-                        // to it here instead of failing.
-                        //
-                        // Right now the only way to say "this key may be
-                        // absent" is `field?: T`, which forces every use
-                        // site to narrow with `is` even when the struct
-                        // already states a perfectly good fallback. A
-                        // declared default is a strictly better answer:
-                        //
-                        //     ref struct Theme { semanticHighlighting: bool = false; }
-                        //
-                        // reads as "absent means false", but today it means
-                        // "required", and parsing a theme without that key
-                        // fails outright.
-                        //
-                        // What makes this worth fixing rather than living
-                        // with: the failure is WHOLE-OBJECT. One absent key
-                        // does not leave that one field unset, it rejects
-                        // the entire parse -- so adding a field to a struct
-                        // fed by third-party JSON (theme files, LSP
-                        // payloads, config) silently breaks every input
-                        // that predates it, and the symptom is "no theme at
-                        // all" rather than "one missing setting". This bit
-                        // the code editor exactly that way.
-                        //
-                        // The default is already known here: `result` was
-                        // constructed above, so `result.[fieldName]`
-                        // already HOLDS the declared default at this point
-                        // for the non-inline path. Detecting "this field
-                        // has an explicit default" is the missing piece:
-                        // `T.fields` would have to expose it, which means
-                        // adding it to the compiler's reflection data.
                         return Error { error: () => f"JSON missing field: {fieldName}" };
                     }
                     let r = parseJsonNodeFromFfi<typeof(result.[fieldName])>(allocator, child);
@@ -380,7 +361,12 @@ namespace json {
         };
     }
 
-    export fn parseJsonNodeFromFfi<T>(allocator: Allocator, node: ffi.hzstd_json_node_t): Result<T, Error> {
+    // `:: final`, like dumpJsonNode: every nested value is parsed through
+    // here, so a type that contains itself (a tree, a linked list, a
+    // discriminated union with a variant holding more of the union) calls it
+    // again while it is still being elaborated -- which the compiler only
+    // allows for a function whose signature is final.
+    export fn parseJsonNodeFromFfi<T>(allocator: Allocator, node: ffi.hzstd_json_node_t): Result<T, Error> :: final {
         if comptime T.category == meta.TypeCategory.Literal {
             if comptime T.baseType is str {
                 let resultValue = parseJsonNodeFromFfi<str>(allocator, node);
@@ -400,6 +386,35 @@ namespace json {
             }
             else {
                 static_assert(false, f"json.parse() only supports comptime literals that are str or int");
+            }
+        }
+        else if comptime T.category == meta.TypeCategory.Reactive && rx.UnwrapReactive<T>.category == meta.TypeCategory.DynamicArray {
+            // A deep reactive array: parsed as the plain array of its values,
+            // then made reactive exactly as rx.reactive<[]E>(values) would --
+            // one cell per element. (Its held value is typed []Reactive<E>,
+            // which is why E is unwrapped from the element type.)
+            type Element = rx.UnwrapReactive<rx.UnwrapReactive<T>.elementType>;
+            let values = parseJsonNodeFromFfi<[]Element>(allocator, node);
+            if !values {
+                return values;
+            }
+            return rx.reactive<[]Element>(values);
+        }
+        else if comptime T.category == meta.TypeCategory.Reactive || T.category == meta.TypeCategory.ShallowReactive {
+            // Any other reactive field: its plain value, made reactive the
+            // way code would make it (the mirror of dumpJsonNode, which reads
+            // through the reactive to write the value).
+            let value = parseJsonNodeFromFfi<rx.UnwrapReactive<T>>(allocator, node);
+            if !value {
+                return value;
+            }
+            // By type, not category: a shallow reactive of a primitive reports
+            // the Reactive category, but only rx.shallowReactive builds it.
+            if comptime T is rx.ShallowReactive<rx.UnwrapReactive<T>> {
+                return rx.shallowReactive<rx.UnwrapReactive<T>>(value);
+            }
+            else {
+                return rx.reactive<rx.UnwrapReactive<T>>(value);
             }
         }
         else if comptime T is Node {
@@ -662,6 +677,21 @@ namespace json {
         }
         else if comptime T.category == meta.TypeCategory.Deep {
             return dumpJsonStruct<T.baseType>(allocator, value);
+        }
+        else if comptime T.category == meta.TypeCategory.Reactive && rx.UnwrapReactive<T>.category == meta.TypeCategory.DynamicArray {
+            // A deep reactive array: an array field of a reactive struct, as in
+            // every CacheFile's data. rx.get() cannot hand it back as a plain
+            // array -- it stays a reactive array underneath, and indexing what
+            // it returns does not compile -- so it is iterated directly, which
+            // reads each element through its own cell.
+            let arr = ffi.hzstd_json_create_array(allocator);
+            for item in value {
+                let node = dumpJsonNode<typeof(item)>(allocator, item);
+                if node {
+                    ffi.hzstd_json_add_item_to_array(allocator, arr, node);
+                }
+            }
+            return arr;
         }
         else if comptime T.category == meta.TypeCategory.Reactive || T.category == meta.TypeCategory.ShallowReactive {
             return dumpJsonNode<rx.UnwrapReactive<T>>(allocator, rx.get(value));

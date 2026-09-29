@@ -221,6 +221,10 @@ fn ContentArea(ui: ui_components.UIContext, args: ContentAreaArgs) {
                     // the mouse -- this is what actually reads as "3D" (a
                     // static screenshot of tilted rects is ambiguous, but
                     // watching them orbit around a shared center isn't).
+                    // ui.mousePos is plain state, not reactive, so the canvas
+                    // cannot see it change; reading the frame count redraws
+                    // it every frame instead, so it follows the mouse.
+                    ui.framecount();
                     let orbitY = ui.mousePos.x * 0.006;
                     let orbitX = (ui.mousePos.y - 300.0) * 0.003;
                     let worldRotation = mat4.rotationX(orbitX).mul(mat4.rotationY(orbitY));
@@ -303,6 +307,9 @@ fn ContentArea(ui: ui_components.UIContext, args: ContentAreaArgs) {
                     // this canvas to see the aberration/vignette react to
                     // it. This part stays a per-frame call since it's
                     // genuinely per-frame data, not shader source.
+                    // Redrawn every frame (the frame count is read), because
+                    // ui.mousePos is not reactive.
+                    ui.framecount();
                     r.canvas.setPostEffectExtra(ui.mousePos.x, ui.mousePos.y);
 
                     r.drawRect({ pos: Vec2(0, 0), size: Vec2(240, 150), fillColor: Color(0.1, 0.1, 0.15, 1) });

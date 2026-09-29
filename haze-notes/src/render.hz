@@ -12,7 +12,7 @@ const comptime pageGapMm = 10.0;
 const comptime zoomSettleFrames = 8;
 const comptime zoomEpsilon = 0.0001;
 
-fn pageOriginY(doc: TskDocumentFile, pageIndex: int): real {
+fn pageOriginY(doc: DocumentFile, pageIndex: int): real {
     return pageIndex as real * (doc.data.pageHeightMm + pageGapMm);
 }
 
@@ -50,7 +50,7 @@ ref struct ImageTextureCache {
     // image is only ever attempted once rather than every frame.
     failed: LinearMap<str, bool> = {};
 
-    fn getOrCreate(r: mut renderer.gfx.Renderer, shape: TskImageShape): renderer.gfx.Texture | none {
+    fn getOrCreate(r: mut renderer.gfx.Renderer, shape: ImageShape): renderer.gfx.Texture | none {
         let key = shape.base64ImageData;
 
         let existing = this.textures.get(key);
@@ -85,14 +85,14 @@ ref struct ImageTextureCache {
 // `level` is the tile pyramid level this content is being rendered at --
 // see TskLineShape.ensureTesselated for why tesselation is cached per
 // level rather than once per shape.
-fn drawShapeInto(r: mut renderer.gfx.Renderer, shape: TskShape, level: int, imageCache: mut ImageTextureCache) {
-    if shape is TskLineShape {
+fn drawShapeInto(r: mut renderer.gfx.Renderer, shape: Shape, level: int, imageCache: mut ImageTextureCache) {
+    if shape is LineShape {
         let tess = shape.ensureTesselated(level);
         if tess.indices.length > 0 {
             r.addTriangles(tess.vertices, tess.indices, shape.penColor, 0);
         }
     }
-    else if shape is TskImageShape {
+    else if shape is ImageShape {
         let bbox = shape.getBBox();
         let texture = imageCache.getOrCreate(r, shape);
         if texture {
@@ -111,7 +111,7 @@ fn drawShapeInto(r: mut renderer.gfx.Renderer, shape: TskShape, level: int, imag
             });
         }
     }
-    else if shape is TskTextblockShape {
+    else if shape is TextblockShape {
         let bbox = shape.getBBox();
         r.drawRect({
             pos: Vec2(bbox.left, bbox.top),
@@ -130,7 +130,7 @@ fn drawShapeInto(r: mut renderer.gfx.Renderer, shape: TskShape, level: int, imag
 // page whose bbox overlaps the tile's page-local rect. Always a full redraw
 // of the tile (not incremental per-shape), which is what makes
 // markShapeDirty()'s "just mark it invalid" enough.
-fn renderTileContent(tile: mut Tile, page: TskPage, pageWidthMm: real, pageHeightMm: real, frame: mut renderer.gfx.Frame, imageCache: mut ImageTextureCache) {
+fn renderTileContent(tile: mut Tile, page: Page, pageWidthMm: real, pageHeightMm: real, frame: mut renderer.gfx.Frame, imageCache: mut ImageTextureCache) {
     let r = renderer.gfx.Renderer(frame, tile.canvas);
 
     tile.canvas.setViewProj(mat4.ortho(
@@ -163,18 +163,12 @@ fn renderTileContent(tile: mut Tile, page: TskPage, pageWidthMm: real, pageHeigh
     };
 
     for shape in page.shapes {
-        if shapeBBox(shape).overlaps(tileBBox) {
+        if shape.getBBox().overlaps(tileBBox) {
             drawShapeInto(r, shape, tile.key.level, imageCache);
         }
     }
 
     r.commit(true);
-}
-
-ref struct Viewport {
-    offsetX: real = 0.0;
-    offsetY: real = 0.0;
-    zoomPxPerMm: real = 4.0;
 }
 
 ref struct PageTileState {
@@ -210,7 +204,7 @@ ref struct DocumentRenderer {
         };
     }
 
-    fn ensurePagesArraySized(doc: TskDocumentFile) {
+    fn ensurePagesArraySized(doc: DocumentFile) {
         while this.pages.length < doc.data.pages.length {
             this.pages.push(PageTileState {});
         }
@@ -267,15 +261,23 @@ ref struct DocumentRenderer {
         this.viewport.offsetY = pivotScreenY - worldY * newZoom;
     }
 
+    // Whether render() still has work that only more calls to it finish: a
+    // zoom that has not held still for zoomSettleFrames renders yet, so its
+    // retile at the new native resolution is still pending. A caller that
+    // only renders on change has to keep calling until this is false.
+    fn isSettling(): bool {
+        return this.zoomStableFrames < zoomSettleFrames;
+    }
+
     // Rerenders exactly the tiles a given shape's bbox overlaps -- not the
     // whole page -- across every currently-active tile of the shape's page.
     // Call after mutating a shape's geometry (points/position/size) and
     // clearing its cached bbox/tesselation, before the next render().
-    fn markShapeDirty(pageIndex: int, shape: TskShape) {
+    fn markShapeDirty(pageIndex: int, shape: Shape) {
         if pageIndex < 0 || pageIndex >= this.pages.length {
             return;
         }
-        let bbox = shapeBBox(shape);
+        let bbox = shape.getBBox();
         let page = this.pages[pageIndex];
         for tile in page.slots.values {
             let tileBBox = BBox {
@@ -298,7 +300,7 @@ ref struct DocumentRenderer {
     // page background + every active tile at the *live* on-screen size --
     // which is what makes tiles visibly stretch/blur mid-zoom instead of
     // updating.
-    fn render(r: mut renderer.gfx.Renderer, doc: TskDocumentFile) {
+    fn render(r: mut renderer.gfx.Renderer, doc: DocumentFile) {
         if this.viewport.zoomPxPerMm <= 0.0 {
             return;
         }
@@ -454,7 +456,7 @@ ref struct DocumentRenderer {
     // Draws the currently in-progress stroke straight onto the main panel
     // canvas every frame, bypassing tiles entirely -- so a live pen stroke
     // never waits on a tile (re)render to become visible.
-    fn renderLiveStroke(r: mut renderer.gfx.Renderer, doc: TskDocumentFile, pageIndex: int, shape: mut TskLineShape) {
+    fn renderLiveStroke(r: mut renderer.gfx.Renderer, doc: DocumentFile, pageIndex: int, shape: LineShape) {
         let zoom = this.viewport.zoomPxPerMm;
         // Same physical-pixel-density level a tile at this live zoom would
         // commit to (see render()'s targetLevel) -- this is also what lets

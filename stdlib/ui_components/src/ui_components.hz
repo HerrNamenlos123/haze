@@ -485,7 +485,9 @@ export struct TextProps {
 export struct CanvasProps {
     id: int;
     style?: ui_styling.DivStyle;
-    elementRef?: ElementRef<ui_elements.CanvasElement>;
+    // A CanvasRef, not an ElementRef: a canvas's handle also carries its
+    // drawing context (see CanvasWrapper).
+    elementRef?: CanvasRef;
     // Defaults to 4 (real hardware MSAA), applied to everything this canvas
     // draws. Set to 1 to skip it (e.g. many small canvases where the extra
     // memory/bandwidth isn't worth it); see renderer.gfx.CanvasOptions.msaaSamples.
@@ -507,8 +509,13 @@ export struct CanvasProps {
 // ui_runtime's renderCanvas glue) does, via
 // TypeErasedBox.get<CanvasHandle>()/set<CanvasHandle>(). Both sides must
 // agree on this exact type: TypeErasedBox has no runtime type tag.
+//
+// `context` is the canvas's one Renderer, for its whole life: what
+// CanvasWrapper.getContext() hands out, and what the every-frame drawFn is
+// handed too. ui_runtime commits it once per frame.
 export ref struct CanvasHandle {
     canvas: mut renderer.gfx.Canvas;
+    context: mut renderer.gfx.Renderer;
 }
 
 // The concrete type stored, type-erased, inside a canvas element's runtime
@@ -521,21 +528,65 @@ export ref struct CanvasHandle {
 // parameters, but has a codegen bug specifically for top-level exported
 // `type X = (...) => Y;` aliases that reference a qualified cross-module
 // type -- it leaves the module prefix unmangled, which then fails to
-// resolve in a consumer project. runCanvasDrawFn() below is the safe
+// resolve in a consumer project. drawCanvasIfNeeded() below is the safe
 // boundary other modules use instead of naming this type directly.
 export type CanvasDrawFn = (r: mut renderer.gfx.Renderer) => void;
 
-// Invokes the draw closure boxed by canvas()'s `drawFn` parameter against
-// `r`, if one was provided. Lets other modules (e.g. ui_runtime) trigger a
-// canvas element's per-frame redraw without ever naming CanvasDrawFn
-// themselves -- exported plain functions, unlike exported type aliases,
-// don't hit the bug described above, so this is the boundary that's safe
-// to cross.
-export fn runCanvasDrawFn(drawFnBox: TypeErasedBox | none, r: mut renderer.gfx.Renderer): void {
-    if drawFnBox {
-        let drawFn = drawFnBox.get<CanvasDrawFn>();
-        drawFn(r);
+// Runs a canvas's draw function into its context if, and only if, the canvas
+// needs drawing. The one place that decides when a canvas is redrawn; called
+// by ui_runtime at the canvas's own step of a frame -- after layout, so the
+// size is this frame's, and before the canvas is committed and composited.
+//
+// A canvas is drawn only when something may have changed its picture:
+//   - `contentLost`: it was just created or resized, so its texture is blank
+//   - its component's template ran again and handed canvas() a draw function,
+//     which may close over different values than last time (canvasImpl)
+//   - a reactive value the draw function read last time was written: it runs
+//     inside a computed, which tracks exactly those, the way a template does
+//   - CanvasWrapper.invalidate(), for state the reactive graph cannot see
+// Otherwise -- an idle canvas, the common case -- this costs one isDirty()
+// check. A draw function that reads ui.now() is therefore drawn every frame,
+// which is how a canvas animates.
+//
+// Returns whether it drew, i.e. whether the canvas has a new picture to be
+// committed from blank.
+export fn drawCanvasIfNeeded(element: ui_elements.CanvasElement, context: mut renderer.gfx.Renderer, contentLost: bool): bool {
+    let data = runtimeDataOf(element);
+    if !data.drawFn {
+        return false;
     }
+    let force = contentLost || data.redrawRequested;
+    data.redrawRequested = false;
+
+    let existing = data.drawEffect;
+    let version = data.redrawVersion;
+    if existing && version {
+        if force {
+            version := rx.get(version) + 1;
+        }
+        if !rx.isDirty(existing) {
+            return false;
+        }
+        rx.get(existing);
+        return true;
+    }
+
+    // First draw: build the effect, and run it once.
+    let newVersion = rx.reactive<int>(0);
+    let effect = rx.computed<int>(() => {
+        // Tracked, so bumping it makes the next read draw again.
+        let drawnVersion = rx.get(newVersion);
+        let drawFnBox = data.drawFn;
+        if drawFnBox {
+            let drawFn = drawFnBox.get<CanvasDrawFn>();
+            drawFn(context);
+        }
+        return drawnVersion;
+    });
+    data.redrawVersion = newVersion;
+    data.drawEffect = effect;
+    rx.get(effect);
+    return true;
 }
 
 // Render/input feedback and an element's GPU canvas handle/drawFn used to
@@ -604,6 +655,11 @@ export ref struct ComponentElementRuntimeData {
     inputFeedbackVersion: rx.Reactive<bool>;
     handle?: TypeErasedBox;
     drawFn?: TypeErasedBox;
+    // When a canvas's drawFn runs -- see drawCanvasIfNeeded. The effect and
+    // its version cell only exist on a canvas that has a drawFn.
+    drawEffect?: rx.Computed<int>;
+    redrawVersion?: rx.Reactive<int>;
+    redrawRequested: bool = false;
     msaaSamples: int = 4;
     postEffect?: rx.Reactive<str>;
 
@@ -4232,16 +4288,22 @@ export opaque ref struct UIContext {
         return element;
     }
 
-    // A standalone element with an auto-managed offscreen GPU canvas.
-    // `drawFn`, if given, is invoked once per frame -- not here during the
-    // build phase, but later from ui_runtime's renderCanvas callback, which
-    // runs right after layout when this frame's size is already known (so
-    // there's no one-frame lag, even on the very first frame). It's cleared
-    // before each such automatic redraw.
+    // A standalone element with an auto-managed offscreen GPU canvas, drawn
+    // through its own context (see CanvasWrapper.getContext) in two ways:
     //
-    // For content that should persist across frames instead of being fully
-    // redrawn every frame, draw imperatively whenever via drawToCanvas()
-    // (e.g. from an event handler) instead of passing drawFn here.
+    //   - `drawFn`, if given, draws the whole canvas from blank, but only when
+    //     something may have changed its picture: it was created or resized,
+    //     this template ran again, a reactive value the drawFn read changed,
+    //     or CanvasWrapper.invalidate() was called. Never here during the
+    //     build phase, but later from ui_runtime's renderCanvas callback,
+    //     right after layout when this frame's size is already known (so
+    //     there's no one-frame lag, even on the very first frame). See
+    //     drawCanvasIfNeeded.
+    //   - anything can also be drawn into the context directly, from its ref,
+    //     whenever; it lands on top at the next frame and stays.
+    //
+    // A canvas that nothing draws into is neither drawn nor committed; its
+    // last picture is simply composited again.
     //
     // Presets are a trailing parameter pack (see div()); since the pack must
     // be last, the optional drawFn is an overload instead of `drawFn?`.
@@ -4273,6 +4335,10 @@ export opaque ref struct UIContext {
             } else {
                 data.drawFn.set<CanvasDrawFn>(drawFn);
             }
+            // This runs because the component's template ran again, and the
+            // closure it handed over may capture different values. See
+            // drawCanvasIfNeeded.
+            data.redrawRequested = true;
         } else {
             data.drawFn = none;
         }
@@ -4287,38 +4353,20 @@ export opaque ref struct UIContext {
 
         if props.elementRef is not none {
             if props.elementRef is null || props.elementRef.raw.id != element.id {
-                props.elementRef := ElementWrapper<ui_elements.CanvasElement> { raw: element, _element: element };
+                props.elementRef := CanvasWrapper { raw: element, _element: element };
             }
         }
 
         return element;
     }
 
-    // Imperative drawing entry point: draws into the canvas element's
-    // already-existing GPU canvas right now, independent of the normal
-    // frame flow (e.g. usable from an event handler). No-ops if this
-    // element hasn't been laid out yet (i.e. never rendered a frame), since
-    // there's no canvas to draw into yet. `clear` defaults to false so
-    // repeated calls accumulate instead of erasing prior content.
-    fn drawToCanvas(element: mut ui_elements.CanvasElement, drawFn: CanvasDrawFn, clear: bool = false) {
-        let data = runtimeDataOf(element);
-        if !data.handle {
-            return;
-        }
-        let handle = data.handle.get<CanvasHandle>();
-        // Outside the main render loop there's no frame already in
-        // progress to join, so this is its own one-Canvas Frame -- still
-        // exactly one queue.submit(), just scoped to this single call
-        // instead of to a whole application frame.
-        let frame = renderer.gfx.Frame(handle.canvas.gfx);
-        let r = renderer.gfx.Renderer(frame, handle.canvas);
-        drawFn(r);
-        r.commit(clear);
-        frame.present();
-    }
-
     fn elementRef<T>(): ElementRef<T> {
         return rx.shallowReactive<ElementWrapper<T> | null>(null);
+    }
+
+    // A canvas's ref -- see CanvasRef.
+    fn canvasRef(): CanvasRef {
+        return rx.shallowReactive<CanvasWrapper | null>(null);
     }
 
     // See ComponentRef. T is the child's exposed-API struct, not the child.
@@ -4405,6 +4453,88 @@ export ref struct ElementWrapper<T> {
 }
 
 export type ElementRef<T> = rx.ShallowReactive<ElementWrapper<T> | null>;
+
+// What a canvas's ref holds: ElementWrapper's queries, plus the canvas's
+// drawing context. Its own type rather than ElementWrapper<CanvasElement>,
+// because getContext() exists for a canvas only, and a generic struct cannot
+// have a method for just one of its instantiations -- so a div's ref has no
+// getContext() at all, rather than one that is always none.
+export ref struct CanvasWrapper {
+    raw: ui_elements.CanvasElement;
+    _element: ui_elements.Element;
+
+    // The canvas's drawing context, like HTML's canvas.getContext(): its one
+    // Renderer for its whole life. Draw into it whenever -- an event handler,
+    // a watcher, onMounted -- and it lands on the canvas at the next frame,
+    // on top of what is already there. What is drawn stays until the canvas
+    // is resized (which clears it, as in HTML) or its drawFn (canvas()'s
+    // drawFn, `@render=` in a template) draws it again from blank; that drawFn
+    // is handed this same context.
+    //
+    // none until the canvas has been laid out once: its GPU surface is
+    // created in its first rendered frame, when its size is first known.
+    fn getContext(): mut renderer.gfx.Renderer | none {
+        let data = runtimeDataOf(this._element);
+        if !data.handle {
+            return none;
+        }
+        return data.handle.get<CanvasHandle>().context;
+    }
+
+    // Has the canvas's drawFn draw it again, at the canvas's step of the next
+    // frame -- after layout, so the canvas has its final size, and once no
+    // matter how many times this was called in between. For inputs the
+    // reactive graph cannot see: plain fields, a renderer's own caches, a
+    // renderer that needs a few more frames to settle. Reactive inputs need
+    // no call; reading them in the drawFn is enough (see drawCanvasIfNeeded).
+    fn invalidate(): void {
+        runtimeDataOf(this._element).redrawRequested = true;
+    }
+
+    fn hover(): bool {
+        return ui_hover(this._element);
+    }
+
+    fn hit(): bool {
+        return ui_hit(this._element);
+    }
+
+    fn active(): bool {
+        return ui_active(this._element);
+    }
+
+    fn focused(): bool {
+        return ui_focused(this._element);
+    }
+
+    fn focusVisible(): bool {
+        return ui_focusVisible(this._element);
+    }
+
+    fn focus(): void {
+        ui_focus(this._element);
+    }
+
+    fn blur(): void {
+        ui_blur(this._element);
+    }
+
+    fn contains(other: ui_elements.Element | none): bool {
+        return ui_contains(this._element, other);
+    }
+
+    fn position(): Vec2 | none {
+        return ui_position(this._element);
+    }
+
+    fn size(): Vec2 | none {
+        return ui_size(this._element);
+    }
+}
+
+// A canvas's ref: `ui.canvasRef()`, handed to canvas()'s `elementRef`. The
+// ElementRef of a canvas, with CanvasWrapper in place of ElementWrapper.
+export type CanvasRef = rx.ShallowReactive<CanvasWrapper | null>;
 
 // A handle a CHILD COMPONENT publishes for its parent -- the component
 // counterpart of ElementRef above, and deliberately not the same thing.

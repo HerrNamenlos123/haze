@@ -275,6 +275,8 @@ namespace errorcodes {
         UnionMethodSignatureMismatch = 7211,
         UnionMemberNotFieldOrMethod = 7212,
         UnionMemberAccessOutsideFunction = 7213,
+        NamespaceUsedAsValueType = 7214,
+        FieldHasNoDefaultValue = 7215,
         ThisDistroPackageManagerNotSupportedYetPlease = 8001,
         DeadCodeDetectedAndStripped = 9001,
         EmbeddedFileSizeMBExceeds50MB = 9002,

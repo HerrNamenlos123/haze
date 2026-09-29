@@ -1021,13 +1021,35 @@ ref struct Parser {
                     let after = this.toks[i + 1].kind;
                     if after == TK.DoubleArrow || after == TK.SingleArrow { return true; }
                     // `(a): T => ...` and `(a) :: final => ...`
+                    //
+                    // The return type's generic arguments are skipped whole:
+                    // `(): LinearMap<str, bool> => ...` has a comma, and
+                    // `Foo<typeof(x)>` a `)`, that belong to the type, not to
+                    // an enclosing call. Outside them the stops are unchanged
+                    // -- a `,` or `)` there still means `(a)` was an
+                    // expression (a call argument, a ternary branch).
                     if after == TK.Colon || after == TK.DoubleColon {
+                        let angle = 0;
+                        let paren = 0;
                         let j = i + 2;
                         while j < limit {
                             let kk = this.toks[j].kind;
-                            if kk == TK.DoubleArrow || kk == TK.SingleArrow { return true; }
-                            if kk == TK.Semi || kk == TK.LCurly || kk == TK.RParen
-                               || kk == TK.Comma || kk == TK.EOF { return false; }
+                            if angle > 0 {
+                                if kk == TK.LAngle { angle++; }
+                                else if kk == TK.RAngle { angle--; }
+                                else if kk == TK.LParen { paren++; }
+                                else if kk == TK.RParen {
+                                    if paren == 0 { return false; }
+                                    paren--;
+                                }
+                                else if kk == TK.Semi || kk == TK.LCurly || kk == TK.RCurly
+                                        || kk == TK.EOF { return false; }
+                            } else {
+                                if kk == TK.DoubleArrow || kk == TK.SingleArrow { return true; }
+                                if kk == TK.LAngle { angle++; }
+                                else if kk == TK.Semi || kk == TK.LCurly || kk == TK.RParen
+                                        || kk == TK.Comma || kk == TK.EOF { return false; }
+                            }
                             j++;
                         }
                     }

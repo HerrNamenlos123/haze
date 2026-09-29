@@ -32,6 +32,24 @@ function makeUnionMappingName(from: Lowered.TypeUseId, to: Lowered.TypeUseId) {
   return `_H_Union_Mapping_${from}_to_${to}_`;
 }
 
+/**
+ * Which member of a bare-pointer union (`ref Struct | none`) is the pointer:
+ * the one that is not nullish. The other is represented by NULL.
+ */
+function rawPointerMemberIndex(
+  union: Lowered.UntaggedUnionDatatypeDef | Lowered.TaggedUnionDatatypeDef
+): number {
+  assert(
+    union.variant === Lowered.ENode.UntaggedUnionDatatype &&
+      union.optimizeAsRawPointer !== null
+  );
+  const index = union.members.findIndex(
+    (m) => m === union.optimizeAsRawPointer
+  );
+  assert(index !== -1);
+  return index;
+}
+
 function escapeStringForC(str: string): [string, number] {
   let escaped = "";
   let byteLength = 0;
@@ -948,18 +966,52 @@ class CodeGenerator {
           `static inline ${this.mangleTypeUse(mapping.to)} ${makeUnionMappingName(mapping.from, mapping.to)}(${this.mangleTypeUse(mapping.from)} from) {`
         )
         .pushIndent();
-      this.out.function_definitions
-        .writeLine("switch (from.tag) {")
-        .pushIndent();
-      for (const [from, to] of mapping.mapping) {
+      // Either side may be a bare-pointer union (Lowered optimizeAsRawPointer):
+      // a pointer, NULL for its nullish member, with no tag to switch on and
+      // no tagged struct to build.
+      const fromUnion = this.resolveUnion(mapping.from);
+      const toUnion = this.resolveUnion(mapping.to);
+      const toType = this.mangleTypeUse(mapping.to);
+      // `value` is the member's payload, or null for a bare pointer's NULL,
+      // which has none.
+      const build = (to: number, value: string | null) => {
+        if (toUnion.optimizeAsRawPointer) {
+          return to === rawPointerMemberIndex(toUnion) && value !== null
+            ? `(${toType})(${value})`
+            : `(${toType})NULL`;
+        }
+        return value === null
+          ? `(${toType}) { .tag = ${to} }`
+          : `(${toType}) { .tag = ${to}, .as_tag_${to} = ${value} }`;
+      };
+      const returnOrUnreachable = (to: number | undefined, value: string | null) =>
+        to === undefined
+          ? "__builtin_unreachable();"
+          : `return ${build(to, value)};`;
+
+      if (fromUnion.optimizeAsRawPointer) {
+        const pointerIndex = rawPointerMemberIndex(fromUnion);
+        const nullIndex = pointerIndex === 0 ? 1 : 0;
         this.out.function_definitions.writeLine(
-          `case ${from}: return (${this.mangleTypeUse(mapping.to)}) { .tag = ${to}, .as_tag_${to} = from.as_tag_${from} };`
+          `if (from == NULL) { ${returnOrUnreachable(mapping.mapping.get(nullIndex), null)} }`
         );
+        this.out.function_definitions.writeLine(
+          returnOrUnreachable(mapping.mapping.get(pointerIndex), "from")
+        );
+      } else {
+        this.out.function_definitions
+          .writeLine("switch (from.tag) {")
+          .pushIndent();
+        for (const [from, to] of mapping.mapping) {
+          this.out.function_definitions.writeLine(
+            `case ${from}: ${returnOrUnreachable(to, `from.as_tag_${from}`)}`
+          );
+        }
+        this.out.function_definitions.writeLine(
+          "default: __builtin_unreachable();"
+        );
+        this.out.function_definitions.popIndent().writeLine("}");
       }
-      this.out.function_definitions.writeLine(
-        "default: __builtin_unreachable();"
-      );
-      this.out.function_definitions.popIndent().writeLine("}");
       this.out.function_definitions.popIndent().writeLine("}");
       // this.out.type_declarations
       //   .writeLine(`static const uint8_t ${makeUnionMappingName(mapping.from, mapping.to)}[] = {`)
@@ -1130,6 +1182,20 @@ class CodeGenerator {
       return "_H" + name.mangledName;
     }
     return name.mangledName;
+  }
+
+  /** The union a (possibly aliased) type use names. */
+  resolveUnion(
+    typeUseId: Lowered.TypeUseId
+  ): Lowered.UntaggedUnionDatatypeDef | Lowered.TaggedUnionDatatypeDef {
+    const union = this.lr.typeDefNodes.get(
+      this.lr.typeUseNodes.get(Lowered.resolveAlias(this.lr, typeUseId)).type
+    );
+    assert(
+      union.variant === Lowered.ENode.UntaggedUnionDatatype ||
+        union.variant === Lowered.ENode.TaggedUnionDatatype
+    );
+    return union;
   }
 
   unionVariantPrettyName(
@@ -2468,9 +2534,46 @@ class CodeGenerator {
             union.variant === Lowered.ENode.TaggedUnionDatatype
         );
 
-        if (union.optimizeAsRawPointer) {
-          // TODO: This is not finally implemented, it is only a quick fix
-          outWriter.write(this.emitExpr(expr.expr).out.get());
+        const source = this.resolveUnion(expr.tagMapping.from);
+        const mapped = [...expr.tagMapping.mapping];
+        const isIdentity =
+          source.optimizeAsRawPointer !== null &&
+          union.optimizeAsRawPointer !== null &&
+          mapped.length === source.members.length &&
+          mapped.length === union.members.length &&
+          mapped.every(([from, to]) => from === to);
+
+        if (isIdentity) {
+          // The same two members, so the same pointer means the same value.
+          outWriter.write(exprWriter.out.get());
+        } else if (source.optimizeAsRawPointer) {
+          // A bare-pointer source has no tag, so HZ_ASSERT_UNION_SET cannot
+          // check it. A refinement can only have dropped one of its two
+          // members, and which one is a NULL check.
+          const inner = exprWriter.out.get();
+          const mappingName = makeUnionMappingName(
+            expr.tagMapping.from,
+            expr.tagMapping.to
+          );
+          const pointerIndex = rawPointerMemberIndex(source);
+          const keepsPointer = expr.tagMapping.mapping.has(pointerIndex);
+          const keepsNull = expr.tagMapping.mapping.has(
+            pointerIndex === 0 ? 1 : 0
+          );
+          if (expr.needsRefinementAssertion && !(keepsPointer && keepsNull)) {
+            const kept = keepsPointer ? pointerIndex : 1 - pointerIndex;
+            const expected = escapeStringForC(
+              this.unionVariantPrettyName(source, kept)
+            )[0];
+            const found = escapeStringForC(
+              this.unionVariantPrettyName(source, 1 - kept)
+            )[0];
+            outWriter.write(
+              `(__extension__({ __typeof__(${inner}) __hz_tmp = (${inner}); if (!(__hz_tmp ${keepsPointer ? "!=" : "=="} NULL)) hzstd_panic_fmt("Haze runtime assertion failed: union refinement invalidated - expected active variant '%s' from previous refinement, but found active variant '%s' at access site", "${expected}", "${found}"); ${mappingName}(__hz_tmp); }))`
+            );
+          } else {
+            outWriter.write(`(${mappingName}(${inner}))`);
+          }
         } else {
           const mappingName = makeUnionMappingName(
             expr.tagMapping.from,

@@ -1,0 +1,95 @@
+import filedialog
+from ui_widgets import ButtonComponent
+
+fn chooseVault(): str | none {
+    let result = filedialog.pickFolder();
+    if result is filedialog.DialogSuccess {
+        return result.path;
+    }
+    return none;
+}
+
+struct GlobalCache {
+    currentVaultDir: str | none = none;
+    knownVaultDirs: []str | none = none;
+}
+
+// A key missing from the file (one written before the field existed) takes
+// the field's default, the same as a struct literal that leaves it out.
+struct VaultCache {
+    lastOpenedFile: str | none = none;
+    expandedFolders: []str = [];
+    sidepanelWidth: real = 200.0;
+    // none until the vault is indexed, when it is opened.
+    vault: VaultFS | none = none;
+}
+
+@props
+[[hzui.untracked]]
+gfx: mut renderer.gfx.Context;
+
+@setup
+let cache = json.CacheFile<GlobalCache>("~/.cache/haze-notes/cache.json");
+
+let addToVaultDirs = (dir: str) => {
+    if !cache.data.knownVaultDirs {
+        cache.data.knownVaultDirs := [] as []str;
+    }
+    let dirs = rx.get(cache.data.knownVaultDirs);
+    assert(dirs);
+    for d in dirs {
+        if d == dir {
+            return; // Already known
+        }
+    }
+    // Not known, add
+    dirs.push(dir);
+    cache.data.knownVaultDirs := dirs;
+};
+
+let selectVault = () => {
+    if let vault = chooseVault() {
+        cache.data.currentVaultDir := vault;
+        addToVaultDirs(vault);
+    }
+};
+
+let vaultCache = computed(() => {
+    if !cache.data.currentVaultDir { return none; }
+    let vaultCachePath = f"{cache.data.currentVaultDir}/.hznotes/vault.json";
+    let vaultCache = json.CacheFile<VaultCache>(vaultCachePath);
+    onFrame(() => {
+        // Every frame, call this and flush, until we finally have an async event loop
+        vaultCache.flush();
+    })
+    return vaultCache;
+});
+
+ui.watch(() => cache.data.currentVaultDir, (old, new) => {
+    if cache.data.currentVaultDir {
+        fmt.println("Indexing Vault...");
+        let c = rx.get(vaultCache);
+        assert(c);
+        c.data.vault := indexVault(cache.data.currentVaultDir);
+        fmt.println("Indexing Vault... Done");
+    }
+}, { immediate: true });
+
+onFrame(() => {
+    // Every frame, call this and flush, until we finally have an async event loop
+    cache.flush();
+});
+
+@template
+
+div [w-grow h-grow bg-["#333"]] {
+    div if=[!vaultCache] [w-grow h-grow items-center justify-center] {
+        div [col items-center gap-4] {
+            text [] ["No Vault is selected"]
+            Button [] label="Select Vault" @click=selectVault {}
+        }
+    }
+    div else [w-grow h-grow] {
+        Editor if=vaultCache [] cache=vaultCache gfx=[props.gfx] {}
+    }
+}

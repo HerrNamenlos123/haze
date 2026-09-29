@@ -277,6 +277,8 @@ export enum HazeErrorCode {
   UnionMethodSignatureMismatch = 7211, // Accessing a method across a union: its signature differs between the variants
   UnionMemberNotFieldOrMethod = 7212, // Accessing a member across a union: only fields and methods can be accessed
   UnionMemberAccessOutsideFunction = 7213, // Accessing a member across a union is only possible inside a function body
+  NamespaceUsedAsValueType = 7214, // '' cannot have type '': '' is a namespace, which has no values
+  FieldHasNoDefaultValue = 7215, // Field '' of '' has no default value
   ThisDistroPackageManagerNotSupportedYetPlease = 8001, // This Distro/Package Manager is not supported yet, please report
   DeadCodeDetectedAndStripped = 9001, // Dead code detected and stripped
   EmbeddedFileSizeMBExceeds50MB = 9002, // Embedded file size ( MB) exceeds 50 MB:

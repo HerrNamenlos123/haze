@@ -5,19 +5,31 @@ import app
 import ui_runtime
 import ui_components
 
-ref struct Cache {
-    vaultDir: str | null = null;
-}
+// Screen pixels of pan per unit of wheel delta -- a tuning knob, not
+// load-bearing; adjust to taste.
+const comptime panSpeed = 50.0;
 
-const comptime profile = false;
+let onFrameHandlers: [](() => none) | none = none;
+fn onFrame(handler: () => none) {
+    if !onFrameHandlers {
+        onFrameHandlers = [];
+    }
+    assert(onFrameHandlers);
+    onFrameHandlers.push(handler);
+}
 
 // Translates app's platform-level pointer edge queue into ui_components'
 // own PointerEdge type -- kept as a small glue function here (rather than
 // having either module import the other's types) so app stays ignorant of
 // the UI component tree and ui_components stays ignorant of SDL/app, same
 // as mousePos/wheelDelta/modifiers just below.
-fn toUIPointerEdges(a: app.App): []ui_components.PointerEdge {
-    let result: []ui_components.PointerEdge = [];
+// `out` is the caller's reusable buffer rather than a fresh array: this runs
+// once per frame, and ui_components only reads the result inside the same
+// process() call (see its `edges` local), so nothing outlives the frame and
+// clear() lets the buffer keep the capacity it already grew to.
+fn toUIPointerEdges(a: app.App, out: mut []ui_components.PointerEdge): []ui_components.PointerEdge {
+    let result = out;
+    result.clear();
     for e in a.pointerEdges() {
         let button = ui_components.PointerButton.None;
         if e.button == 0 { button = ui_components.PointerButton.Left; }
@@ -47,8 +59,10 @@ fn sdlKeyToUIKey<T>(k: T): ui_components.Key :: final {
 
 // Translates app's platform-level key edge queue into ui_components' own
 // KeyEdge type.
-fn toUIKeyEdges(a: app.App): []ui_components.KeyEdge {
-    let result: []ui_components.KeyEdge = [];
+// Reuses the caller's buffer, same as toUIPointerEdges above.
+fn toUIKeyEdges(a: app.App, out: mut []ui_components.KeyEdge): []ui_components.KeyEdge {
+    let result = out;
+    result.clear();
     for e in a.keyEdges() {
         let kind = e.kind == app.KeyEdgeKind.Pressed ? ui_components.KeyEdgeKind.Pressed : ui_components.KeyEdgeKind.Released;
         result.push({ key: sdlKeyToUIKey(e.key), kind: kind, repeat: e.repeat, modifiers: e.modifiers });
@@ -59,7 +73,8 @@ fn toUIKeyEdges(a: app.App): []ui_components.KeyEdge {
 fn main(): int {
     attempt {
         let a = app.App({
-            title: "WebGPU Example",
+            title: "Haze Notes",
+            nativeTitlebar: true,
         })?!;
 
         let font = a.gfx.fontRenderer.fs.addFont(
@@ -67,28 +82,40 @@ fn main(): int {
             "test/Roboto-Regular.ttf"
         );
 
+        // Reused every frame by the two edge-queue callbacks below, so the
+        // per-frame translation costs no allocation after the first frame.
+        let pointerEdgeScratch: mut []ui_components.PointerEdge = [];
+        let keyEdgeScratch: mut []ui_components.KeyEdge = [];
+
         let runtime = ui_runtime.Runtime({
             gfx: a.gfx,
             windowState: a.windowState,
             fonts: [
-                { name: "default", id: a.gfx.fontRenderer.defaultFont },
                 { name: "roboto", id: font },
+                { name: "default", id: font },
             ],
             mousePos: () => a.mousePos(),
+            // Lets the UI tell "pointer at the window's top-left" apart
+            // from "the pointer has never been over this window", which
+            // are the same (0,0) otherwise -- see UIContext.mousePosKnown.
+            mousePosKnown: () => a.mousePosKnown(),
             pointerButtons: ui_components.PointerHeldCallbacks {
                 leftHeld: () => a.pointerLeftHeld(),
                 middleHeld: () => a.pointerMiddleHeld(),
                 rightHeld: () => a.pointerRightHeld(),
-                edgesThisFrame: () => toUIPointerEdges(a),
+                edgesThisFrame: () => toUIPointerEdges(a, pointerEdgeScratch),
             },
             inputExtras: ui_components.InputExtrasCallbacks {
                 wheelDelta: () => a.wheelDelta(),
                 modifiers: () => a.wheelModifiers(),
             },
             keyboard: ui_components.KeyboardCallbacks {
-                keyEdgesThisFrame: () => toUIKeyEdges(a),
+                keyEdgesThisFrame: () => toUIKeyEdges(a, keyEdgeScratch),
                 textInputThisFrame: () => a.textInput(),
             },
+            // The index is a ui_styling.Cursor; app maps it to the platform
+            // cursor. Called every frame, and cheap when unchanged.
+            setCursor: (index: int): void => { app.setCursor(index); },
             // The platform clipboard, for widgets that cut/copy/paste (see
             // ui_components.ClipboardCallbacks). Omit it and ui.hasClipboard()
             // reports false, which widgets read as "use your own register".
@@ -96,23 +123,32 @@ fn main(): int {
                 getText: (): str => { return app.getClipboardText(); },
                 setText: (text: str): bool => { return app.setClipboardText(text); },
             },
-            ui: (ui: ui_components.UIContext) => { UI(ui, a.gfx); },
+            // The OS window, behind `ui.window` -- what a custom titlebar
+            // calls to close, minimize or maximize the window it is drawing,
+            // plus the per-frame publication of where that titlebar IS (see
+            // ui_components.WindowRegion). Same layering as clipboard and
+            // setCursor above: app knows about SDL and the UI does not, so
+            // this is the seam the two meet at.
+            window: ui_components.WindowCallbacks {
+                requestClose: (): void => { a.requestClose(); },
+                minimize: (): void => { a.minimize(); },
+                maximize: (): void => { a.maximize(); },
+                restore: (): void => { a.restore(); },
+                isMaximized: () => a.isMaximized(),
+                hasNativeTitlebar: () => a.hasNativeTitlebar(),
+                // Unrolled into app's begin/push/commit rather than handed
+                // over as an array, so nothing has to cross the C boundary but
+                // scalars -- see app.App.pushWindowRegion.
+                setRegions: (regions: []ui_components.WindowRegion): void => {
+                    a.beginWindowRegions();
+                    for r in regions {
+                        a.pushWindowRegion(r.pos, r.size, r.draggable);
+                    }
+                    a.commitWindowRegions();
+                },
+            },
+            ui: (ui: ui_components.UIContext) => { UIComponent(ui, { id: 0, gfx: a.gfx }); },
         });
-
-        let cache = json.CacheFile<Cache>("tsk.cache.json");
-
-        if !cache.data.vaultDir {
-            let vault = chooseVault();
-            if vault {
-                cache.data.vaultDir := vault;
-            }
-        }
-
-        if (cache.data.vaultDir) {
-            indexVault(cache.data.vaultDir);
-        }
-
-        let profiler = profile ? Profiler() : null;
 
         while let frame = a.nextFrame() {
             if a.resized {
@@ -121,29 +157,18 @@ fn main(): int {
             runtime.render(frame, a.canvas);
             frame.present();
 
-            cache.flush();
-        }
-        
-        if profiler {
-            profiler.stopAndSave();
+            if onFrameHandlers {
+                for handler in onFrameHandlers {
+                    handler();
+                }
+            }
         }
 
         a.destroy();
         return 0;
     }
     else e {
-        if e is str {
-            fmt.println("Application failed: ", e);
-        }
-        else if e is fs.Error {
-            fmt.println("Application failed: ", e);
-        }
-        else if e is none {
-            fmt.println("Application failed: ", e);
-        }
-        else {
-            fmt.println("Application failed: ", e);
-        }
+        fmt.println("Application failed: ", e);
         return 1;
     };
 }

@@ -3330,9 +3330,18 @@ export namespace Semantic {
             wasMangled: true,
           };
         }
+        // A numeric literal type. Its value is what makes it this type --
+        // `1 | 2` and `1 | 3` are different, and a generic instantiated over
+        // each must not become one C function defined twice -- and so is its
+        // primitive: `1` as a u8 is not `1` as an int.
         const name = primitiveToString(literalType);
+        const value = literal.value
+          .toString()
+          .replace(/-/g, "n")
+          .replace(/\./g, "_")
+          .replace(/\+/g, "p");
         return {
-          name: name.length + name,
+          name: `L${name.length}${name}${value}E`,
           wasMangled: true,
         };
       }

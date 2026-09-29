@@ -5,7 +5,8 @@ import {
   EStorageClass,
 } from "../shared/AST";
 import { EVariableContext } from "../shared/common";
-import { assert, type SourceLoc } from "../shared/Errors";
+import { HazeErrorCode } from "../shared/ErrorCodes";
+import { assert, CompilerError, type SourceLoc } from "../shared/Errors";
 import { isTypeConcrete } from "./Elaborate";
 import { Semantic } from "./SemanticTypes";
 
@@ -33,6 +34,107 @@ function createLengthFieldSymbol(
   });
 
   return lengthFieldId;
+}
+
+/**
+ * The namespace inside a type that is meant to hold a value, or null.
+ *
+ * A namespace is a type only in type-land: a generic argument, an alias
+ * target, the receiver of `T.f()`. It has no values, so a value's type cannot
+ * be one, nor contain one in a place the value would store it: an array or
+ * slice element, a union member, a reactive's wrapped value. Struct fields and
+ * function parameters are not descended into. Each is checked where it is
+ * declared (elaborateStructMember, makeRawFunctionDatatypeAvailable), which is
+ * also why a struct's generic arguments are free to be namespaces.
+ */
+function findNamespaceInValueType(
+  sr: Semantic.Context,
+  typeUseId: Semantic.TypeUseId,
+  seen: Set<Semantic.TypeUseId> = new Set()
+): Semantic.TypeUseId | null {
+  // An alias may reach itself through an element (`type Tree = []Tree`).
+  if (seen.has(typeUseId)) {
+    return null;
+  }
+  seen.add(typeUseId);
+
+  const def = sr.typeDefNodes.get(sr.typeUseNodes.get(typeUseId).type);
+  switch (def.variant) {
+    case Semantic.ENode.NamespaceDatatype:
+      return typeUseId;
+
+    case Semantic.ENode.TypeAliasDatatype:
+      return findNamespaceInValueType(sr, def.targetType, seen);
+
+    case Semantic.ENode.FixedArrayDatatype:
+    case Semantic.ENode.DynamicArrayDatatype:
+    case Semantic.ENode.SliceDatatype:
+      return findNamespaceInValueType(sr, def.datatype, seen);
+
+    case Semantic.ENode.UntaggedUnionDatatype:
+      for (const member of def.members) {
+        const found = findNamespaceInValueType(sr, member, seen);
+        if (found) {
+          return found;
+        }
+      }
+      return null;
+
+    case Semantic.ENode.TaggedUnionDatatype:
+      for (const member of def.members) {
+        const found = findNamespaceInValueType(sr, member.type, seen);
+        if (found) {
+          return found;
+        }
+      }
+      return null;
+
+    case Semantic.ENode.ReactiveDatatype:
+    case Semantic.ENode.ShallowReactiveDatatype:
+    case Semantic.ENode.ComputedDatatype:
+      return findNamespaceInValueType(sr, def.wrappedType, seen);
+
+    case Semantic.ENode.DeepDatatype:
+      return findNamespaceInValueType(sr, def.originalType, seen);
+
+    case Semantic.ENode.PrimitiveDatatype:
+    case Semantic.ENode.StructDatatype:
+    case Semantic.ENode.EnumDatatype:
+    case Semantic.ENode.FunctionDatatype:
+    case Semantic.ENode.DeferredFunctionDatatype:
+    case Semantic.ENode.CallableDatatype:
+    case Semantic.ENode.GenericParameterDatatype:
+    case Semantic.ENode.ParameterPackDatatype:
+    case Semantic.ENode.LiteralDatatype:
+    case Semantic.ENode.UnionTagRefDatatype:
+      return null;
+
+    default:
+      def satisfies never;
+      return null;
+  }
+}
+
+/** Throws if `typeUseId` is, or stores, a namespace. `holder` names what would hold the value. */
+export function rejectNamespaceAsValueType(
+  sr: Semantic.Context,
+  typeUseId: Semantic.TypeUseId,
+  holder: string,
+  sourceloc: SourceLoc
+): void {
+  const namespace = findNamespaceInValueType(sr, typeUseId);
+  if (namespace === null) {
+    return;
+  }
+  const typeName = Semantic.serializeTypeUse(sr, typeUseId);
+  const namespaceName = Semantic.serializeTypeUse(sr, namespace);
+  const subject = namespaceName === typeName ? "it" : `'${namespaceName}'`;
+  throw new CompilerError(
+    `${holder} cannot have type '${typeName}': ${subject} is a namespace, ` +
+      `which has no values. Use a type declared inside it instead.`,
+    sourceloc,
+    HazeErrorCode.NamespaceUsedAsValueType
+  );
 }
 
 export function makeDeferredFunctionDatatypeAvailable(
@@ -76,7 +178,10 @@ export function makeDeferredFunctionDatatypeAvailable(
     return id;
   }
 
-  // Nothing found
+  // Nothing found. A cached type was checked when it was created.
+  args.parameters.forEach((p, i) =>
+    rejectNamespaceAsValueType(sr, p.type, `Parameter ${i + 1}`, args.sourceloc)
+  );
   const [_, ftypeId] = sr.b.addType(sr, {
     variant: Semantic.ENode.DeferredFunctionDatatype,
     parameters: args.parameters,
@@ -202,7 +307,16 @@ export function makeRawFunctionDatatypeAvailable(
     return id;
   }
 
-  // Nothing found
+  // Nothing found. A cached type was checked when it was created.
+  args.parameters.forEach((p, i) =>
+    rejectNamespaceAsValueType(sr, p.type, `Parameter ${i + 1}`, args.sourceloc)
+  );
+  rejectNamespaceAsValueType(
+    sr,
+    args.returnType,
+    "The return value",
+    args.sourceloc
+  );
   const [_, ftypeId] = sr.b.addType(sr, {
     variant: Semantic.ENode.FunctionDatatype,
     parameters: args.parameters,

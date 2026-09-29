@@ -1,0 +1,172 @@
+// ============================================================================
+// REGRESSION TEST — this is a real, load-bearing test, not a placeholder.
+//
+// Bug: a check on a computed never narrowed it, where the same check on a
+// reactive does:
+//
+//   let vaultCache = computed((): CacheFile | none => ...);
+//   if vaultCache {
+//       Editor(ui, { cache: vaultCache });
+//       // H4001: No suitable conversion from rx.Computed<(CacheFile | none)>
+//       //        to ref CacheFile is known
+//   }
+//
+// (in hzui: `Editor if=vaultCache [] cache=vaultCache {}`). Member access
+// through the computed was rejected the same way (H7207, 'none' is not a
+// struct).
+//
+// Narrowing only knew a reactive read: the condition's constraint was keyed
+// on the reactive symbol it reads, and a later read of the same symbol looked
+// it up. A computed read matched neither, so the check recorded nothing and
+// the use found nothing.
+//
+// Fix: a computed read is a read of the cell its symbol names, exactly like a
+// reactive read, for recording a constraint and for applying one.
+// ============================================================================
+
+namespace cases_computed_narrowing {
+
+    fn prelude(): str {
+        return """
+ref struct Box { x: int = 0; }
+
+fn take(b: ref Box): int { return b.x; }
+""";
+    }
+
+    export fn register(s: mut testsuite.Suite) {
+
+        // The shape that surfaced it: a computed that is none until something
+        // is loaded, checked and then handed on as the loaded value.
+        s.run(
+            "computed narrowing: a truthiness check narrows a computed for a call",
+            prelude() + """
+fn main(): int {
+    let source = rx.reactive<int>(0);
+    let c = rx.computed((): Box | none => {
+        if source == 0 { return none; }
+        return Box { x: source };
+    });
+    if c {
+        fmt.println(f"unexpected {take(c)}");
+    } else {
+        fmt.println("none");
+    }
+    source := 7;
+    if c {
+        fmt.println(f"take {take(c)}");
+    }
+    return 0;
+}
+""",
+            """
+none
+take 7
+""");
+
+        s.run(
+            "computed narrowing: member access through a narrowed computed",
+            prelude() + """
+fn main(): int {
+    let source = rx.reactive<int>(3);
+    let c = rx.computed((): Box | none => {
+        if source == 0 { return none; }
+        return Box { x: source };
+    });
+    if c {
+        fmt.println(f"member {c.x}");
+    }
+    return 0;
+}
+""",
+            """
+member 3
+""");
+
+        s.run(
+            "computed narrowing: an 'is' check and an early return narrow a computed",
+            prelude() + """
+fn viaIs(c: rx.Computed<Box | none>): str {
+    if c is Box {
+        return f"is {take(c)}";
+    }
+    return "is not";
+}
+
+fn viaEarlyReturn(c: rx.Computed<Box | none>): str {
+    if !c {
+        return "early";
+    }
+    return f"after {take(c)}";
+}
+
+fn main(): int {
+    let source = rx.reactive<int>(0);
+    let c = rx.computed((): Box | none => {
+        if source == 0 { return none; }
+        return Box { x: source };
+    });
+    fmt.println(viaIs(c));
+    fmt.println(viaEarlyReturn(c));
+    source := 4;
+    fmt.println(viaIs(c));
+    fmt.println(viaEarlyReturn(c));
+    return 0;
+}
+""",
+            """
+is not
+early
+is 4
+after 4
+""");
+
+        s.run(
+            "computed narrowing: a computed scalar narrows to its value",
+            """
+fn twice(v: int): int { return v * 2; }
+
+fn main(): int {
+    let source = rx.reactive<int>(5);
+    let n = rx.computed((): int | none => {
+        if source == 0 { return none; }
+        return source;
+    });
+    if n {
+        fmt.println(f"twice {twice(n)}");
+    }
+    return 0;
+}
+""",
+            """
+twice 10
+""");
+
+        // Narrowing is scoped to the check: outside it, the computed is still
+        // the whole union.
+        s.compileFails(
+            "computed narrowing: an unchecked computed is not narrowed",
+            prelude() + """
+fn main(): int {
+    let c = rx.computed((): Box | none => none);
+    let v = take(c);
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.NoSuitableConversionFound)]);
+
+        s.compileFails(
+            "computed narrowing: the narrowing ends with the check's branch",
+            prelude() + """
+fn main(): int {
+    let c = rx.computed((): Box | none => none);
+    if c {
+        fmt.println("some");
+    }
+    let v = take(c);
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.NoSuitableConversionFound)]);
+    }
+}

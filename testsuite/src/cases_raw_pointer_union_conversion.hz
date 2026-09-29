@@ -1,0 +1,173 @@
+// ============================================================================
+// REGRESSION TEST — this is a real, load-bearing test, not a placeholder.
+//
+// Bug: converting a union to another union crashed the compiler whenever one
+// side was a `ref Struct | none` (or `| null`) union:
+//
+//   Error: Union to Union conversion if one is nullptr optimized is not
+//   implemented yet (properly)                          (src/Lower/Lower.ts)
+//
+// Such a union has no tag: Lower represents it as a bare C pointer, NULL for
+// the nullish member. Every other union is a tagged struct, and a conversion
+// between two of them is a generated mapping function that switches on
+// `from.tag`. Nothing mapped between the two representations, in either
+// direction, so any conversion that changed the member set crashed --
+// widening (`R | none` into `R | none | null`) and narrowing alike.
+//
+// The first case is how it surfaced: optional chaining through a method that
+// returns `R | none` widens the result by the chain's own `null`, so
+// `canvasRef?.getContext()` (a reactive canvas ref, a method returning
+// `mut renderer.gfx.Renderer | none`) could not be written at all.
+//
+// Fix: the mapping function reads and builds either representation -- NULL
+// or not instead of a tag on a bare-pointer source, a pointer instead of a
+// tagged struct for a bare-pointer target.
+// ============================================================================
+
+namespace cases_raw_pointer_union_conversion {
+
+    fn prelude(): str {
+        return """
+ref struct R { x: int = 0; }
+
+ref struct W {
+    r: R | none;
+    fn get(): R | none { return this.r; }
+}
+
+fn show(label: str, v: R | none | null) {
+    if v is R {
+        fmt.println(f"{label} R {v.x}");
+    } else if v is none {
+        fmt.println(f"{label} none");
+    } else {
+        fmt.println(f"{label} null");
+    }
+}
+""";
+    }
+
+    export fn register(s: mut testsuite.Suite) {
+
+        s.run(
+            "raw pointer union: optional chaining through a method returning ref | none",
+            prelude() + """
+fn viaChain(w: W | null): str {
+    if let r = w?.get() {
+        return f"got {r.x}";
+    }
+    return "nothing";
+}
+
+fn main(): int {
+    fmt.println(viaChain(W { r: R { x: 3 } }));
+    fmt.println(viaChain(W { r: none }));
+    fmt.println(viaChain(null));
+
+    // The same chain through a reactive, which is what an element ref is.
+    let handle = rx.shallowReactive<W | null>(W { r: R { x: 4 } });
+    if let r = handle?.get() {
+        fmt.println(f"reactive got {r.x}");
+    }
+    handle := null;
+    if let r = handle?.get() {
+        fmt.println("reactive got something?!");
+    } else {
+        fmt.println("reactive nothing");
+    }
+
+    // The chain's value itself, not only its narrowing.
+    let holding: W | null = W { r: R { x: 5 } };
+    let empty: W | null = W { r: none };
+    let absent: W | null = null;
+    show("chain value", holding?.get());
+    show("chain none", empty?.get());
+    show("chain null", absent?.get());
+    return 0;
+}
+""",
+            """
+got 3
+nothing
+nothing
+reactive got 4
+reactive nothing
+chain value R 5
+chain none none
+chain null null
+""");
+
+        s.run(
+            "raw pointer union: widening ref | none into a tagged union",
+            prelude() + """
+fn widen(a: R | none): R | none | null {
+    return a;
+}
+
+fn widenInt(a: R | none): R | none | int {
+    return a;
+}
+
+fn main(): int {
+    show("widen value", widen(R { x: 1 }));
+    show("widen none", widen(none));
+
+    let i = widenInt(R { x: 2 });
+    if i is R { fmt.println(f"int value R {i.x}"); }
+    let j = widenInt(none);
+    if j is none { fmt.println("int none none"); }
+
+    // Widened into a container element, not only a return value.
+    let some: R | none = R { x: 6 };
+    let nothing: R | none = none;
+    let all: [](R | none | null) = [some, nothing, null];
+    for v in all {
+        show("element", v);
+    }
+    return 0;
+}
+""",
+            """
+widen value R 1
+widen none none
+int value R 2
+int none none
+element R 6
+element none
+element null
+""");
+
+        s.run(
+            "raw pointer union: narrowing a tagged union into ref | none",
+            prelude() + """
+fn narrow(a: R | none | null): R | none {
+    if a is null {
+        return none;
+    }
+    let n: R | none = a;
+    return n;
+}
+
+fn main(): int {
+    show("narrow value", narrow(R { x: 8 }));
+    show("narrow none", narrow(none));
+    show("narrow null", narrow(null));
+
+    // There and back: the pointer that went in is the one that comes out.
+    let original = R { x: 9 };
+    let back = narrow(original);
+    original.x = 10;
+    if back is R {
+        fmt.println(f"round trip shares {back.x}");
+    }
+    return 0;
+}
+""",
+            """
+narrow value R 8
+narrow none none
+narrow null none
+round trip shares 10
+""");
+    }
+}

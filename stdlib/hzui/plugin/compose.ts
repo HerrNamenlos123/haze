@@ -19,6 +19,7 @@ import {
   lowerRootProps,
   lowerTemplate,
   parseRootHead,
+  templateMountsTag,
   TemplateError,
   type ElementNode,
   type TemplateContext,
@@ -47,7 +48,7 @@ export class ComposeError extends Error {
 export function rewriteTemplateExpr(code: string): string {
   return code
     .replace(/\bslots\./g, "props.")
-    .replace(/(?<![.\w])elementRef\s*(?=[<(])/g, "ui.elementRef");
+    .replace(/(?<![.\w])(elementRef|canvasRef)\s*(?=[<(])/g, "ui.$1");
 }
 
 // Setup code: every read must be LIVE (closures capture `instance`, not a
@@ -57,14 +58,14 @@ export function rewriteDialectAccessors(code: string): string {
     code
       .replace(/\bprops\./g, "instance.props().")
       .replace(/\bslots\./g, "instance.props().")
-      // `elementRef` is the one dialect function that is not a free symbol:
-      // it is a method on the UIContext, so it cannot be imported and has to
-      // be routed to the `ui` the component function was handed. `<` as well
-      // as `(`, because `elementRef<DivElement>()` is just as ordinary as the
-      // bare call. Everything else the dialect offers by bare name --
-      // `computed`, `reactive`, `shallowReactive`, every type -- is a real
-      // symbol imported from hzui, so it needs no rewrite at all.
-      .replace(/(?<![.\w])elementRef\s*(?=[<(])/g, "ui.elementRef")
+      // `elementRef` and `canvasRef` are the dialect functions that are not
+      // free symbols: they are methods on the UIContext, so they cannot be
+      // imported and have to be routed to the `ui` the component function
+      // was handed. `<` as well as `(`, because `elementRef<DivElement>()` is
+      // just as ordinary as the bare call. Everything else the dialect offers
+      // by bare name -- `computed`, `reactive`, `shallowReactive`, every type
+      // -- is a real symbol imported from hzui, so it needs no rewrite at all.
+      .replace(/(?<![.\w])(elementRef|canvasRef)\s*(?=[<(])/g, "ui.$1")
   );
 }
 
@@ -136,6 +137,8 @@ export const DIALECT_IMPORTS: string[] = [
   "ElementRef",
   "ComponentRef",
   "ElementWrapper",
+  "CanvasRef",
+  "CanvasWrapper",
   "DivProps",
   "TextProps",
   "CanvasProps",
@@ -554,8 +557,17 @@ export function compose(filepath: string, source: string): string {
   // when it says so. The generated types around it (the Args struct, the slot
   // payloads, the exposed struct) stay exported unconditionally -- they are
   // names a caller in ANOTHER file of the same module already has to write.
+  //
+  // A component that mounts itself (a tree node rendering its child nodes) is
+  // a recursive call chain, and the compiler only accepts one whose signature
+  // is fixed up front with `:: final` -- it cannot infer the signature of a
+  // function while still elaborating the body that calls it. Only those get
+  // the annotation, so every other component keeps its inferred signature.
+  const recursive =
+    templateSec !== undefined &&
+    templateMountsTag(templateSec.body, templateSec.bodyStartLine, comp);
   push(
-    `${exported ? "export " : ""}fn ${fnName}(ui: UIContext, args: ${argsName}) {`
+    `${exported ? "export " : ""}fn ${fnName}(ui: UIContext, args: ${argsName})${recursive ? ": void :: final" : ""} {`
   );
   push(
     `    ui.defineComponent(args.id, args, (instance: InstanceData<${argsName}>) => {`

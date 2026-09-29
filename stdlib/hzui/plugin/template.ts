@@ -13,6 +13,8 @@
 // - Capitalized tag = component, lowercase = builtin element. `@event=` on a
 //   builtin sets the matching DivProps callback; on a component it binds that
 //   component's declared @emit, and never its root element (see emitProp).
+//   `canvas` has no DivProps callbacks: its one `@render=` is its draw
+//   function (see lowerCanvas).
 // - The `@template` marker line is an element head too -- the component's own
 //   root element, minus the tag. See parseRootHead/lowerRootProps.
 // - Plain haze `if`/`for` statements in templates are NOT supported in v0 --
@@ -631,6 +633,37 @@ export function parseTemplate(body: string, startLine: number): unknown {
   return new Parser(lex(body, startLine)).parseNodes(false);
 }
 
+/**
+ * Whether a template mounts the component `tag` anywhere: in its own element
+ * tree, inside slot content it provides, or in a slot fallback. A template
+ * that does not parse answers false -- lowerTemplate reports the error.
+ */
+export function templateMountsTag(
+  body: string,
+  startLine: number,
+  tag: string
+): boolean {
+  const visit = (nodes: Node[]): boolean =>
+    nodes.some((n) => {
+      if (n.kind === "slot") {
+        return n.fallback !== null && visit(n.fallback);
+      }
+      return (
+        n.tag === tag ||
+        (n.children !== null && visit(n.children)) ||
+        n.slotProvides.some((sp) => visit(sp.children))
+      );
+    });
+  try {
+    return visit(new Parser(lex(body, startLine)).parseNodes(false));
+  } catch (e) {
+    if (e instanceof TemplateError) {
+      return false;
+    }
+    throw e;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // The component's own root element
 //
@@ -976,7 +1009,7 @@ function lowerElementInner(
     return;
   }
 
-  // Builtin element. `text` is leaf-shaped (content, no children); every
+  // Builtin element. `text` and `canvas` are leaf-shaped (no children); every
   // other tag is div-shaped (children closure). TODO(user): real element
   // registry -- plugin policy, still nothing the compiler knows about.
   const props: string[] = [`id: ${idExpr}`];
@@ -987,29 +1020,25 @@ function lowerElementInner(
       props.push(`${a.name}: ${rw(a.value)}`);
     }
   }
-  for (const e of node.events) {
-    props.push(`${eventProp(e.name, node.line)}: ${rw(e.value)}`);
-  }
 
   const presetCalls = node.classList
     ? lowerClassList(node.classList, ctx.presetNamespace).map(rw)
     : [];
 
+  if (node.tag === "canvas") {
+    lowerCanvas(node, props, presetCalls, em, ctx);
+    return;
+  }
+
+  for (const e of node.events) {
+    props.push(`${eventProp(e.name, node.line)}: ${rw(e.value)}`);
+  }
+
   if (node.tag === "text") {
     if (node.content !== null) {
       props.push(`text: ${rw(node.content)}`);
     }
-    if (presetCalls.length === 0) {
-      em.emit(`ui.text({ ${props.join(", ")} });`);
-    } else {
-      em.emit(`ui.text({ ${props.join(", ")} },`);
-      em.indented(() => {
-        presetCalls.forEach((pc, idx) => {
-          em.emit(pc + (idx < presetCalls.length - 1 ? "," : ""));
-        });
-      });
-      em.emit(`);`);
-    }
+    emitLeafCall(em, "ui.text", [`{ ${props.join(", ")} }`], presetCalls);
     return;
   }
 
@@ -1030,4 +1059,86 @@ function lowerElementInner(
     });
     em.emit(`);`);
   }
+}
+
+/**
+ * `canvas` is drawn the ways ui_components.canvas() offers:
+ *
+ *   canvas [...] @render=draw   `draw` is canvas()'s draw function: run after
+ *                               layout, from blank, whenever something that
+ *                               could change the picture did (see
+ *                               ui_components.drawCanvasIfNeeded)
+ *   canvas [...] ref=surface    `surface` is a ui.canvasRef(): its
+ *                               getContext() can be drawn into at any time,
+ *                               and invalidate() has `draw` run again
+ *
+ * The two combine.
+ *
+ * `@render` is not a CanvasProps callback -- CanvasProps has none, which is
+ * why every other `@event` is rejected here -- but canvas()'s own draw
+ * parameter, so it becomes an argument rather than a props field.
+ */
+function lowerCanvas(
+  node: ElementNode,
+  props: string[],
+  presetCalls: string[],
+  em: Emitter,
+  ctx: TemplateContext
+) {
+  if (node.children !== null) {
+    throw new TemplateError(
+      `a canvas has no children -- it is drawn, by its '@render=' function or through the getContext() of its 'ref='`,
+      node.line
+    );
+  }
+  if (node.content !== null) {
+    const value = /^[A-Za-z_]\w*$/.test(node.content)
+      ? node.content
+      : `[${node.content}]`;
+    throw new TemplateError(
+      `a canvas has no content -- to draw with '${node.content}', write '@render=${value}'`,
+      node.line
+    );
+  }
+  let drawFn: string | null = null;
+  for (const e of node.events) {
+    if (eventKey(e.name) !== "render") {
+      throw new TemplateError(
+        `'@${e.name}' is not a canvas event -- a canvas takes only '@render='. To handle '@${e.name}', wrap the canvas in a div and put it there`,
+        node.line
+      );
+    }
+    if (drawFn !== null) {
+      throw new TemplateError(
+        `more than one '@render' on one canvas -- it has a single draw function`,
+        node.line
+      );
+    }
+    drawFn = ctx.rewriteExpr(e.value);
+  }
+  const args = [`{ ${props.join(", ")} }`];
+  if (drawFn !== null) {
+    args.push(drawFn);
+  }
+  emitLeafCall(em, "ui.canvas", args, presetCalls);
+}
+
+/** `fn(args..., presets...)` -- the presets are a trailing pack, one per line. */
+function emitLeafCall(
+  em: Emitter,
+  fn: string,
+  args: string[],
+  presetCalls: string[]
+) {
+  if (presetCalls.length === 0) {
+    em.emit(`${fn}(${args.join(", ")});`);
+    return;
+  }
+  em.emit(`${fn}(${args.join(", ")},`);
+  em.indented(() => {
+    presetCalls.forEach((pc, idx) => {
+      em.emit(pc + (idx < presetCalls.length - 1 ? "," : ""));
+    });
+  });
+  em.emit(`);`);
 }

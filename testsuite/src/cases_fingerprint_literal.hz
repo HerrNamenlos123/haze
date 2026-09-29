@@ -1,0 +1,105 @@
+// ============================================================================
+// REGRESSION TEST — this is a real, load-bearing test, not a placeholder.
+//
+// Bug: `T.fingerprint` had no rule for a literal type, and threw instead:
+//
+//   Error: T.fingerprint is not defined for LiteralDatatype -- this variant
+//   should not be reachable via reflection on well-typed, fully-elaborated
+//   user code.
+//
+// It is reachable, by ordinary code: a discriminated union whose variants
+// carry a literal tag field,
+//
+//   struct FSFileEntry { type: "file"; ... }
+//   struct FSDirEntry  { type: "directory"; ... }
+//   type FSEntry = FSFileEntry | FSDirEntry;
+//
+// held in a hzui component's props, which TypeErasedBox fingerprints.
+//
+// Rule: a literal type has exactly one value, the layout of its underlying
+// type, and an identity that includes the value. Its fingerprint folds the
+// underlying type's fingerprint and the literal value -- so the same literal
+// always fingerprints the same, and a union keyed on "directory" never
+// fingerprints equal to one keyed on "file".
+// ============================================================================
+
+namespace cases_fingerprint_literal {
+
+    export fn register(s: mut testsuite.Suite) {
+
+        s.run(
+            "fingerprint: a discriminated union with literal tags, through TypeErasedBox",
+            """
+struct FSFileEntry {
+    type: "file";
+    filename: str;
+}
+
+struct FSDirEntry {
+    type: "directory";
+    dirname: str;
+    children: []FSEntry;
+}
+
+type FSEntry = FSFileEntry | FSDirEntry;
+
+struct Props {
+    id: int = 0;
+    entries: []FSEntry = [];
+}
+
+fn main(): int {
+    let props = Props {
+        entries: [
+            FSDirEntry {
+                type: "directory",
+                dirname: "notes",
+                children: [FSFileEntry { type: "file", filename: "a.md" }],
+            },
+        ],
+    };
+    let box = TypeErasedBox<Props>(props);
+    let back = box.get<Props>();
+    for entry in back.entries {
+        if entry is FSDirEntry {
+            fmt.println(f"dir {entry.dirname} {entry.children.length}");
+        }
+    }
+    fmt.println(f"stable {Props.fingerprint == Props.fingerprint}");
+    return 0;
+}
+""",
+            """
+dir notes 1
+stable true
+""");
+
+        s.run(
+            "fingerprint: a literal type is identified by its value and its type",
+            """
+fn fp<T>(): int {
+    return T.fingerprint;
+}
+
+// Literals inside a union: a union's fingerprint carries no name of its own,
+// only its members', so the literal rule is all that tells these apart. (A
+// bare literal as a generic argument, `fp<"a">()`, is its VALUE in value
+// position -- `T.fingerprint` would then be "a".fingerprint.)
+fn main(): int {
+    fmt.println(f"same literal {fp<"a" | "b">() == fp<"a" | "b">()}");
+    fmt.println(f"other value {fp<"a" | "b">() != fp<"a" | "c">()}");
+    fmt.println(f"other number {fp<1 | 2>() != fp<1 | 3>()}");
+    fmt.println(f"not its type {fp<"a" | none>() != fp<str | none>()}");
+    fmt.println(f"same text, other type {fp<1 | none>() != fp<"1" | none>()}");
+    return 0;
+}
+""",
+            """
+same literal true
+other value true
+other number true
+not its type true
+same text, other type true
+""");
+    }
+}

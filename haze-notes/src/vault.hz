@@ -1,0 +1,91 @@
+
+struct FSFileEntry {
+  type: "file";
+  filename: str;
+  fullPath: str;
+}
+
+struct FSDirEntry {
+  type: "directory";
+  dirname: str;
+  fullPath: str;
+  children: []FSEntry;
+}
+
+[[json.discriminator="type"]]
+type FSEntry = FSFileEntry | FSDirEntry;
+
+struct VaultFS {
+  entries: rx.Reactive<[]FSEntry>;
+}
+
+fn indexDirectory(path: str): []FSEntry :: final {
+    let entries: []FSEntry = [];
+    if let dirs = fs.listDir(path) {
+        for dir in dirs {
+            if dir.isFile {
+                entries.push(FSFileEntry {
+                    type: "file",
+                    filename: dir.name,
+                    fullPath: dir.path,
+                });
+            }
+            if dir.isDirectory {
+                entries.push(FSDirEntry {
+                    type: "directory",
+                    dirname: dir.name,
+                    fullPath: dir.path,
+                    children: indexDirectory(dir.path),
+                });
+            }
+        }
+    }
+    return entries;
+}
+
+fn indexVault(vaultPath: str): VaultFS {
+    let vault = VaultFS {
+        entries: rx.reactive<[]FSEntry>(indexDirectory(vaultPath)),
+    };
+    return vault;
+}
+
+
+// fn processFile(path: str) {
+//     let extension = path.slice(-4);
+//     if (extension != ".tsk") {
+//         return;
+//     }
+//     fmt.println(f"Got File: {path}");
+//     // if path[path.length - 1] != "k"
+//     // let document = loadTskDocument(path);
+
+//     let file = fs.readText(path);
+//     if !file { 
+//         fmt.println(f"File {path} failed to open!");
+//         return;
+//     }
+
+//     let document = json.parse<DocumentFile>(file);
+//     if document {
+//         let shapes = 0;
+//         for page in document.data.pages {
+//             shapes = shapes + page.shapes.length;
+//         }
+//         fmt.println(f"{document.data.pages.length} pages, {shapes} shapes");
+//         // let a = json.stringify(document, { pretty: true });
+//         // if (a != file) {
+//             // fmt.println(path);
+//             // fmt.println(f"AAAAAAAA FILE CONTENT IS NOT IDENTICAL!!!!");
+//             // fmt.println(a);
+//             // // fmt.println(a);
+//             // // fmt.println("\n");
+//             // // fmt.println(file);
+//             // fs.writeText("out.a", a);
+//             // fs.writeText("out.b", file);
+//         // }
+//     }
+//     else {
+//         fmt.println(f"File {path} failed to parse!", document.error());
+//     }
+// }

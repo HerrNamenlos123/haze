@@ -1,0 +1,151 @@
+// ============================================================================
+// REGRESSION TEST — this is a real, load-bearing test, not a placeholder.
+//
+// Bug: json.parse treated a field with a declared default as REQUIRED. An
+// absent key failed the whole object ("JSON missing field: ..."), so the only
+// way to say "this key may be absent" was `field: T | none`, and every use
+// site then had to deal with none -- even where the struct states a perfectly
+// good fallback. It bit a real app exactly that way: a cache file
+//
+//   struct VaultCache { expandedFolders: []str | none = none; ... }
+//
+// could not hand `cache.data.expandedFolders` to a component taking a
+// `Reactive<[]str>`, because the field had to be optional to survive a cache
+// file written before the field existed.
+//
+// Fix: an absent key takes the field's declared default -- the very value a
+// struct literal that omits the field gets. A field with no default is still
+// required. Reflection gains what json.parse needs for that:
+// `T.hasFieldDefault(name)` and `T.fieldDefault(name)`.
+// ============================================================================
+
+namespace cases_json_field_defaults {
+
+    export fn register(s: mut testsuite.Suite) {
+
+        s.run(
+            "json defaults: an absent key takes the field's declared default",
+            """
+struct Inner {
+    depth: int = 7;
+}
+
+struct Settings {
+    id: int;
+    count: int = 3;
+    name: str = "untitled";
+    tags: []str = [];
+    inner: Inner = {};
+    width: real | none = 2.5;
+}
+
+fn show(label: str, s: Settings) {
+    let width = s.width ?? -1.0;
+    fmt.println(f"{label}: id={s.id} count={s.count} name={s.name} tags={s.tags.length} depth={s.inner.depth} width={width}");
+}
+
+fn main(): int {
+    let sparse = json.parse<Settings>(\"\"\"{"id": 1}\"\"\");
+    assert(sparse);
+    show("defaults", sparse);
+
+    let full = json.parse<Settings>(\"\"\"{"id": 2, "count": 9, "name": "n", "tags": ["a", "b"], "inner": {"depth": 1}, "width": 1.5}\"\"\");
+    if full {
+        show("present", full);
+    } else {
+        fmt.println(f"present failed: {full}");
+    }
+
+    // Defaults are fresh per parse, like a struct literal's: not one shared array.
+    let a = json.parse<Settings>(\"\"\"{"id": 3}\"\"\");
+    let b = json.parse<Settings>(\"\"\"{"id": 4}\"\"\");
+    assert(a);
+    assert(b);
+    a.tags.push("only a");
+    fmt.println(f"fresh {a.tags.length} {b.tags.length}");
+
+    let missing = json.parse<Settings>(\"\"\"{"count": 1}\"\"\");
+    if missing {
+        fmt.println("required field was not required");
+    } else {
+        fmt.println(f"still required: {missing}");
+    }
+    return 0;
+}
+""",
+            """
+defaults: id=1 count=3 name=untitled tags=0 depth=7 width=2.5
+present: id=2 count=9 name=n tags=2 depth=1 width=1.5
+fresh 1 0
+still required: json error: JSON missing field: id
+""");
+
+        // The shape that surfaced it: a cache whose data is reactive, parsed
+        // from a file that predates its fields, handing one of them on as a
+        // writable reactive array.
+        s.run(
+            "json defaults: a cache field is a plain reactive array, not an optional",
+            """
+struct Cache {
+    folders: []str = [];
+    width: real = 200.0;
+}
+
+fn open(folders: rx.Reactive<[]str>, path: str) {
+    folders.push(path);
+}
+
+fn main(): int {
+    let parsed = json.parse<Cache>(\"\"\"{}\"\"\");
+    assert(parsed);
+    let data = rx.reactive<Cache>(parsed);
+    open(data.folders, "notes");
+    fmt.println(f"{data.folders.length} {data.width}");
+    let back = json.parse<Cache>(json.stringify(data));
+    assert(back);
+    fmt.println(f"round trip {back.folders.length} {back.folders[0]}");
+    return 0;
+}
+""",
+            """
+1 200
+round trip 1 notes
+""");
+
+        s.run(
+            "json defaults: reflection sees a field's default",
+            """
+struct S {
+    required: int;
+    count: int = 3;
+    label: str = "x";
+}
+
+fn main(): int {
+    fmt.println(f"{S.hasFieldDefault("count")} {S.hasFieldDefault("required")} {S.hasFieldDefault("nope")}");
+    fmt.println(f"{S.fieldDefault("count")} {S.fieldDefault("label")}");
+    static_assert(S.hasFieldDefault("label"));
+    static_assert(S.hasFieldDefault("required") == false);
+    return 0;
+}
+""",
+            """
+true false false
+3 x
+""");
+
+        s.compileFails(
+            "json defaults: fieldDefault of a field without one is an error",
+            """
+struct S {
+    required: int;
+}
+
+fn main(): int {
+    let v = S.fieldDefault("required");
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.FieldHasNoDefaultValue)]);
+    }
+}

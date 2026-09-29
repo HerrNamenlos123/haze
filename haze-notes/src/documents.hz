@@ -1,25 +1,13 @@
 import perfect_freehand
 import tesselate
 
-// math.min/math.max exist in core/src/math.hz but aren't marked `export`, so
-// they're not actually reachable as math.min/math.max from other packages
-// (renderer.hz's gfx namespace works around the same gap with its own local
-// `max<T>` -- this mirrors that).
-fn min<T>(a: T, b: T): T {
-  if a <= b {
-    return a;
-  }
-  return b;
-}
+// We use "ref" for the shapes, but not for anything else. So every shape will be its own
+// object, and can be referenced through its reference. The parent only has an array of
+// references, which is not that heavy. But all shapes belonging to one document will
+// live in one arena per document, so the arena per document can only grow and not shrink
+// (shapes are rarely deleted), which makes it very memory-efficient.
 
-fn max<T>(a: T, b: T): T {
-  if a >= b {
-    return a;
-  }
-  return b;
-}
-
-ref struct BBox {
+struct BBox {
   left: real;
   right: real;
   top: real;
@@ -31,15 +19,15 @@ ref struct BBox {
   }
 }
 
-ref struct TskPoint {
+struct Point {
     x: real;
     y: real;
     pressure: real;
 }
 
-ref struct TskLineShape {
+ref struct LineShape {
   variant: "Line";
-  points: []TskPoint;
+  points: []Point;
   penColor: str;
   penThickness: real;
   // Cached outline + bbox for this stroke, so reopening the file doesn't have to redo the
@@ -61,17 +49,14 @@ ref struct TskLineShape {
   [[json.ignore]]
   tesselationCache?: LinearMap<int, TesselationResult> = none;
 
-  ref fn getBBox(): BBox {
+  fn getBBox(): BBox {
     if this.bbox {
       return this.bbox;
     }
 
-    let outline: [][]real = [];
-    if this.cachedOutline {
-      outline = this.cachedOutline;
-    } else {
-      let computed = constructStrokeOutline({ shape: this });
-      for p in computed {
+    let outline: [][]real = this.cachedOutline ?? [];
+    if !this.cachedOutline {
+      for p in constructStrokeOutline({ shape: this }) {
         outline.push([p.x, p.y]);
       }
       this.cachedOutline = outline;
@@ -108,7 +93,7 @@ ref struct TskLineShape {
   // is -- coarser (cheaper) tesselation when zoomed out, finer when zoomed
   // in, instead of one fixed tolerance that's either wasteful or visibly
   // faceted depending on zoom.
-  ref fn ensureTesselated(level: int): TesselationResult {
+  fn ensureTesselated(level: int): TesselationResult {
     if !this.tesselationCache {
       this.tesselationCache = LinearMap<int, TesselationResult>();
     }
@@ -121,9 +106,15 @@ ref struct TskLineShape {
     this.tesselationCache.set(level, result);
     return result;
   }
+
+  fn clearShapeCache() {
+    this.bbox = none;
+    this.cachedOutline = none;
+    this.tesselationCache?.clear();
+  }
 };
 
-ref struct TskImageShape {
+ref struct ImageShape {
   variant: "Image";
   position: Vec2;
   size: Vec2;
@@ -149,9 +140,13 @@ ref struct TskImageShape {
     this.bbox = result;
     return result;
   }
+
+  fn clearShapeCache() {
+    this.bbox = none;
+  }
 };
 
-ref struct TskTextblockShape {
+ref struct TextblockShape {
   variant: "Textblock";
   position: Vec2;
   size: Vec2;
@@ -172,81 +167,47 @@ ref struct TskTextblockShape {
     this.bbox = result;
     return result;
   }
+
+  fn clearShapeCache() {
+    this.bbox = none;
+  }
 };
 
 [[json.discriminator="variant"]]
-type TskShape = TskLineShape | TskImageShape | TskTextblockShape;
+type Shape = LineShape | ImageShape | TextblockShape;
 
-// Narrows the shape union and calls the right variant's getBBox() -- used by
-// the tile renderer to decide which shapes belong in which tile via
-// BBox.overlaps().
-fn shapeBBox(shape: TskShape): BBox {
-  if shape is TskLineShape {
-    return shape.getBBox();
-  }
-  else if shape is TskImageShape {
-    return shape.getBBox();
-  }
-  else if shape is TskTextblockShape {
-    return shape.getBBox();
-  }
-  return BBox { left: 0, right: 0, top: 0, bottom: 0 };
+struct Page {
+    shapes: []Shape;
 }
 
-// Resets every cached derived value on a shape (bbox, perfect-freehand
-// outline, tesselation) so the next getBBox()/ensureTesselated() call
-// recomputes from scratch instead of reusing whatever was cached in
-// memory (or, for bbox/cachedOutline, loaded straight from the saved
-// .tsk file's JSON -- those two are persisted, unlike tesselationCache
-// which is [[json.ignore]]d).
-fn clearShapeCache(shape: TskShape): void {
-  if shape is TskLineShape {
-    shape.bbox = none;
-    shape.cachedOutline = none;
-    if shape.tesselationCache {
-      shape.tesselationCache.clear();
-    }
-  }
-  else if shape is TskImageShape {
-    shape.bbox = none;
-  }
-  else if shape is TskTextblockShape {
-    shape.bbox = none;
-  }
+struct Viewport {
+    offsetX: real = 0.0;
+    offsetY: real = 0.0;
+    zoomPxPerMm: real = 4.0;
 }
 
-ref struct TskPage {
-    shapes: []TskShape;
-}
-
-ref struct TskViewport {
-    offsetX: real;
-    offsetY: real;
-    zoomPxPerMm: real;
-}
-
-ref struct TskDocumentBody {
+struct DocumentBody {
     pageColor: str;
     gridColor: str;
     gridType: "lines" | "dots";
-    pages: []TskPage;
+    pages: []Page;
     pageWidthMm: real;
     pageHeightMm: real;
     currentPageIndex: int;
-    viewport?: TskViewport;
+    viewport?: Viewport;
 }
 
-ref struct TskDocumentFile {
+struct DocumentFile {
     filetype: str;
     fileversion: int;
-    data: TskDocumentBody;
+    data: DocumentBody;
 }
 
-fn loadTskDocument(path: str): Result<TskDocumentFile, none> {
+fn loadDocument(path: str): Result<DocumentFile, none> {
     let file = fs.readText(path);
     if !file { return none; }
 
-    let result = json.parse<TskDocumentFile>(file);
+    let result = json.parse<DocumentFile>(file);
     if result {
         return result;
     }
@@ -256,7 +217,7 @@ fn loadTskDocument(path: str): Result<TskDocumentFile, none> {
     return none;
 }
 
-fn saveTskDocument(path: str, document: TskDocumentFile): Result<none, none> {
+fn saveDocument(path: str, document: DocumentFile): Result<none, none> {
     if !fs.writeText(path, json.stringify(document)) {
         return Result<none, none>.Err(none);
     }
@@ -265,7 +226,7 @@ fn saveTskDocument(path: str, document: TskDocumentFile): Result<none, none> {
 
 struct StrokeConstructArgs {
   accuracyScaling: real = 10.0;
-  shape: TskLineShape;
+  shape: LineShape;
 }
 
 fn constructStrokeOutline(args: StrokeConstructArgs): []Vec2 {
@@ -301,7 +262,7 @@ struct TesselationResult {
 
 struct StrokeTesselateArgs {
   accuracyScaling: real = 10.0;
-  shape: TskLineShape;
+  shape: LineShape;
   // Curve-flattening tolerance, in the same mm units the curve itself is
   // drawn in (post accuracyScaling division). 0.25 (the old default) was
   // never actually exercised before quadraticBezierTo existed -- straight
@@ -315,15 +276,13 @@ struct StrokeTesselateArgs {
 }
 
 fn tesselateStroke(args: StrokeTesselateArgs): TesselationResult {
-    let result = TesselationResult {};
-
     let outline = constructStrokeOutline({
         shape: args.shape,
         accuracyScaling: args.accuracyScaling,
     });
 
     if outline.length == 0 {
-        return result;
+        return {};
     }
 
     // Standard perfect-freehand smoothing recipe (same one the original
@@ -353,9 +312,12 @@ fn tesselateStroke(args: StrokeTesselateArgs): TesselationResult {
     }
     tess.closePath();
     if let t = tess.tessellate(args.tolerance) { 
-        result.vertices = t.vertices;
-        result.indices = t.indices;
+      tess.destroy();
+      return {
+        vertices: t.vertices,
+        indices: t.indices,
+      };
     }
     tess.destroy();
-    return result;
+    return {};
 }

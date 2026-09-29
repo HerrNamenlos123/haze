@@ -274,7 +274,7 @@ export opaque ref struct Runtime {
 
         if !data.handle {
             let offscreen = renderer.gfx.Canvas({ gfx: this.gfx, size: canvasSize, msaaSamples: data.msaaSamples, postEffect: data.postEffect });
-            let handle = ui_components.CanvasHandle { canvas: offscreen };
+            let handle = ui_components.CanvasHandle { canvas: offscreen, context: renderer.gfx.Renderer(frame, offscreen) };
             data.handle = TypeErasedBox<ui_components.CanvasHandle>(handle);
 
             // A brand new offscreen texture has undefined contents --
@@ -282,26 +282,39 @@ export opaque ref struct Runtime {
             // touches it this frame.
             renderer.gfx.Renderer(frame, handle.canvas).commit(true);
 
-            this.drawCanvasAndComposite(data.drawFn, handle, feedback, size, frame, screenRenderer);
+            this.drawCanvasAndComposite(element, handle, true, feedback, size, frame, screenRenderer);
         } else {
             let handle = data.handle.get<ui_components.CanvasHandle>();
-            if handle.canvas.size.framebufferSize.x != fbSize.x || handle.canvas.size.framebufferSize.y != fbSize.y {
+            let resized = handle.canvas.size.framebufferSize.x != fbSize.x || handle.canvas.size.framebufferSize.y != fbSize.y;
+            if resized {
                 handle.canvas.resize(canvasSize);
                 // A freshly resized texture has undefined contents too.
                 renderer.gfx.Renderer(frame, handle.canvas).commit(true);
             }
-            this.drawCanvasAndComposite(data.drawFn, handle, feedback, size, frame, screenRenderer);
+            this.drawCanvasAndComposite(element, handle, resized, feedback, size, frame, screenRenderer);
         }
     }
 
-    // Runs this frame's declarative drawFn (if any) into the canvas
-    // element's offscreen canvas, then composites its current content onto
-    // `screenRenderer` at the element's current bounding box.
-    fn drawCanvasAndComposite(drawFnBox: TypeErasedBox | none, handle: ui_components.CanvasHandle, feedback: ui_components.RenderFeedback, size: Vec2, frame: mut renderer.gfx.Frame, screenRenderer: mut renderer.gfx.Renderer) {
-        if drawFnBox {
-            let r = renderer.gfx.Renderer(frame, handle.canvas);
-            ui_components.runCanvasDrawFn(drawFnBox, r);
-            r.commit(true);
+    // Brings the canvas element's offscreen canvas up to date, then
+    // composites its current content onto `screenRenderer` at the element's
+    // current bounding box.
+    //
+    // Up to date means: its drawFn has drawn it again if anything that could
+    // change its picture did (ui_components.drawCanvasIfNeeded decides), and
+    // whatever was drawn into its context directly since the last frame is
+    // on it. When neither happened -- an idle canvas -- nothing is committed
+    // at all and last frame's texture is composited again. `contentLost`: the
+    // canvas was just created or resized, so its texture was just cleared.
+    fn drawCanvasAndComposite(element: ui_elements.CanvasElement, handle: ui_components.CanvasHandle, contentLost: bool, feedback: ui_components.RenderFeedback, size: Vec2, frame: mut renderer.gfx.Frame, screenRenderer: mut renderer.gfx.Renderer) {
+        let context = handle.context;
+        // Drawn into outside any frame, so pointed at this one only now --
+        // before the drawFn, which may itself draw into other canvases
+        // through context.frame.
+        context.retarget(frame, handle.canvas);
+        let redrawn = ui_components.drawCanvasIfNeeded(element, context, contentLost);
+        if redrawn || context.hasPendingWork() {
+            context.commit(redrawn);
+            context.reset(frame, handle.canvas);
         }
 
         screenRenderer.drawTexture({

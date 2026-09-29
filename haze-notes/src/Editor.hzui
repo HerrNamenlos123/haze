@@ -1,0 +1,130 @@
+@props
+[[hzui.untracked]]
+cache: json.CacheFile<VaultCache>;
+[[hzui.untracked]]
+gfx: mut renderer.gfx.Context;
+
+@setup
+let currentDocumentPath = reactive<str | none>(none);
+if props.cache.data.lastOpenedFile {
+    currentDocumentPath := props.cache.data.lastOpenedFile;
+}
+
+let currentDocument = computed<DocumentFile | null>(() => {
+    if currentDocumentPath {
+        if let doc = loadDocument(currentDocumentPath) {
+            return doc;
+        }
+    }
+    return null;
+});
+
+let documentRenderer = DocumentRenderer(props.gfx);
+let dragging: ref Box<bool> = { value: false };
+let canvasAreaRef = ui.elementRef<DivElement>();
+let canvasRef = ui.canvasRef();
+
+let onCanvasPointerDown = (e: PointerEvent) => {
+    dragging.value = true;
+};
+let onCanvasPointerUp = (e: PointerEvent) => {
+    dragging.value = false;
+};
+let onCanvasWheel = (e: WheelEvent) => {
+    let localX = e.pos.x;
+    let localY = e.pos.y;
+    let wrapper = rx.get(canvasAreaRef);
+    if wrapper {
+        if let divPos = wrapper.position() {
+            localX = e.pos.x - divPos.x;
+            localY = e.pos.y - divPos.y;
+        }
+    }
+
+    if hasModifier(e.modifiers, KeyModifiers.Ctrl) {
+        // SDL's wheel delta.y is positive scrolling away from
+        // the user (scroll up/forward) -- that should zoom
+        // in, so no negation here (confirmed backwards on
+        // first try: fixed by dropping it).
+        let factor = math.pow(1.1, e.delta.y);
+        documentRenderer.zoomBy(factor, localX, localY);
+    } else {
+        let dx = e.delta.x;
+        let dy = e.delta.y;
+        if hasModifier(e.modifiers, KeyModifiers.Shift) {
+            dx = e.delta.y;
+            dy = e.delta.x;
+        }
+        // X and Y need opposite signs here -- confirmed by
+        // trying it: vertical pan felt right with a
+        // positive coefficient, horizontal only felt right
+        // negated.
+        documentRenderer.pan(-dx * panSpeed, dy * panSpeed);
+    }
+    // The viewport is plain state, invisible to the canvas's change
+    // tracking, so say it changed. The redraw happens once, at the
+    // canvas's step of the next frame.
+    canvasRef?.invalidate();
+};
+
+// Runs only when the canvas has to be drawn again: when it is created or
+// resized, when currentDocument (read below, so tracked) changes, or when
+// canvasRef?.invalidate() says the viewport moved.
+let renderCanvas = (r: mut renderer.gfx.Renderer): void => {
+    if let d = rx.get(currentDocument) {
+        documentRenderer.render(r, d);
+        // A settling zoom still needs a few more renders to retile.
+        if documentRenderer.isSettling() {
+            canvasRef?.invalidate();
+        }
+    }
+};
+
+// A drag keeps panning after the pointer leaves the canvas, so it is polled
+// rather than evented -- see UIContext.onFrame. Runs before the canvas's step
+// of the same frame, so the pan is drawn in the frame that saw it.
+ui.onFrame(() => {
+    if dragging.value && (ui.dmousePos.x != 0.0 || ui.dmousePos.y != 0.0) {
+        documentRenderer.pan(ui.dmousePos.x, ui.dmousePos.y);
+        canvasRef?.invalidate();
+    }
+});
+
+let sidepanelOpen = reactive<bool>(true);
+let closeSidepanel = () => {
+    sidepanelOpen := false;
+}
+let openSidepanel = () => {
+    sidepanelOpen := true;
+}
+
+@template
+
+div if=[!currentDocument] [w-grow h-grow justify-center items-center] {
+    text [] ["No document is selected"]
+}
+
+div else [w-grow h-grow] {
+    div [w-grow h-grow relative] ref=canvasAreaRef
+        @pointerdown=onCanvasPointerDown
+        @pointerup=onCanvasPointerUp
+        @wheel=onCanvasWheel
+    {
+        canvas [w-grow h-grow] ref=canvasRef @render=renderCanvas
+
+        div if=sidepanelOpen [absolute col top-0 left-0 h-grow w-[props.cache.data.sidepanelWidth] p-4] {
+            div [justify-between w-grow] {
+                text [] ["Haze Notes"]
+                div [p-2] {
+                    Button [] icon="menu" @click=closeSidepanel {}
+                }
+            }
+
+            FileTree if=[props.cache.data.vault] [] expandedEntries=[props.cache.data.expandedFolders] entries=[props.cache.data.vault.entries] {}
+        }
+
+        div else [absolute top-0 left-0 p-4] {
+            Button [] icon="menu" @click=openSidepanel {}
+        }
+    }
+}

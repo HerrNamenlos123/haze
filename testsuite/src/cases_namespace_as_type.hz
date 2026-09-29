@@ -1,0 +1,384 @@
+// ============================================================================
+// REGRESSION TEST — this is a real, load-bearing test, not a placeholder.
+//
+// Bug: a namespace was accepted as the type of anything that holds a value.
+// A namespace is a type only in type-land: it can be a generic argument, an
+// alias target, the receiver of `T.f()`. It has no values, so a struct field,
+// a variable, a parameter or a return value of namespace type is meaningless,
+// and so is `[]ns` or `ns | none`. Nothing rejected it, so the mistake of
+// naming the namespace instead of a type inside it,
+//
+//   @props
+//   gfx: renderer.gfx;          // meant renderer.gfx.Context
+//
+// surfaced far away as an internal compiler error. Through `T.fingerprint`
+// (which TypeErasedBox computes for every hzui component's props):
+//
+//   Error: T.fingerprint is not defined for NamespaceDatatype -- this variant
+//   should not be reachable via reflection on well-typed, fully-elaborated
+//   user code.
+//
+// and everywhere else as "Unhandled variant: 23" or a bare assertion in Lower,
+// when the namespace reached C type lowering.
+//
+// Fix: the elaborator rejects a namespace as a value type, however deeply it
+// sits (arrays, slices, unions, aliases, reactive wrappers), at the three
+// places a type becomes the type of a value: a struct field, a variable, and
+// a function type's parameters and return type (which also covers lambdas and
+// generic instantiations). Struct generic arguments are type-land and stay
+// legal, as long as no field stores the namespace.
+//
+// The last cases are guards in the other direction: every type-land use of a
+// namespace must keep compiling.
+// ============================================================================
+
+namespace cases_namespace_as_type {
+
+    fn prelude(): str {
+        return """
+namespace outer {
+    export namespace inner {
+        export struct Thing { x: int = 0; }
+        export fn f(): int { return 3; }
+    }
+}
+""";
+    }
+
+    fn gfxModule(): testsuite.TestModule {
+        return testsuite.TestModule {
+            name: "gfxlib",
+            source: """
+export namespace gfx {
+    export struct Context { width: int = 0; }
+}
+""",
+        };
+    }
+
+    export fn register(s: mut testsuite.Suite) {
+        let rejected: []testsuite.ErrorCheck = [testsuite.mustHave(errorcodes.Code.NamespaceUsedAsValueType)];
+
+        // ── The reported crash ──────────────────────────────────────────────
+
+        // Exactly the shape hzui generates from `@props gfx: renderer.gfx;`:
+        // a dependency module's nested namespace as a field type, with the
+        // struct's fingerprint taken.
+        s.compileFailsWithModules(
+            "namespace as type: a dependency's namespace as a field type, fingerprinted",
+            [gfxModule()],
+            """
+import gfxlib;
+
+struct Props {
+    id: int = 0;
+    gfx: gfxlib.gfx;
+}
+
+fn main(): int {
+    let fp = Props.fingerprint;
+    return 0;
+}
+""",
+            rejected);
+
+        s.compileFails(
+            "namespace as type: TypeErasedBox of a struct with a namespace field",
+            prelude() + """
+struct Props {
+    id: int = 0;
+    ns: outer.inner;
+}
+
+fn main(): int {
+    let box = TypeErasedBox<Props>(Props { id: 1, ns: outer.inner });
+    return 0;
+}
+""",
+            rejected);
+
+        // ── Struct fields ───────────────────────────────────────────────────
+
+        s.compileFails(
+            "namespace as type: a struct field",
+            prelude() + """
+struct Holder {
+    id: int = 0;
+    ns: outer.inner;
+}
+
+fn main(): int {
+    let h = Holder { id: 1, ns: outer.inner };
+    return h.id;
+}
+""",
+            rejected);
+
+        // A module is a namespace too.
+        s.compileFailsWithModules(
+            "namespace as type: a module as a field type",
+            [gfxModule()],
+            """
+import gfxlib;
+
+struct Holder {
+    id: int = 0;
+    lib: gfxlib;
+}
+
+fn main(): int {
+    let h = Holder { id: 1 };
+    return h.id;
+}
+""",
+            rejected);
+
+        s.compileFails(
+            "namespace as type: a field typed through an alias of a namespace",
+            prelude() + """
+alias ii = outer.inner;
+
+struct Holder {
+    id: int = 0;
+    ns: ii;
+}
+
+fn main(): int {
+    let h = Holder { id: 1 };
+    return h.id;
+}
+""",
+            rejected);
+
+        s.compileFails(
+            "namespace as type: an array of a namespace as a field type",
+            prelude() + """
+struct Holder {
+    id: int = 0;
+    all: []outer.inner;
+}
+
+fn main(): int {
+    let h = Holder { id: 1, all: [] };
+    return h.id;
+}
+""",
+            rejected);
+
+        s.compileFails(
+            "namespace as type: an optional namespace as a field type",
+            prelude() + """
+struct Holder {
+    id: int = 0;
+    maybe: outer.inner | none = none;
+}
+
+fn main(): int {
+    let h = Holder { id: 1 };
+    return h.id;
+}
+""",
+            rejected);
+
+        s.compileFails(
+            "namespace as type: a reactive namespace as a field type",
+            prelude() + """
+struct Holder {
+    id: int = 0;
+    cell: rx.Reactive<outer.inner>;
+}
+
+fn main(): int {
+    let h = Holder { id: 1 };
+    return h.id;
+}
+""",
+            rejected);
+
+        s.compileFails(
+            "namespace as type: a generic struct storing its namespace argument",
+            prelude() + """
+struct Keep<T> {
+    v: T;
+}
+
+fn main(): int {
+    let b = Keep<outer.inner> { v: outer.inner };
+    return 0;
+}
+""",
+            rejected);
+
+        s.compileFails(
+            "namespace as type: an anonymous struct field",
+            prelude() + """
+fn main(): int {
+    let a: { x: int, ns: outer.inner } = { x: 1 };
+    return a.x;
+}
+""",
+            rejected);
+
+        // ── Variables ───────────────────────────────────────────────────────
+
+        // Rejected for the type itself, not reported as a failed conversion
+        // of the initializer.
+        s.compileFails(
+            "namespace as type: a local variable annotation",
+            prelude() + """
+fn main(): int {
+    let v: outer.inner = 5;
+    return 0;
+}
+""",
+            [
+                testsuite.mustHave(errorcodes.Code.NamespaceUsedAsValueType),
+                testsuite.mustNotHave(errorcodes.Code.NoSuitableConversionFound),
+            ]);
+
+        s.compileFails(
+            "namespace as type: a local slice of a namespace",
+            prelude() + """
+fn main(): int {
+    let v: []outer.inner = [];
+    return 0;
+}
+""",
+            rejected);
+
+        s.compileFails(
+            "namespace as type: a global variable annotation",
+            prelude() + """
+let g: outer.inner | none = none;
+
+fn main(): int {
+    return 0;
+}
+""",
+            rejected);
+
+        s.compileFails(
+            "namespace as type: a variable inferred to a namespace",
+            prelude() + """
+fn main(): int {
+    let v = outer.inner;
+    return 0;
+}
+""",
+            rejected);
+
+        // ── Functions ───────────────────────────────────────────────────────
+
+        s.compileFails(
+            "namespace as type: a function parameter",
+            prelude() + """
+fn takes(p: outer.inner): int {
+    return 1;
+}
+
+fn main(): int {
+    return takes(outer.inner);
+}
+""",
+            rejected);
+
+        s.compileFails(
+            "namespace as type: a function return type",
+            prelude() + """
+fn gives(): outer.inner {
+    return outer.inner;
+}
+
+fn main(): int {
+    gives();
+    return 0;
+}
+""",
+            rejected);
+
+        s.compileFails(
+            "namespace as type: a lambda parameter",
+            prelude() + """
+fn main(): int {
+    let f = (p: outer.inner) => 1;
+    return 0;
+}
+""",
+            rejected);
+
+        s.compileFails(
+            "namespace as type: a callable type with a namespace parameter",
+            prelude() + """
+struct Holder {
+    id: int = 0;
+    cb: ((p: outer.inner) => int) | none = none;
+}
+
+fn main(): int {
+    let h = Holder { id: 1 };
+    return h.id;
+}
+""",
+            rejected);
+
+        s.compileFails(
+            "namespace as type: a generic function taking a namespace as a value",
+            prelude() + """
+fn g<T>(x: T): int {
+    return 0;
+}
+
+fn main(): int {
+    return g(outer.inner);
+}
+""",
+            rejected);
+
+        // ── Type-land uses must keep working ────────────────────────────────
+
+        s.run(
+            "namespace as type: namespaces stay legal wherever no value is stored",
+            prelude() + """
+alias ii = outer.inner;
+
+fn callF<T>(): int {
+    return T.f();
+}
+
+fn isNamespace<T>(): bool {
+    if comptime T.category == meta.TypeCategory.Namespace {
+        return true;
+    }
+    return false;
+}
+
+// Parameterised over a namespace, storing none of it.
+struct Tagged<T> {
+    v: int;
+    fn get(): int { return this.v + T.f(); }
+}
+
+struct Holder {
+    thing: outer.inner.Thing;
+}
+
+fn main(): int {
+    fmt.println(f"generic {callF<outer.inner>()}");
+    fmt.println(f"alias {ii.f()} {callF<ii>()}");
+    fmt.println(f"category {isNamespace<outer.inner>()} {isNamespace<int>()}");
+    let t = Tagged<outer.inner> { v: 1 };
+    fmt.println(f"struct arg {t.get()}");
+    let h = Holder { thing: outer.inner.Thing { x: 7 } };
+    fmt.println(f"inner type {h.thing.x}");
+    return 0;
+}
+""",
+            """
+generic 3
+alias 3 3
+category true false
+struct arg 4
+inner type 7
+""");
+    }
+}

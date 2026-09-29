@@ -1,0 +1,264 @@
+// ============================================================================
+// REGRESSION TEST — this is a real, load-bearing test, not a placeholder.
+//
+// Bug: checking a union a second time was an error once narrowing had
+// already ruled out its nullish member:
+//
+//   let v: Box | none = ...;
+//   if !v { ... } else {
+//       if v { ... }
+//       // H4001: No suitable conversion from ref Box to bool is known
+//   }
+//
+// (in hzui: `div if=[!vaultCache] {...} div else { Editor if=vaultCache ... }`
+// -- the if/else chain narrows, then the element's own `if=` checks again).
+//
+// The check read the variable through its narrowing, so it tested the
+// narrowed `Box`, which has no truthiness. A union narrowed only to a subset
+// (`Box | Other | none` to `Box | Other`) failed too: the union-to-bool
+// conversion looked for a nullish member among those narrowing had left, and
+// there was none.
+//
+// Fix: a truthiness check tests the variable as declared, not what narrowing
+// has proven about it. A check that narrowing already proves is always true,
+// but it is still legal -- the same as testing a value before and after an
+// early return, or in both halves of an `&&`.
+// ============================================================================
+
+namespace cases_narrowed_recheck {
+
+    fn prelude(): str {
+        return """
+ref struct Box { x: int = 0; }
+ref struct Other { y: int = 0; }
+
+fn take(b: ref Box): int { return b.x; }
+""";
+    }
+
+    export fn register(s: mut testsuite.Suite) {
+
+        s.run(
+            "narrowed recheck: an else branch checks a struct union again",
+            prelude() + """
+fn check(v: Box | none): str {
+    if !v {
+        return "none";
+    } else {
+        if v {
+            return f"some {v.x} {take(v)}";
+        }
+        return "unreachable";
+    }
+}
+
+fn checkNull(v: Box | null): str {
+    if v {
+        if v {
+            return f"some {v.x}";
+        }
+        return "unreachable";
+    }
+    return "null";
+}
+
+fn main(): int {
+    fmt.println(check(none));
+    fmt.println(check(Box { x: 3 }));
+    fmt.println(checkNull(null));
+    fmt.println(checkNull(Box { x: 4 }));
+    return 0;
+}
+""",
+            """
+none
+some 3 3
+null
+some 4
+""");
+
+        s.run(
+            "narrowed recheck: scalars, an early return and both halves of &&",
+            """
+fn nested(n: int | none, s: str | none) {
+    if n {
+        if n {
+            fmt.println(f"n {n}");
+        }
+    }
+    if s {
+        if s {
+            fmt.println(f"s '{s}'");
+        }
+    }
+    fmt.println("nested done");
+}
+
+fn early(n: int | none): str {
+    if !n {
+        return "early";
+    }
+    if n {
+        return f"after {n}";
+    }
+    return "unreachable";
+}
+
+fn both(n: int | none): str {
+    if n && n > 1 {
+        if n && n > 2 {
+            return f"both {n}";
+        }
+        return f"outer only {n}";
+    }
+    return "neither";
+}
+
+fn main(): int {
+    // 0 and "" are values, not absence: the check is on none only.
+    nested(0, "");
+    nested(none, none);
+    fmt.println(early(none));
+    fmt.println(early(0));
+    fmt.println(both(none));
+    fmt.println(both(2));
+    fmt.println(both(3));
+    return 0;
+}
+""",
+            """
+n 0
+s ''
+nested done
+nested done
+early
+after 0
+neither
+outer only 2
+both 3
+""");
+
+        s.run(
+            "narrowed recheck: a narrowed member checks again",
+            prelude() + """
+ref struct Holder { f: Box | none = none; }
+
+fn main(): int {
+    let h = Holder { f: Box { x: 9 } };
+    if h.f {
+        fmt.println(f"outer {h.f.x}");
+        if h.f {
+            fmt.println(f"inner {h.f.x} {take(h.f)}");
+        }
+    }
+    return 0;
+}
+""",
+            """
+outer 9
+inner 9 9
+""");
+
+        // Narrowed to a subset: the remaining union has no nullish member,
+        // the declared one does.
+        s.run(
+            "narrowed recheck: a union narrowed to a subset checks again",
+            prelude() + """
+fn check(v: Box | Other | none): str {
+    if v {
+        if v {
+            if v is Box {
+                return f"box {v.x}";
+            }
+            return "other";
+        }
+        return "unreachable";
+    }
+    return "none";
+}
+
+fn main(): int {
+    fmt.println(check(Box { x: 5 }));
+    fmt.println(check(Other { y: 1 }));
+    fmt.println(check(none));
+    return 0;
+}
+""",
+            """
+box 5
+other
+none
+""");
+
+        s.run(
+            "narrowed recheck: a reactive and a computed check again",
+            prelude() + """
+fn main(): int {
+    let r = rx.reactive<Box | none>(Box { x: 6 });
+    if !r {
+        fmt.println("reactive none");
+    } else {
+        if r {
+            fmt.println(f"reactive {r.x} {take(r)}");
+        }
+    }
+
+    let source = rx.reactive<int>(0);
+    let c = rx.computed((): Box | none => {
+        if source == 0 { return none; }
+        return Box { x: source };
+    });
+    let show = () => {
+        if !c {
+            fmt.println("computed none");
+        } else {
+            if c {
+                fmt.println(f"computed {c.x} {take(c)}");
+            }
+        }
+    };
+    show();
+    source := 8;
+    show();
+    return 0;
+}
+""",
+            """
+reactive 6 6
+computed none
+computed 8 8
+""");
+
+        // A union that never had a nullish member has no truthiness, and
+        // neither has a plain struct: rechecking is legal, checking something
+        // that cannot be absent is not.
+        s.compileFails(
+            "narrowed recheck: a union without a nullish member is still not a condition",
+            prelude() + """
+fn check(v: Box | Other): int {
+    if v {
+        return 1;
+    }
+    return 0;
+}
+
+fn main(): int {
+    return check(Box { x: 1 });
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.NoSuitableConversionFound)]);
+
+        s.compileFails(
+            "narrowed recheck: a plain struct is still not a condition",
+            prelude() + """
+fn main(): int {
+    let b = Box { x: 1 };
+    if b {
+        return 1;
+    }
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.NoSuitableConversionFound)]);
+    }
+}

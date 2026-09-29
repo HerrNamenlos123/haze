@@ -20,11 +20,11 @@ import {
   type SourceLoc,
 } from "../shared/Errors";
 import { HazeErrorCode } from "../shared/ErrorCodes";
-import type {
-  ConstraintPath,
-  ConstraintPathSubscriptIndex,
+import {
   ConstraintSet,
-  ConstraintValue,
+  type ConstraintPath,
+  type ConstraintPathSubscriptIndex,
+  type ConstraintValue,
 } from "./Constraint";
 import { makePrimitiveAvailable, makeRawPrimitiveAvailable } from "./Elaborate";
 import { makeTypeUse } from "./LookupDatatype";
@@ -41,7 +41,12 @@ export namespace Conversion {
       return null;
     }
 
-    if (expr.variant === Semantic.ENode.ReactiveReadExpr) {
+    // A computed read, like a reactive read, is the content of the cell its
+    // symbol names.
+    if (
+      expr.variant === Semantic.ENode.ReactiveReadExpr ||
+      expr.variant === Semantic.ENode.ComputedReadExpr
+    ) {
       const inner = sr.exprNodes.get(expr.value);
       if (inner.variant === Semantic.ENode.SymbolValueExpr) {
         return {
@@ -1063,7 +1068,10 @@ export namespace Conversion {
           }
         }
 
-        if (fromExpr.variant === Semantic.ENode.ReactiveReadExpr) {
+        if (
+          fromExpr.variant === Semantic.ENode.ReactiveReadExpr ||
+          fromExpr.variant === Semantic.ENode.ComputedReadExpr
+        ) {
           const inner = sr.exprNodes.get(fromExpr.value);
           if (inner.variant === Semantic.ENode.SymbolValueExpr) {
             const path: ConstraintPath = {
@@ -1127,6 +1135,21 @@ export namespace Conversion {
                 this.possibleVariants.delete(r);
               }
             }
+          }
+        } else if (cv.kind === "union-one-of") {
+          // Keep only the variants that are one of these
+          const remove = new Set<Semantic.TypeUseId>();
+          this.possibleVariants.forEach((m) => {
+            const typeDef = sr.typeUseNodes.get(m).type;
+            const isOneOf = cv.alternatives.some(
+              (a) => a.typeUse === m || (a.typeDef !== undefined && a.typeDef === typeDef)
+            );
+            if (!isOneOf) {
+              remove.add(m);
+            }
+          });
+          for (const r of remove) {
+            this.possibleVariants.delete(r);
           }
         }
       },
@@ -3056,6 +3079,36 @@ export namespace Conversion {
           if (finalResult.ok) {
             return finalResult;
           }
+        }
+      }
+
+      // A truthiness check tests the value as declared, not what narrowing
+      // has proven about it: `if v` inside `if v { ... }` is always true, but
+      // legal. The narrowed value (`Box`) has no truthiness, and the union it
+      // came from, narrowed by the same constraints, has no nullish member
+      // left to test -- so test the union without them.
+      const resolvedTargetTypeDef = sr.typeDefNodes.get(
+        sr.typeUseNodes.get(sr.e.resolveAlias(targetTypeUseId)).type
+      );
+      if (
+        resolvedTargetTypeDef.variant === Semantic.ENode.PrimitiveDatatype &&
+        resolvedTargetTypeDef.primitive === EPrimitive.bool &&
+        ((sourceExpr.variant === Semantic.ENode.UnionToValueCastExpr &&
+          sourceExpr.canBeUnwrappedForLHS) ||
+          (sourceExpr.variant === Semantic.ENode.UnionToUnionCastExpr &&
+            sourceExpr.castComesFromNarrowingAndMayBeUnwrapped))
+      ) {
+        const declaredResult = MakeConversion(
+          sr,
+          sourceExpr.expr,
+          targetTypeUseId,
+          ConstraintSet.empty(),
+          sourceloc,
+          mode,
+          unsafe
+        );
+        if (declaredResult.ok) {
+          return declaredResult;
         }
       }
       return { ok: false, error: conversionPlan.message };

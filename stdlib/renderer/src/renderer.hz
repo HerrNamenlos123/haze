@@ -1495,14 +1495,30 @@ export opaque ref struct Renderer {
     // Renderer allocates nothing at all -- which is the whole point, since the
     // arrays are rebuilt from scratch every frame either way.
     fn reset(frame: mut Frame, canvas: mut Canvas) {
-        this.canvas = canvas;
-        this.frame = frame;
+        this.retarget(frame, canvas);
         this.primitives.clear();
         this._clipStack.clear();
         this.meshVertices.clear();
         this.textureRuns.clear();
         this.transforms.clear();
         this.transforms.push(mat4.identity());
+    }
+
+    // Points this Renderer at another frame and canvas, keeping everything it
+    // has recorded. For a Renderer that outlives frames and is drawn into
+    // outside of one -- a UI canvas's context (ui_components.CanvasWrapper.
+    // getContext) records whenever, and is committed in whichever frame comes
+    // next.
+    fn retarget(frame: mut Frame, canvas: mut Canvas) {
+        this.canvas = canvas;
+        this.frame = frame;
+    }
+
+    // Whether anything has been drawn since the last reset -- i.e. whether a
+    // commit() would change the canvas at all, rather than only clearing it
+    // or reloading it unchanged.
+    fn hasPendingWork(): bool {
+        return this.primitives.length > 0 || this.meshVertices.length > 0;
     }
 
     // Records that primitives[start..start+count) need `texture` bound at

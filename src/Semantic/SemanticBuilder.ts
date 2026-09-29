@@ -1052,8 +1052,12 @@ export class SemanticBuilder {
       };
     }
 
-    // Reactive read: constraint targets the content of the reactive symbol
-    if (expr.variant === Semantic.ENode.ReactiveReadExpr) {
+    // Reactive read: constraint targets the content of the reactive symbol.
+    // A computed read is the same: the content of the cell its symbol names.
+    if (
+      expr.variant === Semantic.ENode.ReactiveReadExpr ||
+      expr.variant === Semantic.ENode.ComputedReadExpr
+    ) {
       const inner = this.sr.exprNodes.get(expr.value);
       if (inner.variant === Semantic.ENode.SymbolValueExpr) {
         return {

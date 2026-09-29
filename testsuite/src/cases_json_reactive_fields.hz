@@ -1,0 +1,115 @@
+// ============================================================================
+// REGRESSION TEST — this is a real, load-bearing test, not a placeholder.
+//
+// Bug: json.stringify wrote a reactive field (it reads through it), but
+// json.parse could not read one back:
+//
+//   struct VaultFS { entries: rx.Reactive<[]FSEntry>; }
+//   json.parse<VaultCache>(...)
+//   // H7015: json.parse(): type rx.Reactive<[](...)> is not supported
+//
+// So a struct holding a reactive handle -- the way to give a nested array its
+// own reactivity without making the whole containing value reactive -- could
+// not live in a CacheFile at all.
+//
+// Fix: a reactive field is parsed as its plain value and then made reactive
+// the same way rx.reactive<T>(value) / rx.shallowReactive<T>(value) would,
+// so what parse builds is exactly what code would build.
+// ============================================================================
+
+namespace cases_json_reactive_fields {
+
+    export fn register(s: mut testsuite.Suite) {
+
+        s.run(
+            "json reactive fields: a reactive array and a reactive scalar parse back",
+            """
+struct VaultFS {
+    entries: rx.Reactive<[]int>;
+    label: rx.Reactive<str>;
+    width: rx.ShallowReactive<real>;
+}
+
+struct VaultCache {
+    vault: VaultFS | none = none;
+}
+
+fn main(): int {
+    let parsed = json.parse<VaultCache>(\"\"\"{"vault": {"entries": [1, 2], "label": "v", "width": 1.5}}\"\"\");
+    if !parsed {
+        fmt.println(f"parse failed: {parsed}");
+        return 1;
+    }
+    let maybeVault = parsed.vault;
+    if maybeVault is VaultFS {
+        let vault: VaultFS = maybeVault;
+        // The computed only needs the handle, so it captures only that.
+        let entries = vault.entries;
+        let count = rx.computed((): int => entries.length);
+        fmt.println(f"before {rx.get(count)} {vault.label} {vault.width}");
+        vault.entries.push(3);
+        vault.label := "w";
+        fmt.println(f"after {rx.get(count)} {vault.label}");
+    }
+    fmt.println(json.stringify(parsed));
+    return 0;
+}
+""",
+            """
+before 2 v 1.5
+after 3 w
+{"vault":{"entries":[1,2,3],"label":"w","width":1.5}}
+""");
+
+        // The shape that surfaced it: a cached file tree whose entries are a
+        // reactive array of a discriminated union.
+        s.run(
+            "json reactive fields: a reactive array of a discriminated union",
+            """
+struct FSFileEntry {
+    type: "file";
+    filename: str;
+}
+
+struct FSDirEntry {
+    type: "directory";
+    dirname: str;
+    children: []FSEntry;
+}
+
+[[json.discriminator="type"]]
+type FSEntry = FSFileEntry | FSDirEntry;
+
+struct VaultFS {
+    entries: rx.Reactive<[]FSEntry>;
+}
+
+fn main(): int {
+    let parsed = json.parse<VaultFS>(\"\"\"{"entries": [
+        {"type": "directory", "dirname": "notes", "children": [{"type": "file", "filename": "a.md"}]},
+        {"type": "file", "filename": "top.md"}
+    ]}\"\"\");
+    if !parsed {
+        fmt.println(f"parse failed: {parsed}");
+        return 1;
+    }
+    for entry in parsed.entries {
+        if entry is FSDirEntry {
+            fmt.println(f"dir {entry.dirname} {entry.children.length}");
+        } else if entry is FSFileEntry {
+            fmt.println(f"file {entry.filename}");
+        }
+    }
+    let again = json.parse<VaultFS>(json.stringify(parsed));
+    assert(again);
+    fmt.println(f"round trip {again.entries.length}");
+    return 0;
+}
+""",
+            """
+dir notes 1
+file top.md
+round trip 2
+""");
+    }
+}

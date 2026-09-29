@@ -85,7 +85,7 @@ namespace tilemath {
     }
 }
 
-ref struct TileKey {
+struct TileKey {
     pageIndex: int = 0;
     level: int = 0;
     tx: int = 0;

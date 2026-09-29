@@ -59,6 +59,15 @@ export type ConstraintValue =
       operation: "is" | "isNot";
       typeUse?: Semantic.TypeUseId;
       typeDef?: Semantic.TypeDefId;
+    }
+  | {
+      // The value is one of these variants: the inverse of several `isNot`s
+      // about it (`if !v` for `v: A | null | none` leaves `null | none`).
+      kind: "union-one-of";
+      alternatives: {
+        typeUse?: Semantic.TypeUseId;
+        typeDef?: Semantic.TypeDefId;
+      }[];
     };
 
 // ============================================================================
@@ -85,21 +94,29 @@ export function pathToKey(path: ConstraintPath): string {
   return key;
 }
 
-function pathConstraintKey(
-  path: ConstraintPath,
-  value: ConstraintValue
-): string {
-  const base = pathToKey(path);
+function valueKey(value: ConstraintValue): string {
   if (value.kind === "comparison") {
-    return [base, "cmp", value.operation, value.value].join("|");
+    return ["cmp", value.operation, value.value].join("|");
+  }
+  if (value.kind === "union-one-of") {
+    return [
+      "oneof",
+      ...value.alternatives.map((a) => `${a.typeUse ?? ""}/${a.typeDef ?? ""}`),
+    ].join("|");
   }
   return [
-    base,
     "union",
     value.operation,
     value.typeUse ?? "",
     value.typeDef ?? "",
   ].join("|");
+}
+
+function pathConstraintKey(
+  path: ConstraintPath,
+  value: ConstraintValue
+): string {
+  return `${pathToKey(path)}|${valueKey(value)}`;
 }
 
 export function pathsMatch(a: ConstraintPath, b: ConstraintPath): boolean {
@@ -189,23 +206,7 @@ export function isPathPrefix(
 }
 
 function constraintKey(c: Constraint): string {
-  if (c.constraintValue.kind === "comparison") {
-    return [
-      "cmp",
-      c.variableSymbol,
-      c.constraintValue.operation,
-      c.constraintValue.value,
-    ].join("|");
-  }
-
-  // union constraint
-  return [
-    "union",
-    c.variableSymbol,
-    c.constraintValue.operation,
-    c.constraintValue.typeUse ?? "",
-    c.constraintValue.typeDef ?? "",
-  ].join("|");
+  return `${c.variableSymbol}|${valueKey(c.constraintValue)}`;
 }
 
 function invertComparison(op: EBinaryOperation): EBinaryOperation {
@@ -227,48 +228,54 @@ function invertComparison(op: EBinaryOperation): EBinaryOperation {
   }
 }
 
-function invertConstraint(c: Constraint): Constraint {
-  const v = c.constraintValue;
-
-  if (v.kind === "comparison") {
-    return {
-      variableSymbol: c.variableSymbol,
-      constraintValue: {
-        kind: "comparison",
-        operation: invertComparison(v.operation),
-        value: v.value,
+// The inverse of a conjunction of facts about ONE value. A constraint set can
+// only say "and", and the inverse of `A && B` is `!A || !B`, so it holds only
+// where that disjunction is itself a single fact: one fact inverts, several
+// `isNot`s (a truthiness check on `A | null | none`) invert to "one of them",
+// and anything else (`n isNot none && n > 2`) inverts to no fact at all.
+// Inverting each fact on its own (`!A && !B`) claimed far more than is known:
+// `n is none && n <= 2`, or the empty union `is null && is none`.
+function invertFacts(values: ConstraintValue[]): ConstraintValue[] {
+  if (values.length === 1) {
+    const v = values[0];
+    if (v.kind === "comparison") {
+      return [
+        {
+          kind: "comparison",
+          operation: invertComparison(v.operation),
+          value: v.value,
+        },
+      ];
+    }
+    if (v.kind === "union-one-of") {
+      return v.alternatives.map((a) => ({
+        kind: "union" as const,
+        operation: "isNot" as const,
+        typeUse: a.typeUse,
+        typeDef: a.typeDef,
+      }));
+    }
+    return [
+      {
+        kind: "union",
+        operation: v.operation === "is" ? "isNot" : "is",
+        typeUse: v.typeUse,
+        typeDef: v.typeDef,
       },
-    };
+    ];
   }
-
-  // union constraint
-  return {
-    variableSymbol: c.variableSymbol,
-    constraintValue: {
-      kind: "union",
-      operation: v.operation === "is" ? "isNot" : "is",
-      typeUse: v.typeUse,
-      typeDef: v.typeDef,
-    },
-  };
-}
-
-function invertConstraintValue(v: ConstraintValue): ConstraintValue {
-  if (v.kind === "comparison") {
-    return {
-      kind: "comparison",
-      operation: invertComparison(v.operation),
-      value: v.value,
-    };
+  if (values.every((v) => v.kind === "union" && v.operation === "isNot")) {
+    return [
+      {
+        kind: "union-one-of",
+        alternatives: values.map((v) => {
+          assert(v.kind === "union");
+          return { typeUse: v.typeUse, typeDef: v.typeDef };
+        }),
+      },
+    ];
   }
-
-  // union constraint
-  return {
-    kind: "union",
-    operation: v.operation === "is" ? "isNot" : "is",
-    typeUse: v.typeUse,
-    typeDef: v.typeDef,
-  };
+  return [];
 }
 
 export class ConstraintSet {
@@ -474,16 +481,31 @@ export class ConstraintSet {
       return empty;
     }
 
-    const inv = new ConstraintSet();
-
-    // Invert legacy constraints
+    // Every entry is about the one value. A legacy entry on a plain variable
+    // and a path entry on it record the same facts (see
+    // distinctSymbolCount()), so invert their union once -- the facts
+    // together, never each on its own (see invertFacts()) -- and record the
+    // result in both forms again.
+    const facts = new Map<string, ConstraintValue>();
+    let legacySymbol: Semantic.SymbolId | undefined;
     for (const c of this.map.values()) {
-      inv.add(invertConstraint(c));
+      legacySymbol = c.variableSymbol;
+      facts.set(valueKey(c.constraintValue), c.constraintValue);
+    }
+    let path: ConstraintPath | undefined;
+    for (const entry of this.pathMap.values()) {
+      path = entry.path;
+      facts.set(valueKey(entry.value), entry.value);
     }
 
-    // Invert path-based constraints
-    for (const { path, value } of this.pathMap.values()) {
-      inv.addPath(path, invertConstraintValue(value));
+    const inv = new ConstraintSet();
+    for (const value of invertFacts([...facts.values()])) {
+      if (legacySymbol !== undefined) {
+        inv.add({ variableSymbol: legacySymbol, constraintValue: value });
+      }
+      if (path) {
+        inv.addPath(path, value);
+      }
     }
 
     // cache both directions
@@ -514,6 +536,13 @@ export class ConstraintSet {
         constraints.push(
           `${symbol.name} ${BinaryOperationToString(constraint.constraintValue.operation)} ${Semantic.serializeExpr(sr, constraint.constraintValue.value)}`
         );
+      } else if (constraint.constraintValue.kind === "union-one-of") {
+        const alternatives = constraint.constraintValue.alternatives.map((a) =>
+          a.typeDef
+            ? Semantic.serializeTypeDef(sr, a.typeDef)
+            : Semantic.serializeTypeUse(sr, a.typeUse!)
+        );
+        constraints.push(`${symbol.name} is one of ${alternatives.join(", ")}`);
       } else if (constraint.constraintValue.typeDef) {
         constraints.push(
           `${symbol.name} ${constraint.constraintValue.operation} ${Semantic.serializeTypeDef(sr, constraint.constraintValue.typeDef)}`

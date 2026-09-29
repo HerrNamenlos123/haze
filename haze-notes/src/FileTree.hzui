@@ -1,0 +1,229 @@
+from ui_widgets import ScrollView, ScrollViewComponent, ScrollViewSlotContent
+
+// A file tree of any size. Only the rows in view are ever built: every row
+// has the same height, so a subtree's row count is its height, and each run
+// of rows outside the viewport collapses into a single spacer div. Clay caps
+// a layout at 8192 elements, so this is what lets a huge open directory
+// render at all, not only what makes it fast.
+//
+// FileTree lays the tree out and windows its top level; each FileTreeEntry
+// then windows its own children the same way, recursively.
+
+// Rows built past each edge of the viewport, so a row scrolling in is
+// already there.
+const OVERSCAN_ROWS = 8;
+
+// How many rows each part of a tree takes up with the current expansion
+// state -- the one thing that has to be known about the WHOLE tree to build
+// only the part in view. Mirrors the FSEntry tree, but only as deep as it is
+// open: a file or a closed directory is a leaf.
+struct FileTreeLayout {
+    // Rows this entry takes: its own, plus every row below it while open. A
+    // list of entries has no row of its own and counts only theirs.
+    rows: int = 1;
+    // Whether `children` and `starts` are laid out.
+    open: bool = false;
+    // One per child, in order...
+    children: []FileTreeLayout = [];
+    // ...and the row each child starts at, counted from the first child's.
+    // One longer than `children`: the last is the rows of all of them.
+    starts: []int = [];
+}
+
+// One child to build, and which of its rows are in view: [windowStart,
+// windowEnd), counted from its own row.
+struct FileTreeChild {
+    index: int;
+    entry: FSEntry;
+    layout: FileTreeLayout;
+    windowStart: int;
+    windowEnd: int;
+}
+
+// The part of a list of entries that is in view. The rows on either side of
+// it are not built, only held open by a spacer.
+struct FileTreeWindow {
+    rowsBefore: int = 0;
+    children: []FileTreeChild = [];
+    rowsAfter: int = 0;
+}
+
+// Lays out a list of entries: the top level, or an open directory's children.
+fn layoutEntries(entries: []FSEntry, expanded: LinearMap<str, bool>): FileTreeLayout :: final {
+    let children: []FileTreeLayout = [];
+    let starts: []int = [0];
+    let rows = 0;
+    for entry in entries {
+        let child = layoutEntry(entry, expanded);
+        rows = rows + child.rows;
+        children.push(child);
+        starts.push(rows);
+    }
+    return FileTreeLayout { rows: rows, open: true, children: children, starts: starts };
+}
+
+fn layoutEntry(entry: FSEntry, expanded: LinearMap<str, bool>): FileTreeLayout :: final {
+    if entry is FSDirEntry {
+        if expanded.has(entry.fullPath) {
+            let inner = layoutEntries(entry.children, expanded);
+            return FileTreeLayout {
+                rows: inner.rows + 1,
+                open: true,
+                children: inner.children,
+                starts: inner.starts,
+            };
+        }
+    }
+    return FileTreeLayout {};
+}
+
+// The index of the first of `starts` (ascending) that is at least `row`.
+fn firstStartFrom(starts: []int, row: int): int {
+    let lo = 0;
+    let hi = starts.length;
+    while lo < hi {
+        let mid = (lo + hi) / 2;
+        if starts[mid] < row {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    return lo;
+}
+
+// The children of a laid-out list that have a row in [windowStart,
+// windowEnd), counted from the first child's row. Found by binary search, so
+// a directory of a hundred thousand files costs no more to window than one
+// of ten.
+fn windowOf(entries: []FSEntry, layout: FileTreeLayout, windowStart: int, windowEnd: int): FileTreeWindow {
+    if !layout.open {
+        return FileTreeWindow {};
+    }
+    let count = layout.children.length;
+    let total = layout.starts[count];
+    let start = max(windowStart, 0);
+    let end = min(windowEnd, total);
+    if start >= end {
+        return FileTreeWindow { rowsBefore: total };
+    }
+
+    // The child holding row `start`, and the first one starting at `end`.
+    let first = firstStartFrom(layout.starts, start + 1) - 1;
+    let last = firstStartFrom(layout.starts, end);
+
+    let children: []FileTreeChild = [];
+    for (let i = first; i < last; i++) {
+        let entry = entries[i];
+        let childLayout = layout.children[i];
+        let childStart = layout.starts[i];
+        children.push(FileTreeChild {
+            index: i,
+            entry: entry,
+            layout: childLayout,
+            windowStart: max(start - childStart, 0),
+            windowEnd: min(end - childStart, childLayout.rows),
+        });
+    }
+    return FileTreeWindow {
+        rowsBefore: layout.starts[first],
+        children: children,
+        rowsAfter: total - layout.starts[last],
+    };
+}
+
+@props
+entries: Reactive<[]FSEntry>;
+expandedEntries: Reactive<[]str>;
+rowHeight: real = 22.0;
+indent: real = 12.0;
+
+@emit
+select: (str,);
+toggle: (str, bool,);
+
+@setup
+// The top level as a plain array, so the layout and the window index into it
+// exactly as they do into a directory's children.
+let topLevel = computed((): []FSEntry => {
+    let entries: []FSEntry = [];
+    for entry in props.entries {
+        entries.push(entry);
+    }
+    return entries;
+});
+
+// The open directories, by path -- what the layout looks them up by. Open
+// state lives with the owner of `expandedEntries`, never in an entry: an
+// entry is unmounted whenever it scrolls out of view or a parent closes, and
+// a directory has to stay open through both.
+let expandedPaths = computed((): LinearMap<str, bool> => {
+    let paths = LinearMap<str, bool>();
+    for path in props.expandedEntries {
+        paths.set(path, true);
+    }
+    return paths;
+});
+
+let scrollView = ui.componentRef<ScrollView>();
+
+// Counts rebuilds of the layout. An entry holds data it cannot compare (it is
+// full of arrays), so this is what tells it that data changed.
+let builds: ref Box<int> = { value: 0 };
+let layout = computed((): FileTreeLayout => {
+    builds.value = builds.value + 1;
+    return layoutEntries(rx.get(topLevel), rx.get(expandedPaths));
+});
+
+// The rows are ScrollView's slot content, and a slot only re-runs when
+// ScrollView's template does: when something the slot READ changed, never
+// merely because this component re-rendered. So everything the rows are
+// built from is read through here.
+let visible = computed((): FileTreeWindow => {
+    let tree = rx.get(layout);
+    let view = rx.get(scrollView);
+    if !view {
+        return FileTreeWindow { rowsBefore: tree.rows };
+    }
+    let range = view.scroll.visibleRange(props.rowHeight, tree.rows, OVERSCAN_ROWS);
+    return windowOf(rx.get(topLevel), tree, range.x, range.y);
+});
+
+let toggle = (path: str) => {
+    let expanded = props.expandedEntries;
+    // A reactive array has no remove: closing rebuilds it without the path.
+    let kept: []Reactive<str> = [];
+    let wasOpen = false;
+    for open in expanded {
+        if open == path {
+            wasOpen = true;
+        } else {
+            kept.push(reactive<str>(open));
+        }
+    }
+    if wasOpen {
+        expanded := kept;
+    } else {
+        expanded.push(path);
+    }
+    emits.toggle(path, !wasOpen);
+};
+
+@template [w-grow h-grow]
+
+ScrollView [] ref=scrollView {
+    #content {
+        div if=[rx.get(visible).rowsBefore > 0]
+            [w-grow h-[rx.get(visible).rowsBefore as real * props.rowHeight]px]
+        FileTreeEntry for=[child in rx.get(visible).children] key=[child.index] []
+            entry=[child.entry] layout=[child.layout]
+            version=[builds.value]
+            windowStart=[child.windowStart] windowEnd=[child.windowEnd]
+            rowHeight=[props.rowHeight] indent=[props.indent]
+            @select=[(path: str) => { emits.select(path); }]
+            @toggle=toggle
+        {}
+        div if=[rx.get(visible).rowsAfter > 0]
+            [w-grow h-[rx.get(visible).rowsAfter as real * props.rowHeight]px]
+    }
+}

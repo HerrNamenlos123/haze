@@ -66,6 +66,7 @@ import {
   makeRawFunctionDatatypeAvailable,
   makeStackArrayDatatypeAvailable,
   makeTypeUse,
+  rejectNamespaceAsValueType,
 } from "./LookupDatatype";
 import { Semantic } from "./SemanticTypes";
 import { findClosestByLevenshtein } from "../utils";
@@ -5501,6 +5502,14 @@ export class SemanticElaborator {
     let type =
       (variableSymbol.type && this.elaborateDatatype(variableSymbol.type)) ||
       null;
+    if (type !== null) {
+      rejectNamespaceAsValueType(
+        this.sr,
+        type,
+        `Variable '${variableSymbol.name}'`,
+        variableSymbol.sourceloc
+      );
+    }
 
     let comptimeValue: Semantic.ExprId | null = null;
     let global = false;
@@ -5517,6 +5526,12 @@ export class SemanticElaborator {
         undefined
       );
       type = _expr.type;
+      rejectNamespaceAsValueType(
+        this.sr,
+        type,
+        `Variable '${variableSymbol.name}'`,
+        variableSymbol.sourceloc
+      );
       global = true;
       comptimeValue = exprId;
     } else if (variableSymbol.globalValueInitializer) {
@@ -5889,6 +5904,12 @@ export class SemanticElaborator {
     if (onlyElaborateType) {
       return;
     }
+    rejectNamespaceAsValueType(
+      this.sr,
+      typeId,
+      `Field '${symbol.name}'`,
+      symbol.sourceloc
+    );
     const typeInstance = this.sr.typeUseNodes.get(typeId);
     const type = this.sr.typeDefNodes.get(typeInstance.type);
     const [variable, variableId] = this.sr.b.addSymbol(this.sr, {
@@ -10532,6 +10553,7 @@ export class SemanticElaborator {
         targetExprId,
         targetExpr.instanceIds
       );
+
       return this.sr.b.addExpr(this.sr, {
         variant: Semantic.ENode.ReactiveWriteExpr,
         instanceIds: [...targetExpr.instanceIds],
@@ -14633,7 +14655,9 @@ export class SemanticElaborator {
       memberName !== "hasAttribute" &&
       memberName !== "isAttributeOfType" &&
       memberName !== "getAttribute" &&
-      memberName !== "hasField"
+      memberName !== "hasField" &&
+      memberName !== "hasFieldDefault" &&
+      memberName !== "fieldDefault"
     ) {
       return null;
     }
@@ -14677,6 +14701,40 @@ export class SemanticElaborator {
           );
         });
       return this.sr.b.literal(hasField, callExpr.sourceloc);
+    }
+
+    // A field's declared default (`count: int = 3`): whether there is one,
+    // and the value itself -- the very expression a struct literal that
+    // omits the field is filled with (see makeStructLiteral), so anything
+    // built from it (json.parse filling an absent key) agrees with a literal
+    // by construction.
+    if (memberName === "hasFieldDefault" || memberName === "fieldDefault") {
+      this.assertParameterN(callExpr, 1, memberName);
+      const fieldName = this.evalCTFEStringArgument(
+        callExpr.arguments[0],
+        memberName,
+        callExpr.sourceloc
+      );
+      const fieldDefault =
+        resolvedTypeDef.variant === Semantic.ENode.StructDatatype
+          ? resolvedTypeDef.memberDefaultValues.find(
+              (d) => d.memberName === fieldName
+            )
+          : undefined;
+      if (memberName === "hasFieldDefault") {
+        return this.sr.b.literal(
+          fieldDefault !== undefined,
+          callExpr.sourceloc
+        );
+      }
+      if (fieldDefault === undefined) {
+        throw new CompilerError(
+          `Field '${fieldName}' of '${Semantic.serializeTypeUse(this.sr, expr.type)}' has no default value`,
+          callExpr.sourceloc,
+          HazeErrorCode.FieldHasNoDefaultValue
+        );
+      }
+      return [this.sr.exprNodes.get(fieldDefault.value), fieldDefault.value];
     }
 
     const annotations: ASTMetaAnnotationItem[] =
@@ -16360,6 +16418,12 @@ export class SemanticElaborator {
             () => this.elaborateDatatype(collectedVariableSymbol.type!)
           );
           assert(variableSymbol.type);
+          rejectNamespaceAsValueType(
+            this.sr,
+            variableSymbol.type,
+            `Variable '${variableSymbol.name}'`,
+            s.sourceloc
+          );
         }
 
         if (variableSymbol.type) {
@@ -16546,6 +16610,14 @@ export class SemanticElaborator {
 
         if (!variableSymbol.type) {
           variableSymbol.type = value?.type || null;
+          if (variableSymbol.type) {
+            rejectNamespaceAsValueType(
+              this.sr,
+              variableSymbol.type,
+              `Variable '${variableSymbol.name}'`,
+              value?.sourceloc ?? s.sourceloc
+            );
+          }
 
           // if (variableSymbol.type && value) {
           //   const variableSymbolType = this.sr.typeUseNodes.get(variableSymbol.type);
@@ -18594,10 +18666,12 @@ export class SemanticElaborator {
           }
         }
 
-        // Apply narrowing for reactive-wrapped union symbols (e.g. Reactive<A | B> narrowed via `if value is A`)
+        // Apply narrowing for reactive-wrapped union symbols (e.g. Reactive<A | B> narrowed via `if value is A`),
+        // and for computed ones (Computed<A | none> narrowed via `if value`)
         if (
           type.variant === Semantic.ENode.ReactiveDatatype ||
-          type.variant === Semantic.ENode.ShallowReactiveDatatype
+          type.variant === Semantic.ENode.ShallowReactiveDatatype ||
+          type.variant === Semantic.ENode.ComputedDatatype
         ) {
           const wrappedTypeUse = this.sr.typeUseNodes.get(
             this.sr.e.resolveAlias(type.wrappedType)

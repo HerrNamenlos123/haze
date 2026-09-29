@@ -2787,48 +2787,9 @@ hzstd_slot_read(&__tmp_result, __slot, sizeof(__tmp_result));`,
           loweredTargetUnion.variant === Lowered.ENode.TaggedUnionDatatype
       );
 
-      if (
-        loweredSourceUnion.optimizeAsRawPointer ||
-        loweredTargetUnion.optimizeAsRawPointer
-      ) {
-        let isFine = false;
-        // This is not a true ultimate solution, it just checks if the union actually remains the same,
-        // and if so, allows the direct conversion. This takes care of 90% of common cases.
-        if (
-          loweredSourceUnion.members.length ===
-            loweredTargetUnion.members.length &&
-          loweredSourceUnion.members.every((m, i) => {
-            if (
-              typeof m === "number" &&
-              typeof loweredTargetUnion.members[i] === "number"
-            ) {
-              return m === loweredTargetUnion.members[i];
-            }
-            if (
-              typeof m !== "number" &&
-              typeof loweredTargetUnion.members[i] !== "number"
-            ) {
-              return (
-                m.tag === loweredTargetUnion.members[i].tag &&
-                m.type === loweredTargetUnion.members[i].type
-              );
-            }
-            return false;
-          }) &&
-          loweredSourceUnion.optimizeAsRawPointer ===
-            loweredTargetUnion.optimizeAsRawPointer
-        ) {
-          isFine = true;
-        }
-
-        if (!isFine) {
-          assert(
-            false,
-            "Union to Union conversion if one is nullptr optimized is not implemented yet (properly)"
-          );
-        }
-      }
-
+      // Either side may be a bare-pointer union (`ref Struct | none`, see
+      // optimizeAsRawPointer); the mapping is built the same way regardless,
+      // and the code generator reads and builds each representation.
       let mapping = lr.loweredUnionMappings.find(
         (m) => m.from === loweredSourceUnionId && m.to === loweredTargetUnionId
       );

@@ -1,0 +1,80 @@
+// One entry of a FileTree and, while it is an open directory, the part of its
+// subtree that is in view -- by mounting itself for each child in view.
+
+// A row's text. A directory's is marked open or closed.
+fn entryLabel(entry: FSEntry, open: bool): str {
+    if entry is FSDirEntry {
+        return (open ? "- " : "+ ") + entry.dirname;
+    }
+    if entry is FSFileEntry {
+        return entry.filename;
+    }
+    return "";
+}
+
+fn entryChildren(entry: FSEntry): []FSEntry {
+    if entry is FSDirEntry {
+        return entry.children;
+    }
+    let empty: []FSEntry = [];
+    return empty;
+}
+
+@props
+// What this entry shows, and how its subtree is laid out. Neither can be
+// compared (they hold arrays), so `version` stands in for both.
+[[hzui.untracked]]
+entry: FSEntry;
+[[hzui.untracked]]
+layout: FileTreeLayout;
+// Changes whenever the tree or which directories are open does.
+version: int;
+// The rows of this subtree to build, counted from this entry's own row:
+// [windowStart, windowEnd). An entry is only mounted when the viewport
+// crosses its subtree, and one wholly inside the viewport always gets
+// [0, layout.rows) -- so scrolling re-renders only the entries on the
+// viewport's edges.
+windowStart: int;
+windowEnd: int;
+rowHeight: real;
+indent: real;
+
+@emit
+select: (str,);
+toggle: (str,);
+
+@setup
+// The children start one row below this entry's own.
+let visible = computed((): FileTreeWindow => windowOf(entryChildren(props.entry),
+    props.layout, props.windowStart - 1, props.windowEnd - 1));
+
+let onRowClick = (e: PointerEvent) => {
+    let entry = props.entry;
+    if entry is FSDirEntry {
+        emits.toggle(entry.fullPath);
+    } else {
+        emits.select(entry.fullPath);
+    }
+};
+
+@template [col w-grow h-fit]
+
+// Built even when it is just above the viewport: it is one row, and it keeps
+// every subtree exactly `layout.rows` tall.
+div [w-grow h-[props.rowHeight]px items-center cursor-pointer] @click=onRowClick {
+    text [text-nowrap] [entryLabel(props.entry, props.layout.open)]
+}
+
+div if=[props.layout.open] [col w-grow h-fit pl-[props.indent]px] {
+    div if=[rx.get(visible).rowsBefore > 0]
+        [w-grow h-[rx.get(visible).rowsBefore as real * props.rowHeight]px]
+    FileTreeEntry for=[child in rx.get(visible).children] key=[child.index] []
+        entry=[child.entry] layout=[child.layout] version=[props.version]
+        windowStart=[child.windowStart] windowEnd=[child.windowEnd]
+        rowHeight=[props.rowHeight] indent=[props.indent]
+        @select=[(path: str) => { emits.select(path); }]
+        @toggle=[(path: str) => { emits.toggle(path); }]
+    {}
+    div if=[rx.get(visible).rowsAfter > 0]
+        [w-grow h-[rx.get(visible).rowsAfter as real * props.rowHeight]px]
+}

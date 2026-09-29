@@ -73,6 +73,15 @@ fn main(): int {
     cases_do_block_emit.register(suite);
     cases_error_propagation_single_eval.register(suite);
     cases_union_member_access.register(suite);
+    cases_namespace_as_type.register(suite);
+    cases_raw_pointer_union_conversion.register(suite);
+    cases_fingerprint_literal.register(suite);
+    cases_json_recursive.register(suite);
+    cases_json_field_defaults.register(suite);
+    cases_json_reactive_fields.register(suite);
+    cases_computed_narrowing.register(suite);
+    cases_narrowed_recheck.register(suite);
+    cases_narrowing_inverse.register(suite);
 
     return testsuite.runAll(config, suite);
 }

@@ -120,6 +120,13 @@ import { Semantic } from "./SemanticTypes";
 //     real-world case (reordering/renaming/retyping variants). Revisit if a
 //     case surfaces where only the raw discriminant value changed with name
 //     and order held fixed.
+//
+// 14. A LITERAL TYPE FOLDS ITS UNDERLYING TYPE AND ITS VALUE. It has exactly
+//     one value and the underlying type's layout, but the value is part of
+//     its identity: a struct field `type: "file"` versus `type: "directory"`
+//     is what a discriminated union is keyed on, so the two must never
+//     fingerprint equal. The value goes through foldLiteralValue, the same
+//     encoding annotations use, which also keeps `1` apart from `"1"`.
 
 const FNV_OFFSET_BASIS = 0xcbf29ce484222325n;
 const FNV_PRIME = 0x100000001b3n;
@@ -472,11 +479,20 @@ function computeTypeDefFingerprintUncached(
       return state;
     }
 
+    case Semantic.ENode.LiteralDatatype: {
+      // Invariant 14: exactly one value, the layout of the underlying type,
+      // and an identity that includes the value -- `"file"` and
+      // `"directory"` as the tag of a discriminated union are what tells its
+      // variants apart, so they must not fingerprint equal.
+      let state = fnv1a64FoldString(fnv1a64Init(), "Literal");
+      state = fnv1a64FoldBigint(state, computeTypeUseFingerprint(sr, def.type));
+      return foldLiteralValue(sr, state, def.literalValue);
+    }
+
     case Semantic.ENode.ParameterPackDatatype:
     case Semantic.ENode.GenericParameterDatatype:
     case Semantic.ENode.NamespaceDatatype:
-    case Semantic.ENode.UnionTagRefDatatype:
-    case Semantic.ENode.LiteralDatatype: {
+    case Semantic.ENode.UnionTagRefDatatype: {
       throw new InternalError(
         `T.fingerprint is not defined for ${Semantic.ENode[def.variant]} -- ` +
           "this variant should not be reachable via reflection on well-typed, " +

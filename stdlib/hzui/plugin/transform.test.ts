@@ -340,6 +340,88 @@ describe("events", () => {
   });
 });
 
+describe("canvas", () => {
+  const tpl = (body: string) => gen(`import ui_components\n@template\n${body}`);
+
+  // A canvas is drawn through ui_components.canvas(): by its draw function,
+  // which the runtime runs whenever the picture may have changed, and/or
+  // through the context behind its ref. Neither takes a children closure --
+  // a canvas has no children.
+
+  test("@render is canvas()'s draw function", () => {
+    const out = tpl("canvas [w-grow h-grow] @render=draw");
+    expect(out).toContain("ui.canvas({ id: 1 }, draw,");
+    expect(out).toContain("presets.wGrow(),");
+    expect(out).toContain("presets.hGrow()");
+    expect(out).not.toContain("(): void =>");
+  });
+
+  test("a canvas ref's types come with the dialect", () => {
+    // `let c: CanvasRef = canvasRef();`, and CanvasWrapper for what it holds.
+    expect(DIALECT_IMPORTS).toContain("CanvasRef");
+    expect(DIALECT_IMPORTS).toContain("CanvasWrapper");
+  });
+
+  test("without @render the canvas is drawn only through its ref", () => {
+    const out = tpl("canvas [w-grow] ref=surface");
+    expect(out).toContain("ui.canvas({ id: 1, elementRef: surface },");
+    expect(out).toContain("presets.wGrow()");
+    expect(out).not.toContain("(): void =>");
+    expect(tpl("canvas [] ref=surface")).toContain(
+      "ui.canvas({ id: 1, elementRef: surface });"
+    );
+  });
+
+  test("both at once: a ref alongside a draw function", () => {
+    expect(tpl("canvas [] ref=surface @render=draw")).toContain(
+      "ui.canvas({ id: 1, elementRef: surface }, draw);"
+    );
+  });
+
+  test("the draw function is an ordinary value, bracketed if it must be", () => {
+    expect(tpl("canvas [] @render=[painter.draw]")).toContain(
+      "ui.canvas({ id: 1 }, painter.draw);"
+    );
+  });
+
+  test("attributes are CanvasProps fields", () => {
+    expect(tpl("canvas [] msaaSamples=1 postEffect=effect")).toContain(
+      "ui.canvas({ id: 1, msaaSamples: 1, postEffect: effect });"
+    );
+  });
+
+  test("a canvas takes a sibling id like any element", () => {
+    const out = tpl('text [] ["a"]\ncanvas [] @render=draw\ntext [] ["b"]');
+    expect(out).toContain("ui.canvas({ id: 2 }, draw);");
+    expect(out).toContain('ui.text({ id: 3, text: "b" });');
+  });
+
+  test("a canvas has no children, and no content", () => {
+    expect(() => tpl("canvas [] {\n    text [] [\"a\"]\n}")).toThrow(
+      /a canvas has no children/
+    );
+    expect(() => tpl("canvas [] [draw]")).toThrow(/@render=draw/);
+  });
+
+  test("a canvas has no DivProps events", () => {
+    // CanvasProps carries no callbacks at all; the element to put a pointer
+    // handler on is a div around the canvas.
+    expect(() => tpl("canvas [] @click=a")).toThrow(
+      /'@click' .*wrap the canvas in a div/
+    );
+  });
+
+  test("one draw function per canvas", () => {
+    expect(() => tpl("canvas [] @render=a @render=b")).toThrow(
+      /more than one '@render'/
+    );
+  });
+
+  test("@render belongs to canvas only", () => {
+    expect(() => tpl("div [] @render=draw")).toThrow(/unknown event '@render'/);
+  });
+});
+
 describe("slots", () => {
   const declare = (decl: string, provide: string) =>
     gen(
@@ -473,10 +555,18 @@ describe("dialect rewrites", () => {
     );
   });
 
+  test("canvasRef is a method on ui too", () => {
+    expect(setup("let c = canvasRef();")).toContain("let c = ui.canvasRef();");
+    expect(setup("let c = ui.canvasRef();")).toContain(
+      "let c = ui.canvasRef();"
+    );
+  });
+
   test("a longer name that merely ends in a dialect name is left alone", () => {
     expect(setup("let s = myElementRef<int>(0);")).toContain(
       "let s = myElementRef<int>(0);"
     );
+    expect(setup("let s = myCanvasRef();")).toContain("let s = myCanvasRef();");
   });
 
   test("props reads become live reads of the instance", () => {
