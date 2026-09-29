@@ -189,6 +189,11 @@ ref struct DocumentRenderer {
     viewport: Viewport = {};
     imageCache: mut ImageTextureCache = {};
 
+    // The document the tiles were drawn from -- render()'s documentId. A tile
+    // is cached by page, level and position alone, so this is the only thing
+    // that tells it apart from the same tile of another document.
+    renderedDocument: int = -1;
+
     // Zoom-settle tracking (see render() below).
     lastZoomPxPerMm: real = 0.0;
     zoomStableFrames: int = 0;
@@ -221,8 +226,8 @@ ref struct DocumentRenderer {
     // level, forcing a full re-tile (and, combined with clearing the
     // shapes' own cached bbox/outline/tesselation -- see
     // documents.hz's clearShapeCache -- a full re-render) on the next
-    // render() call. For manually invalidating stale-looking content
-    // during development.
+    // render() call. render() calls it when the document changes; also for
+    // manually invalidating stale-looking content during development.
     fn clearAll() {
         for page in this.pages {
             this.releasePageTiles(page);
@@ -300,7 +305,16 @@ ref struct DocumentRenderer {
     // page background + every active tile at the *live* on-screen size --
     // which is what makes tiles visibly stretch/blur mid-zoom instead of
     // updating.
-    fn render(r: mut renderer.gfx.Renderer, doc: DocumentFile) {
+    //
+    // `documentId` changes whenever `doc` is a different document, or the
+    // same one loaded again. The tiles are then all from the old one, so
+    // they are dropped: tile validity alone would keep drawing them.
+    fn render(r: mut renderer.gfx.Renderer, doc: DocumentFile, documentId: int) {
+        if documentId != this.renderedDocument {
+            this.clearAll();
+            this.renderedDocument = documentId;
+        }
+
         if this.viewport.zoomPxPerMm <= 0.0 {
             return;
         }

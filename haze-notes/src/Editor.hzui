@@ -15,7 +15,12 @@ let openFile = (path: str) => {
     props.cache.data.lastOpenedFile := path;
 }
 
+// Counts document loads. A DocumentFile is a plain value with no identity,
+// and the renderer's tiles are cached per page position, so this is what tells
+// it that the document under them is a different one.
+let documentLoads: ref Box<int> = { value: 0 };
 let currentDocument = computed<DocumentFile | null>(() => {
+    documentLoads.value = documentLoads.value + 1;
     if currentDocumentPath {
         if let doc = loadDocument(currentDocumentPath) {
             return doc;
@@ -77,7 +82,7 @@ let onCanvasWheel = (e: WheelEvent) => {
 // canvasRef?.invalidate() says the viewport moved.
 let renderCanvas = (r: mut renderer.gfx.Renderer): void => {
     if let d = rx.get(currentDocument) {
-        documentRenderer.render(r, d);
+        documentRenderer.render(r, d, documentLoads.value);
         // A settling zoom still needs a few more renders to retile.
         if documentRenderer.isSettling() {
             canvasRef?.invalidate();
