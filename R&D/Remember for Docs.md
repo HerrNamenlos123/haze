@@ -12,3 +12,9 @@
     and anything that fits the criteria compiles into a concrete function without runtime polymorphism and without 
     compiler errors, and what doesn't fit is a good compiler error. Accessing members through the interface is perfectly
     valid because of Haze's paradigm and hiding them behind a getter is bad practice unless there is a good reason.
+- Unions of structs: `u.x` works on `u: A | B | C` when every variant declares `x` with the exact same type (field) or
+    signature (method), and dispatches on the runtime tag -- runtime polymorphism over plain data, no interfaces and
+    no vtables. Fields are lvalues (`u.count += 1` writes the active variant), a called method is dispatched directly
+    (no allocation), and `let f = u.method` binds the active variant's method (ref structs only, like any binding).
+    Explain it next to the Generics/Interfaces point above: generics give compile-time polymorphism over the same
+    structural members, unions give the runtime kind.

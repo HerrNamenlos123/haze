@@ -2527,9 +2527,105 @@ export function lowerExpr(
           loweredUnionId,
           lr.sr.exprNodes.get(expr.expr).type
         ),
-        needsRefinementAssertion: true,
+        needsRefinementAssertion: !expr.tagProven,
         index: expr.tag,
         type: lowerTypeUse(lr, expr.type),
+      });
+    }
+
+    case Semantic.ENode.UnionMemberSelectExpr: {
+      // A pointer to the member of whichever variant the tag selects,
+      // dereferenced -- so the whole expression is an lvalue:
+      //
+      //   (*({ T* p; if (c0) { p = &v0; } else if (c1) { p = &v1; }
+      //         else { p = &vN; } p; }))
+      //
+      // Every branch value is a member access on a proven (unchecked) union
+      // cast of an lvalue path, which lowers without hoisting anything, so
+      // the pointers aim at the union's own storage and outlive the block.
+      const valueTypeId = lowerTypeUse(lr, expr.type);
+      const pointerTypeId = makeLowerTypeUse(
+        lr,
+        makePointerType(lr, valueTypeId),
+        false
+      )[1];
+
+      const statements: Lowered.StatementId[] = [];
+      const pointerVariableId = storeInTempVarAndGet(
+        lr,
+        pointerTypeId,
+        null,
+        expr.sourceloc,
+        statements
+      )[1];
+
+      const branchBlock = (valueId: Semantic.ExprId) => {
+        const branchStatements: Lowered.StatementId[] = [];
+        const loweredValueId = lowerExpr(
+          lr,
+          valueId,
+          branchStatements,
+          instanceInfo
+        )[1];
+        branchStatements.push(
+          Lowered.addStatement(lr, {
+            variant: Lowered.ENode.ExprStatement,
+            expr: Lowered.addExpr(lr, {
+              variant: Lowered.ENode.ExprAssignmentExpr,
+              target: pointerVariableId,
+              value: Lowered.addExpr(lr, {
+                variant: Lowered.ENode.AddressOfExpr,
+                expr: loweredValueId,
+                type: pointerTypeId,
+              })[1],
+              assignRefTarget: false,
+              type: pointerTypeId,
+            })[1],
+            sourceloc: expr.sourceloc,
+          })[1]
+        );
+        return Lowered.addBlockScope(lr, {
+          definesVariables: true,
+          statements: branchStatements,
+          emittedExpr: null,
+        })[1];
+      };
+
+      assert(expr.branches.length >= 2);
+      const conditional = expr.branches.slice(0, -1);
+      const last = expr.branches[expr.branches.length - 1];
+      const conditionOf = (branch: (typeof expr.branches)[number]) => {
+        assert(branch.condition !== null);
+        return lowerExpr(lr, branch.condition, statements, instanceInfo)[1];
+      };
+      statements.push(
+        Lowered.addStatement(lr, {
+          variant: Lowered.ENode.IfStatement,
+          condition: conditionOf(conditional[0]),
+          thenBlock: branchBlock(conditional[0].value),
+          elseIfs: conditional.slice(1).map((branch) => ({
+            condition: conditionOf(branch),
+            thenBlock: branchBlock(branch.value),
+          })),
+          else: branchBlock(last.value),
+          sourceloc: expr.sourceloc,
+        })[1]
+      );
+
+      const blockExprId = Lowered.addExpr<Lowered.BlockScopeExpr>(lr, {
+        variant: Lowered.ENode.BlockScopeExpr,
+        block: Lowered.addBlockScope(lr, {
+          definesVariables: true,
+          statements: statements,
+          emittedExpr: pointerVariableId,
+        })[1],
+        type: pointerTypeId,
+        sourceloc: expr.sourceloc,
+      })[1];
+      return Lowered.addExpr(lr, {
+        variant: Lowered.ENode.DereferenceExpr,
+        expr: blockExprId,
+        type: valueTypeId,
       });
     }
 
@@ -2838,8 +2934,9 @@ hzstd_slot_read(&__tmp_result, __slot, sizeof(__tmp_result));`,
           : loweredUnion.members.map((m) => m.type);
 
       const tags: number[] = [];
-      comparisonTypes.forEach((t) => {
-        const tag = unionMembers.findIndex((m) => m === t);
+      comparisonTypes.forEach((t, i) => {
+        const tag =
+          expr.tagIndices?.[i] ?? unionMembers.findIndex((m) => m === t);
         assert(tag !== -1);
         tags.push(tag);
       });
@@ -3393,6 +3490,43 @@ function makeVoidPointerType(lr: Lowered.Module) {
   });
   lr.loweredPointers.set(voidTypeId, newVoidId);
   return newVoidId;
+}
+
+// `T*` for any lowered type use (including one that is itself a pointer,
+// such as a `ref` struct). One typedef per referee, emitted as
+// `typedef T* __hz_ptr_T;`.
+function makePointerType(
+  lr: Lowered.Module,
+  refereeTypeId: Lowered.TypeUseId
+): Lowered.TypeDefId {
+  const cached = lr.loweredPointers.get(refereeTypeId);
+  if (cached !== undefined) {
+    return cached;
+  }
+  const referee = lr.typeUseNodes.get(refereeTypeId);
+  const refereeName = referee.name.wasMangled
+    ? "_H" + referee.name.mangledName
+    : referee.name.mangledName;
+  const mangledName = "__hz_ptr_" + refereeName;
+  // Distinct uses can share a C name (e.g. differing only in mutability);
+  // they must share the typedef too.
+  for (const existingId of lr.loweredPointers.values()) {
+    if (lr.typeDefNodes.get(existingId).name.mangledName === mangledName) {
+      lr.loweredPointers.set(refereeTypeId, existingId);
+      return existingId;
+    }
+  }
+  const [_pointer, pointerId] = Lowered.addTypeDef(lr, {
+    variant: Lowered.ENode.PointerDatatype,
+    referee: refereeTypeId,
+    name: {
+      mangledName: mangledName,
+      prettyName: referee.name.prettyName + "*",
+      wasMangled: false,
+    },
+  });
+  lr.loweredPointers.set(refereeTypeId, pointerId);
+  return pointerId;
 }
 
 /**

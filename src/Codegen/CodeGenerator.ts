@@ -2985,7 +2985,8 @@ class CodeGenerator {
           typeDef.variant === Lowered.ENode.ReactiveDatatype ||
           typeDef.variant === Lowered.ENode.LiteralDatatype ||
           typeDef.variant === Lowered.ENode.ComputedDatatype ||
-          typeDef.variant === Lowered.ENode.EnumDatatype
+          typeDef.variant === Lowered.ENode.EnumDatatype ||
+          typeDef.variant === Lowered.ENode.PointerDatatype
         ) {
           outWriter.write(
             "(" + target.out.get() + " = " + value.out.get() + ")"

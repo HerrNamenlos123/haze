@@ -1007,6 +1007,38 @@ export namespace Conversion {
     return values;
   }
 
+  // Narrowing works on types, but a tagged union may give several tags the
+  // same type (`union { Left: P, Right: P }`), and then a type does not
+  // identify a tag. These two decide what a narrowing may do to a union with
+  // the given (alias-resolved) members.
+  //
+  // The single tag the narrowing leaves, or null: a type shared by several
+  // tags never collapses the union to a value.
+  export function narrowedSingleTag(
+    members: Semantic.TypeUseId[],
+    possibleVariants: Set<Semantic.TypeUseId>
+  ): number | null {
+    if (possibleVariants.size !== 1) {
+      return null;
+    }
+    const only = [...possibleVariants][0];
+    const tags = members.filter((m) => m === only);
+    return tags.length === 1 ? members.indexOf(only) : null;
+  }
+
+  // Whether the narrowing drops variants and can be expressed as the untagged
+  // union of the rest -- never for a union whose tags share a type, which
+  // that untagged union could not tell apart.
+  export function narrowsToSubset(
+    members: Semantic.TypeUseId[],
+    possibleVariants: Set<Semantic.TypeUseId>
+  ): boolean {
+    return (
+      new Set(members).size === members.length &&
+      possibleVariants.size !== members.length
+    );
+  }
+
   export function typeNarrowing(sr: Semantic.Context) {
     return {
       possibleVariants: new Set<Semantic.TypeUseId>(),
