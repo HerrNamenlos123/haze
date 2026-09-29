@@ -57,7 +57,10 @@ export opaque ref struct Image {
         }
 
         do unsafe {
-            let pixels: Bytes = uninitialized;
+            // Bytes() rather than `uninitialized`: Bytes has more fields than
+            // the three set below, and a garbage singleByte reads as present,
+            // so every pixels[i] would return it instead of the buffer.
+            let pixels = Bytes();
             __c__("pixels.basePtr = result.pixels;");
             __c__("pixels.offset = 0;");
             __c__("pixels.length = result.width * result.height * result.channels;");

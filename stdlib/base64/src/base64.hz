@@ -39,7 +39,10 @@ export fn decode(data: str): Result<Bytes, Error> {
     }
 
     do unsafe {
-        let bytes: Bytes = uninitialized;
+        // Bytes() rather than `uninitialized`: Bytes has more fields than the
+        // three set below, and a garbage singleByte reads as present, so
+        // every bytes[i] would return it instead of the decoded data.
+        let bytes = Bytes();
         __c__("bytes.basePtr = result.data;");
         __c__("bytes.offset = 0;");
         __c__("bytes.length = result.length;");
