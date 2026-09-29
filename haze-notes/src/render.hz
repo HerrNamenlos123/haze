@@ -16,7 +16,7 @@ fn pageOriginY(doc: DocumentFile, pageIndex: int): real {
     return pageIndex as real * (doc.data.pageHeightMm + pageGapMm);
 }
 
-// TskImageShape.base64ImageData is stored as a full data URL
+// ImageShape.base64ImageData is stored as a full data URL
 // ("data:image/png;base64,<payload>", per how browsers/paste handlers
 // typically produce it), not a raw base64 payload -- base64.decode only
 // accepts the latter, so the "data:...;base64," header has to be stripped
@@ -34,8 +34,8 @@ fn stripDataUrlPrefix(data: str): str {
 }
 
 // Decoded-image GPU textures, keyed by the shape's raw base64ImageData
-// string. Deliberately *not* a field on TskImageShape itself: that struct
-// participates in json.parse<TskDocumentFile>/json.stringify for the whole
+// string. Deliberately *not* a field on ImageShape itself: that struct
+// participates in json.parse<DocumentFile>/json.stringify for the whole
 // document, and a field whose type reaches into opaque wgpu FFI handles
 // (wgpu.Texture/TextureView/BindGroup are forward-declared-only C structs)
 // breaks that generic codegen -- sizeof() on an intentionally-incomplete
@@ -83,7 +83,7 @@ ref struct ImageTextureCache {
 // bound to (already in tile-local mm-space via Canvas.setViewProj, so no
 // CPU-side transform is needed here -- raw mm vertices go straight in).
 // `level` is the tile pyramid level this content is being rendered at --
-// see TskLineShape.ensureTesselated for why tesselation is cached per
+// see LineShape.ensureTesselated for why tesselation is cached per
 // level rather than once per shape.
 fn drawShapeInto(r: mut renderer.gfx.Renderer, shape: Shape, level: int, imageCache: mut ImageTextureCache) {
     if shape is LineShape {
