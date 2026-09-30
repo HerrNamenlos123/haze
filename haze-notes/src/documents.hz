@@ -17,6 +17,33 @@ struct BBox {
     return this.left <= other.right && this.right >= other.left &&
            this.top <= other.bottom && this.bottom >= other.top;
   }
+
+  fn contains(p: Vec2): bool {
+    return p.x >= this.left && p.x <= this.right && p.y >= this.top && p.y <= this.bottom;
+  }
+
+  fn translated(d: Vec2): BBox {
+    return BBox { left: this.left + d.x, right: this.right + d.x, top: this.top + d.y, bottom: this.bottom + d.y };
+  }
+
+  // Scaled about `origin` -- what a uniform resize does to it.
+  fn scaled(origin: Vec2, ratio: real): BBox {
+    return BBox {
+      left: origin.x + (this.left - origin.x) * ratio,
+      right: origin.x + (this.right - origin.x) * ratio,
+      top: origin.y + (this.top - origin.y) * ratio,
+      bottom: origin.y + (this.bottom - origin.y) * ratio,
+    };
+  }
+}
+
+fn combineBBox(a: BBox, b: BBox): BBox {
+  return BBox {
+    left: min(a.left, b.left),
+    right: max(a.right, b.right),
+    top: min(a.top, b.top),
+    bottom: max(a.bottom, b.bottom),
+  };
 }
 
 struct Point {
@@ -48,19 +75,32 @@ ref struct LineShape {
   // deleted.
   [[json.ignore]]
   tesselationCache?: LinearMap<int, TesselationResult> = none;
+  // Left out of the page's tiles while the editor draws it itself -- as it
+  // is being moved or resized, or has been erased and not yet removed. See
+  // DocumentRenderer.render and EditorControls.
+  [[json.ignore]]
+  hidden: bool = false;
+
+  // The stroke's outline polygon in page mm, as [x, y] pairs: what the
+  // eraser hit-tests against, and what the bbox is derived from.
+  fn getOutline(): [][]real {
+    if let cached = this.cachedOutline {
+      return cached;
+    }
+    let outline: [][]real = [];
+    for p in constructStrokeOutline({ shape: this }) {
+      outline.push([p.x, p.y]);
+    }
+    this.cachedOutline = outline;
+    return outline;
+  }
 
   fn getBBox(): BBox {
     if this.bbox {
       return this.bbox;
     }
 
-    let outline: [][]real = this.cachedOutline ?? [];
-    if !this.cachedOutline {
-      for p in constructStrokeOutline({ shape: this }) {
-        outline.push([p.x, p.y]);
-      }
-      this.cachedOutline = outline;
-    }
+    let outline = this.getOutline();
 
     if outline.length == 0 {
       let empty = BBox { left: 0, right: 0, top: 0, bottom: 0 };
@@ -120,6 +160,9 @@ ref struct ImageShape {
   size: Vec2;
   base64ImageData: str;
   bbox?: BBox;
+  // See LineShape.hidden.
+  [[json.ignore]]
+  hidden: bool = false;
   // The decoded GPU texture is cached outside the document model entirely
   // (DocumentRenderer.imageTextures, keyed by base64ImageData) rather than
   // as a field here: this ref struct participates in json.parse/json.stringify
@@ -152,6 +195,9 @@ ref struct TextblockShape {
   size: Vec2;
   rawText: str;
   bbox?: BBox;
+  // See LineShape.hidden.
+  [[json.ignore]]
+  hidden: bool = false;
   // Image/Canvas/Texture element reference
 
   fn getBBox(): BBox {
@@ -176,7 +222,123 @@ ref struct TextblockShape {
 [[json.discriminator="variant"]]
 type Shape = LineShape | ImageShape | TextblockShape;
 
-struct Page {
+// Identity, not contents: `==` on ref structs compares them member by member,
+// and two strokes drawn alike are still two strokes.
+fn shapeAddress(shape: Shape): u64 {
+    if shape is LineShape { return addressOf(shape); }
+    if shape is ImageShape { return addressOf(shape); }
+    if shape is TextblockShape { return addressOf(shape); }
+    return 0;
+}
+
+fn sameShape(a: Shape, b: Shape): bool {
+    return shapeAddress(a) == shapeAddress(b);
+}
+
+fn setShapeHidden(shape: Shape, hidden: bool) {
+    if shape is LineShape { shape.hidden = hidden; }
+    else if shape is ImageShape { shape.hidden = hidden; }
+    else if shape is TextblockShape { shape.hidden = hidden; }
+}
+
+fn isShapeHidden(shape: Shape): bool {
+    if shape is LineShape { return shape.hidden; }
+    if shape is ImageShape { return shape.hidden; }
+    if shape is TextblockShape { return shape.hidden; }
+    return false;
+}
+
+// Moves a shape by `d` mm. A translation leaves a stroke's outline the same
+// shape, so the cached outline and bbox are shifted along instead of
+// recomputed -- perfect-freehand is the expensive part of a stroke.
+fn translateShape(shape: Shape, d: Vec2) {
+    if shape is LineShape {
+        let moved: []Point = [];
+        for p in shape.points {
+            moved.push(Point { x: p.x + d.x, y: p.y + d.y, pressure: p.pressure });
+        }
+        shape.points = moved;
+        if let outline = shape.cachedOutline {
+            for p in outline {
+                p[0] = p[0] + d.x;
+                p[1] = p[1] + d.y;
+            }
+        }
+        if let b = shape.bbox {
+            shape.bbox = b.translated(d);
+        }
+        // Tesselations are in page mm too, so they would all be off by d.
+        shape.tesselationCache?.clear();
+    }
+    else if shape is ImageShape {
+        shape.position = Vec2(shape.position.x + d.x, shape.position.y + d.y);
+        shape.clearShapeCache();
+    }
+    else if shape is TextblockShape {
+        shape.position = Vec2(shape.position.x + d.x, shape.position.y + d.y);
+        shape.clearShapeCache();
+    }
+}
+
+// Scales a shape about `origin` by `ratio`. A stroke keeps its pen thickness
+// unless `scaleThickness`, so its outline has to be recomputed -- thin lines
+// drawn bigger are still thin lines.
+fn scaleShape(shape: Shape, origin: Vec2, ratio: real, scaleThickness: bool) {
+    if shape is LineShape {
+        let scaled: []Point = [];
+        for p in shape.points {
+            scaled.push(Point {
+                x: origin.x + (p.x - origin.x) * ratio,
+                y: origin.y + (p.y - origin.y) * ratio,
+                pressure: p.pressure,
+            });
+        }
+        shape.points = scaled;
+        if scaleThickness {
+            shape.penThickness = shape.penThickness * ratio;
+        }
+        shape.clearShapeCache();
+    }
+    else if shape is ImageShape {
+        shape.position = Vec2(origin.x + (shape.position.x - origin.x) * ratio, origin.y + (shape.position.y - origin.y) * ratio);
+        shape.size = Vec2(shape.size.x * ratio, shape.size.y * ratio);
+        shape.clearShapeCache();
+    }
+    else if shape is TextblockShape {
+        shape.position = Vec2(origin.x + (shape.position.x - origin.x) * ratio, origin.y + (shape.position.y - origin.y) * ratio);
+        shape.size = Vec2(shape.size.x * ratio, shape.size.y * ratio);
+        shape.clearShapeCache();
+    }
+}
+
+// A copy holding only what the file format stores -- what the clipboard
+// carries, so a pasted shape starts with no caches pointing at the original.
+fn cloneShape(shape: Shape): Shape {
+    if shape is LineShape {
+        let points: []Point = [];
+        for p in shape.points {
+            points.push(p);
+        }
+        return LineShape { variant: "Line", points: points, penColor: shape.penColor, penThickness: shape.penThickness };
+    }
+    if shape is ImageShape {
+        return ImageShape { variant: "Image", position: shape.position, size: shape.size, base64ImageData: shape.base64ImageData };
+    }
+    assert(shape is TextblockShape);
+    return TextblockShape { variant: "Textblock", position: shape.position, size: shape.size, rawText: shape.rawText };
+}
+
+// What Ctrl+C puts on the clipboard, in the same format the web app used,
+// so shapes copy between the two.
+struct ShapesInClipboard {
+    type: str;
+    shapes: []Shape;
+}
+
+// Pages, the body and the file are references: the editor edits the one
+// document everything else is showing, and a page added or a shape removed
+// has to be seen by the renderer and by the next save alike.
+ref struct Page {
     shapes: []Shape;
 }
 
@@ -186,7 +348,7 @@ struct Viewport {
     zoomPxPerMm: real = 4.0;
 }
 
-struct DocumentBody {
+ref struct DocumentBody {
     pageColor: str;
     gridColor: str;
     gridType: "lines" | "dots";
@@ -197,7 +359,7 @@ struct DocumentBody {
     viewport?: Viewport;
 }
 
-struct DocumentFile {
+ref struct DocumentFile {
     filetype: str;
     fileversion: int;
     data: DocumentBody;

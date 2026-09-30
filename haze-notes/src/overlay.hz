@@ -1,0 +1,120 @@
+import renderer
+import tesselate
+
+// Screen-space drawing for what the editor puts over the page: selection
+// boxes, the lasso, the eraser, the resize handle.
+//
+// Everything here is triangles, never renderer rect primitives. A Renderer
+// draws all its primitives (the page tiles are textured primitives) before
+// all its triangles, and within each kind in the order drawn -- so building
+// every overlay from triangles is what stacks them above the tiles and above
+// each other in exactly the order EditorControls.renderOverlay draws them,
+// with no z-index bookkeeping.
+
+fn overlayQuad(r: mut renderer.gfx.Renderer, a: Vec2, b: Vec2, c: Vec2, d: Vec2, color: Color) {
+    r.addTriangle(a, b, c, color, color, color);
+    r.addTriangle(a, c, d, color, color, color);
+}
+
+fn overlayLine(r: mut renderer.gfx.Renderer, a: Vec2, b: Vec2, width: real, color: Color) {
+    let dx = b.x - a.x;
+    let dy = b.y - a.y;
+    let len = math.sqrt(dx * dx + dy * dy);
+    if len <= 0.0 {
+        return;
+    }
+    let nx = -dy / len * width / 2.0;
+    let ny = dx / len * width / 2.0;
+    overlayQuad(r, Vec2(a.x + nx, a.y + ny), Vec2(b.x + nx, b.y + ny), Vec2(b.x - nx, b.y - ny), Vec2(a.x - nx, a.y - ny), color);
+}
+
+// A dashed line through `points`, the dash pattern running on across
+// corners rather than restarting at each one -- a lasso is hundreds of tiny
+// segments, and restarting would make it solid.
+fn overlayDashedPolyline(r: mut renderer.gfx.Renderer, points: []Vec2, closed: bool, width: real, color: Color, dash: real, gap: real) {
+    let n = points.length;
+    if n < 2 {
+        return;
+    }
+    let period = dash + gap;
+    // How far into the current period the pen is.
+    let phase = 0.0;
+    let segments = closed ? n : n - 1;
+    for (let i = 0; i < segments; i++) {
+        let a = points[i];
+        let b = points[(i + 1) % n];
+        let dx = b.x - a.x;
+        let dy = b.y - a.y;
+        let len = math.sqrt(dx * dx + dy * dy);
+        if len <= 0.0 {
+            continue;
+        }
+        let t = 0.0;
+        while t < len {
+            let inDash = phase < dash;
+            let step = inDash ? dash - phase : period - phase;
+            let end = min(len, t + step);
+            if inDash {
+                overlayLine(r, Vec2(a.x + dx * t / len, a.y + dy * t / len), Vec2(a.x + dx * end / len, a.y + dy * end / len), width, color);
+            }
+            phase = phase + (end - t);
+            if phase >= period {
+                phase = phase - period;
+            }
+            t = end;
+        }
+    }
+}
+
+fn overlayFillRect(r: mut renderer.gfx.Renderer, pos: Vec2, size: Vec2, color: Color) {
+    overlayQuad(r, pos, Vec2(pos.x + size.x, pos.y), Vec2(pos.x + size.x, pos.y + size.y), Vec2(pos.x, pos.y + size.y), color);
+}
+
+// The outline drawn just inside the rect, like a CSS border.
+fn overlayStrokeRect(r: mut renderer.gfx.Renderer, pos: Vec2, size: Vec2, width: real, color: Color) {
+    overlayFillRect(r, pos, Vec2(size.x, width), color);
+    overlayFillRect(r, Vec2(pos.x, pos.y + size.y - width), Vec2(size.x, width), color);
+    overlayFillRect(r, Vec2(pos.x, pos.y + width), Vec2(width, size.y - 2.0 * width), color);
+    overlayFillRect(r, Vec2(pos.x + size.x - width, pos.y + width), Vec2(width, size.y - 2.0 * width), color);
+}
+
+fn circlePoint(center: Vec2, radius: real, i: int, segments: int): Vec2 {
+    let angle = 2.0 * math.pi() * (i as real) / (segments as real);
+    return Vec2(center.x + math.cos(angle) * radius, center.y + math.sin(angle) * radius);
+}
+
+fn overlayFillCircle(r: mut renderer.gfx.Renderer, center: Vec2, radius: real, color: Color) {
+    let segments = 32;
+    for (let i = 0; i < segments; i++) {
+        r.addTriangle(center, circlePoint(center, radius, i, segments), circlePoint(center, radius, i + 1, segments), color, color, color);
+    }
+}
+
+fn overlayStrokeCircle(r: mut renderer.gfx.Renderer, center: Vec2, radius: real, width: real, color: Color) {
+    let segments = 32;
+    let inner = max(0.0, radius - width);
+    for (let i = 0; i < segments; i++) {
+        overlayQuad(r,
+            circlePoint(center, inner, i, segments), circlePoint(center, radius, i, segments),
+            circlePoint(center, radius, i + 1, segments), circlePoint(center, inner, i + 1, segments),
+            color);
+    }
+}
+
+// Any polygon, self-intersecting or not -- a lasso is whatever the hand drew.
+fn overlayFillPolygon(r: mut renderer.gfx.Renderer, points: []Vec2, color: Color) {
+    if points.length < 3 {
+        return;
+    }
+    let tess = tesselate.Tesselator();
+    tess.beginPath();
+    tess.moveTo(points[0]);
+    for (let i = 1; i < points.length; i++) {
+        tess.lineTo(points[i]);
+    }
+    tess.closePath();
+    if let t = tess.tessellate(1.0) {
+        r.addTriangles(t.vertices, t.indices, color);
+    }
+    tess.destroy();
+}

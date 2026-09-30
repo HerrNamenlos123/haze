@@ -1,0 +1,72 @@
+// ============================================================================
+// REGRESSION TEST — this is a real, load-bearing test, not a placeholder.
+//
+// Bug: addressOf<T>() (stdlib/core/src/util.hz) rejected every struct it was
+// written for. Its struct case was an `if comptime` of its own, followed by a
+// second `if comptime` chain for the reactive and array handles whose `else`
+// was a static_assert(false). An early `return` does not stop elaboration of
+// the code after it, so for a ref struct that second chain was elaborated too
+// -- its condition false, its `else` taken -- and the build failed with
+// "is not a pointer based structure". It was hit giving a note-taking app's
+// shapes identity (`==` on ref structs compares contents).
+//
+// Fix: one if/else-if chain.
+// ============================================================================
+
+namespace cases_address_of {
+
+    export fn register(s: mut testsuite.Suite) {
+
+        s.run(
+            "addressOf: a ref struct, a union member narrowed to one, and a dynamic array",
+            """
+ref struct A { x: int = 0; }
+ref struct B { y: int = 0; }
+type U = A | B;
+
+fn addressOfMember(u: U): u64 {
+    if u is A { return addressOf(u); }
+    if u is B { return addressOf(u); }
+    return 0;
+}
+
+fn main(): int {
+    let a = A {};
+    let alsoA = a;
+    let other = A {};
+    // Identity, not contents: `other` holds the same values as `a`.
+    fmt.println(addressOf(a) == addressOf(alsoA));
+    fmt.println(addressOf(a) == addressOf(other));
+    fmt.println(addressOf(a) != 0);
+
+    let u: U = a;
+    fmt.println(addressOfMember(u) == addressOf(a));
+
+    let items: []int = [1, 2];
+    let sameItems = items;
+    fmt.println(addressOf(items) == addressOf(sameItems));
+    return 0;
+}
+""",
+            """
+true
+false
+true
+true
+true
+""");
+
+        s.compileFails(
+            "addressOf: a value struct has no address to give",
+            """
+struct V { x: int = 0; }
+
+fn main(): int {
+    let v = V {};
+    let address = addressOf(v);
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.StaticAssertFailedWithMessage)]);
+    }
+}

@@ -62,21 +62,23 @@ export fn sizeofTypeInBytes<T>() {
     return size;
 }
 
-export fn addressOf<T>(value: T) {
-    if comptime T.category == meta.TypeCategory.Struct {
-        if comptime T.isValue {
-            static_assert(false, f"Struct '{T.prettyName}' is and therefore not applicable to addressOf()");
-        }
-        let addr: u64 = 0;
-        do unsafe {
-            __c__(f"addr = (uint64_t)(void*)value;");
-        };
-        return addr;
+// The address a reference-typed value points at: identity, for the types
+// whose `==` compares contents (a ref struct compares member by member).
+//
+// One if/else-if chain, deliberately. Each `if comptime` elaborates only its
+// taken branch, but an early `return` does not stop elaboration of the code
+// after it -- so with the struct case as its own `if`, the reactive chain's
+// `else` below it was elaborated for every struct too, and its
+// static_assert rejected exactly the values this exists for.
+export fn addressOf<T>(value: T): u64 :: final {
+    if comptime T.category == meta.TypeCategory.Struct && T.isValue {
+        static_assert(false, f"Struct '{T.prettyName}' is a value, not a reference, and therefore not applicable to addressOf()");
     }
-    if comptime 
-            T.category == meta.TypeCategory.Reactive || 
-            T.category == meta.TypeCategory.Computed || 
-            T.category == meta.TypeCategory.DynamicArray || 
+    else if comptime
+            T.category == meta.TypeCategory.Struct ||
+            T.category == meta.TypeCategory.Reactive ||
+            T.category == meta.TypeCategory.Computed ||
+            T.category == meta.TypeCategory.DynamicArray ||
             T.category == meta.TypeCategory.ShallowReactive {
         let addr: u64 = 0;
         do unsafe {

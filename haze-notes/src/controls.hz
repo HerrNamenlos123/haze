@@ -1,0 +1,1170 @@
+import ui_components
+import renderer
+
+// Everything the editor does with the pen, the mouse, fingers and the
+// keyboard: drawing, erasing, lasso and tap selection, moving and resizing a
+// selection, the pen menu, panning and pinch-zooming, and saving the result.
+//
+// Ported from technicalsketcher.web (src/components/FreehandTest.vue: its
+// Controls class and the pointer, wheel and key handlers around it), so the
+// gestures are the ones its users already know:
+//
+//   pen tip         draw; on the selection, move it; on its corner handle,
+//                   resize it (Ctrl/Shift also scales the pen thickness)
+//   pen eraser end  erase whole strokes it touches
+//   barrel button   held while drawing: lasso-select. Tapped: open the pen
+//                   menu (colors, thickness, selection tool)
+//   one finger      pan; two fingers pinch-zoom and pan
+//   mouse           left/right: lasso or tap select, move, resize; middle
+//                   pans; wheel pans, Ctrl+wheel zooms, Shift+wheel pans
+//                   sideways
+//   keys            Delete/Backspace remove the selection, Escape drops it,
+//                   Ctrl+C/X/V copy, cut and paste shapes, Ctrl+S saves
+//
+// Two things differ from the web app. Pages here are stacked top to bottom
+// rather than shown one at a time, so every gesture first finds the page
+// under it (pageAt) and works in that page's own mm. And the toolbar's
+// selection and eraser tools stand in for the barrel button and the eraser
+// end on a pen that has neither.
+
+// How far (canvas px) a lasso may wander and still count as a tap.
+const comptime contextMenuPerimeterLimitPx = 5.0;
+// The resize handle's size, and how close (canvas px) counts as on it.
+const comptime resizeHandleSizePx = 8.0;
+const comptime eraserSizePx = 5.0;
+// How long a pinch survives having other than two fingers down -- see
+// updateTouch.
+const comptime touchZoomEndGraceSeconds = 0.12;
+// A change is saved once nothing has changed for saveIdleSeconds, and at the
+// latest saveMaxDelaySeconds after the first unsaved one -- steady writing
+// never pauses long enough for the first alone.
+const comptime saveIdleSeconds = 1.0;
+const comptime saveMaxDelaySeconds = 5.0;
+
+fn penThicknesses(): []real {
+    return [0.1, 0.3, 0.5, 0.7, 0.9];
+}
+
+fn penColors(): []str {
+    return ["#000000", "#1D4ED8", "#DC2626", "#16A34A", "#CA8A04", "#7E34D9", "#F57C00", "#6B7280"];
+}
+
+enum Gesture { None, Drawing, Erasing, Lasso, Moving, Resizing, MousePan }
+
+// One finger on the canvas, where it was last seen (canvas px).
+ref struct TouchPoint {
+    id: int;
+    pos: Vec2;
+}
+
+fn distance(a: Vec2, b: Vec2): real {
+    let dx = b.x - a.x;
+    let dy = b.y - a.y;
+    return math.sqrt(dx * dx + dy * dy);
+}
+
+fn pointInPolygon(p: Vec2, polygon: []Vec2): bool {
+    let inside = false;
+    let n = polygon.length;
+    let j = n - 1;
+    for (let i = 0; i < n; i++) {
+        let a = polygon[i];
+        let b = polygon[j];
+        if (a.y > p.y) != (b.y > p.y) && p.x < (b.x - a.x) * (p.y - a.y) / (b.y - a.y) + a.x {
+            inside = !inside;
+        }
+        j = i;
+    }
+    return inside;
+}
+
+fn polygonBBox(points: []Vec2): BBox {
+    let first = points[0];
+    let box = BBox { left: first.x, right: first.x, top: first.y, bottom: first.y };
+    for p in points {
+        box = BBox { left: min(box.left, p.x), right: max(box.right, p.x), top: min(box.top, p.y), bottom: max(box.bottom, p.y) };
+    }
+    return box;
+}
+
+// Nine points spread over the rect, all inside: cheap, and what the web app
+// accepted as "the lasso encloses this".
+fn isRectInsidePolygon(box: BBox, polygon: []Vec2): bool {
+    let midX = (box.left + box.right) / 2.0;
+    let midY = (box.top + box.bottom) / 2.0;
+    let xs: []real = [box.left, midX, box.right];
+    let ys: []real = [box.top, midY, box.bottom];
+    for x in xs {
+        for y in ys {
+            if !pointInPolygon(Vec2(x, y), polygon) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+fn segmentDistance(p: Vec2, a: Vec2, b: Vec2): real {
+    let abx = b.x - a.x;
+    let aby = b.y - a.y;
+    let lenSq = abx * abx + aby * aby;
+    if lenSq <= 0.0 {
+        return distance(p, a);
+    }
+    let t = max(0.0, min(1.0, ((p.x - a.x) * abx + (p.y - a.y) * aby) / lenSq));
+    return distance(p, Vec2(a.x + t * abx, a.y + t * aby));
+}
+
+// Which side of the line a->b the point p is on (the sign of the cross
+// product), or 0 on it.
+fn orientation(a: Vec2, b: Vec2, p: Vec2): real {
+    return (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x);
+}
+
+fn segmentsCross(a: Vec2, b: Vec2, c: Vec2, d: Vec2): bool {
+    let o1 = orientation(a, b, c);
+    let o2 = orientation(a, b, d);
+    let o3 = orientation(c, d, a);
+    let o4 = orientation(c, d, b);
+    return ((o1 > 0.0 && o2 < 0.0) || (o1 < 0.0 && o2 > 0.0)) && ((o3 > 0.0 && o4 < 0.0) || (o3 < 0.0 && o4 > 0.0));
+}
+
+fn segmentToSegmentDistance(a: Vec2, b: Vec2, c: Vec2, d: Vec2): real {
+    if segmentsCross(a, b, c, d) {
+        return 0.0;
+    }
+    return min(min(segmentDistance(a, c, d), segmentDistance(b, c, d)), min(segmentDistance(c, a, b), segmentDistance(d, a, b)));
+}
+
+// Whether an eraser of `radius` swept from `start` to `end` touches a stroke's
+// outline -- inside it, or reaching its edge anywhere along the way.
+//
+// Two departures from the web app, both about strokes it could miss: it
+// tested only whether the eraser's rim crossed the edge, which missed a
+// stroke thin enough to sit wholly inside the eraser; and it tested each pen
+// sample on its own, so a quick swipe stepped right over a thin stroke lying
+// between two samples.
+fn eraserTouches(outline: [][]real, start: Vec2, end: Vec2, radius: real): bool {
+    let n = outline.length;
+    if n == 0 {
+        return false;
+    }
+    let polygon: []Vec2 = [];
+    for p in outline {
+        polygon.push(Vec2(p[0], p[1]));
+    }
+    if pointInPolygon(start, polygon) || pointInPolygon(end, polygon) {
+        return true;
+    }
+    for (let i = 0; i < n; i++) {
+        if segmentToSegmentDistance(start, end, polygon[i], polygon[(i + 1) % n]) <= radius {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn removeShape(shapes: []Shape, target: Shape) {
+    for (let i = shapes.length - 1; i >= 0; i--) {
+        let shape = shapes[i];
+        if sameShape(shape, target) {
+            shapes.remove(i);
+        }
+    }
+}
+
+ref struct EditorControls {
+    view: mut DocumentRenderer;
+    // Has the canvas drawn again at its next step -- the renderer's state is
+    // plain data the canvas cannot track by itself.
+    invalidate: () => none;
+
+    doc: DocumentFile | none = none;
+    path: str = "";
+    // Counts documents opened -- see DocumentRenderer.render's documentId.
+    documentLoads: int = 0;
+
+    // ── Tools, and what the template shows ──────────────────────────
+    selectionTool: rx.Reactive<bool>;
+    eraserTool: rx.Reactive<bool>;
+    penColor: rx.Reactive<str>;
+    penSizeMm: rx.Reactive<real>;
+    // Where the pen menu is open (canvas px), none while closed.
+    popup: rx.ShallowReactive<Vec2 | none>;
+    // The selection's bounds in canvas px, for the color panel above it.
+    selectionScreenBox: rx.ShallowReactive<BBox | none>;
+    // Over the selection's resize handle.
+    resizeCursor: rx.Reactive<bool>;
+
+    // ── The selection -- always on one page ─────────────────────────
+    selected: []Shape = [];
+    selectionPage: int = 0;
+
+    // ── The pen or mouse gesture in flight ──────────────────────────
+    gesture: Gesture = Gesture.None;
+    // Whose events drive it (see PointerEvent.pointerId); the mouse is 1.
+    gesturePointer: int = 0;
+    mouseButton: ui_components.PointerButton = ui_components.PointerButton.None;
+    // The gesture pointer's previous position, canvas px.
+    lastPos: Vec2 = {};
+    // The page a stroke or lasso started on.
+    gesturePage: int = 0;
+    // A move or resize so far. It is only applied to the shapes when the
+    // gesture ends; until then they are drawn through it (liveTransform).
+    moveDelta: Vec2 = {};
+    resizeOrigin: Vec2 = {};
+    resizeScale: real = 1.0;
+    resizeLastDistance: real = 0.0;
+    scaleThickness: bool = false;
+    // In document mm, so it stays put under a pan.
+    lasso: []Vec2 = [];
+    startedSelectionWithStylusButton: bool = false;
+    preview: LineShape | none = none;
+    eraserPos: Vec2 | none = none;
+    // Erased this gesture, hidden from the tiles and drawn grey until the
+    // pen lifts -- with the page each came from.
+    erased: []Shape = [];
+    erasedPages: []int = [];
+
+    // ── Fingers ─────────────────────────────────────────────────────
+    touches: []TouchPoint = [];
+    pinching: bool = false;
+    pinchCenter: Vec2 = {};
+    pinchDistance: real = 0.0;
+    // When the pinch lost its second finger, or -1 -- see updateTouch.
+    pinchEndPendingSince: real = -1.0;
+
+    // ── Saving ──────────────────────────────────────────────────────
+    firstUnsavedChange: real = -1.0;
+    lastChange: real = -1.0;
+
+    fn constructor(view: mut DocumentRenderer, invalidate: () => none): EditorControls {
+        return EditorControls {
+            view: view,
+            invalidate: invalidate,
+            selectionTool: rx.reactive<bool>(false),
+            eraserTool: rx.reactive<bool>(false),
+            penColor: rx.reactive<str>("#000000"),
+            // The web app's default pen, penThicknesses()[2].
+            penSizeMm: rx.reactive<real>(0.5),
+            popup: rx.shallowReactive<Vec2 | none>(none),
+            selectionScreenBox: rx.shallowReactive<BBox | none>(none),
+            resizeCursor: rx.reactive<bool>(false),
+        };
+    }
+
+    // ── The document ────────────────────────────────────────────────
+
+    // Everything in flight belongs to the document it started on, so a new
+    // one starts from nothing -- after the old one's unsaved work is saved.
+    fn setDocument(doc: DocumentFile | none, path: str) {
+        this.saveNow();
+        this.doc = doc;
+        this.path = path;
+        this.documentLoads = this.documentLoads + 1;
+        this.selected.clear();
+        this.gesture = Gesture.None;
+        this.preview = none;
+        this.eraserPos = none;
+        this.erased.clear();
+        this.erasedPages.clear();
+        this.lasso.clear();
+        this.touches.clear();
+        this.pinching = false;
+        this.pinchEndPendingSince = -1.0;
+        this.popup := none;
+        if doc {
+            // Every gesture works on "the page under the pen", so there has
+            // to be one -- the web app, too, always kept a page to draw on.
+            if doc.data.pages.length == 0 {
+                let blank: []Shape = [];
+                doc.data.pages.push(Page { shapes: blank });
+            }
+            this.view.adoptViewport(doc);
+        }
+        this.publishUi();
+        this.invalidate();
+    }
+
+    fn markChanged() {
+        let now = time.now();
+        if this.firstUnsavedChange < 0.0 {
+            this.firstUnsavedChange = now;
+        }
+        this.lastChange = now;
+    }
+
+    fn saveNow() {
+        if this.firstUnsavedChange < 0.0 {
+            return;
+        }
+        this.firstUnsavedChange = -1.0;
+        this.lastChange = -1.0;
+        if let doc = this.doc {
+            // The page in the middle of the view is the current one, which
+            // is what the web app opens the file on -- see adoptViewport.
+            let center = Vec2(this.view.lastPanelSize.x / 2.0, this.view.lastPanelSize.y / 2.0);
+            let page = this.pageUnder(doc, center);
+            doc.data.currentPageIndex = page;
+            doc.data.viewport = this.view.savedViewport(doc, page);
+            if !saveDocument(this.path, doc) {
+                fmt.println("Failed to save ", this.path);
+            }
+        }
+    }
+
+    // ── Coordinates ─────────────────────────────────────────────────
+
+    fn zoom(): real {
+        return this.view.viewport.zoomPxPerMm;
+    }
+
+    // The page a document-space y is on -- or, between two, the nearer.
+    fn pageAt(doc: DocumentFile, worldY: real): int {
+        let n = doc.data.pages.length;
+        if n == 0 {
+            return 0;
+        }
+        let stride = doc.data.pageHeightMm + pageGapMm;
+        let i = tilemath.floorToInt((worldY + pageGapMm / 2.0) / stride);
+        if i < 0 {
+            return 0;
+        }
+        if i >= n {
+            return n - 1;
+        }
+        return i;
+    }
+
+    fn pageUnder(doc: DocumentFile, local: Vec2): int {
+        return this.pageAt(doc, this.view.screenToWorld(local).y);
+    }
+
+    // Canvas px -> mm within `page`.
+    fn toPage(doc: DocumentFile, page: int, local: Vec2): Vec2 {
+        let world = this.view.screenToWorld(local);
+        return Vec2(world.x, world.y - pageOriginY(doc, page));
+    }
+
+    fn pageToScreen(doc: DocumentFile, page: int, p: Vec2): Vec2 {
+        return this.view.worldToScreen(Vec2(p.x, p.y + pageOriginY(doc, page)));
+    }
+
+    // ── The selection ───────────────────────────────────────────────
+
+    // A move or resize in progress, as a transform within the page.
+    fn liveTransform(): mat4.Mat4f {
+        if this.gesture == Gesture.Moving {
+            return mat4.translation(Vec3(this.moveDelta.x, this.moveDelta.y, 0.0));
+        }
+        if this.gesture == Gesture.Resizing {
+            let o = this.resizeOrigin;
+            let s = this.resizeScale;
+            return mat4.translation(Vec3(o.x, o.y, 0.0))
+                .mul(mat4.scaling(Vec3(s, s, 1.0)))
+                .mul(mat4.translation(Vec3(-o.x, -o.y, 0.0)));
+        }
+        return mat4.identity();
+    }
+
+    fn liveBBox(shape: Shape): BBox {
+        let box = shape.getBBox();
+        if this.gesture == Gesture.Moving {
+            return box.translated(this.moveDelta);
+        }
+        if this.gesture == Gesture.Resizing {
+            return box.scaled(this.resizeOrigin, this.resizeScale);
+        }
+        return box;
+    }
+
+    fn selectionBBox(): BBox | none {
+        if this.selected.length == 0 {
+            return none;
+        }
+        let first = this.selected[0];
+        let box = this.liveBBox(first);
+        for shape in this.selected {
+            box = combineBBox(box, this.liveBBox(shape));
+        }
+        return box;
+    }
+
+    fn isInSelection(doc: DocumentFile, local: Vec2): bool {
+        if let box = this.selectionBBox() {
+            return box.contains(this.toPage(doc, this.selectionPage, local));
+        }
+        return false;
+    }
+
+    fn isOnResizeHandle(doc: DocumentFile, local: Vec2): bool {
+        if let box = this.selectionBBox() {
+            let handle = this.pageToScreen(doc, this.selectionPage, Vec2(box.right, box.bottom));
+            return distance(handle, local) <= resizeHandleSizePx;
+        }
+        return false;
+    }
+
+    fn clearSelection() {
+        this.selected.clear();
+    }
+
+    // The topmost shape under the pointer, or nothing.
+    fn selectShapeUnder(doc: DocumentFile, local: Vec2) {
+        this.selected.clear();
+        let page = this.pageUnder(doc, local);
+        let p = this.toPage(doc, page, local);
+        let shapes = doc.data.pages[page].shapes;
+        for (let i = shapes.length - 1; i >= 0; i--) {
+            let shape = shapes[i];
+            if shape.getBBox().contains(p) {
+                this.selected.push(shape);
+                this.selectionPage = page;
+                return;
+            }
+        }
+    }
+
+    // What the lasso encloses, on the page it was started on: a shape whose
+    // bbox it holds, or a stroke all of whose points it holds.
+    fn selectLasso(doc: DocumentFile) {
+        this.selected.clear();
+        if this.lasso.length < 3 {
+            return;
+        }
+        let page = this.gesturePage;
+        let originY = pageOriginY(doc, page);
+        let polygon: []Vec2 = [];
+        for p in this.lasso {
+            polygon.push(Vec2(p.x, p.y - originY));
+        }
+        let bounds = polygonBBox(polygon);
+        for shape in doc.data.pages[page].shapes {
+            let box = shape.getBBox();
+            if !box.overlaps(bounds) {
+                continue;
+            }
+            if isRectInsidePolygon(box, polygon) {
+                this.selected.push(shape);
+                continue;
+            }
+            if shape is LineShape {
+                let inside = true;
+                for point in shape.points {
+                    if !pointInPolygon(Vec2(point.x, point.y), polygon) {
+                        inside = false;
+                        break;
+                    }
+                }
+                if inside {
+                    this.selected.push(shape);
+                }
+            }
+        }
+        this.selectionPage = page;
+    }
+
+    fn lassoPerimeterPx(): real {
+        let total = 0.0;
+        for (let i = 0; i + 1 < this.lasso.length; i++) {
+            total = total + distance(this.lasso[i], this.lasso[i + 1]);
+        }
+        return total * this.zoom();
+    }
+
+    fn deleteSelection() {
+        if let doc = this.doc {
+            let shapes = doc.data.pages[this.selectionPage].shapes;
+            for shape in this.selected {
+                this.view.markShapeDirty(this.selectionPage, shape);
+                removeShape(shapes, shape);
+            }
+            if this.selected.length > 0 {
+                this.markChanged();
+            }
+            this.selected.clear();
+            this.publishUi();
+            this.invalidate();
+        }
+    }
+
+    // What the template needs to know about the selection -- called after
+    // anything that changes it or where it is on screen.
+    fn publishUi() {
+        let doc = this.doc;
+        let box = this.selectionBBox();
+        if doc && box {
+            let topLeft = this.pageToScreen(doc, this.selectionPage, Vec2(box.left, box.top));
+            let bottomRight = this.pageToScreen(doc, this.selectionPage, Vec2(box.right, box.bottom));
+            this.selectionScreenBox := BBox { left: topLeft.x, right: bottomRight.x, top: topLeft.y, bottom: bottomRight.y };
+        } else if rx.get(this.selectionScreenBox) {
+            this.selectionScreenBox := none;
+        }
+    }
+
+    // ── Tools ───────────────────────────────────────────────────────
+
+    fn usePen(sizeMm: real) {
+        this.penSizeMm := sizeMm;
+        this.selectionTool := false;
+        this.eraserTool := false;
+        this.closePopup();
+    }
+
+    fn useSelectionTool() {
+        this.selectionTool := true;
+        this.eraserTool := false;
+        this.closePopup();
+    }
+
+    fn useEraser() {
+        this.eraserTool := true;
+        this.selectionTool := false;
+        this.closePopup();
+    }
+
+    fn setPenColor(color: str) {
+        this.penColor := color;
+        this.closePopup();
+    }
+
+    fn setSelectionColor(color: str) {
+        for shape in this.selected {
+            if shape is LineShape {
+                shape.penColor = color;
+                this.view.markShapeDirty(this.selectionPage, shape);
+            }
+        }
+        this.markChanged();
+        this.invalidate();
+    }
+
+    // Returns whether it was open.
+    fn closePopup(): bool {
+        if rx.get(this.popup) {
+            this.popup := none;
+            return true;
+        }
+        return false;
+    }
+
+    // ── Pointer input ───────────────────────────────────────────────
+    //
+    // `local` is the event's position in canvas px. Pen and touch events keep
+    // coming here after they leave the canvas (the framework captures them,
+    // see ui_components.PointerEvent); the mouse's do not, so a mouse drag is
+    // followed by frame() instead.
+
+    fn pointerDown(e: ui_components.PointerEvent, local: Vec2) {
+        let doc = this.doc;
+        if !doc {
+            return;
+        }
+        // Any press closes the pen menu -- and a pen or mouse press that did
+        // is spent on that, it does not also draw. (The web app closed the
+        // menu a tick later for the same effect.)
+        let popupWasOpen = this.closePopup();
+
+        if e.pointerType == "touch" {
+            this.touches.push(TouchPoint { id: e.pointerId, pos: local });
+            this.updateTouch(Vec2(0.0, 0.0));
+            return;
+        }
+        // One pen or mouse gesture at a time.
+        if this.gesture != Gesture.None {
+            return;
+        }
+        this.gesturePointer = e.pointerId;
+        this.lastPos = local;
+
+        if e.pointerType == "pen" {
+            this.penDown(doc, e, local, popupWasOpen);
+        } else {
+            this.mouseDown(doc, e, local, popupWasOpen);
+        }
+        this.publishUi();
+        this.invalidate();
+    }
+
+    fn pointerMove(e: ui_components.PointerEvent, local: Vec2) {
+        let doc = this.doc;
+        if !doc {
+            return;
+        }
+        if e.pointerType == "touch" {
+            for touch in this.touches {
+                if touch.id == e.pointerId {
+                    let movement = Vec2(local.x - touch.pos.x, local.y - touch.pos.y);
+                    touch.pos = local;
+                    this.updateTouch(movement);
+                    return;
+                }
+            }
+            return;
+        }
+        if this.gesture == Gesture.None {
+            // Hovering. The web app did this for the pen only; the mouse
+            // gets the same cursor over the same handle.
+            let onHandle = this.isOnResizeHandle(doc, local);
+            if onHandle != rx.get(this.resizeCursor) {
+                this.resizeCursor := onHandle;
+            }
+            return;
+        }
+        if e.pointerType == "pen" && e.pointerId == this.gesturePointer {
+            this.drag(doc, local, e.modifiers);
+        }
+    }
+
+    fn pointerUp(e: ui_components.PointerEvent, local: Vec2) {
+        let doc = this.doc;
+        if !doc {
+            return;
+        }
+        if e.pointerType == "touch" {
+            for (let i = 0; i < this.touches.length; i++) {
+                if this.touches[i].id == e.pointerId {
+                    this.touches.remove(i);
+                    break;
+                }
+            }
+            this.updateTouch(Vec2(0.0, 0.0));
+            return;
+        }
+        if this.gesture != Gesture.None && e.pointerId == this.gesturePointer {
+            if e.pointerType == "pen" {
+                this.drag(doc, local, e.modifiers);
+            }
+            this.finishGesture(doc, local);
+        }
+    }
+
+    fn penDown(doc: DocumentFile, e: ui_components.PointerEvent, local: Vec2, popupWasOpen: bool) {
+        let eraser = ui_components.hasButton(e.buttons, ui_components.PointerButtons.Eraser) || rx.get(this.eraserTool);
+        let stylusButton = ui_components.hasButton(e.buttons, ui_components.PointerButtons.Right);
+
+        if this.isOnResizeHandle(doc, local) {
+            this.startResize(doc, local);
+            return;
+        }
+
+        // With a selection, the pen either picks it up or puts it down: a
+        // press outside it only deselects, it does not also start a stroke.
+        let skipDrawLine = false;
+        if this.selected.length > 0 {
+            if this.isInSelection(doc, local) {
+                this.startMove();
+                return;
+            }
+            this.clearSelection();
+            skipDrawLine = true;
+        }
+
+        if popupWasOpen {
+            return;
+        }
+
+        if stylusButton || rx.get(this.selectionTool) {
+            this.startLasso(doc, local, stylusButton);
+            return;
+        }
+
+        if eraser {
+            this.gesture = Gesture.Erasing;
+            this.eraseAlong(doc, local, local);
+            return;
+        }
+
+        if skipDrawLine {
+            return;
+        }
+
+        this.startStroke(doc, local);
+    }
+
+    fn mouseDown(doc: DocumentFile, e: ui_components.PointerEvent, local: Vec2, popupWasOpen: bool) {
+        this.mouseButton = e.button;
+        if e.button == ui_components.PointerButton.Middle {
+            this.gesture = Gesture.MousePan;
+            return;
+        }
+        if this.isOnResizeHandle(doc, local) {
+            this.startResize(doc, local);
+            return;
+        }
+        if this.selected.length > 0 {
+            if this.isInSelection(doc, local) {
+                this.startMove();
+                return;
+            }
+            this.clearSelection();
+        }
+        if popupWasOpen {
+            return;
+        }
+        // The mouse never draws: it selects, as in the web app.
+        this.startLasso(doc, local, false);
+    }
+
+    fn startStroke(doc: DocumentFile, local: Vec2) {
+        let page = this.pageUnder(doc, local);
+        let p = this.toPage(doc, page, local);
+        this.gesturePage = page;
+        let points: []Point = [Point { x: p.x, y: p.y, pressure: 0.5 }];
+        this.preview = LineShape {
+            variant: "Line",
+            points: points,
+            penColor: rx.get(this.penColor),
+            penThickness: rx.get(this.penSizeMm),
+        };
+        this.gesture = Gesture.Drawing;
+    }
+
+    fn startLasso(doc: DocumentFile, local: Vec2, withStylusButton: bool) {
+        this.clearSelection();
+        this.lasso.clear();
+        this.lasso.push(this.view.screenToWorld(local));
+        this.gesturePage = this.pageUnder(doc, local);
+        this.startedSelectionWithStylusButton = withStylusButton;
+        this.gesture = Gesture.Lasso;
+    }
+
+    // The selection leaves the tiles while it moves (its old place has to
+    // show what is under it) and is drawn live instead -- see render().
+    fn hideSelectionFromTiles() {
+        for shape in this.selected {
+            setShapeHidden(shape, true);
+            this.view.markShapeDirty(this.selectionPage, shape);
+        }
+    }
+
+    fn startMove() {
+        this.gesture = Gesture.Moving;
+        this.moveDelta = Vec2(0.0, 0.0);
+        this.hideSelectionFromTiles();
+    }
+
+    // Resizes about the selection's top-left corner, by how much further
+    // from it the pointer is than it was.
+    fn startResize(doc: DocumentFile, local: Vec2) {
+        if let box = this.selectionBBox() {
+            this.resizeOrigin = Vec2(box.left, box.top);
+            this.resizeLastDistance = distance(this.toPage(doc, this.selectionPage, local), this.resizeOrigin);
+            this.resizeScale = 1.0;
+            this.scaleThickness = false;
+            this.gesture = Gesture.Resizing;
+            this.hideSelectionFromTiles();
+        }
+    }
+
+    fn drag(doc: DocumentFile, local: Vec2, modifiers: KeyModifiers) {
+        let previous = this.lastPos;
+        let moved = local.x != previous.x || local.y != previous.y;
+        let deltaPx = Vec2(local.x - previous.x, local.y - previous.y);
+        this.lastPos = local;
+        if !moved {
+            return;
+        }
+
+        if this.gesture == Gesture.MousePan {
+            this.view.pan(deltaPx.x, deltaPx.y);
+            this.viewportChanged();
+            return;
+        }
+        if this.gesture == Gesture.Resizing {
+            let d = distance(this.toPage(doc, this.selectionPage, local), this.resizeOrigin);
+            if this.resizeLastDistance > 0.0 && d > 0.0 {
+                this.resizeScale = this.resizeScale * d / this.resizeLastDistance;
+            }
+            this.resizeLastDistance = d;
+            this.scaleThickness = hasModifier(modifiers, KeyModifiers.Ctrl) || hasModifier(modifiers, KeyModifiers.Shift);
+            this.publishUi();
+        }
+        else if this.gesture == Gesture.Moving {
+            let zoom = this.zoom();
+            this.moveDelta = Vec2(this.moveDelta.x + deltaPx.x / zoom, this.moveDelta.y + deltaPx.y / zoom);
+            this.publishUi();
+        }
+        else if this.gesture == Gesture.Lasso {
+            this.lasso.push(this.view.screenToWorld(local));
+        }
+        else if this.gesture == Gesture.Erasing {
+            this.eraseAlong(doc, previous, local);
+        }
+        else if this.gesture == Gesture.Drawing {
+            if let line = this.preview {
+                let p = this.toPage(doc, this.gesturePage, local);
+                line.points.push(Point { x: p.x, y: p.y, pressure: 0.5 });
+                // Its outline, bbox and tesselation all grew.
+                line.clearShapeCache();
+            }
+        }
+        this.invalidate();
+    }
+
+    // Erases every stroke the eraser touches on its way from one pen sample
+    // to the next (canvas px) -- on the pages under both, since a swipe off
+    // the bottom of a page still has to catch what it crossed on the way.
+    fn eraseAlong(doc: DocumentFile, fromLocal: Vec2, toLocal: Vec2) {
+        this.eraserPos = toLocal;
+        let first = this.pageUnder(doc, fromLocal);
+        let second = this.pageUnder(doc, toLocal);
+        this.eraseOnPage(doc, first, fromLocal, toLocal);
+        if second != first {
+            this.eraseOnPage(doc, second, fromLocal, toLocal);
+        }
+    }
+
+    fn eraseOnPage(doc: DocumentFile, page: int, fromLocal: Vec2, toLocal: Vec2) {
+        let start = this.toPage(doc, page, fromLocal);
+        let end = this.toPage(doc, page, toLocal);
+        let radius = eraserSizePx / 2.0 / this.zoom();
+        let swept = BBox {
+            left: min(start.x, end.x) - radius,
+            right: max(start.x, end.x) + radius,
+            top: min(start.y, end.y) - radius,
+            bottom: max(start.y, end.y) + radius,
+        };
+        for shape in doc.data.pages[page].shapes {
+            if isShapeHidden(shape) {
+                continue;
+            }
+            if !shape.getBBox().overlaps(swept) {
+                continue;
+            }
+            // Strokes only: an image or a text block is not rubbed out by
+            // brushing past it.
+            if shape is LineShape {
+                if eraserTouches(shape.getOutline(), start, end, radius) {
+                    setShapeHidden(shape, true);
+                    this.erased.push(shape);
+                    this.erasedPages.push(page);
+                    this.view.markShapeDirty(page, shape);
+                }
+            }
+        }
+    }
+
+    fn finishGesture(doc: DocumentFile, local: Vec2) {
+        let gesture = this.gesture;
+        this.gesture = Gesture.None;
+        this.eraserPos = none;
+
+        if gesture == Gesture.Moving || gesture == Gesture.Resizing {
+            let changed = gesture == Gesture.Moving
+                ? (this.moveDelta.x != 0.0 || this.moveDelta.y != 0.0)
+                : this.resizeScale != 1.0;
+            for shape in this.selected {
+                if changed {
+                    if gesture == Gesture.Moving {
+                        translateShape(shape, this.moveDelta);
+                    } else {
+                        scaleShape(shape, this.resizeOrigin, this.resizeScale, this.scaleThickness);
+                    }
+                }
+                setShapeHidden(shape, false);
+                this.view.markShapeDirty(this.selectionPage, shape);
+            }
+            if changed {
+                this.markChanged();
+            }
+        }
+        else if gesture == Gesture.Lasso {
+            if this.lassoPerimeterPx() <= contextMenuPerimeterLimitPx {
+                // A tap. With the selection tool it selects what is under it;
+                // with the barrel button it opens the pen menu there.
+                if this.gesturePointer == 1 || (rx.get(this.selectionTool) && !this.startedSelectionWithStylusButton) {
+                    this.selectShapeUnder(doc, local);
+                } else {
+                    this.popup := local;
+                }
+            } else {
+                this.selectLasso(doc);
+            }
+            this.lasso.clear();
+        }
+        else if gesture == Gesture.Drawing {
+            if let line = this.preview {
+                let pageIndex = this.gesturePage;
+                let page = doc.data.pages[pageIndex];
+                line.clearShapeCache();
+                page.shapes.push(line);
+                this.view.markShapeDirty(pageIndex, line);
+                // There is always an empty page to go on to.
+                if pageIndex == doc.data.pages.length - 1 {
+                    let blank: []Shape = [];
+                    doc.data.pages.push(Page { shapes: blank });
+                }
+                this.markChanged();
+            }
+            this.preview = none;
+        }
+        else if gesture == Gesture.Erasing {
+            for (let i = 0; i < this.erased.length; i++) {
+                let shape = this.erased[i];
+                removeShape(doc.data.pages[this.erasedPages[i]].shapes, shape);
+            }
+            if this.erased.length > 0 {
+                this.markChanged();
+            }
+            this.erased.clear();
+            this.erasedPages.clear();
+        }
+        else if gesture == Gesture.MousePan {
+            this.markChanged();
+        }
+
+        this.publishUi();
+        this.invalidate();
+    }
+
+    // Everything a mouse drag and the rest need polling for, once per frame
+    // before this frame's events: the mouse has no capture, so a drag that
+    // leaves the canvas -- or is released outside the window -- is only seen
+    // here. `mouseLocal` is the pointer in canvas px.
+    fn frame(ui: ui_components.UIContext, mouseLocal: Vec2) {
+        let doc = this.doc;
+        if !doc {
+            return;
+        }
+        let now = time.now();
+
+        if this.gesture != Gesture.None && this.gesturePointer == 1 {
+            this.drag(doc, mouseLocal, ui.currentModifiers());
+            let held = ui.leftMouseHeld();
+            if this.mouseButton == ui_components.PointerButton.Middle { held = ui.middleMouseHeld(); }
+            else if this.mouseButton == ui_components.PointerButton.Right { held = ui.rightMouseHeld(); }
+            if !held {
+                this.finishGesture(doc, mouseLocal);
+            }
+        }
+
+        if this.pinching && this.pinchEndPendingSince >= 0.0 && now - this.pinchEndPendingSince >= touchZoomEndGraceSeconds {
+            this.pinchEndPendingSince = -1.0;
+            if this.touches.length != 2 {
+                this.pinching = false;
+                this.markChanged();
+            }
+        }
+
+        if this.firstUnsavedChange >= 0.0 && this.gesture == Gesture.None && this.touches.length == 0 {
+            if now - this.lastChange >= saveIdleSeconds || now - this.firstUnsavedChange >= saveMaxDelaySeconds {
+                this.saveNow();
+            }
+        }
+    }
+
+    // ── Fingers ─────────────────────────────────────────────────────
+
+    // One finger pans; two pinch-zoom about their midpoint and pan with it.
+    //
+    // A pinch is not ended the instant the finger count leaves two: the
+    // platform briefly reports one finger (or three) mid-pinch while two
+    // lifts or landings are in flight, and treating that as the end made the
+    // remaining finger lurch the page. It ends once the count has stayed
+    // off two for touchZoomEndGraceSeconds (see frame()), and until then the
+    // other fingers do nothing.
+    fn updateTouch(movement: Vec2) {
+        let n = this.touches.length;
+        if n == 2 {
+            this.pinchEndPendingSince = -1.0;
+            let a = this.touches[0].pos;
+            let b = this.touches[1].pos;
+            let center = Vec2((a.x + b.x) / 2.0, (a.y + b.y) / 2.0);
+            let d = distance(a, b);
+            if !this.pinching {
+                this.pinching = true;
+                this.pinchCenter = center;
+                this.pinchDistance = d;
+                return;
+            }
+            this.view.pan(center.x - this.pinchCenter.x, center.y - this.pinchCenter.y);
+            if this.pinchDistance > 0.0 && d > 0.0 {
+                this.view.zoomBy(d / this.pinchDistance, center.x, center.y);
+            }
+            this.pinchCenter = center;
+            this.pinchDistance = d;
+            this.viewportChanged();
+            return;
+        }
+        if this.pinching {
+            if this.pinchEndPendingSince < 0.0 {
+                this.pinchEndPendingSince = time.now();
+            }
+            return;
+        }
+        if n == 1 && (movement.x != 0.0 || movement.y != 0.0) {
+            this.view.pan(movement.x, movement.y);
+            this.viewportChanged();
+        }
+        if n == 0 {
+            this.markChanged();
+        }
+    }
+
+    fn viewportChanged() {
+        this.markChanged();
+        this.publishUi();
+        this.invalidate();
+    }
+
+    // ── Wheel ───────────────────────────────────────────────────────
+
+    fn wheel(e: ui_components.WheelEvent, local: Vec2) {
+        if hasModifier(e.modifiers, KeyModifiers.Ctrl) {
+            // SDL's wheel delta.y is positive scrolling away from the user
+            // (scroll up/forward) -- that zooms in.
+            this.view.zoomBy(math.pow(1.1, e.delta.y), local.x, local.y);
+        } else {
+            let dx = e.delta.x;
+            let dy = e.delta.y;
+            if hasModifier(e.modifiers, KeyModifiers.Shift) {
+                dx = e.delta.y;
+                dy = e.delta.x;
+            }
+            // X and Y need opposite signs here: SDL reports y positive away
+            // from the user and x positive to the right.
+            this.view.pan(-dx * panSpeed, dy * panSpeed);
+        }
+        this.viewportChanged();
+    }
+
+    // ── Keyboard ────────────────────────────────────────────────────
+
+    fn keyDown(e: ui_components.KeyboardEvent, ui: ui_components.UIContext) {
+        let ctrl = hasModifier(e.modifiers, KeyModifiers.Ctrl);
+        if ctrl && e.key == ui_components.Key.S {
+            this.saveNow();
+        }
+        else if ctrl && e.key == ui_components.Key.C {
+            this.copySelection(ui);
+        }
+        else if ctrl && e.key == ui_components.Key.X {
+            this.copySelection(ui);
+            this.deleteSelection();
+        }
+        else if ctrl && e.key == ui_components.Key.V {
+            this.paste(ui);
+        }
+        else if e.key == ui_components.Key.Delete || e.key == ui_components.Key.Backspace {
+            this.deleteSelection();
+        }
+        else if e.key == ui_components.Key.Escape {
+            this.closePopup();
+            this.clearSelection();
+            this.publishUi();
+            this.invalidate();
+        }
+    }
+
+    fn copySelection(ui: ui_components.UIContext) {
+        if this.selected.length == 0 {
+            return;
+        }
+        let shapes: []Shape = [];
+        for shape in this.selected {
+            shapes.push(cloneShape(shape));
+        }
+        ui.setClipboardText(json.stringify(ShapesInClipboard { type: "technicalsketcher", shapes: shapes }));
+    }
+
+    // Pastes shapes copied here or from the web app, 10 mm down and to the
+    // right of where they were, onto the page the selection is on -- or the
+    // one in the middle of the view -- and selects them.
+    fn paste(ui: ui_components.UIContext) {
+        let doc = this.doc;
+        if !doc {
+            return;
+        }
+        let text = ui.getClipboardText();
+        if text.length == 0 {
+            return;
+        }
+        // Anything else on the clipboard (plain text, another app's JSON)
+        // is simply not ours to paste.
+        let clip = json.parse<ShapesInClipboard>(text);
+        if !clip {
+            return;
+        }
+        if clip.type != "technicalsketcher" {
+            return;
+        }
+        let page = this.selectionPage;
+        if this.selected.length == 0 {
+            let center = Vec2(this.view.lastPanelSize.x / 2.0, this.view.lastPanelSize.y / 2.0);
+            page = this.pageUnder(doc, center);
+        }
+        this.selected.clear();
+        for shape in clip.shapes {
+            translateShape(shape, Vec2(10.0, 10.0));
+            doc.data.pages[page].shapes.push(shape);
+            this.view.markShapeDirty(page, shape);
+            this.selected.push(shape);
+        }
+        this.selectionPage = page;
+        this.markChanged();
+        this.publishUi();
+        this.invalidate();
+    }
+
+    // ── Drawing ─────────────────────────────────────────────────────
+
+    // The document, then everything in flight over it, in the web app's
+    // colors: moving and resizing shapes, strokes being erased (grey), the
+    // stroke being drawn, the selection's boxes and resize handle, the lasso
+    // and the eraser.
+    fn render(r: mut renderer.gfx.Renderer) {
+        let doc = this.doc;
+        if !doc {
+            return;
+        }
+        this.view.render(r, doc, this.documentLoads);
+
+        if this.gesture == Gesture.Moving || this.gesture == Gesture.Resizing {
+            let transform = this.liveTransform();
+            for shape in this.selected {
+                this.view.drawShapeLive(r, doc, this.selectionPage, shape, transform);
+            }
+        }
+        for (let i = 0; i < this.erased.length; i++) {
+            let shape = this.erased[i];
+            this.view.drawShapeLive(r, doc, this.erasedPages[i], shape, mat4.identity(), Color(0.843, 0.843, 0.843, 1.0));
+        }
+        if let line = this.preview {
+            this.view.drawShapeLive(r, doc, this.gesturePage, line, mat4.identity());
+        }
+
+        if let box = this.selectionBBox() {
+            let orange = Color(0.906, 0.482, 0.0, 1.0);
+            for shape in this.selected {
+                this.drawBoxOutline(r, doc, this.liveBBox(shape), orange);
+            }
+            this.drawBoxOutline(r, doc, box, orange);
+            let handle = this.pageToScreen(doc, this.selectionPage, Vec2(box.right, box.bottom));
+            let half = resizeHandleSizePx / 2.0;
+            overlayFillRect(r, Vec2(handle.x - half, handle.y - half), Vec2(resizeHandleSizePx, resizeHandleSizePx), Color(1.0, 1.0, 1.0, 1.0));
+            overlayStrokeRect(r, Vec2(handle.x - half, handle.y - half), Vec2(resizeHandleSizePx, resizeHandleSizePx), 1.0, Color(0.0, 0.0, 0.0, 1.0));
+        }
+
+        if this.gesture == Gesture.Lasso && this.lasso.length >= 2 {
+            let points: []Vec2 = [];
+            for p in this.lasso {
+                points.push(this.view.worldToScreen(p));
+            }
+            overlayFillPolygon(r, points, Color(0.0, 0.5, 1.0, 0.1));
+            overlayDashedPolyline(r, points, true, 1.0, Color(0.0, 0.0, 0.0, 1.0), 6.0, 4.0);
+        }
+
+        if let pos = this.eraserPos {
+            let radius = eraserSizePx / 2.0;
+            overlayFillCircle(r, pos, radius, Color(1.0, 1.0, 1.0, 0.5));
+            overlayStrokeCircle(r, pos, radius, 1.0, Color(0.0, 0.0, 0.0, 1.0));
+        }
+    }
+
+    fn drawBoxOutline(r: mut renderer.gfx.Renderer, doc: DocumentFile, box: BBox, color: Color) {
+        let topLeft = this.pageToScreen(doc, this.selectionPage, Vec2(box.left, box.top));
+        let bottomRight = this.pageToScreen(doc, this.selectionPage, Vec2(box.right, box.bottom));
+        overlayStrokeRect(r, topLeft, Vec2(bottomRight.x - topLeft.x, bottomRight.y - topLeft.y), 1.0, color);
+    }
+}

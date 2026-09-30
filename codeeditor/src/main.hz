@@ -38,8 +38,26 @@ fn toUIPointerEdges(a: app.App, out: mut []ui_components.PointerEdge): []ui_comp
         if e.button == 0 { button = ui_components.PointerButton.Left; }
         else if e.button == 1 { button = ui_components.PointerButton.Middle; }
         else if e.button == 2 { button = ui_components.PointerButton.Right; }
-        let kind = e.kind == app.PointerEdgeKind.Pressed ? ui_components.PointerEdgeKind.Pressed : ui_components.PointerEdgeKind.Released;
-        result.push({ button: button, kind: kind, pos: e.pos });
+        else if e.button == 5 { button = ui_components.PointerButton.Eraser; }
+        let kind = ui_components.PointerEdgeKind.Pressed;
+        if e.kind == app.PointerEdgeKind.Released { kind = ui_components.PointerEdgeKind.Released; }
+        else if e.kind == app.PointerEdgeKind.Moved { kind = ui_components.PointerEdgeKind.Moved; }
+        else if e.kind == app.PointerEdgeKind.Cancelled { kind = ui_components.PointerEdgeKind.Cancelled; }
+        let pointerType = "mouse";
+        if e.pointerType == app.PointerType.Pen { pointerType = "pen"; }
+        else if e.pointerType == app.PointerType.Touch { pointerType = "touch"; }
+        result.push({
+            button: button,
+            kind: kind,
+            pos: e.pos,
+            pointerId: e.pointerId,
+            pointerType: pointerType,
+            // Both sides number the bits the DOM's way -- see
+            // ui_components.pointerButtonsFromBits.
+            buttons: ui_components.pointerButtonsFromBits(e.buttons),
+            pressure: e.pressure,
+            isPrimary: e.isPrimary,
+        });
     }
     return result;
 }
@@ -124,6 +142,8 @@ fn main(): int {
                 middleHeld: () => a.pointerMiddleHeld(),
                 rightHeld: () => a.pointerRightHeld(),
                 edgesThisFrame: () => toUIPointerEdges(a, pointerEdgeScratch),
+                // app queues every move, of the mouse, a pen and each finger.
+                reportsMotion: true,
             },
             inputExtras: ui_components.InputExtrasCallbacks {
                 wheelDelta: () => a.wheelDelta(),

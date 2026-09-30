@@ -61,10 +61,15 @@ export ref struct AppPointerButtons {
     rightHeld: bool = false;
 }
 
-export enum PointerEdgeKind { Pressed, Released }
+// Moved and Cancelled joined Pressed/Released when pens and touch did: a pen
+// stroke or a pinch needs every position the device reported, not just where
+// the pointer ended up by the time the frame was drawn.
+export enum PointerEdgeKind { Pressed, Released, Moved, Cancelled }
 
-// One press or release, queued in the exact order SDL delivered it, with the
-// cursor position at that moment -- appended to by the SDL callbacks below
+export enum PointerType { Mouse, Pen, Touch }
+
+// One press, release or move, queued in the exact order SDL delivered it, with
+// the pointer position at that moment -- appended to by the SDL callbacks below
 // and drained (reset) at the top of nextFrame(), same one-frame-window
 // lifecycle as App.wheelDeltaThisFrame. This exists *in addition to* the
 // level state in AppPointerButtons above: a single held-boolean (or even a
@@ -78,10 +83,50 @@ export enum PointerEdgeKind { Pressed, Released }
 // as it happens, instead of folding it into shared mutable state, means
 // nothing SDL reports within a frame can ever be lost, no matter how many
 // events land in that frame.
+//
+// The same goes for motion. Pen and touch moves are queued one per sample,
+// because ink drawn from a frame's last position alone is a polygon. Mouse
+// moves in a row collapse into one (the latest position): nothing draws with
+// the mouse at that resolution, and a gaming mouse reports a thousand of them
+// a second.
+//
+// The fields after `pos` follow the DOM's PointerEvent, and default to the
+// mouse so an edge built from the old three fields still means what it did.
 export ref struct PointerEdge {
-    button: int;             // matches sdl.MouseButtonEvent.button: 0=left, 1=middle, 2=right
+    // matches sdl.MouseButtonEvent.button: 0=left (a pen's tip, a finger),
+    // 1=middle, 2=right; 5 is a pen's eraser end, as in the DOM. -1 on a move.
+    button: int;
     kind: PointerEdgeKind;
     pos: Vec2;
+    // 1 is the mouse. Pens and fingers get ids of their own (see
+    // penPointerId/touchPointerId), stable from Pressed to Released.
+    pointerId: int = 1;
+    pointerType: PointerType = PointerType.Mouse;
+    // The DOM's PointerEvent.buttons AFTER this edge: 1 = left/tip/finger,
+    // 2 = right/barrel, 4 = middle/second barrel, 32 = eraser.
+    buttons: int = 0;
+    pressure: real = 0.0;
+    // The mouse and the pen always are; of several fingers, only the first
+    // one down -- the DOM's rule, which is what lets a two-finger pinch leave
+    // clicks and focus alone.
+    isPrimary: bool = true;
+}
+
+fn penPointerId(id: int): int {
+    return 1000 + id;
+}
+
+fn touchPointerId(id: int): int {
+    return 100000 + id;
+}
+
+// Bitflag tests without an `&` operator -- see ui_components.hasButton.
+fn hasBit(value: int, bit: int): bool :: final {
+    do unsafe {
+        let result: bool = uninitialized;
+        __c__("result = (value & bit) != 0;");
+        return result;
+    };
 }
 
 export enum KeyEdgeKind { Pressed, Released }
@@ -190,6 +235,23 @@ export opaque ref struct App {
     focusGained: bool = false;
     focusLost: bool = false;
     _pointerButtons: AppPointerButtons = {};
+    // Who is holding the primary "left" level down. The UI polls one level
+    // for the primary pointer (leftHeld), but the mouse, a pen tip and the
+    // first finger can each hold it, so it is the OR of the three rather than
+    // a flag any one of them could clear from under another.
+    _mouseLeftHeld: bool = false;
+    _penTipHeld: bool = false;
+    _touchHeld: bool = false;
+    // Per pen: the buttons its last event reported, which is what tells a
+    // release of the tip from a release of the eraser (the up itself only
+    // says what is still down afterwards).
+    _penButtons: LinearMap<int, int> = {};
+    // The fingers currently down, in landing order, and whether the first
+    // of them -- the primary one -- is still among them. A finger that lands
+    // while others are down is never primary, even after the primary lifts.
+    _activeTouches: []int = [];
+    _primaryTouch: int = 0;
+    _hasPrimaryTouch: bool = false;
     _pointerEdgeQueue: []PointerEdge = [];
     _keyEdgeQueue: []KeyEdge = [];
     // Committed text chunks (SDL_EVENT_TEXT_INPUT) queued this frame, in
@@ -289,12 +351,14 @@ export opaque ref struct App {
             // First real word on where the pointer is -- see
             // mousePositionKnown.
             app.mousePositionKnown = true;
+            app.queueMouseMove(e.pos);
             return false;
         });
         window.onMouseDown((e: sdl.MouseButtonEvent) => {
-            if e.button == 0 { pointerButtons.leftHeld = true; }
+            if e.button == 0 { app._mouseLeftHeld = true; }
             if e.button == 1 { pointerButtons.middleHeld = true; }
             if e.button == 2 { pointerButtons.rightHeld = true; }
+            app.refreshLeftHeld();
             // A click carries a position too, and can legitimately be the
             // FIRST thing we hear about the pointer: click into an
             // unfocused window without moving first and the press may
@@ -302,14 +366,23 @@ export opaque ref struct App {
             app.mousePosition.x = e.pos.x;
             app.mousePosition.y = e.pos.y;
             app.mousePositionKnown = true;
-            app._pointerEdgeQueue.push({ button: e.button, kind: PointerEdgeKind.Pressed, pos: e.pos });
+            app._pointerEdgeQueue.push({ button: e.button, kind: PointerEdgeKind.Pressed, pos: e.pos, buttons: app.mouseButtons() });
             return false;
         });
         window.onMouseUp((e: sdl.MouseButtonEvent) => {
-            if e.button == 0 { pointerButtons.leftHeld = false; }
+            if e.button == 0 { app._mouseLeftHeld = false; }
             if e.button == 1 { pointerButtons.middleHeld = false; }
             if e.button == 2 { pointerButtons.rightHeld = false; }
-            app._pointerEdgeQueue.push({ button: e.button, kind: PointerEdgeKind.Released, pos: e.pos });
+            app.refreshLeftHeld();
+            app._pointerEdgeQueue.push({ button: e.button, kind: PointerEdgeKind.Released, pos: e.pos, buttons: app.mouseButtons() });
+            return false;
+        });
+        window.onPointer((e: sdl.PointerEvent) => {
+            if e.device == sdl.PointerDevice.Pen {
+                app.handlePen(e);
+            } else {
+                app.handleTouch(e);
+            }
             return false;
         });
         window.onMouseWheel((e: sdl.MouseWheelEvent) => {
@@ -336,6 +409,114 @@ export opaque ref struct App {
 
     fn mousePos(): Vec2 {
         return this.mousePosition;
+    }
+
+    // ── Pointer bookkeeping (called from the SDL callbacks above) ──────
+
+    fn refreshLeftHeld() {
+        this._pointerButtons.leftHeld = this._mouseLeftHeld || this._penTipHeld || this._touchHeld;
+    }
+
+    // The mouse's own buttons as a DOM bitmask -- its buttons only, so a pen
+    // tip that happens to be down does not show up on a mouse event.
+    fn mouseButtons(): int {
+        let buttons = 0;
+        if this._mouseLeftHeld { buttons += 1; }
+        if this._pointerButtons.rightHeld { buttons += 2; }
+        if this._pointerButtons.middleHeld { buttons += 4; }
+        return buttons;
+    }
+
+    // Consecutive mouse moves collapse into one -- see PointerEdge.
+    fn queueMouseMove(pos: Vec2) {
+        let n = this._pointerEdgeQueue.length;
+        if n > 0 {
+            let last = this._pointerEdgeQueue[n - 1];
+            if last.kind == PointerEdgeKind.Moved && last.pointerType == PointerType.Mouse {
+                last.pos = pos;
+                return;
+            }
+        }
+        this._pointerEdgeQueue.push({ button: -1, kind: PointerEdgeKind.Moved, pos: pos, buttons: this.mouseButtons() });
+    }
+
+    // The pen is always a primary pointer: it moves the position the UI
+    // hovers with and its tip holds the primary level, exactly as the mouse
+    // does -- a pen is how a tablet user clicks buttons, too.
+    fn handlePen(e: sdl.PointerEvent) {
+        let previous = this._penButtons.get(e.id) ?? 0;
+        this._penButtons.set(e.id, e.buttons);
+
+        this.mousePosition = e.pos;
+        this.mousePositionKnown = true;
+        this._penTipHeld = hasBit(e.buttons, 1);
+        this.refreshLeftHeld();
+
+        let kind = PointerEdgeKind.Moved;
+        let button = -1;
+        if e.kind == sdl.PointerEventKind.Down {
+            kind = PointerEdgeKind.Pressed;
+            button = hasBit(e.buttons, 32) ? 5 : 0;
+        } else if e.kind == sdl.PointerEventKind.Up {
+            kind = PointerEdgeKind.Released;
+            button = hasBit(previous, 32) ? 5 : 0;
+        } else if e.kind == sdl.PointerEventKind.Cancel {
+            kind = PointerEdgeKind.Cancelled;
+        }
+        this._pointerEdgeQueue.push({
+            button: button,
+            kind: kind,
+            pos: e.pos,
+            pointerId: penPointerId(e.id),
+            pointerType: PointerType.Pen,
+            buttons: e.buttons,
+            pressure: e.pressure,
+        });
+    }
+
+    fn handleTouch(e: sdl.PointerEvent) {
+        let kind = PointerEdgeKind.Moved;
+        let button = -1;
+        if e.kind == sdl.PointerEventKind.Down {
+            kind = PointerEdgeKind.Pressed;
+            button = 0;
+            if this._activeTouches.length == 0 {
+                this._primaryTouch = e.id;
+                this._hasPrimaryTouch = true;
+            }
+            this._activeTouches.push(e.id);
+        } else if e.kind == sdl.PointerEventKind.Up || e.kind == sdl.PointerEventKind.Cancel {
+            kind = e.kind == sdl.PointerEventKind.Up ? PointerEdgeKind.Released : PointerEdgeKind.Cancelled;
+            button = 0;
+            for (let i = 0; i < this._activeTouches.length; i++) {
+                if this._activeTouches[i] == e.id {
+                    this._activeTouches.remove(i);
+                    break;
+                }
+            }
+        }
+
+        let isPrimary = this._hasPrimaryTouch && this._primaryTouch == e.id;
+        if isPrimary {
+            this.mousePosition = e.pos;
+            this.mousePositionKnown = true;
+            this._touchHeld = kind == PointerEdgeKind.Pressed || kind == PointerEdgeKind.Moved;
+            this.refreshLeftHeld();
+            if kind == PointerEdgeKind.Released || kind == PointerEdgeKind.Cancelled {
+                this._hasPrimaryTouch = false;
+            }
+        }
+
+        this._pointerEdgeQueue.push({
+            button: button,
+            kind: kind,
+            pos: e.pos,
+            pointerId: touchPointerId(e.id),
+            pointerType: PointerType.Touch,
+            buttons: e.buttons,
+            pressure: e.pressure,
+            isPrimary: isPrimary,
+        });
     }
 
     // Whether mousePos() means anything RIGHT NOW.

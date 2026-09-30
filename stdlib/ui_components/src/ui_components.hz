@@ -13,12 +13,15 @@ import renderer;
 let __ui_updateRequested: bool = false;
 
 // Which single button triggered a given event. None for events not tied to
-// one specific button (move, hover/hit enter+leave).
+// one specific button (move, hover/hit enter+leave). A pen's tip and a finger
+// are Left, as in the DOM; Eraser is a pen's eraser end touching down (the
+// DOM's button 5).
 export enum PointerButton {
     None,
     Left,
     Middle,
     Right,
+    Eraser,
 }
 
 // Which buttons are held *during* an event, as a bitmask -- mirrors the
@@ -30,11 +33,31 @@ export enum PointerButton {
 // TODO: Check this, i think this is actually not an issue, IIRC the compiler actually always provides
 // a "None" variant, as well as "All" for convenience, so there should not be any reason to 
 // even specify None in the first place.
+//
+// Back/Forward are the mouse's side buttons (8/16) and Eraser a pen's eraser
+// end in contact (32) -- listed so the auto-assigned values land on the DOM's
+// bits, which is what lets a host hand a platform bitmask straight over (see
+// pointerButtonsFromBits). A pen's first barrel button is Right, as in the DOM.
 export enum bitflag PointerButtons {
     Left,
     Right,
     Middle,
+    Back,
+    Forward,
+    Eraser,
     None = 0,
+}
+
+// A DOM-style buttons bitmask (1 left, 2 right, 4 middle, 8 back, 16 forward,
+// 32 eraser) as PointerButtons -- the same numbering, so it is a plain
+// reinterpretation. Hosts use it to translate a platform's bitmask without
+// spelling out every bit.
+export fn pointerButtonsFromBits(bits: int): PointerButtons :: final {
+    do unsafe {
+        let result: PointerButtons = uninitialized;
+        __c__("result = (int)bits;");
+        return result;
+    };
 }
 
 // Bitflag enums only support construction/combination via `|` -- there's no
@@ -86,7 +109,19 @@ const comptime MAX_CLICK_COUNT = 3;
 // Covers mouse, touch, and stylus in one type. stopPropagation() halts both
 // the remaining capture and bubble phases -- see dispatchCapturing()/
 // dispatchBubbling() below for exactly how.
-export struct PointerEvent {
+//
+// pointerType is the DOM's string: "mouse", "pen" or "touch". Pen and touch
+// pointers are implicitly captured, as the DOM does for direct-manipulation
+// devices: from the Down until the Up, every event of that pointer goes to the
+// element path the Down hit, wherever the pointer is now -- a stroke that runs
+// off the canvas it started on stays with that canvas. The mouse is not; see
+// UIContext.leftMouseHeld for how a mouse drag follows the pointer instead.
+//
+// A ref struct, like WheelEvent and KeyboardEvent: every handler along the
+// path is handed the SAME event, which is the only way stopPropagation() in
+// one of them can be seen by the rest. As a value it was copied into each
+// scheduled handler, and stopping it stopped nothing.
+export ref struct PointerEvent {
     pointerId: int;
     pointerType: str;
     pos: Vec2;
@@ -1362,7 +1397,7 @@ export ref struct InstanceData<TProps> {
     }
 }
 
-export enum PointerEdgeKind { Pressed, Released }
+export enum PointerEdgeKind { Pressed, Released, Moved, Cancelled }
 
 // One this-frame press or release, in the exact order the platform layer
 // delivered it, with the cursor position at that moment. edgesThisFrame()
@@ -1376,10 +1411,29 @@ export enum PointerEdgeKind { Pressed, Released }
 // silently dropping every click but the last. See UIContext.process(), which
 // replays this queue in order so nothing reported within a frame is ever
 // lost, no matter how many events land in that frame.
+//
+// Motion may be queued too (Moved), and a host that does so -- and says so,
+// PointerHeldCallbacks.reportsMotion -- gets one Move event per edge: that is
+// what a pen stroke or a pinch needs, every sample rather than wherever the
+// pointer ended up by the frame's end. Any other host gets the old
+// behaviour, one Move per frame derived from the polled position. Cancelled is a pointer the platform took
+// away (a touch claimed by a system gesture); it is dispatched as an Up that
+// completes no click.
+//
+// The fields after `pos` describe WHICH pointer, after the DOM, and default
+// to the mouse so an edge built from the first three still means what it did.
+// For the mouse, the buttons of each event are replayed from the held levels
+// (see process()) and `buttons` here is ignored; a pen or a finger carries its
+// own. See PointerEvent for how pen and touch pointers are captured.
 export ref struct PointerEdge {
     button: PointerButton;
     kind: PointerEdgeKind;
     pos: Vec2;
+    pointerId: int = 1;
+    pointerType: str = "mouse";
+    buttons: PointerButtons = PointerButtons.None;
+    pressure: real = 0.0;
+    isPrimary: bool = true;
 }
 
 // Optional pointer-button callbacks bundled as a struct. Using a ref struct avoids
@@ -1388,11 +1442,18 @@ export ref struct PointerEdge {
 // *Held is the continuous level state (used for the PointerEvent.buttons
 // bitmask and for Move's drag pressure). edgesThisFrame() is the ordered
 // press/release queue described on PointerEdge above, used for Down/Up/Click.
+//
+// reportsMotion says the host queues a Moved edge for every move, so the
+// polled position is never turned into a Move of its own. It has to be said
+// rather than inferred from the edges: a frame in which a finger lands
+// somewhere new carries a Pressed edge and a moved position but no Moved
+// edge, and a guess would report a mouse move that never happened.
 export ref struct PointerHeldCallbacks {
     leftHeld: () => bool;
     middleHeld: () => bool;
     rightHeld: () => bool;
     edgesThisFrame: () => []PointerEdge;
+    reportsMotion: bool = false;
 }
 
 // Optional wheel/modifier poll callbacks, bundled for the same reason as
@@ -1637,6 +1698,22 @@ export struct PendingPointerEvent {
     // is computed once when the press is replayed and carried through here
     // rather than recomputed per event.
     detail: int = 0;
+    // Which pointer, as reported by its edge -- see PointerEdge.
+    pointerId: int = 1;
+    pointerType: str = "mouse";
+    pressure: real = 0.0;
+    isPrimary: bool = true;
+    // An Up that ends the pointer without completing a click -- see
+    // PointerEdgeKind.Cancelled.
+    cancelled: bool = false;
+}
+
+// A pen or touch pointer that is down, and the element path its Down hit:
+// every later event of that pointer is dispatched along this path, not along
+// whatever is under it now -- see PointerEvent.
+export ref struct PointerCapture {
+    pointerId: int;
+    path: []ui_elements.Element = [];
 }
 
 export opaque ref struct UIContext {
@@ -1709,6 +1786,11 @@ export opaque ref struct UIContext {
     // participate in click eligibility on some *later*, unrelated up-event
     // that happens to hit it. See process()'s Down/Up handling.
     _pointerDownTargets: []ComponentElementRuntimeData = [];
+
+    // Pen and touch pointers currently down, each with the path its events
+    // go to until it lifts -- see PointerCapture. Entries are recycled
+    // rather than dropped, so a stroke costs no allocation after the first.
+    _pointerCaptures: []PointerCapture = [];
 
     // Per-frame scratch buffers, allocated once and cleared each frame
     // (clear() keeps the capacity). An idle frame used to build six fresh
@@ -2699,6 +2781,44 @@ export opaque ref struct UIContext {
         return KeyModifiers.None;
     }
 
+    // The capture of a pen or touch pointer that is down -- see
+    // PointerCapture. Pointer id 0 marks a free (recycled) entry; no pointer
+    // has it, the mouse being 1.
+    fn captureOf(pointerId: int): PointerCapture | none {
+        for capture in this._pointerCaptures {
+            if capture.pointerId == pointerId {
+                return capture;
+            }
+        }
+        return none;
+    }
+
+    fn capturePointer(pointerId: int, path: []ui_elements.Element) {
+        let capture = this.captureOf(pointerId);
+        if !capture {
+            capture = this.captureOf(0);
+        }
+        if !capture {
+            let fresh = PointerCapture { pointerId: pointerId };
+            this._pointerCaptures.push(fresh);
+            capture = fresh;
+        }
+        assert(capture);
+        capture.pointerId = pointerId;
+        // A copy: `path` is this frame's reusable hit-path buffer.
+        capture.path.clear();
+        for element in path {
+            capture.path.push(element);
+        }
+    }
+
+    fn releasePointer(pointerId: int) {
+        if let capture = this.captureOf(pointerId) {
+            capture.pointerId = 0;
+            capture.path.clear();
+        }
+    }
+
     // Schedules a pointer event along hitPath from root down to target onto
     // `eventQueue` -- the capture phase. Always scheduled before the
     // corresponding bubble-phase pass for the same event (see process()), so
@@ -3060,31 +3180,65 @@ export opaque ref struct UIContext {
 
         let pendingEvents = this._pendingEvents;
         pendingEvents.clear();
+        // Whether the host queues motion itself -- see PointerEdge. If not,
+        // the one Move below is derived from the polled position instead.
+        let hostReportsMotion = this._pointerButtons ? this._pointerButtons.reportsMotion : false;
         for edge in edges {
-            if edge.kind == PointerEdgeKind.Pressed {
-                if edge.button == PointerButton.Left { runningLeft = true; }
-                else if edge.button == PointerButton.Middle { runningMiddle = true; }
-                else if edge.button == PointerButton.Right { runningRight = true; }
+            // The held levels are the mouse's (and the primary pointer's),
+            // so only a mouse edge moves them; a pen or a finger reports its
+            // own buttons with every edge.
+            let isMouse = edge.pointerType == "mouse";
+            if edge.kind == PointerEdgeKind.Moved {
+                let moveButtons = isMouse ? makeButtons(runningLeft, runningMiddle, runningRight) : edge.buttons;
+                pendingEvents.push({
+                    kind: PointerEventKind.Move, button: PointerButton.None, buttons: moveButtons, pos: edge.pos,
+                    pointerId: edge.pointerId, pointerType: edge.pointerType, pressure: edge.pressure, isPrimary: edge.isPrimary,
+                });
+            }
+            else if edge.kind == PointerEdgeKind.Pressed {
+                if isMouse {
+                    if edge.button == PointerButton.Left { runningLeft = true; }
+                    else if edge.button == PointerButton.Middle { runningMiddle = true; }
+                    else if edge.button == PointerButton.Right { runningRight = true; }
+                }
                 // Click counting happens HERE, on the press, and the count
                 // is then carried by both this Down and the Up that
                 // completes it -- see PendingPointerEvent.detail. `now` is
                 // this frame's timestamp, so two presses landing in the same
                 // frame compare as simultaneous, which they effectively are.
-                this._advanceClickCount(edge.button, edge.pos, now);
-                pendingEvents.push({ kind: PointerEventKind.Down, button: edge.button, buttons: makeButtons(runningLeft, runningMiddle, runningRight), pos: edge.pos, detail: this._clickCount });
+                // Only a primary pointer clicks, so only one counts: a second
+                // finger landing mid-pinch is not the next click of a
+                // sequence.
+                let detail = 0;
+                if edge.isPrimary {
+                    this._advanceClickCount(edge.button, edge.pos, now);
+                    detail = this._clickCount;
+                }
+                let downButtons = isMouse ? makeButtons(runningLeft, runningMiddle, runningRight) : edge.buttons;
+                pendingEvents.push({
+                    kind: PointerEventKind.Down, button: edge.button, buttons: downButtons, pos: edge.pos, detail: detail,
+                    pointerId: edge.pointerId, pointerType: edge.pointerType, pressure: edge.pressure, isPrimary: edge.isPrimary,
+                });
             }
             else {
-                if edge.button == PointerButton.Left { runningLeft = false; }
-                else if edge.button == PointerButton.Middle { runningMiddle = false; }
-                else if edge.button == PointerButton.Right { runningRight = false; }
+                if isMouse {
+                    if edge.button == PointerButton.Left { runningLeft = false; }
+                    else if edge.button == PointerButton.Middle { runningMiddle = false; }
+                    else if edge.button == PointerButton.Right { runningRight = false; }
+                }
                 // A release reports the count of the press it completes, as
                 // in the DOM -- so the mouseup and the click of a double
                 // click both say 2, not 0 and not a fresh 1.
-                let releaseDetail = edge.button == this._lastPressButton ? this._clickCount : 0;
-                pendingEvents.push({ kind: PointerEventKind.Up, button: edge.button, buttons: makeButtons(runningLeft, runningMiddle, runningRight), pos: edge.pos, detail: releaseDetail });
+                let releaseDetail = edge.isPrimary && edge.button == this._lastPressButton ? this._clickCount : 0;
+                let upButtons = isMouse ? makeButtons(runningLeft, runningMiddle, runningRight) : edge.buttons;
+                pendingEvents.push({
+                    kind: PointerEventKind.Up, button: edge.button, buttons: upButtons, pos: edge.pos, detail: releaseDetail,
+                    pointerId: edge.pointerId, pointerType: edge.pointerType, pressure: 0.0, isPrimary: edge.isPrimary,
+                    cancelled: edge.kind == PointerEdgeKind.Cancelled,
+                });
             }
         }
-        if this.dmousePos.x != 0.0 || this.dmousePos.y != 0.0 {
+        if !hostReportsMotion && (this.dmousePos.x != 0.0 || this.dmousePos.y != 0.0) {
             pendingEvents.push({ kind: PointerEventKind.Move, button: PointerButton.None, buttons: buttons, pos: this.mousePos });
         }
 
@@ -3245,53 +3399,82 @@ export opaque ref struct UIContext {
             for pe in pendingEvents {
                 let hitPath = this._eventHitPath;
                 this.buildHitPathInto(hitPath, tree, pe.pos);
-                let pressure = 0.0;
-                if pe.kind == PointerEventKind.Down { pressure = 0.5; }
-                else if pe.kind == PointerEventKind.Move && pe.buttons != PointerButtons.None { pressure = 0.5; }
+
+                // Where this event goes: the element path under it, unless it
+                // belongs to a pen or finger that is down, whose events all go
+                // to the path its Down hit -- see PointerEvent. The Down itself
+                // always hit-tests; it is what sets the capture.
+                let capturable = pe.pointerType != "mouse";
+                let targetPath = hitPath;
+                if capturable && pe.kind != PointerEventKind.Down {
+                    if let capture = this.captureOf(pe.pointerId) {
+                        targetPath = capture.path;
+                    }
+                }
+
+                // The mouse has no pressure sensor, so it reports the DOM's
+                // stand-in: 0.5 while a button is held, 0 otherwise. A pen or a
+                // finger reports what the device measured.
+                let pressure = pe.pressure;
+                if pe.pointerType == "mouse" {
+                    pressure = 0.0;
+                    if pe.kind == PointerEventKind.Down { pressure = 0.5; }
+                    else if pe.kind == PointerEventKind.Move && pe.buttons != PointerButtons.None { pressure = 0.5; }
+                }
                 let event = PointerEvent {
-                    pointerId: 1,
-                    pointerType: "mouse",
+                    pointerId: pe.pointerId,
+                    pointerType: pe.pointerType,
                     pos: pe.pos,
                     button: pe.button,
                     buttons: pe.buttons,
                     pressure: pressure,
-                    isPrimary: true,
+                    isPrimary: pe.isPrimary,
                     modifiers: this.currentModifiers(),
                     detail: pe.detail,
                 };
 
                 if pe.kind == PointerEventKind.Down {
-                    // Defensive cleanup: if a previous Down's targets were
-                    // never fully consumed (e.g. the matching Up never came,
-                    // however that could happen), don't let their
-                    // pointerDownHere leak into this new cycle's eligibility.
-                    for d in this._pointerDownTargets {
-                        setPointerDownHere(d, false);
-                    }
-                    this._pointerDownTargets.clear();
-
-                    for el in hitPath {
-                        let d = runtimeDataOf(el);
-                        if !d.inputFeedback {
-                            d.inputFeedback = { hover: false, hit: false, pointerDownHere: false };
-                        }
-                        assert(d.inputFeedback);
-                        setPointerDownHere(d, true);
-                        this._pointerDownTargets.push(d);
+                    if capturable {
+                        this.capturePointer(pe.pointerId, hitPath);
                     }
 
-                    // Focus: click-to-focus the nearest focusable ancestor
-                    // in this Down's hitPath (innermost wins), or blur
-                    // whatever's focused if there isn't one -- see
-                    // DivProps.focusable and applyFocusChange.
-                    let newFocusTarget = none as ui_elements.Element | none;
-                    for (let fi = hitPath.length - 1; fi >= 0; fi--) {
-                        if runtimeDataOf(hitPath[fi]).focusable {
-                            newFocusTarget = hitPath[fi];
-                            break;
+                    // Clicks, focus and dismissal follow the PRIMARY pointer
+                    // only: a second finger landing mid-pinch must neither
+                    // move focus nor count as a press outside an open popup,
+                    // nor clobber the first finger's click bookkeeping.
+                    if pe.isPrimary {
+                        // Defensive cleanup: if a previous Down's targets were
+                        // never fully consumed (e.g. the matching Up never came,
+                        // however that could happen), don't let their
+                        // pointerDownHere leak into this new cycle's eligibility.
+                        for d in this._pointerDownTargets {
+                            setPointerDownHere(d, false);
                         }
+                        this._pointerDownTargets.clear();
+
+                        for el in hitPath {
+                            let d = runtimeDataOf(el);
+                            if !d.inputFeedback {
+                                d.inputFeedback = { hover: false, hit: false, pointerDownHere: false };
+                            }
+                            assert(d.inputFeedback);
+                            setPointerDownHere(d, true);
+                            this._pointerDownTargets.push(d);
+                        }
+
+                        // Focus: click-to-focus the nearest focusable ancestor
+                        // in this Down's hitPath (innermost wins), or blur
+                        // whatever's focused if there isn't one -- see
+                        // DivProps.focusable and applyFocusChange.
+                        let newFocusTarget = none as ui_elements.Element | none;
+                        for (let fi = hitPath.length - 1; fi >= 0; fi--) {
+                            if runtimeDataOf(hitPath[fi]).focusable {
+                                newFocusTarget = hitPath[fi];
+                                break;
+                            }
+                        }
+                        this.applyFocusChange(tree, newFocusTarget, eventQueue, true);
                     }
-                    this.applyFocusChange(tree, newFocusTarget, eventQueue, true);
 
                     this.dispatchCapturing(hitPath, event, PointerEventKind.Down, eventQueue);
                     this.dispatchBubbling(hitPath, event, PointerEventKind.Down, eventQueue);
@@ -3301,11 +3484,11 @@ export opaque ref struct UIContext {
                     // for why press and not release. Its own event object, so
                     // stopPropagation() on the pointerdown does not silently
                     // swallow the menu (and vice versa).
-                    if pe.button == PointerButton.Right {
+                    if pe.isPrimary && pe.button == PointerButton.Right {
                         let contextEvent = PointerEvent {
-                            pointerId: 1, pointerType: "mouse", pos: pe.pos,
+                            pointerId: pe.pointerId, pointerType: pe.pointerType, pos: pe.pos,
                             button: pe.button, buttons: pe.buttons,
-                            pressure: pressure, isPrimary: true,
+                            pressure: pressure, isPrimary: pe.isPrimary,
                             modifiers: this.currentModifiers(),
                             detail: pe.detail,
                         };
@@ -3316,69 +3499,83 @@ export opaque ref struct UIContext {
                     // Strictly last: a trigger's own handler must have already
                     // run (and had its chance to stopPropagation) before any
                     // layer is told this press was outside it.
-                    this.dispatchPointerDownOutside(hitPath, event, eventQueue);
+                    if pe.isPrimary {
+                        this.dispatchPointerDownOutside(hitPath, event, eventQueue);
+                    }
                 }
                 else if pe.kind == PointerEventKind.Up {
-                    this.dispatchCapturing(hitPath, event, PointerEventKind.Up, eventQueue);
-                    this.dispatchBubbling(hitPath, event, PointerEventKind.Up, eventQueue);
+                    this.dispatchCapturing(targetPath, event, PointerEventKind.Up, eventQueue);
+                    this.dispatchBubbling(targetPath, event, PointerEventKind.Up, eventQueue);
 
-                    // Eligibility: was this up-hitPath element also part of
-                    // the down-hitPath? pointerDownHere hasn't been touched
-                    // since Down (see updateHoverState -- it deliberately no
-                    // longer resets this on hover-loss), so it still
-                    // correctly answers that regardless of anything the
-                    // pointer did in between, including dragging off this
-                    // exact element and back onto it before release.
-                    let clickEligible = this._clickEligible;
-                    clickEligible.clear();
-                    for el in hitPath {
-                        let d = runtimeDataOf(el);
-                        clickEligible.push(d.inputFeedback ? d.inputFeedback.pointerDownHere : false);
+                    if pe.isPrimary {
+                        // Eligibility: was this up-hitPath element also part of
+                        // the down-hitPath? pointerDownHere hasn't been touched
+                        // since Down (see updateHoverState -- it deliberately no
+                        // longer resets this on hover-loss), so it still
+                        // correctly answers that regardless of anything the
+                        // pointer did in between, including dragging off this
+                        // exact element and back onto it before release. It is
+                        // asked of the path UNDER the pointer, not of a capture:
+                        // a stroke that ends over a button did not click it.
+                        let clickEligible = this._clickEligible;
+                        clickEligible.clear();
+                        for el in hitPath {
+                            let d = runtimeDataOf(el);
+                            clickEligible.push(d.inputFeedback ? d.inputFeedback.pointerDownHere : false);
+                        }
+
+                        // Consume pointerDownHere for *every* Down target, not
+                        // just the ones still in this Up's hitPath -- otherwise
+                        // an element the pointer left and never returned to
+                        // would keep a stale true, ready to wrongly fire on some
+                        // later, unrelated click that happens to hit it.
+                        for d in this._pointerDownTargets {
+                            setPointerDownHere(d, false);
+                        }
+                        this._pointerDownTargets.clear();
+
+                        // A cancelled pointer never completes a click -- it did
+                        // not lift, the platform took it away.
+                        if !pe.cancelled {
+                            let clickEvent = PointerEvent {
+                                pointerId: pe.pointerId, pointerType: pe.pointerType, pos: pe.pos,
+                                button: pe.button, buttons: pe.buttons,
+                                pressure: 0.0, isPrimary: pe.isPrimary,
+                                modifiers: this.currentModifiers(),
+                                detail: pe.detail,
+                            };
+                            // Primary button -> click; anything else -> auxclick.
+                            // Strictly one or the other, exactly as in the DOM.
+                            let primary = pe.button == PointerButton.Left;
+                            let clickKind = primary ? ClickEventKind.Click : ClickEventKind.AuxClick;
+                            this.dispatchClickCapturing(hitPath, clickEligible, clickEvent, clickKind, eventQueue);
+                            this.dispatchClickBubbling(hitPath, clickEligible, clickEvent, clickKind, eventQueue);
+
+                            // dblclick is an EXTRA event after the second click, not a
+                            // replacement for it -- a double click fires click, click,
+                            // dblclick. Its own event object so that stopping one does
+                            // not stop the other.
+                            if primary && pe.detail == 2 {
+                                let doubleClickEvent = PointerEvent {
+                                    pointerId: pe.pointerId, pointerType: pe.pointerType, pos: pe.pos,
+                                    button: pe.button, buttons: pe.buttons,
+                                    pressure: 0.0, isPrimary: pe.isPrimary,
+                                    modifiers: this.currentModifiers(),
+                                    detail: pe.detail,
+                                };
+                                this.dispatchClickCapturing(hitPath, clickEligible, doubleClickEvent, ClickEventKind.DoubleClick, eventQueue);
+                                this.dispatchClickBubbling(hitPath, clickEligible, doubleClickEvent, ClickEventKind.DoubleClick, eventQueue);
+                            }
+                        }
                     }
 
-                    // Consume pointerDownHere for *every* Down target, not
-                    // just the ones still in this Up's hitPath -- otherwise
-                    // an element the pointer left and never returned to
-                    // would keep a stale true, ready to wrongly fire on some
-                    // later, unrelated click that happens to hit it.
-                    for d in this._pointerDownTargets {
-                        setPointerDownHere(d, false);
-                    }
-                    this._pointerDownTargets.clear();
-
-                    let clickEvent = PointerEvent {
-                        pointerId: 1, pointerType: "mouse", pos: pe.pos,
-                        button: pe.button, buttons: pe.buttons,
-                        pressure: 0.0, isPrimary: true,
-                        modifiers: this.currentModifiers(),
-                        detail: pe.detail,
-                    };
-                    // Primary button -> click; anything else -> auxclick.
-                    // Strictly one or the other, exactly as in the DOM.
-                    let primary = pe.button == PointerButton.Left;
-                    let clickKind = primary ? ClickEventKind.Click : ClickEventKind.AuxClick;
-                    this.dispatchClickCapturing(hitPath, clickEligible, clickEvent, clickKind, eventQueue);
-                    this.dispatchClickBubbling(hitPath, clickEligible, clickEvent, clickKind, eventQueue);
-
-                    // dblclick is an EXTRA event after the second click, not a
-                    // replacement for it -- a double click fires click, click,
-                    // dblclick. Its own event object so that stopping one does
-                    // not stop the other.
-                    if primary && pe.detail == 2 {
-                        let doubleClickEvent = PointerEvent {
-                            pointerId: 1, pointerType: "mouse", pos: pe.pos,
-                            button: pe.button, buttons: pe.buttons,
-                            pressure: 0.0, isPrimary: true,
-                            modifiers: this.currentModifiers(),
-                            detail: pe.detail,
-                        };
-                        this.dispatchClickCapturing(hitPath, clickEligible, doubleClickEvent, ClickEventKind.DoubleClick, eventQueue);
-                        this.dispatchClickBubbling(hitPath, clickEligible, doubleClickEvent, ClickEventKind.DoubleClick, eventQueue);
+                    if capturable {
+                        this.releasePointer(pe.pointerId);
                     }
                 }
                 else if pe.kind == PointerEventKind.Move {
-                    this.dispatchCapturing(hitPath, event, PointerEventKind.Move, eventQueue);
-                    this.dispatchBubbling(hitPath, event, PointerEventKind.Move, eventQueue);
+                    this.dispatchCapturing(targetPath, event, PointerEventKind.Move, eventQueue);
+                    this.dispatchBubbling(targetPath, event, PointerEventKind.Move, eventQueue);
                 }
             }
 

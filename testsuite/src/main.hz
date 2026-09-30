@@ -79,6 +79,8 @@ fn main(): int {
     cases_json_recursive.register(suite);
     cases_json_field_defaults.register(suite);
     cases_json_reactive_fields.register(suite);
+    cases_json_ignore.register(suite);
+    cases_address_of.register(suite);
     cases_computed_narrowing.register(suite);
     cases_narrowed_recheck.register(suite);
     cases_narrowing_inverse.register(suite);

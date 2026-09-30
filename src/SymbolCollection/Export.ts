@@ -1,18 +1,24 @@
 import { OutputWriter } from "../Codegen/OutputWriter";
 import { Semantic } from "../Semantic/SemanticTypes";
 import {
+  type ASTMetaAnnotationItem,
   EDatatypeMutability,
   EExternLanguage,
   EOverloadedOperator,
   EStorageClass,
 } from "../shared/AST";
 import {
+  EPrimitive,
+  type LiteralValue,
+  primitiveToString,
+} from "../shared/common";
+import {
   getModuleGlobalNamespaceName,
   type ModuleConfig,
 } from "../shared/Config";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { assert, formatSourceLoc } from "../shared/Errors";
+import { assert, formatSourceLoc, InternalError } from "../shared/Errors";
 import {
   Collect,
   type CollectionContext,
@@ -20,6 +26,58 @@ import {
   printCollectedDatatype,
   printCollectedExpr,
 } from "./SymbolCollection";
+
+/**
+ * `[[json.ignore, ui.label="Title"]] ` -- annotations written back out as the
+ * source they were parsed from, since the consumer re-parses this text. "" for
+ * none, so it can be prepended unconditionally.
+ */
+function serializeAnnotations(annotations: ASTMetaAnnotationItem[]): string {
+  if (annotations.length === 0) {
+    return "";
+  }
+  const items = annotations.map((a) =>
+    a.value === null ? a.key : `${a.key}=${serializeAnnotationValue(a.value)}`
+  );
+  return `[[${items.join(", ")}]] `;
+}
+
+/** An annotation value is always a plain literal (see `metaAnnotationItem`). */
+function serializeAnnotationValue(value: LiteralValue): string {
+  switch (value.type) {
+    case EPrimitive.str:
+    case EPrimitive.cstr:
+    case EPrimitive.ccstr:
+      return (value.prefix ?? "") + JSON.stringify(value.value);
+    case EPrimitive.bool:
+      return value.value ? "true" : "false";
+    case EPrimitive.f32:
+    case EPrimitive.f64:
+    case EPrimitive.real:
+      // `3.0` must not come back as the int `3`: getAttribute<real> would
+      // then see a different type than the producer did.
+      return Number.isInteger(value.value)
+        ? value.value.toFixed(1)
+        : String(value.value);
+    case EPrimitive.Regex:
+      return `r"${value.pattern}"${[...value.flags].join("")}`;
+    case EPrimitive.i8:
+    case EPrimitive.i16:
+    case EPrimitive.i32:
+    case EPrimitive.i64:
+    case EPrimitive.u8:
+    case EPrimitive.u16:
+    case EPrimitive.u32:
+    case EPrimitive.u64:
+    case EPrimitive.usize:
+    case EPrimitive.int:
+      return `${value.value}`;
+    default:
+      throw new InternalError(
+        `Cannot export an annotation value of kind '${value.type === "enum" ? "enum" : primitiveToString(value.type)}'`
+      );
+  }
+}
 
 function isSourceLocationDefaultValue(
   sr: Semantic.Context,
@@ -181,6 +239,10 @@ export function ExportTypeDef(
         }
       }
       assert(typedef.generics.length === 0);
+      // Annotations are behaviour, not decoration: the consumer is where
+      // json.stringify<T> and friends get instantiated, and it only knows
+      // about an annotation that is written into this text.
+      file.write(serializeAnnotations(typedef.annotations));
       if (typedef.extern === EExternLanguage.Extern) {
         file.write("extern ");
       } else if (typedef.extern === EExternLanguage.Extern_C) {
@@ -212,6 +274,12 @@ export function ExportTypeDef(
           (v) => v.memberName === content.name
         );
         assert(content.type);
+        const memberAnnotations = typedef.memberAnnotations.find(
+          (m) => m.memberName === content.name
+        );
+        if (memberAnnotations) {
+          file.write(serializeAnnotations(memberAnnotations.annotations));
+        }
         if (defaultValue) {
           file.writeLine(
             `${content.name}: ${Semantic.serializeTypeUse(

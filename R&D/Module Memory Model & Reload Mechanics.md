@@ -211,14 +211,14 @@ binary shape. Every input is length-prefixed before folding in, so
   target fingerprint — the alias isn't a distinct nominal identity, but its
   annotations are still real, alias-level metadata the bare target has no
   way to carry.
-- **Known gap, not fixed, discovered while adding the above**: struct
-  *member*-level annotations (`[[...]] x: int;` inside a struct body) are
-  parsed (`ASTStructMemberDefinition.annotations`) but silently dropped when
-  lowered into `Collect.VariableSymbol`/`Semantic.VariableSymbol` — neither
-  carries an `annotations` field, so member annotations don't survive
-  compilation at all today, independent of fingerprinting. Nothing for the
-  fingerprint (or anything else) to read. A real feature gap, out of scope
-  for the fingerprint work itself.
+- **Struct *member*-level annotations** (`[[json.ignore]] cache: T;`) are
+  folded too, next to the member they belong to (name, type, then that
+  member's annotations, sorted the same way). They used to be parsed and
+  silently dropped before reaching `Semantic.Context`; they now live on the
+  struct (`StructDatatypeDef.memberAnnotations`, only for members that have
+  any) — which is also what `T.hasFieldAttribute` reads. Folded only for a
+  member that has annotations, so every struct without them keeps the exact
+  fingerprint it had before this was added.
 
 ## Import Table
 

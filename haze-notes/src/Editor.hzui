@@ -15,89 +15,110 @@ let openFile = (path: str) => {
     props.cache.data.lastOpenedFile := path;
 }
 
-// Counts document loads. A DocumentFile is a plain value with no identity,
-// and the renderer's tiles are cached per page position, so this is what tells
-// it that the document under them is a different one.
-let documentLoads: ref Box<int> = { value: 0 };
-let currentDocument = computed<DocumentFile | null>(() => {
-    documentLoads.value = documentLoads.value + 1;
-    if currentDocumentPath {
-        if let doc = loadDocument(currentDocumentPath) {
-            return doc;
-        }
-    }
-    return null;
-});
-
 let documentRenderer = DocumentRenderer(props.gfx);
-let dragging: ref Box<bool> = { value: false };
 let canvasAreaRef = ui.elementRef<DivElement>();
 let canvasRef = ui.canvasRef();
 
-let onCanvasPointerDown = (e: PointerEvent) => {
-    dragging.value = true;
-};
-let onCanvasPointerUp = (e: PointerEvent) => {
-    dragging.value = false;
-};
-let onCanvasWheel = (e: WheelEvent) => {
-    let localX = e.pos.x;
-    let localY = e.pos.y;
-    let wrapper = rx.get(canvasAreaRef);
-    if wrapper {
-        if let divPos = wrapper.position() {
-            localX = e.pos.x - divPos.x;
-            localY = e.pos.y - divPos.y;
-        }
-    }
-
-    if hasModifier(e.modifiers, KeyModifiers.Ctrl) {
-        // SDL's wheel delta.y is positive scrolling away from
-        // the user (scroll up/forward) -- that should zoom
-        // in, so no negation here (confirmed backwards on
-        // first try: fixed by dropping it).
-        let factor = math.pow(1.1, e.delta.y);
-        documentRenderer.zoomBy(factor, localX, localY);
-    } else {
-        let dx = e.delta.x;
-        let dy = e.delta.y;
-        if hasModifier(e.modifiers, KeyModifiers.Shift) {
-            dx = e.delta.y;
-            dy = e.delta.x;
-        }
-        // X and Y need opposite signs here -- confirmed by
-        // trying it: vertical pan felt right with a
-        // positive coefficient, horizontal only felt right
-        // negated.
-        documentRenderer.pan(-dx * panSpeed, dy * panSpeed);
-    }
-    // The viewport is plain state, invisible to the canvas's change
-    // tracking, so say it changed. The redraw happens once, at the
-    // canvas's step of the next frame.
+// The renderer's state is plain data the canvas cannot track, so every
+// change to it says so. The redraw happens once, at the canvas's step of the
+// next frame, however often this is called before then.
+let invalidateCanvas: () => none = () => {
     canvasRef?.invalidate();
 };
+let controls = EditorControls(documentRenderer, invalidateCanvas);
+
+// Whether a document is open -- what the template switches on. The
+// document itself lives in `controls`, which edits it.
+let documentOpen = reactive<bool>(false);
+
+ui.watch(() => rx.get(currentDocumentPath), (old, new) => {
+    let path = rx.get(currentDocumentPath);
+    let doc: DocumentFile | none = none;
+    if path {
+        if let loaded = loadDocument(path) {
+            doc = loaded;
+        }
+    }
+    controls.setDocument(doc, path ?? "");
+    documentOpen := doc ? true : false;
+}, { immediate: true });
+
+// Pointer positions arrive window-global; the controls work in canvas px.
+let toLocal = (pos: Vec2): Vec2 => {
+    let area = rx.get(canvasAreaRef);
+    if area {
+        if let origin = area.position() {
+            return Vec2(pos.x - origin.x, pos.y - origin.y);
+        }
+    }
+    return pos;
+};
+
+let onPointerDown = (e: PointerEvent) => {
+    controls.pointerDown(e, toLocal(e.pos));
+};
+let onPointerMove = (e: PointerEvent) => {
+    controls.pointerMove(e, toLocal(e.pos));
+};
+let onPointerUp = (e: PointerEvent) => {
+    controls.pointerUp(e, toLocal(e.pos));
+};
+let onWheel = (e: WheelEvent) => {
+    controls.wheel(e, toLocal(e.pos));
+};
+let onKeyDown = (e: KeyboardEvent) => {
+    controls.keyDown(e, ui);
+};
+
+// Polled every frame: a mouse drag that leaves the canvas, a pinch waiting
+// out its grace period, the autosave -- see EditorControls.frame. Runs before
+// the canvas's step of the same frame, so what it changes is drawn at once.
+ui.onFrame(() => {
+    controls.frame(ui, toLocal(ui.mousePos));
+});
 
 // Runs only when the canvas has to be drawn again: when it is created or
-// resized, when currentDocument (read below, so tracked) changes, or when
-// canvasRef?.invalidate() says the viewport moved.
+// resized, or when invalidateCanvas() says something on it changed.
 let renderCanvas = (r: mut renderer.gfx.Renderer): void => {
-    if let d = rx.get(currentDocument) {
-        documentRenderer.render(r, d, documentLoads.value);
-        // A settling zoom still needs a few more renders to retile.
-        if documentRenderer.isSettling() {
-            canvasRef?.invalidate();
-        }
+    controls.render(r);
+    // A settling zoom still needs a few more renders to retile.
+    if documentRenderer.isSettling() {
+        canvasRef?.invalidate();
     }
 };
 
-// A drag keeps panning after the pointer leaves the canvas, so it is polled
-// rather than evented -- see UIContext.onFrame. Runs before the canvas's step
-// of the same frame, so the pan is drawn in the frame that saw it.
-ui.onFrame(() => {
-    if dragging.value && (ui.dmousePos.x != 0.0 || ui.dmousePos.y != 0.0) {
-        documentRenderer.pan(ui.dmousePos.x, ui.dmousePos.y);
-        canvasRef?.invalidate();
-    }
+let colors = penColors();
+let sizes = penThicknesses();
+
+let penToolActive = computed((): bool => !rx.get(controls.selectionTool) && !rx.get(controls.eraserTool));
+
+// The pen menu, centred on where the barrel button was tapped (as in the web
+// app); its size is fixed by its content, so the offsets are too.
+let penMenuOpen = computed((): bool => {
+    if rx.get(controls.popup) { return true; }
+    return false;
+});
+let penMenuLeft = computed((): real => {
+    if let p = rx.get(controls.popup) { return p.x - 130.0; }
+    return 0.0;
+});
+let penMenuTop = computed((): real => {
+    if let p = rx.get(controls.popup) { return p.y - 48.0; }
+    return 0.0;
+});
+
+// Recolor and delete, just above the selection's top-right corner.
+let selectionPanelOpen = computed((): bool => {
+    if rx.get(controls.selectionScreenBox) { return true; }
+    return false;
+});
+let selectionPanelLeft = computed((): real => {
+    if let box = rx.get(controls.selectionScreenBox) { return box.right; }
+    return 0.0;
+});
+let selectionPanelTop = computed((): real => {
+    if let box = rx.get(controls.selectionScreenBox) { return max(0.0, box.top - 48.0); }
+    return 0.0;
 });
 
 let sidepanelOpen = reactive<bool>(true);
@@ -110,15 +131,18 @@ let openSidepanel = () => {
 
 @template [relative]
 
-div if=[!currentDocument] [w-grow h-grow justify-center items-center] {
+div if=[!rx.get(documentOpen)] [w-grow h-grow justify-center items-center] {
     text [] ["No document is selected"]
 }
 
 div else [w-grow h-grow] {
-    div [w-grow h-grow] ref=canvasAreaRef
-        @pointerdown=onCanvasPointerDown
-        @pointerup=onCanvasPointerUp
-        @wheel=onCanvasWheel
+    div [w-grow h-grow [rx.get(controls.resizeCursor)]?cursor-resize-n-w-s-e] ref=canvasAreaRef
+        focusable=[true]
+        @pointerdown=onPointerDown
+        @pointermove=onPointerMove
+        @pointerup=onPointerUp
+        @wheel=onWheel
+        @keydown=onKeyDown
     {
         canvas [w-grow h-grow] ref=canvasRef @render=renderCanvas
     }
@@ -137,4 +161,61 @@ div if=sidepanelOpen [absolute col top-0 left-0 h-grow w-[props.cache.data.sidep
 
 div else [absolute top-0 left-0 p-4] {
     Button [] icon="menu" @click=openSidepanel {}
+}
+
+// The tools: pen (at five thicknesses), selection, eraser, and the pen color.
+// The barrel-button menu offers the same; this is for a pen without one.
+div if=[rx.get(documentOpen)] [absolute top-0 right-0 p-4] {
+    div [row items-center gap-1 p-1 bg-["#222"] rounded-6 border-1 border-color-["#555"]] {
+        div for=[size, index in sizes] key=[index]
+            [w-[30]px h-[30]px items-center justify-center rounded-4 cursor-pointer
+             [rx.get(penToolActive) && rx.get(controls.penSizeMm) == size]?bg-["#555"]]
+            @click=[(e: PointerEvent) => { controls.usePen(size); }]
+        {
+            div [w-[20]px h-[size * 5.0 + 1.0]px rounded-2 bg-[rx.get(controls.penColor)]]
+        }
+        Button [] icon="inspect" selected=[rx.get(controls.selectionTool)] @click=[() => { controls.useSelectionTool(); }] {}
+        Button [] icon="eraser" selected=[rx.get(controls.eraserTool)] @click=[() => { controls.useEraser(); }] {}
+        div [w-[1]px h-[24]px bg-["#555"]]
+        div for=[color, index in colors] key=[index]
+            [w-[26]px h-[26]px items-center justify-center rounded-13 cursor-pointer
+             [rx.get(controls.penColor) == color]?bg-["#888"]]
+            @click=[(e: PointerEvent) => { controls.setPenColor(color); }]
+        {
+            div [w-[18]px h-[18]px rounded-9 bg-[color]]
+        }
+    }
+}
+
+div if=[rx.get(selectionPanelOpen)] [absolute left-[rx.get(selectionPanelLeft)] top-[rx.get(selectionPanelTop)]] {
+    div [row items-center gap-1 p-1 bg-["#222"] rounded-6 border-1 border-color-["#555"]] {
+        div for=[color, index in colors] key=[index]
+            [w-[26]px h-[26]px items-center justify-center rounded-13 cursor-pointer]
+            @click=[(e: PointerEvent) => { controls.setSelectionColor(color); }]
+        {
+            div [w-[18]px h-[18]px rounded-9 bg-[color]]
+        }
+        Button [] icon="trash" @click=[() => { controls.deleteSelection(); }] {}
+    }
+}
+
+// The pen menu: pen color, then the selection tool and the five pens.
+div if=[rx.get(penMenuOpen)] [absolute left-[rx.get(penMenuLeft)] top-[rx.get(penMenuTop)] col items-center gap-2] {
+    div [row items-center gap-1 p-1 bg-["#222"] rounded-6 border-1 border-color-["#555"]] {
+        div for=[color, index in colors] key=[index]
+            [w-[30]px h-[30]px items-center justify-center rounded-15 cursor-pointer]
+            @click=[(e: PointerEvent) => { controls.setPenColor(color); }]
+        {
+            div [w-[22]px h-[22]px rounded-11 bg-[color]]
+        }
+    }
+    div [row items-center gap-1 p-1 bg-["#222"] rounded-6 border-1 border-color-["#555"]] {
+        Button [] icon="inspect" @click=[() => { controls.useSelectionTool(); }] {}
+        div for=[size, index in sizes] key=[index]
+            [w-[34]px h-[34]px items-center justify-center rounded-4 cursor-pointer]
+            @click=[(e: PointerEvent) => { controls.usePen(size); }]
+        {
+            div [w-[24]px h-[size * 5.0 + 1.0]px rounded-2 bg-["#DDD"]]
+        }
+    }
 }

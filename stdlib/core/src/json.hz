@@ -318,43 +318,61 @@ namespace json {
             for comptime field in T.fields {
                 const comptime fieldName = field.name;
 
-                let child = ffi.hzstd_json_get_object_item(allocator, node, fieldName);
-
-                // An absent key takes the field's declared default -- the
-                // value a struct literal that omits the field gets, so
-                // `expanded: []str = [];` reads as "absent means empty",
-                // exactly as it does in code. Failing it instead used to
-                // reject the WHOLE object, so every input written before a
-                // field existed (a cache file, a config, a theme) stopped
-                // parsing the moment the field was added.
-                //
-                // Without a default, a field that allows none is set to it,
-                // and any other field is required.
-                let absentHandled = false;
-                if !child {
+                // A [[json.ignore]] field is never read -- not even when the
+                // key is there, as it is in a file written before the field
+                // was ignored -- and is filled the way an absent key is
+                // below: its declared default, else none. Decided at compile
+                // time, so its type is never instantiated for parsing, and a
+                // field with nothing to fill it with is a compile error
+                // rather than a struct handed back with garbage in it.
+                if comptime T.hasFieldAttribute(fieldName, "json.ignore") {
                     if comptime T.hasFieldDefault(fieldName) {
-                        absentHandled = true;
                         result.[fieldName] = T.fieldDefault(fieldName);
                     }
-                    else if comptime T[fieldName].category == meta.TypeCategory.Union {
-                        for comptime Variant in T[fieldName].variants {
-                            if comptime Variant is none {
-                                absentHandled = true;
-                                result.[fieldName] = none;
+                    else {
+                        static_assert(T[fieldName].hasVariant<none>(), f"json.parse(): field '{fieldName}' of {T.prettyName} is [[json.ignore]], so it is never read, but it has no default value and does not accept none -- nothing to fill it with. Give it a default value.");
+                        result.[fieldName] = none;
+                    }
+                }
+                else {
+                    let child = ffi.hzstd_json_get_object_item(allocator, node, fieldName);
+
+                    // An absent key takes the field's declared default -- the
+                    // value a struct literal that omits the field gets, so
+                    // `expanded: []str = [];` reads as "absent means empty",
+                    // exactly as it does in code. Failing it instead used to
+                    // reject the WHOLE object, so every input written before a
+                    // field existed (a cache file, a config, a theme) stopped
+                    // parsing the moment the field was added.
+                    //
+                    // Without a default, a field that allows none is set to it,
+                    // and any other field is required.
+                    let absentHandled = false;
+                    if !child {
+                        if comptime T.hasFieldDefault(fieldName) {
+                            absentHandled = true;
+                            result.[fieldName] = T.fieldDefault(fieldName);
+                        }
+                        else if comptime T[fieldName].category == meta.TypeCategory.Union {
+                            for comptime Variant in T[fieldName].variants {
+                                if comptime Variant is none {
+                                    absentHandled = true;
+                                    result.[fieldName] = none;
+                                }
                             }
                         }
                     }
-                }
 
-                if !absentHandled {
-                    if !child {
-                        return Error { error: () => f"JSON missing field: {fieldName}" };
+                    if !absentHandled {
+                        if !child {
+                            return Error { error: () => f"JSON missing field: {fieldName}" };
+                        }
+                        let r = parseJsonNodeFromFfi<typeof(result.[fieldName])>(allocator, child);
+                        if !r {
+                            return r;
+                        }
+                        result.[fieldName] = r;
                     }
-                    let r = parseJsonNodeFromFfi<typeof(result.[fieldName])>(allocator, child);
-                    if !r {
-                        return r;
-                    }
-                    result.[fieldName] = r;
                 }
             }
             return result;
@@ -661,10 +679,16 @@ namespace json {
         let obj = ffi.hzstd_json_create_object(allocator);
         for comptime field in T.fields {
             const comptime fieldName = field.name;
-            let fieldValue = value.[fieldName];
-            let node = dumpJsonNode<typeof(fieldValue)>(allocator, fieldValue);
-            if node {
-                ffi.hzstd_json_add_item_to_object(allocator, obj, fieldName, node);
+            // A [[json.ignore]] field is not written at all. Decided at
+            // compile time, so its type is never instantiated for encoding:
+            // it may well be one json has no form for (a GPU handle, a
+            // closure, a cache of either).
+            if comptime T.hasFieldAttribute(fieldName, "json.ignore") == false {
+                let fieldValue = value.[fieldName];
+                let node = dumpJsonNode<typeof(fieldValue)>(allocator, fieldValue);
+                if node {
+                    ffi.hzstd_json_add_item_to_object(allocator, obj, fieldName, node);
+                }
             }
         }
         return obj;

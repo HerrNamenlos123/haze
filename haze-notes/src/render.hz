@@ -16,6 +16,15 @@ fn pageOriginY(doc: DocumentFile, pageIndex: int): real {
     return pageIndex as real * (doc.data.pageHeightMm + pageGapMm);
 }
 
+// The file's currentPageIndex, kept to a page that exists.
+fn currentPageOf(doc: DocumentFile): int {
+    let n = doc.data.pages.length;
+    let i = doc.data.currentPageIndex;
+    if i >= n { i = n - 1; }
+    if i < 0 { i = 0; }
+    return i;
+}
+
 // ImageShape.base64ImageData is stored as a full data URL
 // ("data:image/png;base64,<payload>", per how browsers/paste handlers
 // typically produce it), not a raw base64 payload -- base64.decode only
@@ -163,6 +172,11 @@ fn renderTileContent(tile: mut Tile, page: Page, pageWidthMm: real, pageHeightMm
     };
 
     for shape in page.shapes {
+        // A hidden shape is being drawn by the editor itself -- see
+        // LineShape.hidden.
+        if isShapeHidden(shape) {
+            continue;
+        }
         if shape.getBBox().overlaps(tileBBox) {
             drawShapeInto(r, shape, tile.key.level, imageCache);
         }
@@ -198,9 +212,14 @@ ref struct DocumentRenderer {
     lastZoomPxPerMm: real = 0.0;
     zoomStableFrames: int = 0;
 
-    // DEBUG: throttles the retile log line, temporary.
-    lastPrintedLevel: int = -999999;
-    lastPrintedPage: int = -1;
+    // The canvas size (px) at the last render -- where "the middle of the
+    // view" is, for anything placed there.
+    lastPanelSize: Vec2 = {};
+
+    // Set when a document without a saved viewport is opened: the first
+    // render, which is the first moment the canvas size is known, fits the
+    // page to it.
+    needsFit: bool = false;
 
     fn constructor(gfx: mut renderer.gfx.Context) {
         return DocumentRenderer {
@@ -213,6 +232,55 @@ ref struct DocumentRenderer {
         while this.pages.length < doc.data.pages.length {
             this.pages.push(PageTileState {});
         }
+    }
+
+    // Takes over a newly opened document's saved viewport, or fits its first
+    // page if it has none. (Its tiles are dropped by render(), which sees the
+    // new documentId.)
+    //
+    // The file keeps the web app's meaning: the offset places the page
+    // `currentPageIndex` (the web app showed one page at a time), not the
+    // top of the stack -- see savedViewport for the way back.
+    fn adoptViewport(doc: DocumentFile) {
+        if let saved = doc.data.viewport {
+            this.viewport = saved;
+            this.viewport.offsetY = saved.offsetY - pageOriginY(doc, currentPageOf(doc)) * saved.zoomPxPerMm;
+            this.needsFit = saved.zoomPxPerMm <= 0.0;
+        } else {
+            this.viewport = {};
+            this.needsFit = true;
+        }
+        this.zoomStableFrames = 0;
+    }
+
+    // The viewport as the file stores it, with `page` as the current page --
+    // the reverse of adoptViewport.
+    fn savedViewport(doc: DocumentFile, page: int): Viewport {
+        let result = this.viewport;
+        result.offsetY = this.viewport.offsetY + pageOriginY(doc, page) * this.viewport.zoomPxPerMm;
+        return result;
+    }
+
+    // The first page, as wide as the canvas allows (never past the web app's
+    // 5 px/mm default), centered, just below the top edge.
+    fn fitToWidth(doc: DocumentFile, panelW: real) {
+        let zoom = min(5.0, (panelW - 40.0) / doc.data.pageWidthMm);
+        if zoom < 0.05 {
+            zoom = 0.05;
+        }
+        this.viewport.zoomPxPerMm = zoom;
+        this.viewport.offsetX = (panelW - doc.data.pageWidthMm * zoom) / 2.0;
+        this.viewport.offsetY = 20.0;
+    }
+
+    // Canvas px <-> document mm. The document's space is the pages stacked
+    // top to bottom -- see pageOriginY for where each one starts.
+    fn screenToWorld(p: Vec2): Vec2 {
+        return Vec2((p.x - this.viewport.offsetX) / this.viewport.zoomPxPerMm, (p.y - this.viewport.offsetY) / this.viewport.zoomPxPerMm);
+    }
+
+    fn worldToScreen(p: Vec2): Vec2 {
+        return Vec2(p.x * this.viewport.zoomPxPerMm + this.viewport.offsetX, p.y * this.viewport.zoomPxPerMm + this.viewport.offsetY);
     }
 
     fn releasePageTiles(page: mut PageTileState) {
@@ -315,6 +383,13 @@ ref struct DocumentRenderer {
             this.renderedDocument = documentId;
         }
 
+        let panelW = r.canvas.size.logicalSize.x as real;
+        let panelH = r.canvas.size.logicalSize.y as real;
+        this.lastPanelSize = Vec2(panelW, panelH);
+        if this.needsFit && panelW > 0.0 {
+            this.fitToWidth(doc, panelW);
+            this.needsFit = false;
+        }
         if this.viewport.zoomPxPerMm <= 0.0 {
             return;
         }
@@ -322,8 +397,6 @@ ref struct DocumentRenderer {
         this.ensurePagesArraySized(doc);
 
         let zoom = this.viewport.zoomPxPerMm;
-        let panelW = r.canvas.size.logicalSize.x as real;
-        let panelH = r.canvas.size.logicalSize.y as real;
 
         let visMinX = (0.0 - this.viewport.offsetX) / zoom;
         let visMaxX = (panelW - this.viewport.offsetX) / zoom;
@@ -439,27 +512,6 @@ ref struct DocumentRenderer {
                         pos: tileScreenPos,
                         size: Vec2(tileScreenSize, tileScreenSize),
                     });
-                    // DEBUG: tile boundary outline, temporary -- remove once
-                    // tiling is visually confirmed.
-                    r.drawRect({
-                        pos: tileScreenPos,
-                        size: Vec2(tileScreenSize, tileScreenSize),
-                        fillColor: Color(0, 0, 0, 0),
-                        borderColor: Color(1, 0, 0, 1),
-                        borderThickness: 1.0,
-                    });
-                }
-
-                // DEBUG: prints once per (page, committedLevel) change so we
-                // can see the settle-then-retile behavior in the log without
-                // flooding it every frame -- temporary, remove later.
-                if page.committedLevel != this.lastPrintedLevel || i != this.lastPrintedPage {
-                    let tileWorldSizeMmForPrint = tilemath.tileWorldSize(page.committedLevel);
-                    let onScreenLogicalPx = tileWorldSizeMmForPrint * zoom;
-                    let onScreenPhysicalPx = onScreenLogicalPx * dpiScale;
-                    fmt.println("[debug] page ", i, " retiled: level=", page.committedLevel, " tiles=", page.slots.size(), " poolTotal=", this.pool.tiles.length, " dpiScale=", dpiScale, " tileOnScreenLogicalPx=", onScreenLogicalPx, " tileOnScreenPhysicalPx=", onScreenPhysicalPx, " (texel budget=512)");
-                    this.lastPrintedLevel = page.committedLevel;
-                    this.lastPrintedPage = i;
                 }
             } else {
                 this.releasePageTiles(page);
@@ -467,31 +519,61 @@ ref struct DocumentRenderer {
         }
     }
 
-    // Draws the currently in-progress stroke straight onto the main panel
-    // canvas every frame, bypassing tiles entirely -- so a live pen stroke
-    // never waits on a tile (re)render to become visible.
-    fn renderLiveStroke(r: mut renderer.gfx.Renderer, doc: DocumentFile, pageIndex: int, shape: LineShape) {
+    // Page mm -> canvas px for one page: what a shape's own coordinates go
+    // through to land where its page is on screen.
+    fn pageToScreenTransform(doc: DocumentFile, pageIndex: int): mat4.Mat4f {
         let zoom = this.viewport.zoomPxPerMm;
-        // Same physical-pixel-density level a tile at this live zoom would
-        // commit to (see render()'s targetLevel) -- this is also what lets
-        // the live overlay and a freshly-tiled version of the same shape
-        // share a cache entry instead of tesselating it twice.
-        let dpiScale = r.canvas.size.dpiScale as real;
-        let level = tilemath.zoomLevelFor(zoom * dpiScale);
-
-        let tess = shape.ensureTesselated(level);
-        if tess.indices.length == 0 {
-            return;
-        }
-
-        let originY = pageOriginY(doc, pageIndex);
-
-        let transform = mat4.translation(Vec3(
-            0.0 * zoom + this.viewport.offsetX,
-            originY * zoom + this.viewport.offsetY,
+        return mat4.translation(Vec3(
+            this.viewport.offsetX,
+            pageOriginY(doc, pageIndex) * zoom + this.viewport.offsetY,
             0.0
         )).mul(mat4.scaling(Vec3(zoom, zoom, 1.0)));
+    }
 
-        r.addTriangles(tess.vertices, tess.indices, shape.penColor, 0, transform);
+    // Draws a shape straight onto the panel canvas, bypassing the tiles --
+    // so a live pen stroke never waits on a tile (re)render to become
+    // visible, and a shape being moved or resized follows the pen every
+    // frame. `pageTransform` places it within its page (identity for where
+    // it is; a move or resize in progress otherwise), and `color`, when
+    // given, replaces a stroke's own (the grey of an erased one).
+    fn drawShapeLive(r: mut renderer.gfx.Renderer, doc: DocumentFile, pageIndex: int, shape: Shape, pageTransform: mat4.Mat4f, color: Color | none = none) {
+        let transform = this.pageToScreenTransform(doc, pageIndex).mul(pageTransform);
+        if shape is LineShape {
+            // Same physical-pixel-density level a tile at this live zoom would
+            // commit to (see render()'s targetLevel) -- this is also what lets
+            // the live overlay and a freshly-tiled version of the same shape
+            // share a cache entry instead of tesselating it twice.
+            let dpiScale = r.canvas.size.dpiScale as real;
+            let level = tilemath.zoomLevelFor(this.viewport.zoomPxPerMm * dpiScale);
+            let tess = shape.ensureTesselated(level);
+            if tess.indices.length == 0 {
+                return;
+            }
+            let fill = color ?? Color.fromHexOrDefault(shape.penColor, Color(0.0, 0.0, 0.0, 1.0));
+            r.addTriangles(tess.vertices, tess.indices, fill, 0, transform);
+        }
+        else if shape is ImageShape {
+            let bbox = shape.getBBox();
+            let texture = this.imageCache.getOrCreate(r, shape);
+            if texture {
+                r.drawTexture({
+                    texture: texture,
+                    pos: Vec2(bbox.left, bbox.top),
+                    size: Vec2(bbox.right - bbox.left, bbox.bottom - bbox.top),
+                    transform: transform,
+                });
+            }
+        }
+        else if shape is TextblockShape {
+            let bbox = shape.getBBox();
+            r.drawRect({
+                pos: Vec2(bbox.left, bbox.top),
+                size: Vec2(bbox.right - bbox.left, bbox.bottom - bbox.top),
+                fillColor: Color(0.95, 0.95, 0.8, 1.0),
+                borderColor: Color(0.6, 0.6, 0.3, 1.0),
+                borderThickness: 0.5,
+                transform: transform,
+            });
+        }
     }
 }

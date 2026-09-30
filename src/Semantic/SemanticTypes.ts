@@ -381,6 +381,15 @@ export namespace Semantic {
       memberName: string;
       value: Semantic.ExprId;
     }[];
+    /**
+     * Annotations written on individual members (`[[json.ignore]] cache: T;`),
+     * only for the members that have any. What `T.hasFieldAttribute` and
+     * friends read, and part of the fingerprint.
+     */
+    memberAnnotations: {
+      memberName: string;
+      annotations: ASTMetaAnnotationItem[];
+    }[];
     methods: Semantic.SymbolId[];
     methodsInProgress: boolean;
     methodsFinalized: boolean;

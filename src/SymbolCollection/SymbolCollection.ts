@@ -498,6 +498,17 @@ export namespace Collect {
       name: string;
       value: Collect.ExprId;
     }[];
+    /**
+     * `[[json.ignore]] cache: T;` -- the annotations written on a member,
+     * listed only for the members that have any. They live on the struct
+     * rather than on the member's VariableSymbol for the same reason the
+     * defaults above do: they describe the member's role in the struct, and
+     * the struct is what reflection (`T.hasFieldAttribute`) asks.
+     */
+    memberAnnotations: {
+      name: string;
+      annotations: ASTMetaAnnotationItem[];
+    }[];
     name: string;
     export: boolean;
     opaque: boolean;
@@ -1544,6 +1555,9 @@ function collectTypeDef(
             item.members.filter((m) => m.optional).map((m) => m.name)
           ),
           defaultMemberValues: [],
+          memberAnnotations: item.members
+            .filter((m) => m.annotations.length > 0)
+            .map((m) => ({ name: m.name, annotations: m.annotations })),
           export: item.export,
           extern: item.extern,
           opaque: item.opaque,
@@ -3510,6 +3524,8 @@ function collectExpr(
             item.members.filter((m) => m.optional).map((m) => m.name)
           ),
           defaultMemberValues: [],
+          // The grammar gives an anonymous struct's members no annotations.
+          memberAnnotations: [],
           export: false,
           extern: EExternLanguage.None,
           opaque: false,

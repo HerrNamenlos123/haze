@@ -64,6 +64,7 @@ namespace ffi {
 	extern C type HazeSdlMouseButtonFn = (userdata: cptr, button: i32, x: f32, y: f32) -> void :: final;
 	extern C type HazeSdlMouseWheelFn = (userdata: cptr, x: f32, y: f32, mouseX: f32, mouseY: f32) -> void :: final;
 	extern C type HazeSdlTextInputFn = (userdata: cptr, text: ccstr) -> void :: final;
+	extern C type HazeSdlPointerFn = (userdata: cptr, kind: i32, device: i32, id: i64, x: f32, y: f32, pressure: f32, buttons: i32) -> void :: final;
 
 	extern C noemit struct haze_sdl_trampolines_t {
 		keyDown: HazeSdlKeyFn;
@@ -74,6 +75,7 @@ namespace ffi {
 		mouseUp: HazeSdlMouseButtonFn;
 		mouseWheel: HazeSdlMouseWheelFn;
 		textInput: HazeSdlTextInputFn;
+		pointer: HazeSdlPointerFn;
 	}
 
 	// Duplicates a C string into an owned, GC'd Haze str -- needed because
@@ -105,6 +107,7 @@ namespace ffi {
 			mouseUp: hazeMouseUpDispatch,
 			mouseWheel: hazeMouseWheelDispatch,
 			textInput: hazeTextInputDispatch,
+			pointer: hazePointerDispatch,
 		});
 		return none;
 	}
@@ -319,6 +322,33 @@ export struct TextInputEvent {
 	text: str;
 }
 
+// Which device a PointerEvent came from. The mouse has its own events above;
+// this is for the two that SDL reports separately (and that the mouse events
+// no longer carry copies of -- see haze_sdl_is_synthesized_mouse).
+export enum PointerDevice { Pen, Touch }
+
+export enum PointerEventKind { Down, Up, Move, Cancel }
+
+// One pen or touch event. Down/Up are the contact itself (the pen's tip or
+// eraser touching the surface, a finger landing or lifting); Move is
+// everything in between AND everything that changes without contact -- a pen
+// hovering, or a barrel button pressed or released. Cancel is a touch the
+// platform took away (a system gesture, say) that will never see an Up.
+//
+// `buttons` is the DOM's PointerEvent.buttons after this event: 1 = tip or
+// finger in contact, 2 = first barrel button, 4 = second, 32 = eraser end in
+// contact. `id` tells pens apart from each other and fingers apart from each
+// other, not a pen from a finger -- pair it with `device`.
+export struct PointerEvent {
+	kind: PointerEventKind;
+	device: PointerDevice;
+	id: int;
+	pos: Vec2;
+	pressure: real;
+	buttons: int;
+	modifiers: KeyModifiers;
+}
+
 // ---------------------------------------------------------------------------
 // Callback type aliases
 // ---------------------------------------------------------------------------
@@ -329,6 +359,7 @@ export type MouseMoveEventCallback = (e: MouseMoveEvent) => bool :: final;
 export type MouseButtonEventCallback = (e: MouseButtonEvent) => bool :: final;
 export type MouseWheelEventCallback = (e: MouseWheelEvent) => bool :: final;
 export type TextInputEventCallback = (e: TextInputEvent) => bool :: final;
+export type PointerEventCallback = (e: PointerEvent) => bool :: final;
 
 // ---------------------------------------------------------------------------
 // Internal handler structs (one per event category)
@@ -362,6 +393,11 @@ export struct MouseWheelHandler {
 export struct TextInputHandler {
 	id: int;
 	callback: TextInputEventCallback;
+}
+
+export struct PointerHandler {
+	id: int;
+	callback: PointerEventCallback;
 }
 
 // ---------------------------------------------------------------------------
@@ -492,6 +528,28 @@ fn hazeMouseWheelDispatch(userdata: cptr, x: f32, y: f32, mouseX: f32, mouseY: f
 	};
 }
 
+fn hazePointerDispatch(userdata: cptr, kind: i32, device: i32, id: i64, x: f32, y: f32, pressure: f32, buttons: i32): void :: final {
+	do unsafe {
+		let window: Window = uninitialized;
+		__c__("window = userdata;");
+		// Numbering fixed by the C side -- see haze_sdl_dispatch_pointer.
+		let eventKind = PointerEventKind.Move;
+		if kind == 0 { eventKind = PointerEventKind.Down; }
+		else if kind == 1 { eventKind = PointerEventKind.Up; }
+		else if kind == 3 { eventKind = PointerEventKind.Cancel; }
+		let e = PointerEvent {
+			kind: eventKind,
+			device: device == 1 ? PointerDevice.Pen : PointerDevice.Touch,
+			id: id as int,
+			pos: Vec2(x as real, y as real),
+			pressure: pressure as real,
+			buttons: buttons as int,
+			modifiers: getModifiers(),
+		};
+		window.dispatchPointer(e);
+	};
+}
+
 fn hazeTextInputDispatch(userdata: cptr, text: ccstr): void :: final {
 	do unsafe {
 		let window: Window = uninitialized;
@@ -518,6 +576,7 @@ export ref struct Window {
 	mouseUpHandlers: []MouseButtonHandler = [];
 	textInputHandlers: []TextInputHandler = [];
 	mouseWheelHandlers: []MouseWheelHandler = [];
+	pointerHandlers: []PointerHandler = [];
 
 	fn makeContextCurrent() {
 		ffi.makeContextCurrent(this.handle);
@@ -764,6 +823,14 @@ export ref struct Window {
 		return id;
 	}
 
+	// Pen and touch -- see PointerEvent.
+	fn onPointer(cb: PointerEventCallback): int {
+		let id = this.nextHandlerId;
+		this.nextHandlerId = id + 1;
+		this.pointerHandlers.push(PointerHandler { id: id, callback: cb });
+		return id;
+	}
+
 	// --- Deregistration ---
 
 	fn removeHandler(id: int) {
@@ -854,6 +921,17 @@ export ref struct Window {
 			}
 			i = i + 1;
 		}
+
+		i = 0;
+		while i < this.pointerHandlers.length {
+			if this.pointerHandlers[i].id == id {
+				do unsafe {
+					__c__("hzstd_dynamic_array_remove(this->pointerHandlers, (size_t)i, NULL);");
+				};
+				return;
+			}
+			i = i + 1;
+		}
 	}
 
 	// --- Internal dispatch (called by trampolines) ---
@@ -932,6 +1010,16 @@ export ref struct Window {
 		let i = 0;
 		while i < this.textInputHandlers.length {
 			if this.textInputHandlers[i].callback(e) {
+				return;
+			}
+			i = i + 1;
+		}
+	}
+
+	fn dispatchPointer(e: PointerEvent) {
+		let i = 0;
+		while i < this.pointerHandlers.length {
+			if this.pointerHandlers[i].callback(e) {
 				return;
 			}
 			i = i + 1;

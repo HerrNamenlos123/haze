@@ -1,0 +1,550 @@
+// ============================================================================
+// REGRESSION TEST — this is a real, load-bearing test, not a placeholder.
+//
+// Bug: `[[json.ignore]]` on a struct member was parsed and then silently
+// dropped -- it never reached the semantic struct, so json.stringify wrote
+// every field and json.parse read every field. It bit a real app exactly where
+// the annotation was written:
+//
+//   ref struct LineShape {
+//       variant: "Line";
+//       points: []Point;
+//       [[json.ignore]]
+//       tesselationCache?: LinearMap<int, TesselationResult> = none;
+//   }
+//
+// Saving a document wrote every shape's tesselation cache into the file, and
+// a field whose type json cannot encode at all (anything reaching an enum, a
+// closure or an opaque FFI handle -- a GPU texture, say) failed the whole
+// build even though it was marked ignored.
+//
+// Fix: member annotations are carried into the semantic struct, reflected as
+// `T.hasFieldAttribute(field, key)` / `T.isFieldAttributeOfType<U>(field, key)`
+// / `T.getFieldAttribute<U>(field, key)` (the field-level twins of
+// hasAttribute/isAttributeOfType/getAttribute), exported across module
+// boundaries, and folded into the fingerprint. json.stringify skips an ignored
+// field at compile time, so its type is never instantiated for encoding;
+// json.parse never reads it and fills it the way it fills an absent key -- the
+// declared default, else none -- and a field it cannot fill is a compile error.
+// ============================================================================
+
+namespace cases_json_ignore {
+
+    export fn register(s: mut testsuite.Suite) {
+
+        s.run(
+            "json ignore: stringify leaves the field out, parse never reads it",
+            """
+struct Settings {
+    name: str;
+    [[json.ignore]]
+    scratch: int = 7;
+    count: int = 1;
+    [[json.ignore]]
+    notes?: []str;
+    [[json.ignore]]
+    lastError: str | none;
+}
+
+// Encoding needs no default: an ignored field is simply not written.
+struct EncodeOnly {
+    id: int;
+    [[json.ignore]]
+    session: str;
+}
+
+fn describe(label: str, s: Settings) {
+    let notesAbsent = s.notes is none;
+    let errorAbsent = s.lastError is none;
+    fmt.println(f"{label}: name={s.name} scratch={s.scratch} count={s.count} notesAbsent={notesAbsent} errorAbsent={errorAbsent}");
+}
+
+fn main(): int {
+    let s = Settings { name: "a", scratch: 99, count: 3, notes: ["x"], lastError: "boom" };
+    let text = json.stringify(s);
+    fmt.println(text);
+
+    // Present in the input and still not read: the declared default (or
+    // none) wins, exactly as if the key were absent.
+    let given = json.parse<Settings>(\"\"\"{"name": "b", "scratch": 5, "count": 4, "notes": ["y"], "lastError": "e"}\"\"\");
+    if !given {
+        fmt.println(f"parse failed: {given}");
+        return 1;
+    }
+    describe("given", given);
+
+    // Nor is a value of the wrong type an error: it is never looked at.
+    let wrongType = json.parse<Settings>(\"\"\"{"name": "c", "scratch": "not a number", "notes": 12}\"\"\");
+    if !wrongType {
+        fmt.println(f"parse failed: {wrongType}");
+        return 1;
+    }
+    describe("wrong type", wrongType);
+
+    let back = json.parse<Settings>(text);
+    if !back {
+        fmt.println(f"parse failed: {back}");
+        return 1;
+    }
+    describe("round trip", back);
+
+    fmt.println(json.stringify(EncodeOnly { id: 4, session: "secret" }));
+    return 0;
+}
+""",
+            """
+{"name":"a","count":3}
+given: name=b scratch=7 count=4 notesAbsent=true errorAbsent=true
+wrong type: name=c scratch=7 count=1 notesAbsent=true errorAbsent=true
+round trip: name=a scratch=7 count=3 notesAbsent=true errorAbsent=true
+{"id":4}
+""");
+
+        // Neither an enum nor a closure has a JSON form -- json.stringify and
+        // json.parse both static_assert on them -- so an ignored field of such
+        // a type, or of a struct that reaches one (a GPU resource cached on a
+        // document shape), must never be instantiated for JSON at all.
+        s.run(
+            "json ignore: a field json cannot encode is never instantiated",
+            """
+enum TextureFormat {
+    RGBA8,
+    BGRA8,
+}
+
+ref struct GpuTexture {
+    format: TextureFormat;
+    release: () => int;
+}
+
+struct Point {
+    x: real;
+    y: real;
+}
+
+ref struct ImageShape {
+    variant: "Image";
+    position: Point;
+    [[json.ignore]]
+    texture?: GpuTexture;
+    [[json.ignore]]
+    format: TextureFormat = TextureFormat.RGBA8;
+}
+
+fn main(): int {
+    let shape = ImageShape {
+        variant: "Image",
+        position: Point { x: 1.5, y: 2.5 },
+        texture: GpuTexture { format: TextureFormat.BGRA8, release: () => 1 },
+        format: TextureFormat.BGRA8,
+    };
+    let text = json.stringify(shape);
+    fmt.println(text);
+    let back = json.parse<ImageShape>(text);
+    if !back {
+        fmt.println(f"parse failed: {back}");
+        return 1;
+    }
+    let noTexture = back.texture is none;
+    let defaultFormat = back.format == TextureFormat.RGBA8;
+    fmt.println(f"{back.position.x} {back.position.y} noTexture={noTexture} defaultFormat={defaultFormat}");
+    return 0;
+}
+""",
+            """
+{"variant":"Image","position":{"x":1.5,"y":2.5}}
+1.5 2.5 noTexture=true defaultFormat=true
+""");
+
+        // The shape that surfaced it: ref struct shapes in a discriminated
+        // union, nested in pages of a document, each carrying a cache that
+        // must not be saved and must come back empty.
+        s.run(
+            "json ignore: a document's nested shape caches are neither saved nor loaded",
+            """
+struct Point {
+    x: real;
+    y: real;
+}
+
+struct TesselationResult {
+    vertices: []Point = [];
+}
+
+ref struct LineShape {
+    variant: "Line";
+    points: []Point;
+    width: real = 2.5;
+    [[json.ignore]]
+    tesselationCache?: LinearMap<int, TesselationResult> = none;
+}
+
+ref struct TextShape {
+    variant: "Text";
+    text: str;
+    [[json.ignore]]
+    layoutWidth: real = -1.0;
+}
+
+[[json.discriminator="variant"]]
+type Shape = LineShape | TextShape;
+
+struct Page {
+    shapes: []Shape = [];
+}
+
+struct DocumentFile {
+    title: str;
+    pages: []Page = [];
+    [[json.ignore]]
+    dirty: bool = false;
+}
+
+fn describe(label: str, doc: DocumentFile) {
+    fmt.println(f"{label}: title={doc.title} dirty={doc.dirty} pages={doc.pages.length}");
+    for page in doc.pages {
+        for shape in page.shapes {
+            if shape is LineShape {
+                let uncached = shape.tesselationCache is none;
+                fmt.println(f"  line points={shape.points.length} width={shape.width} uncached={uncached}");
+            } else if shape is TextShape {
+                fmt.println(f"  text {shape.text} layoutWidth={shape.layoutWidth}");
+            }
+        }
+    }
+}
+
+fn main(): int {
+    let cache = LinearMap<int, TesselationResult>();
+    cache.set(3, TesselationResult { vertices: [Point { x: 1.0, y: 1.0 }] });
+    let line = LineShape {
+        variant: "Line",
+        points: [Point { x: 0.0, y: 0.5 }, Point { x: 1.5, y: 2.5 }],
+        tesselationCache: cache,
+    };
+    let doc = DocumentFile {
+        title: "notes",
+        pages: [Page { shapes: [line, TextShape { variant: "Text", text: "hi", layoutWidth: 42.0 }] }],
+        dirty: true,
+    };
+
+    let saved = json.stringify(doc);
+    fmt.println(saved);
+
+    // A file that has the ignored keys -- one written before they were
+    // ignored -- still loads them as their defaults.
+    let loaded = json.parse<DocumentFile>(\"\"\"{"title": "old", "dirty": true, "pages": [{"shapes": [
+        {"variant": "Line", "points": [], "width": 1.5, "tesselationCache": {"3": {"vertices": []}}},
+        {"variant": "Text", "text": "x", "layoutWidth": 3}
+    ]}]}\"\"\");
+    if !loaded {
+        fmt.println(f"parse failed: {loaded}");
+        return 1;
+    }
+    describe("loaded", loaded);
+
+    let back = json.parse<DocumentFile>(saved);
+    if !back {
+        fmt.println(f"parse failed: {back}");
+        return 1;
+    }
+    describe("round trip", back);
+    return 0;
+}
+""",
+            """
+{"title":"notes","pages":[{"shapes":[{"variant":"Line","points":[{"x":0,"y":0.5},{"x":1.5,"y":2.5}],"width":2.5},{"variant":"Text","text":"hi"}]}]}
+loaded: title=old dirty=false pages=1
+  line points=0 width=1.5 uncached=true
+  text x layoutWidth=-1
+round trip: title=notes dirty=false pages=1
+  line points=2 width=2.5 uncached=true
+  text hi layoutWidth=-1
+""");
+
+        s.run(
+            "json ignore: field attributes are reflected, per field and through aliases and generics",
+            """
+struct Base {
+    untagged: int = 0;
+    [[json.ignore]]
+    skipped: int = 1;
+    [[json.ignore, ui.label="Title"]]
+    tagged: str = "";
+    [[ui.order=3]]
+    ordered: int = 0;
+}
+
+type Alias = Base;
+
+struct Box<T> {
+    value: T;
+    [[json.ignore]]
+    cache: T | none = none;
+}
+
+fn main(): int {
+    fmt.println(f"{Base.hasFieldAttribute("skipped", "json.ignore")} {Base.hasFieldAttribute("untagged", "json.ignore")} {Base.hasFieldAttribute("missing", "json.ignore")}");
+    fmt.println(f"{Base.hasFieldAttribute("tagged", "json.ignore")} {Base.hasFieldAttribute("tagged", "ui.label")} {Base.getFieldAttribute<str>("tagged", "ui.label")} {Base.getFieldAttribute<int>("ordered", "ui.order")}");
+    fmt.println(f"{Base.isFieldAttributeOfType<str>("tagged", "ui.label")} {Base.isFieldAttributeOfType<int>("tagged", "ui.label")} {Base.isFieldAttributeOfType<str>("skipped", "json.ignore")}");
+
+    let throughAlias = Alias.hasFieldAttribute("skipped", "json.ignore");
+    let genericCache = Box<int>.hasFieldAttribute("cache", "json.ignore");
+    let genericValue = Box<str>.hasFieldAttribute("value", "json.ignore");
+    fmt.println(f"alias {throughAlias} generic {genericCache} {genericValue}");
+
+    // A member's attribute belongs to the member, not to the type.
+    fmt.println(f"type-level {Base.hasAttribute("json.ignore")}");
+
+    static_assert(Base.hasFieldAttribute("skipped", "json.ignore"));
+    static_assert(Base.hasFieldAttribute("untagged", "json.ignore") == false);
+
+    fmt.println(json.stringify(Base { untagged: 1, skipped: 2, tagged: "t", ordered: 4 }));
+    fmt.println(json.stringify(Box<int> { value: 1, cache: 2 }));
+    return 0;
+}
+""",
+            """
+true false false
+true true Title 3
+true false false
+alias true generic true false
+type-level false
+{"untagged":1,"ordered":4}
+{"value":1}
+""");
+
+        // A reactive struct is written through its Deep clone, which has to
+        // know about the ignored field too. And since serializing is what
+        // subscribes a CacheFile's flush to the fields, an ignored field is
+        // not a dependency: changing it alone writes nothing.
+        s.run(
+            "json ignore: a reactive struct and a CacheFile skip the field too",
+            """
+struct Prefs {
+    theme: str = "dark";
+    [[json.ignore]]
+    hoverCount: int = 0;
+}
+
+fn cachePath(name: str): str {
+    let dir = env.get("HAZE_TEST_WORKDIR");
+    if dir is str {
+        return f"{dir}/{name}";
+    }
+    return f"/tmp/{name}";
+}
+
+fn main(): int {
+    let data = rx.reactive<Prefs>(Prefs { hoverCount: 3 });
+    let runs: ref Box<int> = { value: 0 };
+    let text = rx.computed((): str => {
+        runs.value = runs.value + 1;
+        return json.stringify(data);
+    });
+    let first = rx.get(text);
+    fmt.println(f"{first} runs={runs.value}");
+    data.hoverCount := 4;
+    let second = rx.get(text);
+    fmt.println(f"{second} runs={runs.value}");
+    data.theme := "light";
+    let third = rx.get(text);
+    fmt.println(f"{third} runs={runs.value}");
+
+    let path = cachePath("json_ignore_prefs.json");
+    fs.writeText(path, \"\"\"{"theme": "solar", "hoverCount": 42}\"\"\");
+    let cache = json.CacheFile<Prefs>(path);
+    fmt.println(f"loaded {cache.data.theme} {cache.data.hoverCount}");
+    cache.data.hoverCount := 5;
+    cache.flush();
+    let written = fs.readText(path);
+    if written {
+        fmt.println(f"written {written}");
+    }
+    return 0;
+}
+""",
+            """
+{"theme":"dark"} runs=1
+{"theme":"dark"} runs=1
+{"theme":"light"} runs=2
+loaded solar 0
+written {"theme":"solar"}
+""");
+
+        // An exported struct reaches its consumer as re-emitted source (a
+        // non-generic one through Export.ts, a generic one as its original
+        // text), and the consumer is where json.stringify<T> is instantiated.
+        // An annotation that does not survive that trip is not there.
+        s.runWithModules(
+            "json ignore: survives a module boundary",
+            [
+                testsuite.TestModule {
+                    name: "shapes",
+                    source: """
+export ref struct Stroke {
+    width: real = 2.5;
+    [[json.ignore]]
+    cache: int = 0;
+}
+
+export struct Tagged<T> {
+    value: T;
+    [[json.ignore]]
+    scratch: int = 0;
+}
+""",
+                },
+            ],
+            """
+import shapes;
+
+fn main(): int {
+    let stroke = shapes.Stroke { width: 1.5, cache: 7 };
+    fmt.println(json.stringify(stroke));
+    let back = json.parse<shapes.Stroke>(\"\"\"{"width": 3.5, "cache": 9}\"\"\");
+    if !back {
+        fmt.println(f"parse failed: {back}");
+        return 1;
+    }
+    fmt.println(f"{back.width} {back.cache}");
+    let ignored = shapes.Stroke.hasFieldAttribute("cache", "json.ignore");
+    fmt.println(f"reflected {ignored}");
+    fmt.println(json.stringify(shapes.Tagged<int> { value: 1, scratch: 5 }));
+    return 0;
+}
+""",
+            """
+{"width":1.5}
+3.5 0
+reflected true
+{"value":1}
+""");
+
+        // An ignored field is filled the way an absent key is. With no
+        // default and no none to fall back on there is nothing to fill it
+        // with, and parse must say so when it is compiled rather than hand
+        // back a struct with a garbage field.
+        s.compileFails(
+            "json ignore: parsing an ignored field with nothing to fill it is a compile error",
+            """
+struct Broken {
+    name: str;
+    [[json.ignore]]
+    count: int;
+}
+
+fn main(): int {
+    let b = json.parse<Broken>(\"\"\"{"name": "x", "count": 1}\"\"\");
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.StaticAssertFailedWithMessage)]);
+
+        s.compileFails(
+            "json ignore: getFieldAttribute of an attribute the field does not have is an error",
+            """
+struct S {
+    [[json.ignore]]
+    cache: int = 0;
+}
+
+fn main(): int {
+    let v = S.getFieldAttribute<str>("cache", "ui.label");
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.FieldDoesNotHaveAttributeNamed)]);
+
+        // A fingerprint identifies a type ACROSS builds (hot reload,
+        // TypeErasedBox), and within one build two structs always differ by
+        // name already -- so the only way to see whether a member annotation
+        // counts is to build the same struct twice, with and without it. The
+        // case does exactly that, through the compiler under test: same
+        // module id, same struct, one annotation apart.
+        s.run(
+            "json ignore: a member annotation changes the struct's fingerprint",
+            """
+fn workDir(): str {
+    let dir = env.get("HAZE_TEST_WORKDIR");
+    if dir is str {
+        return dir;
+    }
+    return "/tmp";
+}
+
+fn probeSource(members: str): str {
+    return \"\"\"
+struct Shape {
+\"\"\" + members + \"\"\"
+}
+
+fn main(): int {
+    fmt.println(f"{Shape.fingerprint}");
+    return 0;
+}
+\"\"\";
+}
+
+// Builds and runs one version of a project whose only difference between
+// versions is Shape's members, and returns what it prints: the fingerprint.
+fn fingerprintWith(members: str): str {
+    let hazeBinary = env.get("HAZE_TEST_BINARY");
+    if !hazeBinary {
+        sys.panic("HAZE_TEST_BINARY is not set. Run the suite via scripts/run-tests.sh.");
+    }
+    let root = f"{workDir()}/json_ignore_fingerprint";
+    fs.createDirectory(root);
+    fs.createDirectory(f"{root}/src");
+    fs.writeText(f"{root}/haze.toml", \"\"\"
+name = "json_ignore_fingerprint"
+id = "jsonigfp"
+version = "0.1.0"
+description = "testsuite case"
+license = "MIT"
+authors = []
+src = "src"
+type = "exe"
+
+[dependencies]
+\"\"\");
+    fs.writeText(f"{root}/src/main.hz", probeSource(members));
+    let r = process.runCaptured(hazeBinary, ["run", "--quiet", "--dir", root]);
+    if r.exitCode != 0 {
+        sys.panic(f"building the fingerprint probe failed:\\n{r.stdoutResult}\\n{r.stderrResult}");
+    }
+    return r.stdoutResult.trim();
+}
+
+fn main(): int {
+    let bare = fingerprintWith(\"\"\"
+    points: []int = [];
+    cache: int = 0;
+\"\"\");
+    let bareAgain = fingerprintWith(\"\"\"
+    points: []int = [];
+    cache: int = 0;
+\"\"\");
+    let ignored = fingerprintWith(\"\"\"
+    points: []int = [];
+    [[json.ignore]]
+    cache: int = 0;
+\"\"\");
+    let ignoredElsewhere = fingerprintWith(\"\"\"
+    [[json.ignore]]
+    points: []int = [];
+    cache: int = 0;
+\"\"\");
+    fmt.println(f"deterministic {bare == bareAgain}");
+    fmt.println(f"a member annotation counts {bare != ignored}");
+    fmt.println(f"so does which member has it {ignored != ignoredElsewhere}");
+    return 0;
+}
+""",
+            """
+deterministic true
+a member annotation counts true
+so does which member has it true
+""");
+    }
+}

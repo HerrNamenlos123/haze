@@ -6179,6 +6179,10 @@ export class SemanticElaborator {
         members: [],
         export: definedStructType.export,
         memberDefaultValues: [],
+        memberAnnotations: definedStructType.memberAnnotations.map((m) => ({
+          memberName: m.name,
+          annotations: m.annotations,
+        })),
         methods: [],
         methodsFinalized: false,
         methodsInProgress: false,
@@ -14971,7 +14975,8 @@ export class SemanticElaborator {
   }
 
   // Intercepts call-syntax type reflection functions (T.hasAttribute("k"), T.isAttributeOfType<U>("k"),
-  // T.getAttribute<U>("k"), T.hasField("name")) before generic call resolution runs, since these operate
+  // T.getAttribute<U>("k"), T.hasField("name"), their per-field twins T.hasFieldAttribute("name", "k")
+  // etc., U.hasVariant<V>()) before generic call resolution runs, since these operate
   // on the type itself (its struct/alias definition) rather than on a callable member.
   // Returns null when the base expression is not a type value, so normal call resolution can proceed
   // (e.g. if a real struct happens to define an instance method with one of these names).
@@ -15043,7 +15048,11 @@ export class SemanticElaborator {
       memberName !== "getAttribute" &&
       memberName !== "hasField" &&
       memberName !== "hasFieldDefault" &&
-      memberName !== "fieldDefault"
+      memberName !== "fieldDefault" &&
+      memberName !== "hasFieldAttribute" &&
+      memberName !== "isFieldAttributeOfType" &&
+      memberName !== "getFieldAttribute" &&
+      memberName !== "hasVariant"
     ) {
       return null;
     }
@@ -15089,6 +15098,36 @@ export class SemanticElaborator {
       return this.sr.b.literal(hasField, callExpr.sourceloc);
     }
 
+    // Whether a union has V among its members (`U.hasVariant<none>()`): the
+    // existential that `for comptime V in U.variants` cannot express, since an
+    // unrolled loop has nowhere to accumulate an answer. False for anything
+    // that is not a union, so it can sit on the right of a comptime `&&`
+    // (which elaborates both sides) behind a category check.
+    if (memberName === "hasVariant") {
+      this.assertParameterN(callExpr, 0, memberName);
+      if (collectedExpr.genericArgs.length !== 1) {
+        throw new CompilerError(
+          `The ${memberName} function requires exactly one type parameter`,
+          callExpr.sourceloc,
+          HazeErrorCode.FunctionRequiresExactlyOneTypeParameter
+        );
+      }
+      const variantExpr = this.sr.exprNodes.get(
+        this.expressionAsGenericArg(collectedExpr.genericArgs[0])
+      );
+      const variantTypeDef = this.sr.typeUseNodes.get(
+        this.resolveAlias(variantExpr.type)
+      ).type;
+      const hasVariant =
+        resolvedTypeDef.variant === Semantic.ENode.UntaggedUnionDatatype &&
+        resolvedTypeDef.members.some(
+          (m) =>
+            this.sr.typeUseNodes.get(this.resolveAlias(m)).type ===
+            variantTypeDef
+        );
+      return this.sr.b.literal(hasVariant, callExpr.sourceloc);
+    }
+
     // A field's declared default (`count: int = 3`): whether there is one,
     // and the value itself -- the very expression a struct literal that
     // omits the field is filled with (see makeStructLiteral), so anything
@@ -15123,21 +15162,47 @@ export class SemanticElaborator {
       return [this.sr.exprNodes.get(fieldDefault.value), fieldDefault.value];
     }
 
-    const annotations: ASTMetaAnnotationItem[] =
-      unresolvedTypeDef.variant === Semantic.ENode.StructDatatype ||
-      unresolvedTypeDef.variant === Semantic.ENode.TypeAliasDatatype
-        ? unresolvedTypeDef.annotations
-        : [];
+    // The same three questions are asked of the type itself
+    // (`T.hasAttribute("k")`) or of one of its fields
+    // (`T.hasFieldAttribute("cache", "json.ignore")`), which takes the
+    // field's name as an extra first argument. A field's annotations are
+    // found through aliases, like every other field lookup above.
+    const fieldName =
+      memberName === "hasFieldAttribute" ||
+      memberName === "isFieldAttributeOfType" ||
+      memberName === "getFieldAttribute"
+        ? this.evalFieldAttributeFieldName(callExpr, memberName)
+        : null;
 
-    this.assertParameterN(callExpr, 1, memberName);
+    let annotations: ASTMetaAnnotationItem[];
+    let annotatedStruct: Semantic.StructDatatypeDef | null = null;
+    if (fieldName !== null) {
+      annotatedStruct = this.fieldReflectionStruct(resolvedTypeDef);
+      annotations =
+        annotatedStruct?.memberAnnotations.find(
+          (m) => m.memberName === fieldName
+        )?.annotations ?? [];
+    } else {
+      this.assertParameterN(callExpr, 1, memberName);
+      annotations =
+        unresolvedTypeDef.variant === Semantic.ENode.StructDatatype ||
+        unresolvedTypeDef.variant === Semantic.ENode.TypeAliasDatatype
+          ? unresolvedTypeDef.annotations
+          : [];
+    }
+
     const key = this.evalCTFEStringArgument(
-      callExpr.arguments[0],
+      callExpr.arguments[fieldName === null ? 0 : 1],
       memberName,
       callExpr.sourceloc
     );
     const found = annotations.find((a) => a.key === key);
+    const annotatedName =
+      fieldName === null
+        ? `type ${Semantic.serializeTypeUse(this.sr, expr.type)}`
+        : `field '${fieldName}' of type ${Semantic.serializeTypeUse(this.sr, expr.type)}`;
 
-    if (memberName === "hasAttribute") {
+    if (memberName === "hasAttribute" || memberName === "hasFieldAttribute") {
       return this.sr.b.literal(found !== undefined, callExpr.sourceloc);
     }
 
@@ -15156,7 +15221,10 @@ export class SemanticElaborator {
       this.sr.e.resolveAlias(genericExpr.type)
     );
 
-    if (memberName === "isAttributeOfType") {
+    if (
+      memberName === "isAttributeOfType" ||
+      memberName === "isFieldAttributeOfType"
+    ) {
       const matches =
         found !== undefined &&
         found.value !== null &&
@@ -15164,12 +15232,34 @@ export class SemanticElaborator {
       return this.sr.b.literal(matches, callExpr.sourceloc);
     }
 
-    // getAttribute
+    // getAttribute / getFieldAttribute
     if (found === undefined) {
+      if (fieldName === null) {
+        throw new CompilerError(
+          `Type ${Semantic.serializeTypeUse(this.sr, expr.type)} does not have an attribute named '${key}'`,
+          callExpr.sourceloc,
+          HazeErrorCode.TypeDoesNotHaveAttributeNamed
+        );
+      }
+      const fieldExists =
+        annotatedStruct?.members.some((memberId) => {
+          const member = this.sr.symbolNodes.get(memberId);
+          return (
+            member.variant === Semantic.ENode.VariableSymbol &&
+            member.name === fieldName
+          );
+        }) ?? false;
+      if (!fieldExists) {
+        throw new CompilerError(
+          `Struct '${Semantic.serializeTypeUse(this.sr, expr.type)}' does not have a field named '${fieldName}'`,
+          callExpr.sourceloc,
+          HazeErrorCode.StructDoesNotHaveFieldNamed
+        );
+      }
       throw new CompilerError(
-        `Type ${Semantic.serializeTypeUse(this.sr, expr.type)} does not have an attribute named '${key}'`,
+        `Field '${fieldName}' of type ${Semantic.serializeTypeUse(this.sr, expr.type)} does not have an attribute named '${key}'`,
         callExpr.sourceloc,
-        HazeErrorCode.TypeDoesNotHaveAttributeNamed
+        HazeErrorCode.FieldDoesNotHaveAttributeNamed
       );
     }
     if (found.value === null) {
@@ -15180,12 +15270,45 @@ export class SemanticElaborator {
     }
     if (!this.literalValueMatchesTypeDef(found.value, genericTypeUse.type)) {
       throw new CompilerError(
-        `Attribute '${key}' on type ${Semantic.serializeTypeUse(this.sr, expr.type)} has a value that is not of type '${Semantic.serializeTypeUse(this.sr, genericExpr.type)}'`,
+        `Attribute '${key}' on ${annotatedName} has a value that is not of type '${Semantic.serializeTypeUse(this.sr, genericExpr.type)}'`,
         callExpr.sourceloc,
         HazeErrorCode.AttributeTypeHasValueThatNotType
       );
     }
     return this.sr.b.literalValue(found.value, callExpr.sourceloc);
+  }
+
+  /** The field-name argument of `T.hasFieldAttribute("field", "key")` and friends. */
+  private evalFieldAttributeFieldName(
+    callExpr: Collect.ExprCallExpr,
+    functionName: string
+  ): string {
+    this.assertParameterN(callExpr, 2, functionName);
+    return this.evalCTFEStringArgument(
+      callExpr.arguments[0],
+      functionName,
+      callExpr.sourceloc
+    );
+  }
+
+  /**
+   * The struct whose fields `T.hasFieldAttribute` and friends describe: the
+   * (alias-resolved) struct itself, or for a Deep<T> the reactive clone it
+   * stands for. The clone matters because a reactive struct is serialized
+   * through it -- json.stringify(cache.data) walks the fields of a Deep<T> --
+   * and it carries the original's member annotations. null for a type that
+   * has no fields to ask about.
+   */
+  private fieldReflectionStruct(
+    typeDef: Semantic.TypeDef
+  ): Semantic.StructDatatypeDef | null {
+    if (typeDef.variant === Semantic.ENode.DeepDatatype) {
+      const cloned = this.sr.typeDefNodes.get(
+        this.sr.typeUseNodes.get(typeDef.clonedType).type
+      );
+      return cloned.variant === Semantic.ENode.StructDatatype ? cloned : null;
+    }
+    return typeDef.variant === Semantic.ENode.StructDatatype ? typeDef : null;
   }
 
   makeArrayLiteral(
@@ -15547,6 +15670,7 @@ export class SemanticElaborator {
         membersBuilt: true,
         membersFinalized: true,
         memberDefaultValues: [],
+        memberAnnotations: [],
         methods: [],
         methodsInProgress: false,
         methodsFinalized: true,
@@ -15617,6 +15741,7 @@ export class SemanticElaborator {
         membersBuilt: true,
         membersFinalized: true,
         memberDefaultValues: [],
+        memberAnnotations: [],
         methods: [],
         methodsInProgress: false,
         methodsFinalized: true,
@@ -15668,6 +15793,7 @@ export class SemanticElaborator {
         membersBuilt: true,
         membersFinalized: true,
         memberDefaultValues: [],
+        memberAnnotations: [],
         methods: [],
         methodsInProgress: false,
         methodsFinalized: true,
@@ -18030,6 +18156,7 @@ export class SemanticElaborator {
         membersBuilt: true,
         membersFinalized: true,
         memberDefaultValues: [],
+        memberAnnotations: [],
         methods: [],
         methodsInProgress: false,
         methodsFinalized: true,
@@ -21671,6 +21798,10 @@ export function makeDeepDatatypeAvailable(
       membersFinalized: false,
       methodsFinalized: false,
       memberDefaultValues: wrappedTypeDef.memberDefaultValues,
+      // Carried over like the type-level annotations: a reactive struct is
+      // serialized through its clone (json.stringify(cache.data)), so a
+      // [[json.ignore]] member must stay ignored there too.
+      memberAnnotations: wrappedTypeDef.memberAnnotations,
       members: [],
       methods: wrappedTypeDef.methods,
       methodsInProgress: false,

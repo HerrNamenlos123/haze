@@ -188,13 +188,11 @@ function mangledTypeUseName(
 // Compile-time annotations (`[[json.discriminator="foo"]]`) can change how
 // code compiles/behaves around a type (e.g. a JSON serializer branching on
 // the annotation), so two otherwise-identical types that differ only in
-// annotations must NOT fingerprint equal. Only `StructDatatypeDef` and
-// `TypeAliasDatatypeDef` carry `annotations` today -- enums, unions, and
-// individual struct members do not (member-level annotations are parsed,
-// `ASTStructMemberDefinition.annotations`, but dropped when lowered into
-// `Collect.VariableSymbol`/`Semantic.VariableSymbol` -- they never survive
-// to this point at all, a separate, pre-existing gap, not something this
-// function can fold in because there's nothing here to read).
+// annotations must NOT fingerprint equal. `StructDatatypeDef` and
+// `TypeAliasDatatypeDef` carry type-level `annotations`, and a struct also
+// carries the annotations of its individual members (`memberAnnotations`,
+// `[[json.ignore]] cache: T;`), folded next to the member they belong to.
+// Enums and unions carry none.
 function foldAnnotations(
   sr: Semantic.Context,
   state: bigint,
@@ -322,6 +320,17 @@ function computeTypeDefFingerprintUncached(
           state,
           computeTypeUseFingerprint(sr, member.type)
         );
+        // Only for a member that has any: a struct without member
+        // annotations keeps exactly the fingerprint it always had, rather
+        // than every fingerprint in existence changing for no structural
+        // reason (see invariant 9).
+        const memberAnnotations = def.memberAnnotations.find(
+          (m) => m.memberName === member.name
+        );
+        if (memberAnnotations !== undefined) {
+          state = fnv1a64FoldString(state, "member annotations");
+          state = foldAnnotations(sr, state, memberAnnotations.annotations);
+        }
       }
       return state;
     }

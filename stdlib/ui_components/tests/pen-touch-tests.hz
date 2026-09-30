@@ -1,0 +1,327 @@
+import ui_components
+import ui_elements
+
+// Drives the component system headlessly to verify how pen and touch pointers
+// are dispatched, next to the mouse:
+//
+//   * every Moved edge is its own Move event, carrying its pointer's type,
+//     id, buttons and pressure -- and a host that queues no motion still
+//     gets one Move per frame from the polled position;
+//   * a pen or a finger that is down is captured: its moves and its up go to
+//     the element its down hit, wherever it is now, while the mouse is not;
+//   * only a primary pointer clicks, and a cancelled one completes no click;
+//   * stopPropagation() in one handler is seen by the rest of the path.
+//
+// Like pointer-click-tests.hz next door, bounding boxes are applied by hand
+// (applyRenderFeedback), so no layout engine is needed.
+
+ref struct TestArgs {}
+
+// All mutable test state in one ref struct -- closures capture by copy, so
+// loose locals would each get their own.
+ref struct State {
+    log: str = "";
+    mouseX: real = 0.0;
+    mouseY: real = 0.0;
+    leftHeld: bool = false;
+    stopInnerDown: bool = false;
+    failures: int = 0;
+    checks: int = 0;
+
+    mut fn checkStr(name: str, actual: str, expected: str) {
+        this.checks = this.checks + 1;
+        if actual != expected {
+            this.failures = this.failures + 1;
+            fmt.println(f"FAIL: {name}\n  expected '{expected}'\n  got      '{actual}'");
+        }
+    }
+
+    mut fn record(what: str) {
+        this.log = f"{this.log}{what};";
+    }
+}
+
+fn describe(who: str, what: str, e: ui_components.PointerEvent): str {
+    let primary = e.isPrimary ? "" : ",secondary";
+    return f"{who}-{what}({e.pointerType}{primary})";
+}
+
+fn main(): int {
+    let state = State {};
+
+    let outerRef: ui_components.ElementRef<ui_elements.DivElement> =
+        rx.shallowReactive<ui_components.ElementWrapper<ui_elements.DivElement> | null>(null);
+    let innerRef: ui_components.ElementRef<ui_elements.DivElement> =
+        rx.shallowReactive<ui_components.ElementWrapper<ui_elements.DivElement> | null>(null);
+
+    // Queued edges, drained every frame the way a real backend drains its
+    // SDL queue. Mutated in place because the callback below captured it.
+    let edges: []ui_components.PointerEdge = [];
+
+    let ui = ui_components.UIContext({
+        ui: (ctx: ui_components.UIContext) => {
+            ctx.defineComponent(0, {} as TestArgs, (instance: ui_components.InstanceData<TestArgs>) => {
+                return (): ui_components.DivProps => {
+                    ctx.div({
+                        id: 1,
+                        elementRef: outerRef,
+                        onPointerDown: (e: ui_components.PointerEvent) => { state.record(describe("outer", "down", e)); },
+                        onPointerMove: (e: ui_components.PointerEvent) => { state.record(describe("outer", "move", e)); },
+                        onPointerUp: (e: ui_components.PointerEvent) => { state.record(describe("outer", "up", e)); },
+                        onClick: (e: ui_components.PointerEvent) => { state.record(describe("outer", "click", e)); },
+                    }, () => {
+                        ctx.div({
+                            id: 2,
+                            elementRef: innerRef,
+                            onPointerDown: (e: ui_components.PointerEvent) => {
+                                state.record(describe("inner", "down", e));
+                                if state.stopInnerDown { e.stopPropagation(); }
+                            },
+                            onPointerMove: (e: ui_components.PointerEvent) => { state.record(describe("inner", "move", e)); },
+                            onPointerUp: (e: ui_components.PointerEvent) => { state.record(describe("inner", "up", e)); },
+                            onClick: (e: ui_components.PointerEvent) => { state.record(describe("inner", "click", e)); },
+                        }, () => {});
+                    });
+                    return { id: 0 };
+                };
+            });
+        },
+        mousePos: (): Vec2 => { return Vec2(state.mouseX, state.mouseY); },
+        pointerButtons: ui_components.PointerHeldCallbacks {
+            leftHeld: (): bool => { return state.leftHeld; },
+            middleHeld: (): bool => { return false; },
+            rightHeld: (): bool => { return false; },
+            edgesThisFrame: (): []ui_components.PointerEdge => {
+                let out: []ui_components.PointerEdge = [];
+                for e in edges { out.push(e); }
+                edges.clear();
+                return out;
+            },
+            // Like app.App: every move is queued.
+            reportsMotion: true,
+        },
+    });
+
+    ui.process();
+    let outer = rx.get(outerRef);
+    let inner = rx.get(innerRef);
+    assert(outer);
+    assert(inner);
+    // outer covers (0,0)-(200,100); inner sits at (10,10)-(110,70).
+    ui_components.applyRenderFeedback(outer._element, Vec2(0.0, 0.0), Vec2(200.0, 100.0));
+    ui_components.applyRenderFeedback(inner._element, Vec2(10.0, 10.0), Vec2(100.0, 60.0));
+
+    let pen = (kind: ui_components.PointerEdgeKind, x: real, y: real, buttons: ui_components.PointerButtons): none => {
+        // A pen is the primary pointer: the host moves the polled position
+        // with it, as app.App does.
+        state.mouseX = x;
+        state.mouseY = y;
+        let button = ui_components.PointerButton.None;
+        if kind == ui_components.PointerEdgeKind.Pressed || kind == ui_components.PointerEdgeKind.Released {
+            button = ui_components.PointerButton.Left;
+        }
+        edges.push({ button: button, kind: kind, pos: Vec2(x, y), pointerId: 1001, pointerType: "pen", buttons: buttons, pressure: 0.7 });
+    };
+    let finger = (id: int, primary: bool, kind: ui_components.PointerEdgeKind, x: real, y: real): none => {
+        let button = kind == ui_components.PointerEdgeKind.Moved ? ui_components.PointerButton.None : ui_components.PointerButton.Left;
+        let buttons = kind == ui_components.PointerEdgeKind.Pressed || kind == ui_components.PointerEdgeKind.Moved
+            ? ui_components.PointerButtons.Left : ui_components.PointerButtons.None;
+        if primary {
+            state.mouseX = x;
+            state.mouseY = y;
+        }
+        edges.push({ button: button, kind: kind, pos: Vec2(x, y), pointerId: 100000 + id, pointerType: "touch", buttons: buttons, pressure: 1.0, isPrimary: primary });
+    };
+
+    // --- A pen stroke that starts on inner and ends outside everything ----
+    //
+    // Every sample is its own move, all of them go to inner (and bubble to
+    // outer) although the last two are not over it, and the up that lands
+    // outside clicks nothing.
+    state.log = "";
+    pen(ui_components.PointerEdgeKind.Pressed, 50.0, 50.0, ui_components.PointerButtons.Left);
+    pen(ui_components.PointerEdgeKind.Moved, 60.0, 50.0, ui_components.PointerButtons.Left);
+    pen(ui_components.PointerEdgeKind.Moved, 150.0, 50.0, ui_components.PointerButtons.Left);
+    ui.process();
+    pen(ui_components.PointerEdgeKind.Moved, 300.0, 300.0, ui_components.PointerButtons.Left);
+    pen(ui_components.PointerEdgeKind.Released, 300.0, 300.0, ui_components.PointerButtons.None);
+    ui.process();
+    state.checkStr("a pen stroke is captured by the element it started on",
+        state.log,
+        "inner-down(pen);outer-down(pen);inner-move(pen);outer-move(pen);inner-move(pen);outer-move(pen);"
+        + "inner-move(pen);outer-move(pen);inner-up(pen);outer-up(pen);");
+
+    // --- A pen tap clicks, like the mouse ---------------------------------
+    state.log = "";
+    pen(ui_components.PointerEdgeKind.Pressed, 50.0, 50.0, ui_components.PointerButtons.Left);
+    ui.process();
+    pen(ui_components.PointerEdgeKind.Released, 50.0, 50.0, ui_components.PointerButtons.None);
+    ui.process();
+    state.checkStr("a pen tap is a click",
+        state.log,
+        "inner-down(pen);outer-down(pen);inner-up(pen);outer-up(pen);inner-click(pen);outer-click(pen);");
+
+    // --- Pen hover is hit-tested, not captured ------------------------------
+    state.log = "";
+    pen(ui_components.PointerEdgeKind.Moved, 180.0, 90.0, ui_components.PointerButtons.None);
+    ui.process();
+    state.checkStr("a hovering pen moves over whatever is under it",
+        state.log,
+        "outer-move(pen);");
+
+    // --- The mouse is not captured ------------------------------------------
+    state.log = "";
+    state.mouseX = 50.0;
+    state.mouseY = 50.0;
+    state.leftHeld = true;
+    edges.push({ button: ui_components.PointerButton.Left, kind: ui_components.PointerEdgeKind.Pressed, pos: Vec2(50.0, 50.0) });
+    ui.process();
+    state.mouseX = 180.0;
+    state.mouseY = 90.0;
+    edges.push({ button: ui_components.PointerButton.None, kind: ui_components.PointerEdgeKind.Moved, pos: Vec2(180.0, 90.0) });
+    ui.process();
+    state.leftHeld = false;
+    edges.push({ button: ui_components.PointerButton.Left, kind: ui_components.PointerEdgeKind.Released, pos: Vec2(180.0, 90.0) });
+    ui.process();
+    // (The release clicks outer: the press landed in it too, so it is the
+    // common ancestor -- the DOM's rule, older than pens here.)
+    state.checkStr("a mouse drag goes to whatever is under the mouse",
+        state.log,
+        "inner-down(mouse);outer-down(mouse);outer-move(mouse);outer-up(mouse);outer-click(mouse);");
+
+    // --- Two fingers: only the primary one clicks ---------------------------
+    //
+    // The second finger's down and up reach the elements, marked secondary,
+    // but its up clicks nothing; the first finger's release, after both were
+    // down, still clicks.
+    state.log = "";
+    finger(1, true, ui_components.PointerEdgeKind.Pressed, 40.0, 40.0);
+    finger(2, false, ui_components.PointerEdgeKind.Pressed, 80.0, 40.0);
+    ui.process();
+    finger(2, false, ui_components.PointerEdgeKind.Released, 80.0, 40.0);
+    ui.process();
+    finger(1, true, ui_components.PointerEdgeKind.Released, 40.0, 40.0);
+    ui.process();
+    state.checkStr("a second finger neither clicks nor spoils the first finger's click",
+        state.log,
+        "inner-down(touch);outer-down(touch);inner-down(touch,secondary);outer-down(touch,secondary);"
+        + "inner-up(touch,secondary);outer-up(touch,secondary);"
+        + "inner-up(touch);outer-up(touch);inner-click(touch);outer-click(touch);");
+
+    // --- A cancelled finger ends without a click ----------------------------
+    state.log = "";
+    finger(3, true, ui_components.PointerEdgeKind.Pressed, 40.0, 40.0);
+    ui.process();
+    finger(3, true, ui_components.PointerEdgeKind.Cancelled, 40.0, 40.0);
+    ui.process();
+    state.checkStr("a cancelled touch is an up that clicks nothing",
+        state.log,
+        "inner-down(touch);outer-down(touch);inner-up(touch);outer-up(touch);");
+
+    // --- A finger that lifted is no longer captured -------------------------
+    //
+    // Pointer ids are reused by the platform; a new touch with the same id
+    // must hit-test afresh rather than inherit the previous one's capture.
+    state.log = "";
+    finger(3, true, ui_components.PointerEdgeKind.Pressed, 180.0, 90.0);
+    finger(3, true, ui_components.PointerEdgeKind.Moved, 50.0, 50.0);
+    finger(3, true, ui_components.PointerEdgeKind.Released, 50.0, 50.0);
+    ui.process();
+    state.checkStr("a new touch with a reused id is captured where IT went down",
+        state.log,
+        "outer-down(touch);outer-move(touch);outer-up(touch);outer-click(touch);");
+
+    // --- stopPropagation() stops the rest of the path -----------------------
+    state.log = "";
+    state.stopInnerDown = true;
+    pen(ui_components.PointerEdgeKind.Pressed, 50.0, 50.0, ui_components.PointerButtons.Left);
+    ui.process();
+    pen(ui_components.PointerEdgeKind.Released, 50.0, 50.0, ui_components.PointerButtons.None);
+    ui.process();
+    state.stopInnerDown = false;
+    state.checkStr("stopPropagation in inner's pointerdown keeps it from outer",
+        state.log,
+        "inner-down(pen);inner-up(pen);outer-up(pen);inner-click(pen);outer-click(pen);");
+
+    // --- What a pen reports reaches the handler unchanged -------------------
+    //
+    // A context of its own, with its own ref: element ids are per parent, so
+    // outerRef would keep pointing at the first context's element of the
+    // same id.
+    let eraserRef: ui_components.ElementRef<ui_elements.DivElement> =
+        rx.shallowReactive<ui_components.ElementWrapper<ui_elements.DivElement> | null>(null);
+    let eraserUi = ui_components.UIContext({
+        ui: (ctx: ui_components.UIContext) => {
+            ctx.defineComponent(0, {} as TestArgs, (instance: ui_components.InstanceData<TestArgs>) => {
+                return (): ui_components.DivProps => {
+                    ctx.div({
+                        id: 1,
+                        elementRef: eraserRef,
+                        onPointerDown: (e: ui_components.PointerEvent) => {
+                            let eraser = e.button == ui_components.PointerButton.Eraser
+                                && ui_components.hasButton(e.buttons, ui_components.PointerButtons.Eraser)
+                                && !ui_components.hasButton(e.buttons, ui_components.PointerButtons.Left);
+                            state.record(f"eraser={eraser},barrel={ui_components.hasButton(e.buttons, ui_components.PointerButtons.Right)},pressure={e.pressure},id={e.pointerId}");
+                        },
+                        onPointerMove: (e: ui_components.PointerEvent) => { state.record(describe("second", "move", e)); },
+                    }, () => {});
+                    return { id: 0 };
+                };
+            });
+        },
+        mousePos: (): Vec2 => { return Vec2(state.mouseX, state.mouseY); },
+        pointerButtons: ui_components.PointerHeldCallbacks {
+            leftHeld: (): bool => { return false; },
+            middleHeld: (): bool => { return false; },
+            rightHeld: (): bool => { return false; },
+            edgesThisFrame: (): []ui_components.PointerEdge => {
+                let out: []ui_components.PointerEdge = [];
+                for e in edges { out.push(e); }
+                edges.clear();
+                return out;
+            },
+        },
+    });
+    eraserUi.process();
+    let eraserTarget = rx.get(eraserRef);
+    assert(eraserTarget);
+    ui_components.applyRenderFeedback(eraserTarget._element, Vec2(0.0, 0.0), Vec2(200.0, 100.0));
+    state.log = "";
+    edges.push({
+        button: ui_components.PointerButton.Eraser,
+        kind: ui_components.PointerEdgeKind.Pressed,
+        pos: Vec2(20.0, 20.0),
+        pointerId: 1002,
+        pointerType: "pen",
+        // The DOM's bits, as a host translates them: 32 eraser, 2 barrel.
+        buttons: ui_components.pointerButtonsFromBits(34),
+        pressure: 0.25,
+    });
+    eraserUi.process();
+    state.checkStr("a pen's eraser, barrel button, pressure and id arrive as reported",
+        state.log,
+        "eraser=true,barrel=true,pressure=0.25,id=1002;");
+
+    // --- A host that does not report motion gets one Move a frame -----------
+    //
+    // eraserUi's callbacks leave reportsMotion off, as every host did before
+    // pens: the polled position alone produces the move.
+    state.log = "";
+    state.mouseX = 30.0;
+    state.mouseY = 30.0;
+    eraserUi.process();
+    eraserUi.process();
+    state.mouseX = 40.0;
+    state.mouseY = 30.0;
+    eraserUi.process();
+    state.checkStr("without reportsMotion, a moved polled position is one move per frame",
+        state.log,
+        "second-move(mouse);second-move(mouse);");
+
+    if state.failures > 0 {
+        fmt.println(f"\n{state.failures} FAILURES out of {state.checks} checks");
+        return 1;
+    }
+    fmt.println(f"\nALL {state.checks} PEN/TOUCH CHECKS PASS");
+    return 0;
+}

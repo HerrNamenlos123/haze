@@ -281,6 +281,11 @@ typedef void (*HazeSdlMouseButtonFn)(void *userdata, int button, float x,
 typedef void (*HazeSdlMouseWheelFn)(void *userdata, float x, float y,
                                     float mouseX, float mouseY);
 typedef void (*HazeSdlTextInputFn)(void *userdata, const char *text);
+/* One trampoline for every pen and touch event -- see haze_sdl_dispatch_pen
+   and haze_sdl_dispatch_finger for what each argument carries. */
+typedef void (*HazeSdlPointerFn)(void *userdata, int kind, int device,
+                                 int64_t id, float x, float y, float pressure,
+                                 int buttons);
 
 typedef struct {
   HazeSdlKeyFn keyDown;
@@ -291,10 +296,11 @@ typedef struct {
   HazeSdlMouseButtonFn mouseUp;
   HazeSdlMouseWheelFn mouseWheel;
   HazeSdlTextInputFn textInput;
+  HazeSdlPointerFn pointer;
 } haze_sdl_trampolines_t;
 
-static haze_sdl_trampolines_t g_haze_trampolines = {NULL, NULL, NULL, NULL,
-                                                    NULL, NULL, NULL, NULL};
+static haze_sdl_trampolines_t g_haze_trampolines = {
+    NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL};
 
 void haze_sdl_register_trampolines(haze_sdl_trampolines_t t) {
   g_haze_trampolines = t;
@@ -926,9 +932,196 @@ void haze_sdl_setWindowShouldClose(SDL_Window *window, bool value) {
   haze_sdl_set_window_should_close(window, value);
 }
 
+/* ---------- Pen and touch ----------
+
+   Both arrive through the one `pointer` trampoline as
+   (kind, device, id, x, y, pressure, buttons):
+
+     kind     0 = down, 1 = up, 2 = move, 3 = cancel (a touch the platform
+              took away, e.g. for a system gesture -- it never gets an up)
+     device   1 = pen, 2 = touch
+     id       SDL's pen instance id / finger id, unique per device kind
+     x, y     window coordinates, the same space mouse events use
+     buttons  the DOM's PointerEvent.buttons AFTER this event: 1 = the tip
+              (or a finger) is in contact, 2 = the pen's first barrel button,
+              4 = its second, 32 = the eraser end is in contact. The DOM
+              uses exactly these bits for a pen, which is what lets the UI
+              layer hand them on untouched.
+
+   SDL synthesizes mouse events from both (SDL_PEN_MOUSEID/SDL_TOUCH_MOUSEID)
+   and touch events from the pen (SDL_PEN_TOUCHID). Those are dropped in
+   haze_sdl_pollEvents: the real event already describes the same contact,
+   with the device it came from, so passing the copy on as well would report
+   every stroke twice -- once as a pen and once as a mouse that isn't there. */
+
+/* A pen's pressure only arrives on SDL_EVENT_PEN_AXIS, never on the motion
+   or touch events that need it, so the latest value per pen is kept here.
+   A handful of slots is plenty: this is one per pen in proximity, not per
+   event, and an unknown pen just reads 0.5 until its first axis event. */
+#define HAZE_SDL_MAX_PENS 8
+static struct {
+  SDL_PenID id;
+  float pressure;
+} g_haze_pen_pressure[HAZE_SDL_MAX_PENS];
+static int g_haze_pen_pressure_count = 0;
+
+static float *haze_sdl_pen_pressure_slot(SDL_PenID id) {
+  for (int i = 0; i < g_haze_pen_pressure_count; i++) {
+    if (g_haze_pen_pressure[i].id == id) {
+      return &g_haze_pen_pressure[i].pressure;
+    }
+  }
+  int slot = g_haze_pen_pressure_count < HAZE_SDL_MAX_PENS
+                 ? g_haze_pen_pressure_count++
+                 : HAZE_SDL_MAX_PENS - 1;
+  g_haze_pen_pressure[slot].id = id;
+  g_haze_pen_pressure[slot].pressure = 0.5f;
+  return &g_haze_pen_pressure[slot].pressure;
+}
+
+/* SDL_PenInputFlags -> DOM buttons. The tip is reported as 1 or 32
+   depending on which end is down, as in the DOM, rather than as "down" plus
+   a separate eraser flag. */
+static int haze_sdl_pen_buttons(SDL_PenInputFlags state) {
+  int buttons = 0;
+  if (state & SDL_PEN_INPUT_DOWN) {
+    buttons |= (state & SDL_PEN_INPUT_ERASER_TIP) ? 32 : 1;
+  }
+  if (state & SDL_PEN_INPUT_BUTTON_1) {
+    buttons |= 2;
+  }
+  if (state & SDL_PEN_INPUT_BUTTON_2) {
+    buttons |= 4;
+  }
+  return buttons;
+}
+
+static void haze_sdl_dispatch_pointer(SDL_WindowID windowID, int kind,
+                                      int device, int64_t id, float x, float y,
+                                      float pressure, int buttons) {
+  SDL_Window *window = SDL_GetWindowFromID(windowID);
+  if (!window || !g_haze_trampolines.pointer) {
+    return;
+  }
+  void *userdata = haze_sdl_get_window_event_userdata(window);
+  if (userdata) {
+    g_haze_trampolines.pointer(userdata, kind, device, id, x, y, pressure,
+                               buttons);
+  }
+}
+
+/* Returns whether the event was a pen event (and so is fully handled). */
+static bool haze_sdl_dispatch_pen(const SDL_Event *event) {
+  switch (event->type) {
+  case SDL_EVENT_PEN_AXIS:
+    if (event->paxis.axis == SDL_PEN_AXIS_PRESSURE) {
+      *haze_sdl_pen_pressure_slot(event->paxis.which) = event->paxis.value;
+    }
+    return true;
+
+  case SDL_EVENT_PEN_MOTION: {
+    const SDL_PenMotionEvent *e = &event->pmotion;
+    float pressure = *haze_sdl_pen_pressure_slot(e->which);
+    int buttons = haze_sdl_pen_buttons(e->pen_state);
+    haze_sdl_dispatch_pointer(e->windowID, 2, 1, (int64_t)e->which, e->x, e->y,
+                              buttons & (1 | 32) ? pressure : 0.0f, buttons);
+    return true;
+  }
+
+  case SDL_EVENT_PEN_DOWN:
+  case SDL_EVENT_PEN_UP: {
+    const SDL_PenTouchEvent *e = &event->ptouch;
+    float pressure = *haze_sdl_pen_pressure_slot(e->which);
+    /* Derived from the event's own fields rather than pen_state alone, so
+       the tip bit is right even on a backend that updates pen_state only
+       after the event: the tip is down exactly when this is a down. */
+    int buttons = haze_sdl_pen_buttons(e->pen_state) & ~(1 | 32);
+    if (e->down) {
+      buttons |= e->eraser ? 32 : 1;
+    }
+    haze_sdl_dispatch_pointer(e->windowID, e->down ? 0 : 1, 1,
+                              (int64_t)e->which, e->x, e->y,
+                              e->down ? pressure : 0.0f, buttons);
+    return true;
+  }
+
+  /* A barrel button changes the pen's buttons without making or breaking
+     contact, which the DOM reports as a move carrying the new buttons -- a
+     pointerdown/up is only for the contact itself. */
+  case SDL_EVENT_PEN_BUTTON_DOWN:
+  case SDL_EVENT_PEN_BUTTON_UP: {
+    const SDL_PenButtonEvent *e = &event->pbutton;
+    float pressure = *haze_sdl_pen_pressure_slot(e->which);
+    int buttons = haze_sdl_pen_buttons(e->pen_state);
+    int bit = e->button == 1 ? 2 : e->button == 2 ? 4 : 0;
+    buttons = e->down ? (buttons | bit) : (buttons & ~bit);
+    haze_sdl_dispatch_pointer(e->windowID, 2, 1, (int64_t)e->which, e->x, e->y,
+                              buttons & (1 | 32) ? pressure : 0.0f, buttons);
+    return true;
+  }
+
+  case SDL_EVENT_PEN_PROXIMITY_IN:
+  case SDL_EVENT_PEN_PROXIMITY_OUT:
+    return true;
+
+  default:
+    return false;
+  }
+}
+
+/* Returns whether the event was a touch event (and so is fully handled). */
+static bool haze_sdl_dispatch_finger(const SDL_Event *event) {
+  int kind;
+  switch (event->type) {
+  case SDL_EVENT_FINGER_DOWN:
+    kind = 0;
+    break;
+  case SDL_EVENT_FINGER_UP:
+    kind = 1;
+    break;
+  case SDL_EVENT_FINGER_MOTION:
+    kind = 2;
+    break;
+  case SDL_EVENT_FINGER_CANCELED:
+    kind = 3;
+    break;
+  default:
+    return false;
+  }
+
+  const SDL_TouchFingerEvent *e = &event->tfinger;
+  /* The pen's (and, if enabled, the mouse's) copies of itself -- see above. */
+  if (e->touchID == SDL_PEN_TOUCHID || e->touchID == SDL_MOUSE_TOUCHID) {
+    return true;
+  }
+
+  /* Touch positions are normalized to the window, unlike every other
+     pointer event; scaled back into window coordinates so a finger and the
+     mouse at the same spot report the same position. */
+  SDL_Window *window = SDL_GetWindowFromID(e->windowID);
+  if (!window) {
+    return true;
+  }
+  int w = 0, h = 0;
+  SDL_GetWindowSize(window, &w, &h);
+  haze_sdl_dispatch_pointer(e->windowID, kind, 2, (int64_t)e->fingerID,
+                            e->x * (float)w, e->y * (float)h,
+                            kind == 0 || kind == 2 ? e->pressure : 0.0f,
+                            kind == 0 || kind == 2 ? 1 : 0);
+  return true;
+}
+
+static bool haze_sdl_is_synthesized_mouse(SDL_MouseID which) {
+  return which == SDL_TOUCH_MOUSEID || which == SDL_PEN_MOUSEID;
+}
+
 void haze_sdl_pollEvents(void) {
   SDL_Event event;
   while (SDL_PollEvent(&event)) {
+    if (haze_sdl_dispatch_pen(&event) || haze_sdl_dispatch_finger(&event)) {
+      continue;
+    }
+
     if (event.type == SDL_EVENT_QUIT) {
       haze_sdl_should_close_all = true;
       continue;
@@ -1000,6 +1193,9 @@ void haze_sdl_pollEvents(void) {
     }
 
     if (event.type == SDL_EVENT_MOUSE_MOTION) {
+      if (haze_sdl_is_synthesized_mouse(event.motion.which)) {
+        continue;
+      }
       SDL_Window *window = SDL_GetWindowFromID(event.motion.windowID);
       if (window && g_haze_trampolines.mouseMove) {
         void *userdata = haze_sdl_get_window_event_userdata(window);
@@ -1019,6 +1215,9 @@ void haze_sdl_pollEvents(void) {
       if (haze_sdl_handle_titlebar_event(window, &event, true)) {
         continue;
       }
+      if (haze_sdl_is_synthesized_mouse(event.button.which)) {
+        continue;
+      }
       if (window && g_haze_trampolines.mouseDown) {
         void *userdata = haze_sdl_get_window_event_userdata(window);
         if (userdata) {
@@ -1034,6 +1233,9 @@ void haze_sdl_pollEvents(void) {
     if (event.type == SDL_EVENT_MOUSE_BUTTON_UP) {
       SDL_Window *window = SDL_GetWindowFromID(event.button.windowID);
       if (haze_sdl_handle_titlebar_event(window, &event, false)) {
+        continue;
+      }
+      if (haze_sdl_is_synthesized_mouse(event.button.which)) {
         continue;
       }
       if (window && g_haze_trampolines.mouseUp) {
@@ -1059,6 +1261,9 @@ void haze_sdl_pollEvents(void) {
     }
 
     if (event.type == SDL_EVENT_MOUSE_WHEEL) {
+      if (haze_sdl_is_synthesized_mouse(event.wheel.which)) {
+        continue;
+      }
       SDL_Window *window = SDL_GetWindowFromID(event.wheel.windowID);
       if (window && g_haze_trampolines.mouseWheel) {
         void *userdata = haze_sdl_get_window_event_userdata(window);
