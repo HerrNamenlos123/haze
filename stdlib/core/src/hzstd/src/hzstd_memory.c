@@ -416,3 +416,13 @@ void *hzstd_allocate(hzstd_allocator_t allocator, size_t size, const char *dataT
 {
   return hzstd_allocate_n(allocator, size, dataType, 1);
 }
+
+void *hzstd_allocate_atomic_n(hzstd_allocator_t allocator, size_t size, const char *dataType, int skip_n_frames)
+{
+  return allocator.allocateAtomic(allocator.ctx, size, dataType, 1 + skip_n_frames);
+}
+
+void *hzstd_allocate_atomic(hzstd_allocator_t allocator, size_t size, const char *dataType)
+{
+  return hzstd_allocate_atomic_n(allocator, size, dataType, 1);
+}

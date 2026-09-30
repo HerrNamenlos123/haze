@@ -50,6 +50,15 @@ fn toFFI(v: BufferUsage): ffi.WGPUBufferUsage :: final {
 
 export struct Buffer {
     handle: mut ffi.WGPUBufferImpl;
+
+    // Gives up this handle. wgpu keeps the object itself alive for as long as
+    // work already recorded or submitted still uses it, so this is safe right
+    // after the last call that referenced it -- but the handle, and every copy
+    // of this struct, must not be used again. Nothing is released implicitly:
+    // a handle that is simply dropped leaks its GPU object for good.
+    fn release() {
+        ffi.wgpuBufferRelease(this.handle);
+    }
 }
 
 fn fromFFI(v: mut ffi.WGPUBufferImpl): Buffer :: final {

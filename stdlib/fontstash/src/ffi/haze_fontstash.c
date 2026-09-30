@@ -274,6 +274,23 @@ haze_fontstash_atlas_t haze_fontstash_get_atlas(void* ctx)
   return atlas;
 }
 
+// The part of the atlas glyphs were rasterized into since the last call, and
+// resets it -- so an atlas upload can copy just that, and only when there is
+// something new.
+haze_fontstash_dirty_rect_t haze_fontstash_take_dirty_rect(void* ctx)
+{
+  int dirty[4];
+  haze_fontstash_dirty_rect_t rect = { 0 };
+  if (fonsValidateTexture((FONScontext*)ctx, dirty)) {
+    rect.valid = true;
+    rect.x0 = dirty[0];
+    rect.y0 = dirty[1];
+    rect.x1 = dirty[2];
+    rect.y1 = dirty[3];
+  }
+  return rect;
+}
+
 haze_fontstash_metrics_t haze_fontstash_get_metrics(hzstd_cptr_t ctx, hzstd_int_t font, hzstd_real_t size)
 {
   FONScontext* fs = ctx;

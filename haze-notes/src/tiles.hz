@@ -85,19 +85,12 @@ namespace tilemath {
     }
 }
 
-struct TileKey {
-    pageIndex: int = 0;
-    level: int = 0;
-    tx: int = 0;
-    ty: int = 0;
-}
-
-// One pooled 512x512 hardware tile. Never resized after construction --
-// "moving" a tile to cover a different part of a page/level is purely a
-// bookkeeping change (reset()), the GPU canvas itself is untouched.
+// One pooled 512x512 hardware tile: the picture of one square of one page at
+// one pyramid level. Never resized -- "moving" a tile to cover another square
+// is only bookkeeping (assign()), the GPU canvas itself is untouched.
 //
 // localMinX/localMinY are always relative to the *page* this tile belongs
-// to (key.pageIndex), never to document/world space -- a tile at page-local
+// to (pageIndex), never to document/world space -- a tile at page-local
 // (0,0) looks identical whether it's page 0 or page 5. The page's own
 // position in the vertically-stacked document (pageOriginY in render.hz)
 // only ever gets added in at the final composite step (screen position) and
@@ -105,12 +98,18 @@ struct TileKey {
 // across every page.
 ref struct Tile {
     canvas: mut renderer.gfx.Canvas;
-    inUse: bool = false;
-    valid: bool = false;       // false = hardware contents are stale/undefined, needs a render before use
-    key: TileKey = {};
+    pageIndex: int = 0;
+    level: int = 0;
+    tx: int = 0;
+    ty: int = 0;
     localMinX: real = 0.0;
     localMinY: real = 0.0;
-    localSize: real = 0.0;     // mm size of this tile's page-local rect (square) at its native level
+    localSize: real = 0.0;     // mm size of this tile's page-local rect (square) at its level
+    // It holds a picture of its square -- possibly an outdated one, see dirty.
+    // A tile without one is not drawn at all.
+    hasContent: bool = false;
+    // Its picture is outdated or missing, so it has to be drawn (again).
+    dirty: bool = true;
 
     fn constructor(gfx: mut renderer.gfx.Context) {
         return Tile {
@@ -120,48 +119,70 @@ ref struct Tile {
                     logicalSize: Vec2i(tileSizePx, tileSizePx),
                     framebufferSize: Vec2i(tileSizePx, tileSizePx),
                 },
+                // Every tile render starts from a clear canvas, so all tiles
+                // share one multisampled color buffer instead of each having
+                // a 4 MB one of its own.
+                alwaysClears: true,
             }),
         };
     }
 
-    // Repoints this (possibly recycled) tile at a new key/page-local rect
-    // and marks it dirty. Never touches the GPU canvas.
-    fn reset(key: TileKey, localMinX: real, localMinY: real, localSize: real) {
-        this.key = key;
-        this.localMinX = localMinX;
-        this.localMinY = localMinY;
-        this.localSize = localSize;
-        this.valid = false;
-        this.inUse = true;
+    // Repoints this (possibly recycled) tile at a square of a page. It has no
+    // picture of that square yet.
+    fn assign(pageIndex: int, level: int, tx: int, ty: int) {
+        let size = tilemath.tileWorldSize(level);
+        this.pageIndex = pageIndex;
+        this.level = level;
+        this.tx = tx;
+        this.ty = ty;
+        this.localMinX = tx as real * size;
+        this.localMinY = ty as real * size;
+        this.localSize = size;
+        this.hasContent = false;
+        this.dirty = true;
+    }
+
+    fn isAt(level: int, tx: int, ty: int): bool {
+        return this.level == level && this.tx == tx && this.ty == ty;
+    }
+
+    fn bbox(): BBox {
+        return BBox {
+            left: this.localMinX,
+            right: this.localMinX + this.localSize,
+            top: this.localMinY,
+            bottom: this.localMinY + this.localSize,
+        };
     }
 }
 
+// The tiles no page is using, kept for reuse. Every tile is a 1 MB GPU
+// texture, so only a few are kept; trim() frees the rest.
 ref struct TilePool {
     gfx: mut renderer.gfx.Context;
-    tiles: []mut Tile = [];
+    free: []mut Tile = [];
 
     fn constructor(gfx: mut renderer.gfx.Context) {
         return TilePool { gfx: gfx };
     }
 
-    // Reuses a free tile if one exists, otherwise grows the pool by one.
-    // The pool never shrinks -- released tiles just sit there marked
-    // !inUse until something else needs a tile.
-    fn acquire(key: TileKey, localMinX: real, localMinY: real, localSize: real) {
-        for tile in this.tiles {
-            if !tile.inUse {
-                tile.reset(key, localMinX, localMinY, localSize);
-                return tile;
-            }
-        }
-        let tile = Tile(this.gfx);
-        tile.reset(key, localMinX, localMinY, localSize);
-        this.tiles.push(tile);
+    fn acquire(pageIndex: int, level: int, tx: int, ty: int): mut Tile {
+        let tile = this.free.length > 0 ? this.free.pop() : Tile(this.gfx);
+        tile.assign(pageIndex, level, tx, ty);
         return tile;
     }
 
     fn release(tile: mut Tile) {
-        tile.inUse = false;
-        tile.valid = false;
+        this.free.push(tile);
+    }
+
+    // Frees the GPU memory of all but `keep` unused tiles. A tile drawn
+    // somewhere this frame must not be freed before that draw is committed
+    // (see Canvas.destroy), so this runs before anything draws.
+    fn trim(keep: int) {
+        while this.free.length > keep {
+            let tile = this.free.pop();
+            tile.canvas.destroy();
+        }
     }
 }

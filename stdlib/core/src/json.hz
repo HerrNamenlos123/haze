@@ -36,6 +36,9 @@ namespace ffi {
     export extern C fn hzstd_json_get_object_item(allocator: Allocator, json: hzstd_json_node_t, name: str): hzstd_json_node_t | none :: final;
     export extern C fn hzstd_json_get_array_size(allocator: Allocator, json: hzstd_json_node_t): usize :: final;
     export extern C fn hzstd_json_get_array_item(allocator: Allocator, json: hzstd_json_node_t, index: usize): hzstd_json_node_t :: final;
+    // O(1) per step, unlike indexing -- see hzstd_json.h.
+    export extern C fn hzstd_json_get_first_child(json: hzstd_json_node_t): hzstd_json_node_t | none :: final;
+    export extern C fn hzstd_json_get_next_sibling(json: hzstd_json_node_t): hzstd_json_node_t | none :: final;
 
     // Object-key enumeration: unlike hzstd_json_get_object_item(), which
     // requires already knowing the key you want, these walk every key of an
@@ -236,6 +239,71 @@ namespace json {
             };
         }
 
+        // Arrays and numbers, the same way: for a [[json.parse]] or
+        // [[json.serialize]] hook that keeps an array as something other than
+        // a Haze array of the same shape -- say [[x, y], ...] as one flat
+        // []Vec2. Reading panics on a node of another kind, like the rest of
+        // this API; isArray()/isNumber() check first.
+        fn isArray(): bool {
+            return ffi.hzstd_json_is_array(this.data);
+        }
+
+        fn isNumber(): bool {
+            return ffi.hzstd_json_is_number(this.data);
+        }
+
+        fn arrayLength(): usize {
+            if !ffi.hzstd_json_is_array(this.data) {
+                sys.panic("arrayLength() called on a JSON node that is not an array");
+            }
+            return ffi.hzstd_json_get_array_size(this.allocator, this.data);
+        }
+
+        // The first element of an array node (none if it is empty), then
+        // each element's next() until none -- the way to walk an array: its
+        // elements are a linked list, so indexing one is O(index).
+        fn firstElement(): Node | none {
+            if !ffi.hzstd_json_is_array(this.data) {
+                sys.panic("firstElement() called on a JSON node that is not an array");
+            }
+            if let child = ffi.hzstd_json_get_first_child(this.data) {
+                return Node { allocator: this.allocator, data: child };
+            }
+            return none;
+        }
+
+        fn next(): Node | none {
+            if let sibling = ffi.hzstd_json_get_next_sibling(this.data) {
+                return Node { allocator: this.allocator, data: sibling };
+            }
+            return none;
+        }
+
+        fn numberValue(): real {
+            if !ffi.hzstd_json_is_number(this.data) {
+                sys.panic("numberValue() called on a JSON node that is not a number");
+            }
+            return ffi.hzstd_json_get_number_value(this.allocator, this.data);
+        }
+
+        // Appends to an array node.
+        fn append(item: Node) {
+            if !ffi.hzstd_json_is_array(this.data) {
+                sys.panic("append() called on a JSON node that is not an array");
+            }
+            ffi.hzstd_json_add_item_to_array(this.allocator, this.data, item.data);
+        }
+
+        fn appendNumber(value: real) {
+            this.append(Node { allocator: this.allocator, data: ffi.hzstd_json_create_number(this.allocator, value) });
+        }
+
+        // A new, empty array node from this node's allocator -- to append to
+        // this one.
+        fn newArray(): Node {
+            return Node { allocator: this.allocator, data: ffi.hzstd_json_create_array(this.allocator) };
+        }
+
     }
 
     export fn parseToJsonNode(data: str): Result<Node, Error> {
@@ -271,12 +339,19 @@ namespace json {
         }
         let arr: T = [];
         let count = ffi.hzstd_json_get_array_size(allocator, node);
-        for (let i: usize = 0; i < count; i++) {
-            let r = parseJsonNodeFromFfi<T.elementType>(allocator, ffi.hzstd_json_get_array_item(allocator, node, i));
+        if count <= 1000000000 {
+            arr.reserve(count as int);
+        }
+        // Walked as the linked list it is: indexing it is O(index), which
+        // made every array O(n^2) to read.
+        let item = ffi.hzstd_json_get_first_child(node);
+        while let current = item {
+            let r = parseJsonNodeFromFfi<T.elementType>(allocator, current);
             if !r {
                 return r;
             }
             arr.push(r);
+            item = ffi.hzstd_json_get_next_sibling(current);
         }
         return arr;
     }
@@ -649,8 +724,15 @@ namespace json {
         return parse<T>(parseToJsonNode(allocator, data)?!);
     }
 
+    // The parse tree is scratch: it goes into an arena nothing references
+    // once the result is built, and the result itself is built on the heap.
+    // Built in the arena too, as it once was, any part of the result that
+    // lived on kept the whole arena alive -- every node of the parse tree,
+    // for as long as the parsed value existed, all of it scanned by the
+    // garbage collector on every collection.
     export fn parse<T>(data: str): Result<T, Error> {
-        return parse<T>(Alloc.arena(), data);
+        let tree = parseToJsonNode(Alloc.arena(), data)?!;
+        return parseJsonNodeFromFfi<T>(Alloc.heap(), tree.data);
     }
 
     export fn dumpJsonArray<T>(allocator: Allocator, value: T): ffi.hzstd_json_node_t {

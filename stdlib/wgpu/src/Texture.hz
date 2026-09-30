@@ -50,6 +50,12 @@ fn toFFI(v: TextureViewDescriptor): ffi.WGPUTextureViewDescriptor :: final {
 export struct Texture {
     handle: mut ffi.WGPUTextureImpl;
 
+    // See Buffer.release. The texture's views hold references of their own,
+    // so each of them has to be released too before its memory is freed.
+    fn release() {
+        ffi.wgpuTextureRelease(this.handle);
+    }
+
     fn createView(viewDescriptor?: TextureViewDescriptor): Result<TextureView, none> {
       do unsafe {
         let value: ffi.WGPUTextureViewDescriptor = uninitialized;
@@ -83,6 +89,11 @@ fn toFFI(v: Texture): mut ffi.WGPUTextureImpl :: final {
 
 export struct TextureView {
     handle: mut ffi.WGPUTextureViewImpl;
+
+    // See Buffer.release.
+    fn release() {
+        ffi.wgpuTextureViewRelease(this.handle);
+    }
 }
 
 fn fromFFI(v: mut ffi.WGPUTextureViewImpl): TextureView :: final {

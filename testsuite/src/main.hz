@@ -85,6 +85,7 @@ fn main(): int {
     cases_narrowed_recheck.register(suite);
     cases_narrowing_inverse.register(suite);
     cases_cache_file.register(suite);
+    cases_reactive_write_operands.register(suite);
 
     return testsuite.runAll(config, suite);
 }

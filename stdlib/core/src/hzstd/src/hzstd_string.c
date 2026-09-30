@@ -57,7 +57,7 @@ hzstd_str_t hzstd_str_from_cstr_dup(hzstd_allocator_t allocator, hzstd_cstr_t da
     return (hzstd_str_t) { .length = 0, .data = 0 };
   }
   else {
-    char *buffer = hzstd_allocate(allocator, length, NULL);
+    char *buffer = hzstd_allocate_atomic(allocator, length, NULL);
     memcpy(buffer, data, length);
     return (hzstd_str_t) {
       .data = buffer,

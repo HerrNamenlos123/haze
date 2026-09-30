@@ -2,6 +2,11 @@
 export struct RenderPassEncoder {
     handle: mut ffi.WGPURenderPassEncoderImpl;
 
+    // See Buffer.release. end() does not release it.
+    fn release() {
+        ffi.wgpuRenderPassEncoderRelease(this.handle);
+    }
+
     fn end() {
         ffi.wgpuRenderPassEncoderEnd(this.handle);
     }

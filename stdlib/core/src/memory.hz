@@ -97,9 +97,17 @@ export opaque ref struct ByteBuffer {
         if this.borrowed {
             let source = this.borrowed;
             let cloned: []u8 = [];
-            cloned.reserve(source.length);
-            for (let i = 0; i < source.length; i++) {
-                cloned.push(source.getAt(i));
+            if let byte = source.singleByte {
+                cloned.push(byte);
+            } else if source.length > 0 {
+                let ok = false;
+                __c__("""
+                    ok = hzstd_dynamic_array_resize_zeroed(cloned, (size_t)source.length) == hzstd_dynamic_array_result_ok
+                        && hzstd_dynamic_array_write(cloned, 0, (const char *)source.basePtr + source.offset, (size_t)source.length) == hzstd_dynamic_array_result_ok;
+                """);
+                if !ok {
+                    sys.panic("ByteBuffer: out of memory");
+                }
             }
             this.data = cloned;
             this.borrowed = none;
@@ -142,7 +150,7 @@ export opaque ref struct ByteBuffer {
                 do unsafe {
                     let ptr: cptr = none as cptr;
                     let byte = source.singleByte;
-                    __c__("ptr = hzstd_allocate(hzstd_make_heap_allocator(), 1, \"ByteBuffer frozen bytes\");");
+                    __c__("ptr = hzstd_heap_allocate_atomic(1, \"ByteBuffer frozen bytes\");");
                     __c__("((hzstd_u8_t*)ptr)[0] = byte;");
                     this.frozenPtr = ptr;
                 };
@@ -172,7 +180,7 @@ export opaque ref struct ByteBuffer {
             let data = this._getData();
 
             if len > 0 {
-                __c__("ptr = hzstd_allocate(hzstd_make_heap_allocator(), len, \"ByteBuffer frozen bytes\");");
+                __c__("ptr = hzstd_heap_allocate_atomic(len, \"ByteBuffer frozen bytes\");");
                 __c__("memcpy(ptr, hzstd_dynamic_array_raw_buffer(data), len);");
             }
 
@@ -185,13 +193,17 @@ export opaque ref struct ByteBuffer {
     }
 
     fn resize(newSize: int) :: final {
-        let data = this._getMutableData();
-        // Do the dumb, obvious thing now, optimize later
-        while data.length < newSize {
-            data.push(0);
+        if newSize < 0 {
+            sys.panic("ByteBuffer.resize() to a negative size");
         }
-        while data.length > newSize {
-            data.pop();
+        let data = this._getMutableData();
+        // One call, not a push per byte: this is under every push(), so a
+        // byte-at-a-time loop made building a large string or file O(bytes)
+        // interpreted steps.
+        let ok = false;
+        __c__("ok = hzstd_dynamic_array_resize_zeroed(data, (size_t)newSize) == hzstd_dynamic_array_result_ok;");
+        if !ok {
+            sys.panic("ByteBuffer.resize(): out of memory");
         }
     }
 
@@ -243,10 +255,12 @@ export opaque ref struct ByteBuffer {
             sys.panic("Out of bounds access in ByteBuffer");
         }
 
-        // Do the dumb, trivial loop, we can optimize bounds checking away later
-        for (let i = 0; i < value.length; i++) {
-            data[startIndex + i] = value[i];
+        if let byte = value.singleByte {
+            data[startIndex] = byte;
+            return;
         }
+        // One memcpy (bounds checked above).
+        __c__("hzstd_dynamic_array_write(data, (size_t)startIndex, (const char *)value.basePtr + value.offset, (size_t)value.length);");
     }
 
     mut fn writeAt(startIndex: int, value: ByteBuffer) {

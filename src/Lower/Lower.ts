@@ -2630,8 +2630,10 @@ export function lowerExpr(
     }
 
     case Semantic.ENode.ReactiveWriteExpr: {
-      const statements: Lowered.StatementId[] = [];
-
+      // The target and value are lowered into `flattened`, the enclosing
+      // statement list, like any other operand: whatever they need declared
+      // first (an `if let` binding, the temporaries of `?.` and `??`) has to
+      // come before the write itself.
       const reactiveTypeId = lowerTypeUse(lr, expr.type);
       const reactiveType = lr.typeUseNodes.get(reactiveTypeId);
 
@@ -2648,8 +2650,8 @@ export function lowerExpr(
           lr,
           "hzstd_reactive_array_write",
           [
-            lowerExpr(lr, expr.target, statements, instanceInfo)[1],
-            lowerExpr(lr, expr.value, statements, instanceInfo)[1],
+            lowerExpr(lr, expr.target, flattened, instanceInfo)[1],
+            lowerExpr(lr, expr.value, flattened, instanceInfo)[1],
           ],
           reactiveTypeId
         );
@@ -2670,9 +2672,9 @@ export function lowerExpr(
             type: valueExprTypeId,
           })[1],
           // Reactive Value
-          lowerExpr(lr, expr.target, statements, instanceInfo)[1],
+          lowerExpr(lr, expr.target, flattened, instanceInfo)[1],
           // Value
-          lowerExpr(lr, expr.value, statements, instanceInfo)[1],
+          lowerExpr(lr, expr.value, flattened, instanceInfo)[1],
         ],
         reactiveTypeId
       );

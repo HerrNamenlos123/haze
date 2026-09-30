@@ -8,9 +8,26 @@ const comptime pageGapMm = 10.0;
 
 // A zoom gesture is considered "finished" once the live zoom value has held
 // steady (within zoomEpsilon) for this many consecutive render() calls --
-// only then does a page actually retile at the new native resolution.
+// only then does a page zoomed into retile at the new native resolution.
 const comptime zoomSettleFrames = 8;
 const comptime zoomEpsilon = 0.0001;
+
+// How long render() may spend per frame drawing tiles, and tessellating the
+// strokes and decoding the images on them. Whatever does not fit is drawn in
+// the following frames, nearest the middle of the view first; until then a
+// square shows another zoom level's tiles stretched over it, or the blank
+// page. This is what keeps the editor responsive however much a zoom, a
+// scroll or an edit has to redraw -- the frame never waits for the document.
+const comptime tileWorkBudgetSeconds = 0.006;
+
+// Tiles of other zoom levels kept on screen while the current level's are
+// still being drawn. Beyond this, the ones furthest from the current level
+// go first.
+const comptime maxFallbackTiles = 96;
+
+// Unused tile canvases (1 MB of GPU memory each) kept for reuse; the rest are
+// freed.
+const comptime maxFreeTiles = 16;
 
 fn pageOriginY(doc: DocumentFile, pageIndex: int): real {
     return pageIndex as real * (doc.data.pageHeightMm + pageGapMm);
@@ -59,32 +76,65 @@ ref struct ImageTextureCache {
     // image is only ever attempted once rather than every frame.
     failed: LinearMap<str, bool> = {};
 
-    fn getOrCreate(r: mut renderer.gfx.Renderer, shape: ImageShape): renderer.gfx.Texture | none {
+    // Images decoded but not uploaded yet -- see prepare().
+    decodedKeys: []str = [];
+    decodedImages: []image.Image = [];
+
+    // Whether getOrCreate() would return at once, without decoding.
+    fn isReady(shape: ImageShape): bool {
+        return this.textures.has(shape.base64ImageData) || this.failed.has(shape.base64ImageData);
+    }
+
+    // Does the next step of getting a shape's image onto the GPU -- decoding
+    // it, or uploading it (with its mip chain) -- so a caller on a frame
+    // budget can check the clock in between: each is ~10 ms for a 1 MP
+    // image. Nothing to do once isReady().
+    fn prepare(gfx: mut renderer.gfx.Context, shape: ImageShape) {
         let key = shape.base64ImageData;
-
-        let existing = this.textures.get(key);
-        if existing {
-            return existing;
+        if this.isReady(shape) {
+            return;
         }
-        if this.failed.has(key) {
-            return none;
+        for (let i = 0; i < this.decodedKeys.length; i++) {
+            if this.decodedKeys[i] == key {
+                // stb_image (via the `image` package) returns straight alpha;
+                // createRGBATexture's premultiply=true converts it to the
+                // premultiplied form this renderer's textured-quad shader
+                // assumes.
+                let img = this.decodedImages[i];
+                this.textures.set(key, gfx.createRGBATexture(img.pixels, img.width, img.height, true));
+                this.decodedKeys.remove(i);
+                this.decodedImages.remove(i);
+                return;
+            }
         }
-
         let decoded = base64.decode(stripDataUrlPrefix(key));
         if decoded {
-            // stb_image (via the `image` package) returns straight alpha;
-            // createRGBATexture's premultiply=true converts it to the
-            // premultiplied form this renderer's textured-quad shader
-            // assumes.
-            let img = image.Image(decoded);
-            let texture = r.canvas.gfx.createRGBATexture(img.pixels, img.width, img.height, true);
-            this.textures.set(key, texture);
-            return texture;
+            this.decodedKeys.push(key);
+            this.decodedImages.push(image.Image(decoded));
+            return;
         }
-
         fmt.println("Image shape: failed to decode base64 image data");
         this.failed.set(key, true);
-        return none;
+    }
+
+    // The shape's texture, decoding and uploading it first if need be.
+    fn getOrCreate(gfx: mut renderer.gfx.Context, shape: ImageShape): renderer.gfx.Texture | none {
+        while !this.isReady(shape) {
+            this.prepare(gfx, shape);
+        }
+        return this.textures.get(shape.base64ImageData);
+    }
+
+    // Frees every texture -- the document they came from is gone. Nothing
+    // drawn with one may still be waiting for its commit().
+    fn releaseAll() {
+        for texture in this.textures.values {
+            texture.release();
+        }
+        this.textures.clear();
+        this.failed.clear();
+        this.decodedKeys.clear();
+        this.decodedImages.clear();
     }
 }
 
@@ -94,7 +144,7 @@ ref struct ImageTextureCache {
 // `level` is the tile pyramid level this content is being rendered at --
 // see LineShape.ensureTesselated for why tesselation is cached per
 // level rather than once per shape.
-fn drawShapeInto(r: mut renderer.gfx.Renderer, shape: Shape, level: int, imageCache: mut ImageTextureCache) {
+fn drawShapeInto(r: mut renderer.gfx.Renderer, gfx: mut renderer.gfx.Context, shape: Shape, level: int, imageCache: mut ImageTextureCache) {
     if shape is LineShape {
         let tess = shape.ensureTesselated(level);
         if tess.indices.length > 0 {
@@ -103,7 +153,7 @@ fn drawShapeInto(r: mut renderer.gfx.Renderer, shape: Shape, level: int, imageCa
     }
     else if shape is ImageShape {
         let bbox = shape.getBBox();
-        let texture = imageCache.getOrCreate(r, shape);
+        let texture = imageCache.getOrCreate(gfx, shape);
         if texture {
             r.drawTexture({
                 texture: texture,
@@ -132,68 +182,24 @@ fn drawShapeInto(r: mut renderer.gfx.Renderer, shape: Shape, level: int, imageCa
     }
 }
 
-// (Re)renders one tile's full content at its native resolution: white page
-// background (clipped to the actual page rect -- a tile's page-local rect
-// is grid-aligned and routinely extends past the page edge, since pages
-// are rarely exact multiples of the tile size), then every shape on the
-// page whose bbox overlaps the tile's page-local rect. Always a full redraw
-// of the tile (not incremental per-shape), which is what makes
-// markShapeDirty()'s "just mark it invalid" enough.
-fn renderTileContent(tile: mut Tile, page: Page, pageWidthMm: real, pageHeightMm: real, frame: mut renderer.gfx.Frame, imageCache: mut ImageTextureCache) {
-    let r = renderer.gfx.Renderer(frame, tile.canvas);
-
-    tile.canvas.setViewProj(mat4.ortho(
-        tile.localMinX, tile.localMinX + tile.localSize,
-        tile.localMinY + tile.localSize, tile.localMinY,
-        -100000.0, 100000.0
-    ));
-
-    let clipMinX = tile.localMinX;
-    if clipMinX < 0.0 { clipMinX = 0.0; }
-    let clipMinY = tile.localMinY;
-    if clipMinY < 0.0 { clipMinY = 0.0; }
-    let clipMaxX = tile.localMinX + tile.localSize;
-    if clipMaxX > pageWidthMm { clipMaxX = pageWidthMm; }
-    let clipMaxY = tile.localMinY + tile.localSize;
-    if clipMaxY > pageHeightMm { clipMaxY = pageHeightMm; }
-    if clipMaxX > clipMinX && clipMaxY > clipMinY {
-        r.drawRect({
-            pos: Vec2(clipMinX, clipMinY),
-            size: Vec2(clipMaxX - clipMinX, clipMaxY - clipMinY),
-            fillColor: Color(1, 1, 1, 1),
-        });
-    }
-
-    let tileBBox = BBox {
-        left: tile.localMinX,
-        right: tile.localMinX + tile.localSize,
-        top: tile.localMinY,
-        bottom: tile.localMinY + tile.localSize,
-    };
-
-    for shape in page.shapes {
-        // A hidden shape is being drawn by the editor itself -- see
-        // LineShape.hidden.
-        if isShapeHidden(shape) {
-            continue;
-        }
-        if shape.getBBox().overlaps(tileBBox) {
-            drawShapeInto(r, shape, tile.key.level, imageCache);
+fn pageHasShape(page: Page, shape: Shape): bool {
+    for s in page.shapes {
+        if sameShape(s, shape) {
+            return true;
         }
     }
-
-    r.commit(true);
+    return false;
 }
 
 ref struct PageTileState {
-    hasCommittedLevel: bool = false;
-    committedLevel: int = 0;
-    // Keyed by "{level}:{tx}:{ty}". LinearMap.K is constrained to
-    // primitives (see containers.hz), so the composite tile position is
-    // string-encoded rather than used as a ref struct key directly. .keys/
-    // .values are iterated directly (public fields) wherever every entry
-    // needs visiting (the stale-tile sweep, markShapeDirty).
-    slots: LinearMap<str, mut Tile> = {};
+    // The pyramid level this page is tiled at -- see render() for when it
+    // changes.
+    level: int = 0;
+    hasLevel: bool = false;
+    // Every tile this page holds: the squares of `level` in view, and tiles
+    // of other levels still shown under them until those squares all have a
+    // picture.
+    tiles: []mut Tile = [];
 }
 
 ref struct DocumentRenderer {
@@ -220,6 +226,23 @@ ref struct DocumentRenderer {
     // render, which is the first moment the canvas size is known, fits the
     // page to it.
     needsFit: bool = false;
+
+    // Draws a tile's content. One for all tiles, re-armed per tile, so its
+    // buffers keep their capacity.
+    tileRenderer?: mut renderer.gfx.Renderer;
+
+    // The tiles render() still has to draw, nearest the middle of the view
+    // first, and their distances from it -- rebuilt every render().
+    _work: []mut Tile = [];
+    _workDistance: []real = [];
+    // How many of them the last render() did not get to.
+    pendingTiles: int = 0;
+
+    // Shapes changed on a page (added, moved, recoloured) whose tiles do not
+    // show them yet: drawn over the tiles until they do, so an edit shows at
+    // once even when its tiles wait for a later frame. See markShapeDirty.
+    liveShapes: []Shape = [];
+    livePages: []int = [];
 
     fn constructor(gfx: mut renderer.gfx.Context) {
         return DocumentRenderer {
@@ -284,22 +307,20 @@ ref struct DocumentRenderer {
     }
 
     fn releasePageTiles(page: mut PageTileState) {
-        for tile in page.slots.values {
+        for tile in page.tiles {
             this.pool.release(tile);
         }
-        page.slots.clear();
+        page.tiles.clear();
     }
 
-    // Releases every tile on every page and forgets each page's committed
-    // level, forcing a full re-tile (and, combined with clearing the
-    // shapes' own cached bbox/outline/tesselation -- see
-    // documents.hz's clearShapeCache -- a full re-render) on the next
-    // render() call. render() calls it when the document changes; also for
-    // manually invalidating stale-looking content during development.
+    // Releases every tile on every page and forgets each page's level,
+    // forcing a full re-tile on the next render() call. render() calls it
+    // when the document changes; also for manually invalidating
+    // stale-looking content during development.
     fn clearAll() {
         for page in this.pages {
             this.releasePageTiles(page);
-            page.hasCommittedLevel = false;
+            page.hasLevel = false;
         }
     }
 
@@ -307,7 +328,7 @@ ref struct DocumentRenderer {
     // is also what streams new edge tiles in continuously while panning --
     // even mid-zoom-gesture, before the zoom itself has settled -- since
     // render() recomputes each page's visible tx/ty range from the live
-    // offset every frame regardless of committed-level changes.
+    // offset every frame regardless of level changes.
     fn pan(dxScreenPx: real, dyScreenPx: real) {
         this.viewport.offsetX += dxScreenPx;
         this.viewport.offsetY += dyScreenPx;
@@ -334,45 +355,242 @@ ref struct DocumentRenderer {
         this.viewport.offsetY = pivotScreenY - worldY * newZoom;
     }
 
-    // Whether render() still has work that only more calls to it finish: a
-    // zoom that has not held still for zoomSettleFrames renders yet, so its
-    // retile at the new native resolution is still pending. A caller that
-    // only renders on change has to keep calling until this is false.
-    fn isSettling(): bool {
-        return this.zoomStableFrames < zoomSettleFrames;
+    // Whether render() has work left that only more calls to it finish: a
+    // zoom that has not held still for zoomSettleFrames renders yet (its
+    // retile is still to come), tiles the frame budget did not reach, or
+    // edits drawn live until their tiles show them. A caller that only
+    // renders on change has to keep calling until this is false.
+    fn hasPendingWork(): bool {
+        return this.zoomStableFrames < zoomSettleFrames || this.pendingTiles > 0 || this.liveShapes.length > 0;
     }
 
-    // Rerenders exactly the tiles a given shape's bbox overlaps -- not the
-    // whole page -- across every currently-active tile of the shape's page.
-    // Call after mutating a shape's geometry (points/position/size) and
-    // clearing its cached bbox/tesselation, before the next render().
+    // Has the tiles a shape's bbox overlaps drawn again -- not the whole
+    // page. Call after mutating a shape's geometry (points/position/size) and
+    // clearing its cached bbox/tesselation, before the next render(), and
+    // for a shape added to or removed from the page. Until its tiles are
+    // drawn, a shape that is on the page is drawn live over them.
     fn markShapeDirty(pageIndex: int, shape: Shape) {
         if pageIndex < 0 || pageIndex >= this.pages.length {
             return;
         }
         let bbox = shape.getBBox();
         let page = this.pages[pageIndex];
-        for tile in page.slots.values {
-            let tileBBox = BBox {
-                left: tile.localMinX,
-                right: tile.localMinX + tile.localSize,
-                top: tile.localMinY,
-                bottom: tile.localMinY + tile.localSize,
-            };
-            if bbox.overlaps(tileBBox) {
-                tile.valid = false;
+        for tile in page.tiles {
+            if bbox.overlaps(tile.bbox()) {
+                tile.dirty = true;
             }
         }
+        if isShapeHidden(shape) {
+            return;
+        }
+        for live in this.liveShapes {
+            if sameShape(live, shape) {
+                return;
+            }
+        }
+        this.liveShapes.push(shape);
+        this.livePages.push(pageIndex);
+    }
+
+    fn findTile(page: PageTileState, level: int, tx: int, ty: int): bool {
+        for tile in page.tiles {
+            if tile.isAt(level, tx, ty) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // Every shape a tile shows is tessellated at the tile's level, and every
+    // image on it decoded -- or false, when the deadline came first. That
+    // work is kept, and the next call goes on from there.
+    fn prepareTile(tile: Tile, page: Page, deadline: real): bool {
+        let box = tile.bbox();
+        for shape in page.shapes {
+            if isShapeHidden(shape) {
+                continue;
+            }
+            if shape is LineShape {
+                if !shape.hasTesselation(tile.level) && shape.getBBox().overlaps(box) {
+                    if time.now() >= deadline {
+                        return false;
+                    }
+                    shape.ensureTesselated(tile.level);
+                }
+            }
+            else if shape is ImageShape {
+                if !this.imageCache.isReady(shape) && shape.getBBox().overlaps(box) {
+                    while !this.imageCache.isReady(shape) {
+                        if time.now() >= deadline {
+                            return false;
+                        }
+                        this.imageCache.prepare(this.gfx, shape);
+                    }
+                }
+            }
+        }
+        return true;
+    }
+
+    // (Re)renders one tile's full content at its native resolution: white
+    // page background (clipped to the actual page rect -- a tile's
+    // page-local rect is grid-aligned and routinely extends past the page
+    // edge, since pages are rarely exact multiples of the tile size), then
+    // every shape on the page whose bbox overlaps the tile's page-local rect.
+    // Always a full redraw of the tile (not incremental per-shape), which is
+    // what makes markShapeDirty()'s "just mark it dirty" enough.
+    fn drawTile(tile: mut Tile, page: Page, pageWidthMm: real, pageHeightMm: real, frame: mut renderer.gfx.Frame) {
+        if !this.tileRenderer {
+            this.tileRenderer = renderer.gfx.Renderer(frame, tile.canvas);
+        }
+        let cached = this.tileRenderer;
+        assert(cached);
+        let r = cached;
+        r.reset(frame, tile.canvas);
+
+        tile.canvas.setViewProj(mat4.ortho(
+            tile.localMinX, tile.localMinX + tile.localSize,
+            tile.localMinY + tile.localSize, tile.localMinY,
+            -100000.0, 100000.0
+        ));
+
+        let clipMinX = tile.localMinX;
+        if clipMinX < 0.0 { clipMinX = 0.0; }
+        let clipMinY = tile.localMinY;
+        if clipMinY < 0.0 { clipMinY = 0.0; }
+        let clipMaxX = tile.localMinX + tile.localSize;
+        if clipMaxX > pageWidthMm { clipMaxX = pageWidthMm; }
+        let clipMaxY = tile.localMinY + tile.localSize;
+        if clipMaxY > pageHeightMm { clipMaxY = pageHeightMm; }
+        if clipMaxX > clipMinX && clipMaxY > clipMinY {
+            r.drawRect({
+                pos: Vec2(clipMinX, clipMinY),
+                size: Vec2(clipMaxX - clipMinX, clipMaxY - clipMinY),
+                fillColor: Color(1, 1, 1, 1),
+            });
+        }
+
+        let tileBBox = tile.bbox();
+        for shape in page.shapes {
+            // A hidden shape is being drawn by the editor itself -- see
+            // LineShape.hidden.
+            if isShapeHidden(shape) {
+                continue;
+            }
+            if shape.getBBox().overlaps(tileBBox) {
+                drawShapeInto(r, this.gfx, shape, tile.level, this.imageCache);
+            }
+        }
+
+        r.commit(true);
+        tile.dirty = false;
+        tile.hasContent = true;
+    }
+
+    // Orders `work` nearest the middle of the view first -- what the budget
+    // should be spent on when it cannot cover everything.
+    fn sortWorkByDistance(doc: DocumentFile, centerX: real, centerY: real) {
+        let work = this._work;
+        let distance = this._workDistance;
+        distance.clear();
+        let zoom = this.viewport.zoomPxPerMm;
+        for tile in work {
+            let half = tile.localSize / 2.0;
+            let x = (tile.localMinX + half) * zoom + this.viewport.offsetX - centerX;
+            let y = (pageOriginY(doc, tile.pageIndex) + tile.localMinY + half) * zoom + this.viewport.offsetY - centerY;
+            distance.push(x * x + y * y);
+        }
+        for (let i = 1; i < work.length; i++) {
+            let tile = work[i];
+            let d = distance[i];
+            let j = i - 1;
+            while j >= 0 && distance[j] > d {
+                work[j + 1] = work[j];
+                distance[j + 1] = distance[j];
+                j -= 1;
+            }
+            work[j + 1] = tile;
+            distance[j + 1] = d;
+        }
+    }
+
+    // Keeps the tiles of other levels -- the ones shown while the current
+    // level's are drawn -- to maxFallbackTiles, dropping those of the level
+    // furthest from their page's own first.
+    fn limitFallbackTiles() {
+        let count = 0;
+        for page in this.pages {
+            for tile in page.tiles {
+                if tile.level != page.level {
+                    count += 1;
+                }
+            }
+        }
+        while count > maxFallbackTiles {
+            let worstPage = -1;
+            let worstIndex = -1;
+            let worstDistance = 0;
+            for (let p = 0; p < this.pages.length; p++) {
+                let page = this.pages[p];
+                for (let k = 0; k < page.tiles.length; k++) {
+                    let d = levelDistance(page.tiles[k].level, page.level);
+                    if d > worstDistance {
+                        worstDistance = d;
+                        worstPage = p;
+                        worstIndex = k;
+                    }
+                }
+            }
+            if worstPage < 0 {
+                return;
+            }
+            let page = this.pages[worstPage];
+            this.pool.release(page.tiles[worstIndex]);
+            page.tiles.remove(worstIndex);
+            count -= 1;
+        }
+    }
+
+    // Draws the shapes in liveShapes whose tiles do not show them yet, and
+    // forgets the rest: those shown, removed from their page, or hidden.
+    fn drawLiveShapes(r: mut renderer.gfx.Renderer, doc: DocumentFile) {
+        for (let k = this.liveShapes.length - 1; k >= 0; k--) {
+            let shape = this.liveShapes[k];
+            let pageIndex = this.livePages[k];
+            let keep = pageIndex < doc.data.pages.length && pageIndex < this.pages.length && !isShapeHidden(shape);
+            if keep {
+                keep = pageHasShape(doc.data.pages[pageIndex], shape) && !this.tilesShow(this.pages[pageIndex], shape);
+            }
+            if !keep {
+                this.liveShapes.remove(k);
+                this.livePages.remove(k);
+            }
+        }
+        for (let k = 0; k < this.liveShapes.length; k++) {
+            this.drawShapeLive(r, doc, this.livePages[k], this.liveShapes[k], mat4.identity());
+        }
+    }
+
+    // Whether every tile of the page's level that the shape overlaps has
+    // been drawn since the shape last changed.
+    fn tilesShow(page: PageTileState, shape: Shape): bool {
+        let box = shape.getBBox();
+        for tile in page.tiles {
+            if tile.level == page.level && tile.dirty && tile.bbox().overlaps(box) {
+                return false;
+            }
+        }
+        return true;
     }
 
     // Draws every page of `doc` into `r`'s panel: culls offscreen pages
     // (releasing their tiles back to the pool), syncs each visible page's
     // tile set against the live viewport (streaming edge tiles in/out every
-    // frame), retiles at a new native resolution only once a zoom gesture
-    // has settled, (re)renders any tile marked dirty, then composites the
-    // page background + every active tile at the *live* on-screen size --
-    // which is what makes tiles visibly stretch/blur mid-zoom instead of
-    // updating.
+    // frame), draws as many outdated tiles as tileWorkBudgetSeconds allows,
+    // then composites the page background, the tiles of other levels still
+    // standing in for missing ones, and every tile with a picture at the
+    // *live* on-screen size -- which is what makes tiles visibly
+    // stretch/blur mid-zoom instead of updating.
     //
     // `documentId` changes whenever `doc` is a different document, or the
     // same one loaded again. The tiles are then all from the old one, so
@@ -380,8 +598,14 @@ ref struct DocumentRenderer {
     fn render(r: mut renderer.gfx.Renderer, doc: DocumentFile, documentId: int) {
         if documentId != this.renderedDocument {
             this.clearAll();
+            this.imageCache.releaseAll();
+            this.liveShapes.clear();
+            this.livePages.clear();
             this.renderedDocument = documentId;
         }
+        // Frees tiles released in earlier frames -- before this frame draws
+        // any, see TilePool.trim.
+        this.pool.trim(maxFreeTiles);
 
         let panelW = r.canvas.size.logicalSize.x as real;
         let panelH = r.canvas.size.logicalSize.y as real;
@@ -430,93 +654,155 @@ ref struct DocumentRenderer {
         let dpiScale = r.canvas.size.dpiScale as real;
         let targetLevel = tilemath.zoomLevelFor(zoom * dpiScale);
 
+        // Which tiles each page needs, and which of those need drawing.
+        let work = this._work;
+        work.clear();
         for (let i = 0; i < doc.data.pages.length; i++) {
             let page = this.pages[i];
-            let originX = 0.0;
             let originY = pageOriginY(doc, i);
             let pageBBox = BBox {
-                left: originX,
-                right: originX + doc.data.pageWidthMm,
+                left: 0.0,
+                right: doc.data.pageWidthMm,
                 top: originY,
                 bottom: originY + doc.data.pageHeightMm,
             };
+            if !pageBBox.overlaps(visibleBBox) {
+                this.releasePageTiles(page);
+                page.hasLevel = false;
+                continue;
+            }
 
-            if pageBBox.overlaps(visibleBBox) {
-                if !page.hasCommittedLevel {
-                    page.committedLevel = targetLevel;
-                    page.hasCommittedLevel = true;
-                } else if zoomSettled && targetLevel != page.committedLevel {
-                    this.releasePageTiles(page);
-                    page.committedLevel = targetLevel;
+            // The level the page is tiled at. Zooming in, the tiles of the
+            // old level get fewer and bigger on screen: they are stretched
+            // until the zoom settles, instead of redrawn at every step of
+            // the gesture. Zooming out, they get smaller and more numerous
+            // without limit, so the new level is taken at once -- the old
+            // tiles stay under it until it is drawn.
+            if !page.hasLevel || targetLevel < page.level || (zoomSettled && targetLevel != page.level) {
+                page.level = targetLevel;
+                page.hasLevel = true;
+            }
+
+            // The page's visible part, page-local.
+            let visibleLocal = BBox {
+                left: max(visMinX, pageBBox.left),
+                right: min(visMaxX, pageBBox.right),
+                top: max(visMinY, pageBBox.top) - originY,
+                bottom: min(visMaxY, pageBBox.bottom) - originY,
+            };
+
+            // Out of view, or of another level and with nothing to show.
+            for (let k = page.tiles.length - 1; k >= 0; k--) {
+                let tile = page.tiles[k];
+                let keep = tile.bbox().overlaps(visibleLocal);
+                if tile.level != page.level && !tile.hasContent {
+                    keep = false;
                 }
+                if !keep {
+                    this.pool.release(tile);
+                    page.tiles.remove(k);
+                }
+            }
 
-                let tileWorldSizeMm = tilemath.tileWorldSize(page.committedLevel);
-
-                let localMinX = max(visMinX, pageBBox.left) - originX;
-                let localMaxX = min(visMaxX, pageBBox.right) - originX;
-                let localMinY = max(visMinY, pageBBox.top) - originY;
-                let localMaxY = min(visMaxY, pageBBox.bottom) - originY;
-
-                let txMin = tilemath.floorToInt(localMinX / tileWorldSizeMm);
-                let txMax = tilemath.floorToInt(localMaxX / tileWorldSizeMm);
-                let tyMin = tilemath.floorToInt(localMinY / tileWorldSizeMm);
-                let tyMax = tilemath.floorToInt(localMaxY / tileWorldSizeMm);
-
-                let newSlots = LinearMap<str, mut Tile> {};
-                for (let ty = tyMin; ty <= tyMax; ty++) {
-                    for (let tx = txMin; tx <= txMax; tx++) {
-                        let slotKey = f"{page.committedLevel}:{tx}:{ty}";
-                        let existing = page.slots.get(slotKey);
-                        if existing {
-                            newSlots.set(slotKey, existing);
-                        } else {
-                            // Page-local, not world -- never add originX/originY
-                            // here (see Tile's own doc comment in tiles.hz).
-                            let localTileMinX = tx as real * tileWorldSizeMm;
-                            let localTileMinY = ty as real * tileWorldSizeMm;
-                            let tileKey = TileKey { pageIndex: i, level: page.committedLevel, tx: tx, ty: ty };
-                            let tile = this.pool.acquire(tileKey, localTileMinX, localTileMinY, tileWorldSizeMm);
-                            newSlots.set(slotKey, tile);
-                        }
+            let tileWorldSizeMm = tilemath.tileWorldSize(page.level);
+            let txMin = tilemath.floorToInt(visibleLocal.left / tileWorldSizeMm);
+            let txMax = tilemath.floorToInt(visibleLocal.right / tileWorldSizeMm);
+            let tyMin = tilemath.floorToInt(visibleLocal.top / tileWorldSizeMm);
+            let tyMax = tilemath.floorToInt(visibleLocal.bottom / tileWorldSizeMm);
+            for (let ty = tyMin; ty <= tyMax; ty++) {
+                for (let tx = txMin; tx <= txMax; tx++) {
+                    if !this.findTile(page, page.level, tx, ty) {
+                        page.tiles.push(this.pool.acquire(i, page.level, tx, ty));
                     }
                 }
+            }
 
-                for (let k = 0; k < page.slots.keys.length; k++) {
-                    if !newSlots.has(page.slots.keys[k]) {
-                        this.pool.release(page.slots.values[k]);
+            for tile in page.tiles {
+                if tile.level == page.level && tile.dirty {
+                    work.push(tile);
+                }
+            }
+        }
+        this.limitFallbackTiles();
+
+        // Draw what the budget allows, nearest the middle of the view first.
+        this.sortWorkByDistance(doc, panelW / 2.0, panelH / 2.0);
+        let deadline = time.now() + tileWorkBudgetSeconds;
+        let drawn = 0;
+        for tile in work {
+            if time.now() >= deadline {
+                break;
+            }
+            let page = doc.data.pages[tile.pageIndex];
+            if !this.prepareTile(tile, page, deadline) {
+                break;
+            }
+            this.drawTile(tile, page, doc.data.pageWidthMm, doc.data.pageHeightMm, r.frame);
+            drawn += 1;
+        }
+        this.pendingTiles = work.length - drawn;
+
+        for (let i = 0; i < doc.data.pages.length; i++) {
+            let page = this.pages[i];
+            if !page.hasLevel {
+                continue;
+            }
+
+            // Once every square of the page's level has a picture, the other
+            // levels' tiles are hidden under them anyway.
+            let covered = true;
+            let minLevel = page.level;
+            let maxLevel = page.level;
+            for tile in page.tiles {
+                if tile.level == page.level && !tile.hasContent {
+                    covered = false;
+                }
+                minLevel = min(minLevel, tile.level);
+                maxLevel = max(maxLevel, tile.level);
+            }
+            if covered {
+                for (let k = page.tiles.length - 1; k >= 0; k--) {
+                    if page.tiles[k].level != page.level {
+                        this.pool.release(page.tiles[k]);
+                        page.tiles.remove(k);
                     }
                 }
-                page.slots = newSlots;
+            }
 
-                for tile in page.slots.values {
-                    if !tile.valid {
-                        renderTileContent(tile, doc.data.pages[i], doc.data.pageWidthMm, doc.data.pageHeightMm, r.frame, this.imageCache);
-                        tile.valid = true;
-                    }
+            let originY = pageOriginY(doc, i);
+            r.drawRect({
+                pos: Vec2(this.viewport.offsetX, originY * zoom + this.viewport.offsetY),
+                size: Vec2(doc.data.pageWidthMm * zoom, doc.data.pageHeightMm * zoom),
+                fillColor: Color(1, 1, 1, 1),
+            });
+
+            // Other levels coarse to fine, then the page's own level on top.
+            for (let level = minLevel; level <= maxLevel + 1; level++) {
+                let drawLevel = level;
+                if level == page.level {
+                    continue;
                 }
-
-                r.drawRect({
-                    pos: Vec2(originX * zoom + this.viewport.offsetX, originY * zoom + this.viewport.offsetY),
-                    size: Vec2(doc.data.pageWidthMm * zoom, doc.data.pageHeightMm * zoom),
-                    fillColor: Color(1, 1, 1, 1),
-                });
-
-                for tile in page.slots.values {
+                if level == maxLevel + 1 {
+                    drawLevel = page.level;
+                }
+                for tile in page.tiles {
+                    if tile.level != drawLevel || !tile.hasContent {
+                        continue;
+                    }
                     let tileScreenSize = tile.localSize * zoom;
-                    let tileScreenPos = Vec2(
-                        (originX + tile.localMinX) * zoom + this.viewport.offsetX,
-                        (originY + tile.localMinY) * zoom + this.viewport.offsetY
-                    );
                     r.drawTexture({
                         texture: tile.canvas.asTexture(),
-                        pos: tileScreenPos,
+                        pos: Vec2(
+                            tile.localMinX * zoom + this.viewport.offsetX,
+                            (originY + tile.localMinY) * zoom + this.viewport.offsetY
+                        ),
                         size: Vec2(tileScreenSize, tileScreenSize),
                     });
                 }
-            } else {
-                this.releasePageTiles(page);
             }
         }
+
+        this.drawLiveShapes(r, doc);
     }
 
     // Page mm -> canvas px for one page: what a shape's own coordinates go
@@ -554,7 +840,7 @@ ref struct DocumentRenderer {
         }
         else if shape is ImageShape {
             let bbox = shape.getBBox();
-            let texture = this.imageCache.getOrCreate(r, shape);
+            let texture = this.imageCache.getOrCreate(this.gfx, shape);
             if texture {
                 r.drawTexture({
                     texture: texture,

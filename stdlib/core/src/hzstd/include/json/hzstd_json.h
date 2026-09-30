@@ -45,6 +45,13 @@ hzstd_json_node_t *hzstd_json_get_array_item(hzstd_allocator_t allocator,
                                              hzstd_json_node_t *json,
                                              hzstd_usize_t index);
 
+// Walking an array's (or object's) children in order, O(1) per step. Prefer
+// these to hzstd_json_get_array_item() in a loop: the children are a linked
+// list, so indexing is O(index) and an indexed loop over n of them O(n^2).
+// Both return NULL at the end.
+hzstd_json_node_t *hzstd_json_get_first_child(hzstd_json_node_t *json);
+hzstd_json_node_t *hzstd_json_get_next_sibling(hzstd_json_node_t *json);
+
 hzstd_bool_t hzstd_json_add_item_to_object(hzstd_allocator_t allocator,
                                            hzstd_json_node_t *object,
                                            hzstd_str_t name,

@@ -1,6 +1,11 @@
 
 export struct BindGroup {
     handle: mut ffi.WGPUBindGroupImpl;
+
+    // See Buffer.release.
+    fn release() {
+        ffi.wgpuBindGroupRelease(this.handle);
+    }
 }
 
 fn fromFFI(v: mut ffi.WGPUBindGroupImpl): BindGroup :: final {

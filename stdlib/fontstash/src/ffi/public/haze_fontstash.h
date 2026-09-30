@@ -22,6 +22,16 @@ typedef struct {
   hzstd_int_t height;
 } haze_fontstash_atlas_t;
 
+// The atlas region changed since it was last asked for -- see
+// haze_fontstash_take_dirty_rect.
+typedef struct {
+  hzstd_bool_t valid;
+  hzstd_int_t x0;
+  hzstd_int_t y0;
+  hzstd_int_t x1;
+  hzstd_int_t y1;
+} haze_fontstash_dirty_rect_t;
+
 typedef struct {
   float ascender;
   float descender;

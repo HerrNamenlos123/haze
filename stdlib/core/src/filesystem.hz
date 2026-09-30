@@ -35,6 +35,8 @@ namespace ffi {
     extern C fn hzstd_file_open_write(allocator: Allocator, path: str, out_handle: cptr): hzstd_fs_error_t :: final;
     extern C fn hzstd_file_append_text(allocator: Allocator, handle: cptr, input: str): hzstd_fs_error_t :: final;
     extern C fn hzstd_file_close(allocator: Allocator, handle: cptr): hzstd_fs_error_t :: final;
+    extern C fn hzstd_file_open_read(allocator: Allocator, path: str, out_handle: cptr, out_size: cptr): hzstd_fs_error_t :: final;
+    extern C fn hzstd_file_read_some(allocator: Allocator, handle: cptr, dest: cptr, max_bytes: int, out_read: cptr): hzstd_fs_error_t :: final;
 
     extern C fn hzstd_mkdir_recursive(path: str): hzstd_fs_error_t :: final;
 
@@ -227,6 +229,108 @@ export namespace fs {
         else {
             return Result<none, Error>.Err(mapErrorEnum(result.code));
         }
+    }
+
+    // ── Streaming reads ─────────────────────────────────────────────────────
+    //
+    // readText() reads a whole file in one call, which for a large file is a
+    // stall of however long that takes. A FileReader reads it a piece at a
+    // time -- readSome() as often as fits, until done() -- into one buffer
+    // the size of the file, and hands it over as text at the end: the same
+    // result as readText(), without the one long call.
+    //
+    // The file is read as large as it was when opened. close() when giving up
+    // early; text() closes it itself.
+    export opaque ref struct FileReader {
+        handle: cptr;
+        buffer: cptr;
+        size: int;
+        position: int = 0;
+        closed: bool = false;
+
+        fn constructor(handle: cptr, size: int): mut FileReader {
+            let buffer = none as cptr;
+            if size > 0 {
+                // Never holds pointers, so the collector need not scan it.
+                __c__("buffer = hzstd_heap_allocate_atomic((size_t)size, \"FileReader buffer\");");
+            }
+            return FileReader { handle: handle, buffer: buffer, size: size };
+        }
+
+        fn done(): bool {
+            return this.position >= this.size;
+        }
+
+        // Reads up to `maxBytes` more.
+        mut fn readSome(maxBytes: int): Error {
+            if this.closed {
+                return Error.IOError;
+            }
+            let want = this.size - this.position;
+            if maxBytes < want {
+                want = maxBytes;
+            }
+            if want <= 0 {
+                return Error.None;
+            }
+            let got = 0;
+            let err = do unsafe {
+                let dest = none as cptr;
+                let gotPtr = none as cptr;
+                let buffer = this.buffer;
+                let position = this.position;
+                __c__("dest = (char *)buffer + position; gotPtr = &got;");
+                ffi.hzstd_file_read_some(Alloc.heap(), this.handle, dest, want, gotPtr)
+            };
+            if err.code != ffi.hzstd_fs_error_code_none {
+                return mapErrorEnum(err.code);
+            }
+            if got == 0 {
+                // The file shrank since it was opened: it ends here.
+                this.size = this.position;
+            }
+            this.position = this.position + got;
+            return Error.None;
+        }
+
+        // Everything read, as text -- the file, once done(). Closes it.
+        mut fn text(): str {
+            this.close();
+            let result = "";
+            if this.position > 0 {
+                let buffer = this.buffer;
+                let length = this.position;
+                __c__("result = HZSTD_STRING((const char *)buffer, length);");
+            }
+            return result;
+        }
+
+        mut fn close(): Error {
+            if this.closed {
+                return Error.None;
+            }
+            this.closed = true;
+            let err = ffi.hzstd_file_close(Alloc.heap(), this.handle);
+            if err.code != ffi.hzstd_fs_error_code_none {
+                return mapErrorEnum(err.code);
+            }
+            return Error.None;
+        }
+    }
+
+    export fn openRead(path: str): mut FileReader | Error {
+        let handle = none as cptr;
+        let size = 0;
+        let err = do unsafe {
+            let outHandle = none as cptr;
+            let outSize = none as cptr;
+            __c__("outHandle = &handle; outSize = &size;");
+            ffi.hzstd_file_open_read(Alloc.heap(), path, outHandle, outSize)
+        };
+        if err.code != ffi.hzstd_fs_error_code_none {
+            return mapErrorEnum(err.code);
+        }
+        return FileReader(handle, size);
     }
 
     // ── Streaming writes ────────────────────────────────────────────────────

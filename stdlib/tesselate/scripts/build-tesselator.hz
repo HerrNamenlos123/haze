@@ -12,9 +12,12 @@ fn main(): int {
         let cxxCompiler = env.get("HAZE_CXX_COMPILER");
         if !cxxCompiler { raise f"HAZE_CXX_COMPILER not defined"; }
 
+        // Release: a debug build of the Rust side runs 10-50x slower, and
+        // it runs for every stroke drawn.
         process.run("cargo",
             {
                 "build",
+                "--release",
             },
             process.Options {
                 inherit_stdio: true,
@@ -28,7 +31,7 @@ fn main(): int {
         }
 
         fs.createDirectory(f"{binaryDir}/lib")?!;
-        fs.copyFile(f"{sourceDir}/lyon/target/debug/{libFilename}", f"{binaryDir}/lib/{libFilename}", {
+        fs.copyFile(f"{sourceDir}/lyon/target/release/{libFilename}", f"{binaryDir}/lib/{libFilename}", {
             overwrite: true
         })?!;
 

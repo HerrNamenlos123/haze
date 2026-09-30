@@ -20,6 +20,8 @@
 #define PATH_SEPARATOR '/'
 #define MKDIR(path) mkdir(path, 0777)
 #define STAT stat
+#define FSTAT fstat
+#define FILENO fileno
 #define IS_DIR(mode) S_ISDIR(mode)
 
 #elif defined(HAZE_PLATFORM_WIN32)
@@ -32,6 +34,8 @@
 #define PATH_SEPARATOR '\\'
 #define MKDIR(path) _mkdir(path)
 #define STAT _stat
+#define FSTAT _fstat
+#define FILENO _fileno
 #define IS_DIR(mode) ((mode) & _S_IFDIR)
 
 #else
@@ -396,6 +400,81 @@ hzstd_fs_error_t hzstd_file_append_text(hzstd_allocator_t allocator, void* handl
     };
   }
 
+  return (hzstd_fs_error_t) {
+    .code = hzstd_fs_error_code_none,
+    .message = HZSTD_STRING(NULL, 0),
+  };
+}
+
+hzstd_fs_error_t
+hzstd_file_open_read(hzstd_allocator_t allocator, hzstd_str_t path, void* out_handle_raw, void* out_size_raw)
+{
+  hzstd_int_t* out_size = (hzstd_int_t*)out_size_raw;
+  if (!out_handle_raw || !out_size) {
+    return (hzstd_fs_error_t) {
+      .code = hzstd_fs_error_code_invalid_path,
+      .message = HZSTD_STRING("out_handle and out_size must not be null", 40),
+    };
+  }
+  void** out_handle = (void**)out_handle_raw;
+  *out_handle = NULL;
+  *out_size = 0;
+
+  char* nullTermPath = hzstd_cstr_from_str(allocator, path);
+  if (!nullTermPath) {
+    return (hzstd_fs_error_t) {
+      .code = hzstd_fs_error_code_out_of_memory,
+      .message = HZSTD_STRING("out of memory", 13),
+    };
+  }
+
+  FILE* f = fopen(nullTermPath, "rb");
+  if (!f) {
+    int err = errno;
+    return (hzstd_fs_error_t) {
+      .code = hzstd_fs_error_from_errno(err),
+      .message = strerror(err) ? hzstd_str_from_cstr_dup(allocator, strerror(err)) : HZSTD_STRING(NULL, 0),
+    };
+  }
+
+  struct STAT st;
+  if (FSTAT(FILENO(f), &st) != 0) {
+    int err = errno;
+    fclose(f);
+    return (hzstd_fs_error_t) {
+      .code = hzstd_fs_error_from_errno(err),
+      .message = strerror(err) ? hzstd_str_from_cstr_dup(allocator, strerror(err)) : HZSTD_STRING(NULL, 0),
+    };
+  }
+
+  *out_handle = f;
+  *out_size = (hzstd_int_t)st.st_size;
+  return (hzstd_fs_error_t) {
+    .code = hzstd_fs_error_code_none,
+    .message = HZSTD_STRING(NULL, 0),
+  };
+}
+
+hzstd_fs_error_t hzstd_file_read_some(
+    hzstd_allocator_t allocator, void* handle, void* dest, hzstd_int_t max_bytes, void* out_read_raw)
+{
+  hzstd_int_t* out_read = (hzstd_int_t*)out_read_raw;
+  *out_read = 0;
+  if (!handle || max_bytes <= 0) {
+    return (hzstd_fs_error_t) {
+      .code = hzstd_fs_error_code_none,
+      .message = HZSTD_STRING(NULL, 0),
+    };
+  }
+  size_t got = fread(dest, 1, (size_t)max_bytes, (FILE*)handle);
+  *out_read = (hzstd_int_t)got;
+  if (got < (size_t)max_bytes && ferror((FILE*)handle)) {
+    int err = errno;
+    return (hzstd_fs_error_t) {
+      .code = hzstd_fs_error_from_errno(err),
+      .message = strerror(err) ? hzstd_str_from_cstr_dup(allocator, strerror(err)) : HZSTD_STRING(NULL, 0),
+    };
+  }
   return (hzstd_fs_error_t) {
     .code = hzstd_fs_error_code_none,
     .message = HZSTD_STRING(NULL, 0),
@@ -849,6 +928,45 @@ hzstd_fs_error_t hzstd_fs_copy(hzstd_str_t src, hzstd_str_t dst, const hzstd_fs_
 
 hzstd_fs_error_t hzstd_fs_move(hzstd_str_t src, hzstd_str_t dst, const hzstd_fs_copy_options_t* opts)
 {
+  // Within one filesystem a move is a rename: instant whatever the size, and
+  // atomic -- dst is the old file or the whole new one, never a partial copy,
+  // which is what makes "write a temporary file, then move it over the real
+  // one" a save that a crash cannot corrupt. Only a move to another
+  // filesystem (or a directory onto an existing one, which is merged) falls
+  // back to copying and deleting.
+  const char* srcPath = HZSTD_CSTR(src);
+  const char* dstPath = HZSTD_CSTR(dst);
+#if defined(HAZE_PLATFORM_LINUX)
+  {
+    struct STAT dst_st;
+    if (!opts->overwrite && STAT(dstPath, &dst_st) == 0) {
+      return (hzstd_fs_error_t) { .code = hzstd_fs_error_code_already_exists,
+                                  .message = hzstd_cstr_dup("destination exists") };
+    }
+    hzstd_mkdir_recursive(hzstd_fs_parent_dir(dstPath));
+    if (rename(srcPath, dstPath) == 0) {
+      return (hzstd_fs_error_t) { .code = hzstd_fs_error_code_none };
+    }
+    if (errno != EXDEV && errno != ENOTEMPTY && errno != EEXIST && errno != EISDIR) {
+      return (hzstd_fs_error_t) { .code = hzstd_fs_error_from_errno(errno),
+                                  .message = hzstd_fs_strdup_msg(strerror(errno)) };
+    }
+  }
+#elif defined(HAZE_PLATFORM_WIN32)
+  {
+    hzstd_mkdir_recursive(hzstd_fs_parent_dir(dstPath));
+    DWORD flags = opts->overwrite ? MOVEFILE_REPLACE_EXISTING : 0;
+    if (MoveFileExA(srcPath, dstPath, flags)) {
+      return (hzstd_fs_error_t) { .code = hzstd_fs_error_code_none };
+    }
+    DWORD moveErr = GetLastError();
+    if (moveErr != ERROR_NOT_SAME_DEVICE && moveErr != ERROR_ACCESS_DENIED) {
+      return (hzstd_fs_error_t) { .code = hzstd_fs_error_from_windows_error(moveErr),
+                                  .message = hzstd_fs_windows_error(moveErr) };
+    }
+  }
+#endif
+
   hzstd_fs_error_t err = hzstd_fs_copy(src, dst, opts);
   if (err.code != hzstd_fs_error_code_none) {
     return err;

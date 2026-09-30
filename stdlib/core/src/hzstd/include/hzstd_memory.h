@@ -129,6 +129,10 @@ void *hzstd_arena_allocate_n(hzstd_arena_t *arena, size_t size, int skip_n_frame
 
 void *hzstd_allocate(hzstd_allocator_t allocator, size_t size, const char *dataType);
 void *hzstd_allocate_n(hzstd_allocator_t allocator, size_t size, const char *dataType, int skip_n_frames);
+// For memory that will never hold a pointer (string bytes, numbers): the
+// garbage collector does not scan it.
+void *hzstd_allocate_atomic(hzstd_allocator_t allocator, size_t size, const char *dataType);
+void *hzstd_allocate_atomic_n(hzstd_allocator_t allocator, size_t size, const char *dataType, int skip_n_frames);
 
 hzstd_allocator_t hzstd_make_heap_allocator();
 hzstd_allocator_t hzstd_make_arena_allocator();

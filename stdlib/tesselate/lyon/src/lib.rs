@@ -3,15 +3,15 @@ use std::os::raw::{c_float, c_int, c_uint};
 
 use lyon::math::Point;
 use lyon::path::Path;
-use lyon::tessellation::{
-    geometry_builder::simple_builder, FillOptions, FillTessellator, VertexBuffers,
-};
+use lyon::tessellation::{BuffersBuilder, FillOptions, FillTessellator, FillVertex, VertexBuffers};
 
 pub struct TesselatorContext {
     builder: Option<lyon::path::path::Builder>,
     in_subpath: bool,
     vertices: Vec<Point>,
-    indices: Vec<u16>,
+    // u32: a long stroke flattened finely passes 65535 vertices, and with
+    // u16 indices lyon then fails the whole tessellation.
+    indices: Vec<u32>,
 }
 
 impl TesselatorContext {
@@ -165,7 +165,7 @@ pub unsafe extern "C" fn tesselator_tessellate_fill(
 
     let path = builder.build();
 
-    let mut geometry: VertexBuffers<Point, u16> = VertexBuffers::new();
+    let mut geometry: VertexBuffers<Point, u32> = VertexBuffers::new();
     let mut tessellator = FillTessellator::new();
 
     let mut options = if tolerance > 0.0 {
@@ -175,7 +175,9 @@ pub unsafe extern "C" fn tesselator_tessellate_fill(
     };
     options.fill_rule = FillRule::NonZero;
 
-    match tessellator.tessellate_path(&path, &options, &mut simple_builder(&mut geometry)) {
+    // BuffersBuilder rather than simple_builder, which only makes u16 indices.
+    let mut builder = BuffersBuilder::new(&mut geometry, |v: FillVertex| v.position());
+    match tessellator.tessellate_path(&path, &options, &mut builder) {
         Ok(_) => {
             ctx.vertices = geometry.vertices;
             ctx.indices = geometry.indices;

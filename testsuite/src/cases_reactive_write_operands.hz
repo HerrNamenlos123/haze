@@ -1,0 +1,97 @@
+// Regression coverage for `:=` whose target or value needs a temporary.
+//
+// Context: a reactive write lowered its target and value into a statement
+// list of its own that was then dropped, instead of into the enclosing one.
+// Whatever those operands needed declared first -- the variable an `if let`
+// binds, the temporaries of `?.` and `??` -- was declared nowhere, and the C
+// compiler rejected the output ("use of undeclared identifier '__temp_N'").
+// Found writing `this.progress := load.progress();` inside
+// `if let load = this.loading { ... }` in haze-notes.
+
+namespace cases_reactive_write_operands {
+
+    export fn register(s: mut testsuite.Suite) {
+
+        s.run(
+            "reactive write: operands that need temporaries are declared",
+            """
+ref struct Loader {
+    n: real = 0.5;
+    fn progress(): real { return this.n; }
+}
+
+ref struct Holder {
+    p: rx.Reactive<real>;
+    maybe: rx.Reactive<int> | none = none;
+    loading: Loader | none = none;
+
+    // The value is a method call on an `if let` binding.
+    fn step() {
+        if let load = this.loading {
+            this.p := load.progress();
+        }
+    }
+
+    // The target is an `if let` binding.
+    fn setMaybe(v: int) {
+        if let r = this.maybe {
+            r := v;
+        }
+    }
+
+    // The value needs `?.` and `??` temporaries.
+    fn fromOptional() {
+        this.p := this.loading?.progress() ?? -1.0;
+    }
+}
+
+fn main(): int {
+    let h = Holder { p: rx.reactive<real>(0.0), maybe: rx.reactive<int>(1), loading: Loader { n: 0.25 } };
+    h.step();
+    fmt.println(f"step: {rx.get(h.p)}");
+
+    h.setMaybe(7);
+    if let m = h.maybe {
+        fmt.println(f"maybe: {rx.get(m)}");
+    }
+
+    h.loading = Loader { n: 0.75 };
+    h.fromOptional();
+    fmt.println(f"optional: {rx.get(h.p)}");
+    h.loading = none;
+    h.fromOptional();
+    fmt.println(f"none: {rx.get(h.p)}");
+
+    // A loop's `while let` binding as the value, and a computed that sees
+    // every write.
+    let runs: ref Box<int> = { value: 0 };
+    let c = rx.computed(() => {
+        runs.value = runs.value + 1;
+        return rx.get(h.p);
+    });
+    rx.get(c);
+    let queue: []Loader = [Loader { n: 1.0 }, Loader { n: 2.0 }];
+    let next: Loader | none = queue[0];
+    let i = 0;
+    while let current = next {
+        h.p := current.progress();
+        rx.get(c);
+        i += 1;
+        next = i < queue.length ? queue[i] : none;
+    }
+    fmt.println(f"loop: {rx.get(h.p)} after {runs.value} computes");
+
+    // A deep reactive array, written from an `if let` binding.
+    let arr = rx.reactive<[]int>([1, 2]);
+    let replacement: []rx.Reactive<int> | none = [rx.reactive<int>(3), rx.reactive<int>(4), rx.reactive<int>(5)];
+    if let r = replacement {
+        arr := r;
+    }
+    fmt.println(f"array: {arr.length}");
+    return 0;
+}
+""",
+            "step: 0.25\nmaybe: 7\noptional: 0.75\nnone: -1\nloop: 2 after 3 computes\narray: 3\n",
+        );
+    }
+}

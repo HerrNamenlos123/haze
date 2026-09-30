@@ -152,6 +152,14 @@ hzstd_dynamic_array_t *hzstd_dynamic_array_create(
 void hzstd_dynamic_array_init_borrowed(
     hzstd_dynamic_array_t *da, size_t elem_size, void *buffer, size_t count, const char *elementTypeName);
 hzstd_dynamic_array_result_t hzstd_dynamic_array_reserve(hzstd_dynamic_array_t *da, size_t new_capacity);
+// Sets the length to new_size: new elements are zero bytes, and growing
+// doubles the capacity at least, so growing piece by piece stays amortized
+// O(1) per element.
+hzstd_dynamic_array_result_t hzstd_dynamic_array_resize_zeroed(hzstd_dynamic_array_t *da, size_t new_size);
+// Copies `count` elements from `src` over the elements starting at `index`,
+// which must already exist. One memcpy, for bulk byte copies.
+hzstd_dynamic_array_result_t
+hzstd_dynamic_array_write(hzstd_dynamic_array_t *da, size_t index, const void *src, size_t count);
 hzstd_dynamic_array_result_t hzstd_dynamic_array_shrink_to_fit(hzstd_dynamic_array_t *da);
 hzstd_dynamic_array_result_t hzstd_dynamic_array_push(hzstd_dynamic_array_t *da, const void *elem);
 hzstd_dynamic_array_result_t hzstd_dynamic_array_insert(hzstd_dynamic_array_t *da, size_t index, const void *elem);

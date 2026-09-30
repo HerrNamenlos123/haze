@@ -1,6 +1,11 @@
 
 export struct Sampler {
     handle: mut ffi.WGPUSamplerImpl;
+
+    // See Buffer.release.
+    fn release() {
+        ffi.wgpuSamplerRelease(this.handle);
+    }
 }
 
 fn fromFFI(v: mut ffi.WGPUSamplerImpl): Sampler :: final {

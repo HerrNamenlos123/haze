@@ -40,6 +40,11 @@ const comptime touchZoomEndGraceSeconds = 0.12;
 // never pauses long enough for the first alone.
 const comptime saveIdleSeconds = 1.0;
 const comptime saveMaxDelaySeconds = 5.0;
+// How long a frame may spend saving, and loading -- see persistence.hz. A
+// load has the frame to itself (nothing else can happen until the document is
+// there), a save runs beside the editing.
+const comptime saveBudgetSeconds = 0.003;
+const comptime loadBudgetSeconds = 0.008;
 
 fn penThicknesses(): []real {
     return [0.1, 0.3, 0.5, 0.7, 0.9];
@@ -144,14 +149,10 @@ fn segmentToSegmentDistance(a: Vec2, b: Vec2, c: Vec2, d: Vec2): real {
 // stroke thin enough to sit wholly inside the eraser; and it tested each pen
 // sample on its own, so a quick swipe stepped right over a thin stroke lying
 // between two samples.
-fn eraserTouches(outline: [][]real, start: Vec2, end: Vec2, radius: real): bool {
-    let n = outline.length;
+fn eraserTouches(polygon: []Vec2, start: Vec2, end: Vec2, radius: real): bool {
+    let n = polygon.length;
     if n == 0 {
         return false;
-    }
-    let polygon: []Vec2 = [];
-    for p in outline {
-        polygon.push(Vec2(p[0], p[1]));
     }
     if pointInPolygon(start, polygon) || pointInPolygon(end, polygon) {
         return true;
@@ -183,6 +184,15 @@ ref struct EditorControls {
     path: str = "";
     // Counts documents opened -- see DocumentRenderer.render's documentId.
     documentLoads: int = 0;
+    // What the template shows: a document, or one being loaded and how far.
+    documentOpen: rx.Reactive<bool>;
+    loadingDocument: rx.Reactive<bool>;
+    loadProgress: rx.Reactive<real>;
+    // The document being opened.
+    loading: DocumentLoad | none = none;
+    // Saves still being written, oldest first; frame() steps the first. A
+    // document stays in memory until its last one is done.
+    saves: []DocumentSave = [];
 
     // ── Tools, and what the template shows ──────────────────────────
     selectionTool: rx.Reactive<bool>;
@@ -237,11 +247,20 @@ ref struct EditorControls {
     // ── Saving ──────────────────────────────────────────────────────
     firstUnsavedChange: real = -1.0;
     lastChange: real = -1.0;
+    // The view moved since the last save. Only the document's content is
+    // autosaved: the file keeps the view too, but rewriting the whole file
+    // after every pan and zoom kept a save running nearly all the time. It
+    // is written with the next save of the content, or when the document is
+    // closed, saved with Ctrl+S, or the app quits.
+    viewportUnsaved: bool = false;
 
     fn constructor(view: mut DocumentRenderer, invalidate: () => none): EditorControls {
         return EditorControls {
             view: view,
             invalidate: invalidate,
+            documentOpen: rx.reactive<bool>(false),
+            loadingDocument: rx.reactive<bool>(false),
+            loadProgress: rx.reactive<real>(0.0),
             selectionTool: rx.reactive<bool>(false),
             eraserTool: rx.reactive<bool>(false),
             penColor: rx.reactive<str>("#000000"),
@@ -255,10 +274,33 @@ ref struct EditorControls {
 
     // ── The document ────────────────────────────────────────────────
 
+    // Opens the document at `path`, or none: the current one is saved and
+    // closed at once, the new one loaded over the next frames -- see frame().
+    fn open(path: str | none) {
+        if let previous = this.loading {
+            previous.cancel();
+            this.loading = none;
+            this.loadingDocument := false;
+        }
+        this.setDocument(none, "");
+        if let p = path {
+            // A document still being saved is newer in memory than on disk.
+            for (let i = this.saves.length - 1; i >= 0; i--) {
+                if this.saves[i].path == p {
+                    this.setDocument(this.saves[i].doc, p);
+                    return;
+                }
+            }
+            this.loading = DocumentLoad(p);
+            this.loadProgress := 0.0;
+            this.loadingDocument := true;
+        }
+    }
+
     // Everything in flight belongs to the document it started on, so a new
     // one starts from nothing -- after the old one's unsaved work is saved.
     fn setDocument(doc: DocumentFile | none, path: str) {
-        this.saveNow();
+        this.saveNow(true);
         this.doc = doc;
         this.path = path;
         this.documentLoads = this.documentLoads + 1;
@@ -282,6 +324,7 @@ ref struct EditorControls {
             }
             this.view.adoptViewport(doc);
         }
+        this.documentOpen := doc ? true : false;
         this.publishUi();
         this.invalidate();
     }
@@ -294,12 +337,17 @@ ref struct EditorControls {
         this.lastChange = now;
     }
 
-    fn saveNow() {
-        if this.firstUnsavedChange < 0.0 {
+    // Starts saving the unsaved changes, if there are any. The save is
+    // written over the next frames (see frame()); a save of the same document
+    // that has not started writing yet is replaced, since this one has all
+    // its changes too.
+    fn saveNow(includeViewport: bool = false) {
+        if this.firstUnsavedChange < 0.0 && !(includeViewport && this.viewportUnsaved) {
             return;
         }
         this.firstUnsavedChange = -1.0;
         this.lastChange = -1.0;
+        this.viewportUnsaved = false;
         if let doc = this.doc {
             // The page in the middle of the view is the current one, which
             // is what the web app opens the file on -- see adoptViewport.
@@ -307,8 +355,44 @@ ref struct EditorControls {
             let page = this.pageUnder(doc, center);
             doc.data.currentPageIndex = page;
             doc.data.viewport = this.view.savedViewport(doc, page);
-            if !saveDocument(this.path, doc) {
-                fmt.println("Failed to save ", this.path);
+            for (let i = this.saves.length - 1; i >= 0; i--) {
+                if this.saves[i].path == this.path && !this.saves[i].started() {
+                    this.saves.remove(i);
+                }
+            }
+            this.saves.push(DocumentSave(this.path, doc));
+        }
+    }
+
+    // Saves everything now, however long it takes -- for when the app is
+    // closing and there are no more frames to spread it over.
+    fn finishSaves() {
+        this.saveNow(true);
+        for save in this.saves {
+            save.finish();
+        }
+        this.saves.clear();
+    }
+
+    fn stepLoadAndSaves() {
+        if let load = this.loading {
+            let over = load.step(time.now() + loadBudgetSeconds);
+            this.loadProgress := load.progress();
+            if over {
+                this.loading = none;
+                this.loadingDocument := false;
+                if let doc = load.doc {
+                    if !load.failed {
+                        this.setDocument(doc, load.path);
+                    }
+                }
+            }
+            // Saves wait: the frame's time went to the load.
+            return;
+        }
+        if this.saves.length > 0 {
+            if this.saves[0].step(time.now() + saveBudgetSeconds) {
+                this.saves.remove(0);
             }
         }
     }
@@ -911,7 +995,7 @@ ref struct EditorControls {
             this.erasedPages.clear();
         }
         else if gesture == Gesture.MousePan {
-            this.markChanged();
+            this.viewportUnsaved = true;
         }
 
         this.publishUi();
@@ -923,6 +1007,7 @@ ref struct EditorControls {
     // leaves the canvas -- or is released outside the window -- is only seen
     // here. `mouseLocal` is the pointer in canvas px.
     fn frame(ui: ui_components.UIContext, mouseLocal: Vec2) {
+        this.stepLoadAndSaves();
         let doc = this.doc;
         if !doc {
             return;
@@ -943,7 +1028,6 @@ ref struct EditorControls {
             this.pinchEndPendingSince = -1.0;
             if this.touches.length != 2 {
                 this.pinching = false;
-                this.markChanged();
             }
         }
 
@@ -997,13 +1081,10 @@ ref struct EditorControls {
             this.view.pan(movement.x, movement.y);
             this.viewportChanged();
         }
-        if n == 0 {
-            this.markChanged();
-        }
     }
 
     fn viewportChanged() {
-        this.markChanged();
+        this.viewportUnsaved = true;
         this.publishUi();
         this.invalidate();
     }
@@ -1034,7 +1115,7 @@ ref struct EditorControls {
     fn keyDown(e: ui_components.KeyboardEvent, ui: ui_components.UIContext) {
         let ctrl = hasModifier(e.modifiers, KeyModifiers.Ctrl);
         if ctrl && e.key == ui_components.Key.S {
-            this.saveNow();
+            this.saveNow(true);
         }
         else if ctrl && e.key == ui_components.Key.C {
             this.copySelection(ui);

@@ -132,8 +132,12 @@ export opaque ref struct Texture {
     bindGroup: wgpu.BindGroup;
     width: int;
     height: int;
+    // Whether texture/view belong to this Texture, or to the Canvas it shows
+    // (Canvas.asTexture) -- release() frees only what is its own.
+    ownsTexture: bool = true;
+    ownedSampler: wgpu.Sampler | none = none;
 
-    fn constructor(id: int, texture: wgpu.Texture, view: wgpu.TextureView, bindGroup: wgpu.BindGroup, width: int, height: int) {
+    fn constructor(id: int, texture: wgpu.Texture, view: wgpu.TextureView, bindGroup: wgpu.BindGroup, width: int, height: int, ownsTexture: bool = true, ownedSampler: wgpu.Sampler | none = none) {
         return Texture {
             id: id,
             texture: texture,
@@ -141,7 +145,22 @@ export opaque ref struct Texture {
             bindGroup: bindGroup,
             width: width,
             height: height,
+            ownsTexture: ownsTexture,
+            ownedSampler: ownedSampler,
         };
+    }
+
+    // Frees the GPU memory. Nothing may draw it afterwards -- including a
+    // Renderer that recorded a drawTexture() of it and has not committed yet.
+    fn release() {
+        this.bindGroup.release();
+        if let sampler = this.ownedSampler {
+            sampler.release();
+        }
+        if this.ownsTexture {
+            this.view.release();
+            this.texture.release();
+        }
     }
 }
 
@@ -213,6 +232,22 @@ fn createRenderTexture(device: wgpu.Device, size: Vec2i, format: wgpu.TextureFor
     return RenderTexture { texture: texture, view: view };
 }
 
+fn releaseRenderTexture(target: RenderTexture) {
+    target.view.release();
+    target.texture.release();
+}
+
+// A render-pass attachment that holds nothing between passes, shared by every
+// canvas that needs one of this size, format and sample count -- see
+// Context.acquireAttachment.
+export ref struct SharedAttachment {
+    size: Vec2i;
+    format: wgpu.TextureFormat;
+    samples: int;
+    target: RenderTexture;
+    users: int = 0;
+}
+
 // One level of a CPU-built RGBA8 mip chain (see buildMipChain below).
 struct MipLevel {
     pixels: Bytes;
@@ -226,39 +261,41 @@ struct MipLevel {
 // the 2x2 source block it covers; the last row/column of an odd-sized
 // source is sampled twice (clamped) rather than reading out of bounds --
 // equivalent to clamp-to-edge for the purposes of this filter.
+//
+// The pixel loops here and in buildMipChain are C over raw pointers: as
+// checked Bytes/ByteBuffer accesses, one call per byte, they took ~230 ms for
+// a 1 MP image -- a frozen frame whenever an image is first shown.
 fn downsampleHalf(src: Bytes, width: int, height: int): MipLevel {
     let dstWidth = width / 2;
     if dstWidth < 1 { dstWidth = 1; }
     let dstHeight = height / 2;
     if dstHeight < 1 { dstHeight = 1; }
 
-    let buffer = ByteBuffer(dstWidth * dstHeight * 4);
-    buffer.resize(dstWidth * dstHeight * 4);
-
-    for (let y = 0; y < dstHeight; y++) {
-        let y0 = y * 2;
-        let y1 = y0 + 1;
-        if y1 >= height { y1 = y0; }
-        for (let x = 0; x < dstWidth; x++) {
-            let x0 = x * 2;
-            let x1 = x0 + 1;
-            if x1 >= width { x1 = x0; }
-
-            let dstIndex = (y * dstWidth + x) * 4;
-            for (let c = 0; c < 4; c++) {
-                let p00 = src[(y0 * width + x0) * 4 + c] as int;
-                let p10 = src[(y0 * width + x1) * 4 + c] as int;
-                let p01 = src[(y1 * width + x0) * 4 + c] as int;
-                let p11 = src[(y1 * width + x1) * 4 + c] as int;
-                let avg = (p00 + p10 + p01 + p11 + 2) / 4;
-                assert(avg >= u8.min && avg <= u8.max);
-                buffer.setAt(dstIndex + c, avg as u8);
+    let pixels = Bytes();
+    __c__("""
+        const uint8_t *s = (const uint8_t *)src.basePtr + src.offset;
+        uint8_t *d = hzstd_heap_allocate_atomic((size_t)dstWidth * (size_t)dstHeight * 4, "mip level");
+        for (int64_t y = 0; y < dstHeight; y++) {
+            int64_t y0 = y * 2;
+            int64_t y1 = y0 + 1 < height ? y0 + 1 : y0;
+            for (int64_t x = 0; x < dstWidth; x++) {
+                int64_t x0 = x * 2;
+                int64_t x1 = x0 + 1 < width ? x0 + 1 : x0;
+                const uint8_t *p00 = s + (y0 * width + x0) * 4;
+                const uint8_t *p10 = s + (y0 * width + x1) * 4;
+                const uint8_t *p01 = s + (y1 * width + x0) * 4;
+                const uint8_t *p11 = s + (y1 * width + x1) * 4;
+                uint8_t *o = d + (y * dstWidth + x) * 4;
+                for (int c = 0; c < 4; c++) {
+                    o[c] = (uint8_t)(((int)p00[c] + p10[c] + p01[c] + p11[c] + 2) / 4);
+                }
             }
         }
-    }
-
-    buffer.commit();
-    return MipLevel { pixels: buffer.bytes(), width: dstWidth, height: dstHeight };
+        pixels.basePtr = d;
+        pixels.offset = 0;
+        pixels.length = dstWidth * dstHeight * 4;
+    """);
+    return MipLevel { pixels: pixels, width: dstWidth, height: dstHeight };
 }
 
 // Builds a full CPU-side RGBA8 mip chain down to 1x1, optionally
@@ -269,26 +306,26 @@ fn downsampleHalf(src: Bytes, width: int, height: int): MipLevel {
 // a proper box-filter pyramid instead of repeated nearest-neighbor
 // shrinking.
 fn buildMipChain(pixels: Bytes, width: int, height: int, premultiply: bool): []MipLevel {
+    assert(pixels.length >= width * height * 4, "buildMipChain: fewer pixels than width x height");
     let base = pixels;
     if premultiply {
-        let buffer = ByteBuffer(width * height * 4);
-        buffer.resize(width * height * 4);
-        for (let i = 0; i < width * height; i++) {
-            let a = pixels[i * 4 + 3];
-            let aInt = a as int;
-            let r = (pixels[i * 4 + 0] as int * aInt) / 255;
-            let g = (pixels[i * 4 + 1] as int * aInt) / 255;
-            let b = (pixels[i * 4 + 2] as int * aInt) / 255;
-            assert(r >= u8.min && r <= u8.max);
-            assert(g >= u8.min && g <= u8.max);
-            assert(b >= u8.min && b <= u8.max);
-            buffer.setAt(i * 4 + 0, r as u8);
-            buffer.setAt(i * 4 + 1, g as u8);
-            buffer.setAt(i * 4 + 2, b as u8);
-            buffer.setAt(i * 4 + 3, a);
-        }
-        buffer.commit();
-        base = buffer.bytes();
+        let premultiplied = Bytes();
+        __c__("""
+            size_t count = (size_t)width * (size_t)height;
+            const uint8_t *s = (const uint8_t *)pixels.basePtr + pixels.offset;
+            uint8_t *d = hzstd_heap_allocate_atomic(count * 4, "premultiplied pixels");
+            for (size_t i = 0; i < count; i++) {
+                unsigned a = s[i * 4 + 3];
+                d[i * 4 + 0] = (uint8_t)((s[i * 4 + 0] * a) / 255);
+                d[i * 4 + 1] = (uint8_t)((s[i * 4 + 1] * a) / 255);
+                d[i * 4 + 2] = (uint8_t)((s[i * 4 + 2] * a) / 255);
+                d[i * 4 + 3] = (uint8_t)a;
+            }
+            premultiplied.basePtr = d;
+            premultiplied.offset = 0;
+            premultiplied.length = (int64_t)(count * 4);
+        """);
+        base = premultiplied;
     }
 
     let levels: []MipLevel = [MipLevel { pixels: base, width: width, height: height }];
@@ -387,8 +424,12 @@ export opaque ref struct Context {
     fontRenderer: mut TextRenderer;
     fontAtlas: Texture;
 
-    fontAtlasDirty: bool = true;
     nextTextureId: int = 0;
+
+    // Depth buffers, and the multisampled color buffers of canvases that
+    // always clear, keyed by size, format and sample count -- see
+    // acquireAttachment.
+    sharedAttachments: []mut SharedAttachment = [];
 
     fn constructor(options: ContextOptions) {
         let startTime = time.now();
@@ -798,6 +839,45 @@ export opaque ref struct Context {
         return this.nextTextureId;
     }
 
+    // An attachment whose content only lives for one render pass: cleared
+    // when the pass starts, discarded when it ends. Every canvas of the same
+    // size shares one, since passes run one after another -- a canvas's depth
+    // buffer (and 4x MSAA color buffer) is otherwise 4-5x the memory of its
+    // actual picture, for every canvas that exists. Pair with
+    // releaseAttachment.
+    fn acquireAttachment(size: Vec2i, format: wgpu.TextureFormat, samples: int, usage: wgpu.TextureUsage): mut SharedAttachment {
+        for a in this.sharedAttachments {
+            if a.size.x == size.x && a.size.y == size.y && a.format == format && a.samples == samples {
+                a.users += 1;
+                return a;
+            }
+        }
+        let a = SharedAttachment {
+            size: size,
+            format: format,
+            samples: samples,
+            target: createRenderTexture(this.device, size, format, usage, samples),
+            users: 1,
+        };
+        this.sharedAttachments.push(a);
+        return a;
+    }
+
+    // The last user of an attachment frees its GPU memory.
+    fn releaseAttachment(attachment: mut SharedAttachment) {
+        attachment.users -= 1;
+        if attachment.users > 0 {
+            return;
+        }
+        for (let i = 0; i < this.sharedAttachments.length; i++) {
+            if addressOf(this.sharedAttachments[i]) == addressOf(attachment) {
+                this.sharedAttachments.remove(i);
+                releaseRenderTexture(attachment.target);
+                return;
+            }
+        }
+    }
+
     // Uploads a CPU-side RGBA8 pixel buffer (row-major, top-to-bottom, 4
     // bytes/px -- e.g. straight out of the `image` package's stb_image
     // binding) as a sampleable Texture with a full box-filtered mip chain,
@@ -863,26 +943,40 @@ export opaque ref struct Context {
             );
         }
 
-        return Texture(this.allocTextureId(), texture, view, bindGroup, width, height);
+        return Texture(this.allocTextureId(), texture, view, bindGroup, width, height, true, sampler);
     }
 
     // Re-uploads the font atlas to the GPU if any text was drawn (through any
     // Renderer/Canvas) since the last upload. Cheap no-op otherwise, and only
     // ever runs once per real frame even if several canvases commit per frame.
+    //
+    // Only the rows glyphs were rasterized into since the last upload, and
+    // only when there are any: drawing text that is already in the atlas --
+    // almost every frame of every UI -- uploads nothing. (It once re-uploaded
+    // the whole 2048x2048 atlas whenever any text was drawn, which was most
+    // of an idle frame's CPU time.)
     fn updateFontAtlasIfDirty() {
-        if !this.fontAtlasDirty {
+        let dirty = this.fontRenderer.fs.takeDirtyRect();
+        if !dirty {
             return;
         }
-
         let atlas = this.fontRenderer.fs.getAtlas();
+        let y0 = max(0, dirty.y0);
+        let y1 = min(atlas.height, dirty.y1);
+        if y1 <= y0 {
+            return;
+        }
+        // Whole rows: they are contiguous in the source, so the copy is one
+        // block starting at row y0.
+        let rows = atlas.pixels;
+        __c__("rows = (uint8_t *)rows + y0 * atlas.width;");
         this.queue.writeTexture(
-            { texture: this.fontAtlas.texture },
-            atlas.pixels,
-            atlas.width * atlas.height,
-            { offset: 0, bytesPerRow: atlas.width, rowsPerImage: atlas.height },
-            { width: atlas.width, height: atlas.height, depthOrArrayLayers: 1 }
+            { texture: this.fontAtlas.texture, origin: { x: 0, y: y0, z: 0 } },
+            rows,
+            atlas.width * (y1 - y0),
+            { offset: 0, bytesPerRow: atlas.width, rowsPerImage: y1 - y0 },
+            { width: atlas.width, height: y1 - y0, depthOrArrayLayers: 1 }
         );
-        this.fontAtlasDirty = false;
     }
 
 }
@@ -945,6 +1039,14 @@ export ref struct CanvasOptions {
     // used for non-visual pixel-exact output.
     msaaSamples: int = 4;
 
+    // A promise that every commit() into this canvas clears it -- never
+    // commit(false). Its multisampled color buffer then holds nothing between
+    // passes, so it is shared with every other such canvas of its size (see
+    // Context.acquireAttachment) instead of being its own: 4x less memory per
+    // canvas at 4x MSAA. Meant for many same-size canvases, like a tile cache.
+    // (The depth buffer is always shared; nothing ever loads it.)
+    alwaysClears: bool = false;
+
     // Optional custom full-canvas fragment effect (water refraction, color
     // grading, glitch/CRT looks, ...) applied after everything this canvas
     // draws each frame -- just a WGSL fragment shader body (see
@@ -975,13 +1077,22 @@ export opaque ref struct Canvas {
 
     // Only populated when msaaSamples > 1; a msaaSamples == 1 canvas renders
     // directly into its target with no separate multisample texture or
-    // resolve step at all.
+    // resolve step at all. The canvas's own, unless it alwaysClears -- then
+    // it is shared, like the depth buffer.
     msaaSamples: int = 4;
-    msaaColorTexture?: wgpu.Texture = none;
-    msaaColorView?: wgpu.TextureView = none;
+    alwaysClears: bool = false;
+    msaaColor?: RenderTexture = none;
+    sharedMsaaColor?: mut SharedAttachment = none;
 
-    depthTexture: wgpu.Texture;
-    depthView: wgpu.TextureView;
+    depth: mut SharedAttachment;
+
+    // The window surface's texture while this frame draws into it: acquired
+    // by the first commit(), released after present().
+    surfaceTexture?: wgpu.Texture = none;
+    surfaceView?: wgpu.TextureView = none;
+
+    // Set by destroy(); nothing may use the canvas afterwards.
+    destroyed: bool = false;
 
     globalsBuffer: wgpu.Buffer;
     globalsBindGroup: wgpu.BindGroup;
@@ -1058,27 +1169,7 @@ export opaque ref struct Canvas {
             offscreenView = target.view;
         }
 
-        let depthTarget = createRenderTexture(
-            options.gfx.device,
-            options.size.framebufferSize,
-            depthFormat,
-            wgpu.TextureUsage.RenderAttachment,
-            options.msaaSamples
-        );
-
-        let msaaColorTexture = none as wgpu.Texture | none;
-        let msaaColorView = none as wgpu.TextureView | none;
-        if options.msaaSamples > 1 {
-            let msaaTarget = createRenderTexture(
-                options.gfx.device,
-                options.size.framebufferSize,
-                options.gfx.targetFormat,
-                wgpu.TextureUsage.RenderAttachment,
-                options.msaaSamples
-            );
-            msaaColorTexture = msaaTarget.texture;
-            msaaColorView = msaaTarget.view;
-        }
+        let depth = options.gfx.acquireAttachment(options.size.framebufferSize, depthFormat, options.msaaSamples, wgpu.TextureUsage.RenderAttachment);
 
         // Built once, here, from whatever shader source CanvasOptions.postEffect
         // was given -- none if this canvas has no post effect at all. Reading
@@ -1092,7 +1183,7 @@ export opaque ref struct Canvas {
             postEffectPipeline = watchPostEffectPipeline(options.gfx, source);
         }
 
-        return Canvas {
+        let canvas = Canvas {
             gfx: options.gfx,
             size: options.size,
             surface: options.surface,
@@ -1100,14 +1191,97 @@ export opaque ref struct Canvas {
             offscreenView: offscreenView,
             cachedTexture: none,
             msaaSamples: options.msaaSamples,
-            msaaColorTexture: msaaColorTexture,
-            msaaColorView: msaaColorView,
-            depthTexture: depthTarget.texture,
-            depthView: depthTarget.view,
+            alwaysClears: options.alwaysClears,
+            depth: depth,
             globalsBuffer: globalsBuffer,
             globalsBindGroup: globalsBindGroup,
             postEffectPipeline: postEffectPipeline,
         };
+        canvas.createMsaaColor();
+        return canvas;
+    }
+
+    fn createMsaaColor() {
+        if this.msaaSamples <= 1 {
+            return;
+        }
+        if this.alwaysClears {
+            this.sharedMsaaColor = this.gfx.acquireAttachment(this.size.framebufferSize, this.gfx.targetFormat, this.msaaSamples, wgpu.TextureUsage.RenderAttachment);
+        } else {
+            this.msaaColor = createRenderTexture(this.gfx.device, this.size.framebufferSize, this.gfx.targetFormat, wgpu.TextureUsage.RenderAttachment, this.msaaSamples);
+        }
+    }
+
+    fn releaseMsaaColor() {
+        if let own = this.msaaColor {
+            releaseRenderTexture(own);
+            this.msaaColor = none;
+        }
+        if let shared = this.sharedMsaaColor {
+            this.gfx.releaseAttachment(shared);
+            this.sharedMsaaColor = none;
+        }
+    }
+
+    // The multisampled color buffer passes render into (msaaSamples > 1).
+    fn msaaView(): wgpu.TextureView | none {
+        if let own = this.msaaColor {
+            return own.view;
+        }
+        if let shared = this.sharedMsaaColor {
+            return shared.target.view;
+        }
+        return none;
+    }
+
+    // The canvas's own picture and what samples it -- everything that
+    // depends on its size, apart from the attachments.
+    fn releaseOffscreenTargets() {
+        if let cached = this.cachedTexture {
+            cached.release();
+            this.cachedTexture = none;
+        }
+        if let view = this.offscreenView {
+            view.release();
+            this.offscreenView = none;
+        }
+        if let texture = this.offscreenTexture {
+            texture.release();
+            this.offscreenTexture = none;
+        }
+        if let cached = this.postProcessCachedTexture {
+            cached.release();
+            this.postProcessCachedTexture = none;
+        }
+        if let view = this.postProcessView {
+            view.release();
+            this.postProcessView = none;
+        }
+        if let texture = this.postProcessTexture {
+            texture.release();
+            this.postProcessTexture = none;
+        }
+    }
+
+    // Frees every GPU resource this canvas holds; it must not be used again.
+    // Anything that recorded a draw of its asTexture() has to have committed
+    // first.
+    fn destroy() {
+        if this.destroyed {
+            return;
+        }
+        this.destroyed = true;
+        this.releaseOffscreenTargets();
+        this.releaseMsaaColor();
+        this.gfx.releaseAttachment(this.depth);
+        this.releaseSurfaceTexture();
+        this.globalsBindGroup.release();
+        this.globalsBuffer.release();
+        if let b = this.instanceBuffer { b.release(); this.instanceBuffer = none; }
+        if let b = this.meshVertexBuffer { b.release(); this.meshVertexBuffer = none; }
+        if let g = this.transformBindGroup { g.release(); this.transformBindGroup = none; }
+        if let b = this.transformBuffer { b.release(); this.transformBuffer = none; }
+        if let b = this.postEffectParamsBuffer { b.release(); this.postEffectParamsBuffer = none; }
     }
 
     // Sets this canvas's camera. Pass an orthographic matrix (via mat4.ortho)
@@ -1159,7 +1333,17 @@ export opaque ref struct Canvas {
     // buffer (and, for an offscreen canvas, the color target) to match. For a
     // window canvas the caller is responsible for re-configuring the
     // wgpu.Surface itself.
+    //
+    // The old targets are released, so -- as for destroy() -- anything that
+    // recorded a draw of this canvas's asTexture() has to have committed first.
     fn resize(size: CanvasSize) {
+        assert(!this.destroyed, "Canvas.resize() after destroy()");
+        // The post effect's output target (if any) is recreated at the new
+        // size on the next commit().
+        this.releaseOffscreenTargets();
+        this.releaseMsaaColor();
+        this.gfx.releaseAttachment(this.depth);
+
         this.size = size;
 
         if !this.surface {
@@ -1171,28 +1355,19 @@ export opaque ref struct Canvas {
             );
             this.offscreenTexture = target.texture;
             this.offscreenView = target.view;
-            this.cachedTexture = none;
         }
 
-        // Force the post effect's output target (if any) to be recreated at
-        // the new size on the next commit().
-        this.postProcessTexture = none;
-        this.postProcessView = none;
-        this.postProcessCachedTexture = none;
-
-        let depthTarget = createRenderTexture(this.gfx.device, size.framebufferSize, depthFormat, wgpu.TextureUsage.RenderAttachment, this.msaaSamples);
-        this.depthTexture = depthTarget.texture;
-        this.depthView = depthTarget.view;
-
-        if this.msaaSamples > 1 {
-            let msaaTarget = createRenderTexture(this.gfx.device, size.framebufferSize, this.gfx.targetFormat, wgpu.TextureUsage.RenderAttachment, this.msaaSamples);
-            this.msaaColorTexture = msaaTarget.texture;
-            this.msaaColorView = msaaTarget.view;
-        }
+        this.depth = this.gfx.acquireAttachment(size.framebufferSize, depthFormat, this.msaaSamples, wgpu.TextureUsage.RenderAttachment);
+        this.createMsaaColor();
     }
 
     fn currentView(): Result<wgpu.TextureView, str> {
         if this.surface {
+            // Acquired once per frame; every commit() until present() draws
+            // into the same one.
+            if let view = this.surfaceView {
+                return view;
+            }
             let surfaceTexture = this.surface.getCurrentTexture();
 
             if surfaceTexture.status != wgpu.SurfaceGetCurrentTextureStatus.SuccessOptimal &&
@@ -1209,8 +1384,11 @@ export opaque ref struct Canvas {
 
             let view = surfaceTexture.texture.createView();
             if !view {
+                surfaceTexture.texture.release();
                 return "Texture View cannot be found";
             }
+            this.surfaceTexture = surfaceTexture.texture;
+            this.surfaceView = view;
             return view;
         }
 
@@ -1221,11 +1399,25 @@ export opaque ref struct Canvas {
         return this.offscreenView;
     }
 
+    fn releaseSurfaceTexture() {
+        if let view = this.surfaceView {
+            view.release();
+            this.surfaceView = none;
+        }
+        if let texture = this.surfaceTexture {
+            texture.release();
+            this.surfaceTexture = none;
+        }
+    }
+
     fn present() {
         if this.surface {
             if !this.surface.present() {
                 fmt.println("gfx: surface present failed");
             }
+            // A surface texture is a new handle every frame, and the frame
+            // is over.
+            this.releaseSurfaceTexture();
         }
     }
 
@@ -1234,6 +1426,7 @@ export opaque ref struct Canvas {
     // composited into the main window). Only valid for offscreen canvases.
     fn asTexture(): Texture {
         assert(!this.surface, "Canvas.asTexture() is only valid for offscreen canvases");
+        assert(!this.destroyed, "Canvas.asTexture() after destroy()");
 
         // With a post effect active, the composited output is the effect's
         // own render target (built in Renderer.commit()), not this canvas's
@@ -1262,7 +1455,8 @@ export opaque ref struct Canvas {
                 view,
                 bindGroup,
                 this.size.framebufferSize.x,
-                this.size.framebufferSize.y
+                this.size.framebufferSize.y,
+                false
             );
         }
 
@@ -1308,6 +1502,9 @@ export opaque ref struct Canvas {
 export opaque ref struct Frame {
     gfx: mut Context;
     encoder: wgpu.CommandEncoder;
+    // Whether `encoder` still needs releasing -- present() releases it, a
+    // reset() without a present() in between has to.
+    encoderLive: bool = true;
     pendingPresents: []mut Canvas = [];
 
     fn constructor(gfx: mut Context) {
@@ -1322,9 +1519,13 @@ export opaque ref struct Frame {
     // at the top of every App.nextFrame() instead of constructing a new
     // Frame.
     mut fn reset() {
+        if this.encoderLive {
+            this.encoder.release();
+        }
         let encoder = this.gfx.device.createCommandEncoder();
         assert(encoder, "gfx: failed to create command encoder");
         this.encoder = encoder;
+        this.encoderLive = true;
         this.pendingPresents.clear();
     }
 
@@ -1334,11 +1535,14 @@ export opaque ref struct Frame {
     // this frame's Renderer.commit() calls.
     fn present() {
         let commandBuffer = this.encoder.finish();
+        this.encoder.release();
+        this.encoderLive = false;
         if !commandBuffer {
             fmt.println("gfx: failed to finish command buffer");
             return;
         }
         this.gfx.queue.submit(commandBuffer);
+        commandBuffer.release();
 
         for canvas in this.pendingPresents {
             canvas.present();
@@ -1814,7 +2018,6 @@ export opaque ref struct Renderer {
 
         let count = this.primitives.length - start;
         if count > 0 {
-            this.canvas.gfx.fontAtlasDirty = true;
             this.recordTextureRun(start, count, this.canvas.gfx.fontAtlas);
         }
     }
@@ -1891,6 +2094,8 @@ export opaque ref struct Renderer {
     fn commit(clear: bool = true) {
         let canvas = this.canvas;
         let gfx = canvas.gfx;
+        assert(!canvas.destroyed, "Renderer.commit() into a destroyed Canvas");
+        assert(clear || !canvas.alwaysClears, "commit(false) into a Canvas created with alwaysClears");
 
         gfx.updateFontAtlasIfDirty();
 
@@ -1910,6 +2115,8 @@ export opaque ref struct Renderer {
         // Renderer constructor, so this buffer is never empty.
         let requiredTransforms = sizeofTypeInBytes<mat4.Mat4f>() * this.transforms.length;
         if !canvas.transformBuffer || requiredTransforms > canvas.transformBufferSize {
+            if let old = canvas.transformBindGroup { old.release(); }
+            if let old = canvas.transformBuffer { old.release(); }
             canvas.transformBufferSize = max(requiredTransforms, canvas.transformBufferSize * 2);
             canvas.transformBuffer = gfx.device.createBuffer({
                 size: canvas.transformBufferSize,
@@ -1936,6 +2143,7 @@ export opaque ref struct Renderer {
         if this.primitives.length > 0 {
             let required = sizeofTypeInBytes<PrimitiveInstance>() * this.primitives.length;
             if !canvas.instanceBuffer || required > canvas.instanceBufferSize {
+                if let old = canvas.instanceBuffer { old.release(); }
                 canvas.instanceBufferSize = max(required, canvas.instanceBufferSize * 2);
                 canvas.instanceBuffer = gfx.device.createBuffer({
                     size: canvas.instanceBufferSize,
@@ -1950,6 +2158,7 @@ export opaque ref struct Renderer {
         if this.meshVertices.length > 0 {
             let required = sizeofTypeInBytes<MeshVertex>() * this.meshVertices.length;
             if !canvas.meshVertexBuffer || required > canvas.meshVertexBufferSize {
+                if let old = canvas.meshVertexBuffer { old.release(); }
                 canvas.meshVertexBufferSize = max(required, canvas.meshVertexBufferSize * 2);
                 canvas.meshVertexBuffer = gfx.device.createBuffer({
                     size: canvas.meshVertexBufferSize,
@@ -1987,7 +2196,7 @@ export opaque ref struct Renderer {
             storeOp: wgpu.StoreOp.Store,
         };
         if canvas.msaaSamples > 1 {
-            let msaaView = canvas.msaaColorView;
+            let msaaView = canvas.msaaView();
             assert(msaaView);
             colorAttachment = wgpu.RenderPassColorAttachment {
                 view: msaaView,
@@ -1999,7 +2208,7 @@ export opaque ref struct Renderer {
         }
 
         let depthAttachment = wgpu.RenderPassDepthStencilAttachment {
-            view: canvas.depthView,
+            view: canvas.depth.target.view,
             depthLoadOp: wgpu.LoadOp.Clear,
             depthStoreOp: wgpu.StoreOp.Discard,
             depthClearValue: 1.0,
@@ -2087,6 +2296,7 @@ export opaque ref struct Renderer {
         }
 
         pass.end();
+        pass.release();
 
         // Custom post effect (see CanvasOptions.postEffect): a second,
         // independent fullscreen pass that samples this canvas's
@@ -2122,7 +2332,8 @@ export opaque ref struct Renderer {
                     target.view,
                     outputBindGroup,
                     canvas.size.framebufferSize.x,
-                    canvas.size.framebufferSize.y
+                    canvas.size.framebufferSize.y,
+                    false
                 );
             }
             if !canvas.postEffectParamsBuffer {
@@ -2179,7 +2390,9 @@ export opaque ref struct Renderer {
                 postPass.setBindGroup(0, inputBindGroup);
                 postPass.draw(3, 1, 0, 0);
                 postPass.end();
+                postPass.release();
             }
+            inputBindGroup.release();
         }
 
         // Submission and presentation happen once for the whole Frame, in

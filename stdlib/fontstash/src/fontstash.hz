@@ -44,6 +44,10 @@ namespace ffi {
         ctx: cptr,
     ): haze_fontstash_atlas_t :: final;
 
+    export extern C fn haze_fontstash_take_dirty_rect(
+        ctx: cptr,
+    ): haze_fontstash_dirty_rect_t :: final;
+
     export extern C fn haze_fontstash_get_metrics(
         ctx: cptr,
         font: int,
@@ -75,6 +79,14 @@ namespace ffi {
         t1: f32;
     }
 
+    export extern C noemit struct haze_fontstash_dirty_rect_t {
+        valid: bool;
+        x0: int;
+        y0: int;
+        x1: int;
+        y1: int;
+    }
+
     export extern C noemit struct haze_fontstash_metrics_t {
         ascender: real;
         descender: real;
@@ -98,6 +110,13 @@ export struct Metrics {
 export struct Dimensions {
     width: real;
     height: real;
+}
+
+export struct Rect2i {
+    x0: int;
+    y0: int;
+    x1: int;
+    y1: int;
 }
 
 export struct Atlas {
@@ -221,6 +240,18 @@ export opaque ref struct FontStash {
             height: atlas.height,
             pixels: atlas.pixels,
         };
+    }
+
+    // The atlas region (x0, y0) to (x1, y1), exclusive, that glyphs were
+    // rasterized into since the last call, or none -- what an upload of the
+    // atlas has to copy.
+    fn takeDirtyRect(): Rect2i | none {
+        assert(this.fonsContext, "FontStash Context not available");
+        let rect = ffi.haze_fontstash_take_dirty_rect(this.fonsContext);
+        if !rect.valid {
+            return none;
+        }
+        return Rect2i { x0: rect.x0, y0: rect.y0, x1: rect.x1, y1: rect.y1 };
     }
 
     fn getMetrics(font: int, fontSize: real): Metrics {

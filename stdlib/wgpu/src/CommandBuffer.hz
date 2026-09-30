@@ -1,6 +1,11 @@
 
 export struct CommandBuffer {
     handle: mut ffi.WGPUCommandBufferImpl;
+
+    // See Buffer.release. Submitting does not release it.
+    fn release() {
+        ffi.wgpuCommandBufferRelease(this.handle);
+    }
 }
 
 fn fromFFI(v: mut ffi.WGPUCommandBufferImpl): CommandBuffer :: final {

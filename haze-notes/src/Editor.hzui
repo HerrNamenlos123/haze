@@ -27,21 +27,22 @@ let invalidateCanvas: () => none = () => {
 };
 let controls = EditorControls(documentRenderer, invalidateCanvas);
 
-// Whether a document is open -- what the template switches on. The
-// document itself lives in `controls`, which edits it.
-let documentOpen = reactive<bool>(false);
-
+// The document lives in `controls`, which loads, edits and saves it; its
+// documentOpen and loadingDocument are what the template switches on.
 ui.watch(() => rx.get(currentDocumentPath), (old, new) => {
-    let path = rx.get(currentDocumentPath);
-    let doc: DocumentFile | none = none;
-    if path {
-        if let loaded = loadDocument(path) {
-            doc = loaded;
-        }
-    }
-    controls.setDocument(doc, path ?? "");
-    documentOpen := doc ? true : false;
+    controls.open(rx.get(currentDocumentPath));
 }, { immediate: true });
+
+// Unsaved work is written before the app goes -- there are no more frames to
+// spread the save over, but the window is already gone.
+onExit(() => {
+    controls.finishSaves();
+});
+
+let loadingText = computed((): str => {
+    let percent = (rx.get(controls.loadProgress) * 100.0) as int;
+    return f"Loading... {percent}%";
+});
 
 // Pointer positions arrive window-global; the controls work in canvas px.
 let toLocal = (pos: Vec2): Vec2 => {
@@ -81,8 +82,9 @@ ui.onFrame(() => {
 // resized, or when invalidateCanvas() says something on it changed.
 let renderCanvas = (r: mut renderer.gfx.Renderer): void => {
     controls.render(r);
-    // A settling zoom still needs a few more renders to retile.
-    if documentRenderer.isSettling() {
+    // A settling zoom, and tiles the frame's budget did not reach, need more
+    // renders to finish.
+    if documentRenderer.hasPendingWork() {
         canvasRef?.invalidate();
     }
 };
@@ -131,7 +133,11 @@ let openSidepanel = () => {
 
 @template [relative]
 
-div if=[!rx.get(documentOpen)] [w-grow h-grow justify-center items-center] {
+div if=[rx.get(controls.loadingDocument)] [w-grow h-grow justify-center items-center] {
+    text [] [rx.get(loadingText)]
+}
+
+div else-if=[!rx.get(controls.documentOpen)] [w-grow h-grow justify-center items-center] {
     text [] ["No document is selected"]
 }
 
@@ -165,7 +171,7 @@ div else [absolute top-0 left-0 p-4] {
 
 // The tools: pen (at five thicknesses), selection, eraser, and the pen color.
 // The barrel-button menu offers the same; this is for a pen without one.
-div if=[rx.get(documentOpen)] [absolute top-0 right-0 p-4] {
+div if=[rx.get(controls.documentOpen)] [absolute top-0 right-0 p-4] {
     div [row items-center gap-1 p-1 bg-["#222"] rounded-6 border-1 border-color-["#555"]] {
         div for=[size, index in sizes] key=[index]
             [w-[30]px h-[30]px items-center justify-center rounded-4 cursor-pointer

@@ -18,6 +18,17 @@ fn onFrame(handler: () => none) {
     onFrameHandlers.push(handler);
 }
 
+// Run once the window has closed, before the app exits -- for work that has
+// to finish, like saving.
+let onExitHandlers: [](() => none) | none = none;
+fn onExit(handler: () => none) {
+    if !onExitHandlers {
+        onExitHandlers = [];
+    }
+    assert(onExitHandlers);
+    onExitHandlers.push(handler);
+}
+
 // Translates app's platform-level pointer edge queue into ui_components'
 // own PointerEdge type -- kept as a small glue function here (rather than
 // having either module import the other's types) so app stays ignorant of
@@ -184,6 +195,12 @@ fn main(): int {
             }
         }
 
+        a.window.hide();
+        if onExitHandlers {
+            for handler in onExitHandlers {
+                handler();
+            }
+        }
         a.destroy();
         return 0;
     }

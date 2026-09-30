@@ -86,6 +86,38 @@ hzstd_dynamic_array_realloc_buffer(hzstd_dynamic_array_t *da, size_t new_capacit
 
 /* Public API */
 
+hzstd_dynamic_array_result_t hzstd_dynamic_array_resize_zeroed(hzstd_dynamic_array_t *da, size_t new_size)
+{
+  hzstd_assert(da != NULL);
+  if (new_size > da->capacity) {
+    size_t grown = da->capacity * 2;
+    hzstd_dynamic_array_result_t rc
+        = hzstd_dynamic_array_realloc_buffer(da, new_size > grown ? new_size : grown, 1);
+    if (rc != hzstd_dynamic_array_result_ok) {
+      return rc;
+    }
+  }
+  if (new_size > da->size) {
+    memset((char *)da->buffer + da->size * da->elem_size, 0, (new_size - da->size) * da->elem_size);
+  }
+  da->size = new_size;
+  return hzstd_dynamic_array_result_ok;
+}
+
+hzstd_dynamic_array_result_t
+hzstd_dynamic_array_write(hzstd_dynamic_array_t *da, size_t index, const void *src, size_t count)
+{
+  hzstd_assert(da != NULL);
+  if (index > da->size || count > da->size - index) {
+    return hzstd_dynamic_array_result_out_of_bounds;
+  }
+  if (count > 0) {
+    memcpy((char *)da->buffer + index * da->elem_size, src, count * da->elem_size);
+  }
+  return hzstd_dynamic_array_result_ok;
+}
+
+
 /* Create a DynArray control structure inside the provided arena.
  * The control struct is allocated from the arena. The variable buffer is NULL initially.
  * Returns pointer to DynArray on success, NULL on allocation failure (arena ran out).

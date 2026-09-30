@@ -28,6 +28,11 @@ fn toFFI(c: CommandEncoderDescriptor): ffi.WGPUCommandEncoderDescriptor :: final
 export struct CommandEncoder {
     handle: mut ffi.WGPUCommandEncoderImpl;
 
+    // See Buffer.release. finish() does not release it.
+    fn release() {
+        ffi.wgpuCommandEncoderRelease(this.handle);
+    }
+
     fn beginRenderPass(descriptor: RenderPassDescriptor): Result<RenderPassEncoder, none> {
         do unsafe {
             // The two optional sub-structs the WGPURenderPassDescriptor points at

@@ -8,7 +8,11 @@ type = "lib"
 
 [generator.build-tesselator]
 exec = "scripts/build-tesselator.hz"
-inputs = []
+# The Rust sources, so changing them rebuilds the library.
+inputs = [
+    { module="this", dir="root", path="lyon/Cargo.toml" },
+    { module="this", dir="root", path="lyon/src/lib.rs" },
+]
 outputs = [
     { module="this", dir="bin", path="include/tesselator.h" },
     { module="this", dir="bin", path="lib/tesselator.lib", platform="win32" },

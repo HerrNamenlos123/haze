@@ -41,6 +41,17 @@ hzstd_file_open_write(hzstd_allocator_t allocator, hzstd_str_t path, void* out_h
 hzstd_fs_error_t hzstd_file_append_text(hzstd_allocator_t allocator, void* handle, hzstd_str_t input);
 hzstd_fs_error_t hzstd_file_close(hzstd_allocator_t allocator, void* handle);
 
+// The reading counterpart: open, read in pieces of any size, close with
+// hzstd_file_close. For reading a large file without blocking for as long as
+// the whole read takes. `out_size` (an hzstd_int_t*, typed void* like
+// `out_handle`) receives the file's size when opened.
+hzstd_fs_error_t
+hzstd_file_open_read(hzstd_allocator_t allocator, hzstd_str_t path, void* out_handle, void* out_size);
+// Reads up to `max_bytes` into `dest`; `out_read` (an hzstd_int_t*) receives
+// how many were read, 0 at the end of the file.
+hzstd_fs_error_t hzstd_file_read_some(
+    hzstd_allocator_t allocator, void* handle, void* dest, hzstd_int_t max_bytes, void* out_read);
+
 hzstd_fs_error_t hzstd_mkdir_recursive(hzstd_str_t path);
 
 hzstd_fs_exists_result_t hzstd_fs_exists(hzstd_str_t path);

@@ -52,6 +52,58 @@ struct Point {
     pressure: real;
 }
 
+// A stroke's outline polygon, in page mm. The file keeps it as [[x, y], ...];
+// in memory it is one flat array. As a little array per point, the outlines
+// were most of the objects in a loaded document -- hundreds of thousands in a
+// large one -- and the garbage collector walks every one of them on every
+// collection, so the pauses grew with the document.
+[[json.serialize="toJson", json.parse="fromJson"]]
+ref struct Outline {
+  points: []Vec2 = [];
+
+  fn toJson(): json.Node {
+    let node = json.array();
+    for p in this.points {
+      let pair = node.newArray();
+      pair.appendNumber(p.x);
+      pair.appendNumber(p.y);
+      node.append(pair);
+    }
+    return node;
+  }
+
+  static fn fromJson(node: json.Node): Result<Outline, json.Error> {
+    if !node.isArray() {
+      return json.Error { error: () => "outline: expected an array" };
+    }
+    let points: []Vec2 = [];
+    let count = node.arrayLength();
+    if count <= 1000000000 {
+      points.reserve(count as int);
+    }
+    let pair = node.firstElement();
+    while let current = pair {
+      if !current.isArray() {
+        return json.Error { error: () => "outline: expected [x, y]" };
+      }
+      let x = current.firstElement();
+      if !x {
+        return json.Error { error: () => "outline: expected [x, y]" };
+      }
+      let y = x.next();
+      if !y {
+        return json.Error { error: () => "outline: expected [x, y]" };
+      }
+      if !x.isNumber() || !y.isNumber() {
+        return json.Error { error: () => "outline: expected [x, y]" };
+      }
+      points.push(Vec2(x.numberValue(), y.numberValue()));
+      pair = current.next();
+    }
+    return Outline { points: points };
+  }
+}
+
 ref struct LineShape {
   variant: "Line";
   points: []Point;
@@ -60,38 +112,30 @@ ref struct LineShape {
   // Cached outline + bbox for this stroke, so reopening the file doesn't have to redo the
   // perfect-freehand computation. Optional for backward compatibility with older files.
   bbox?: BBox;
-  cachedOutline?: [][]real;
+  cachedOutline?: Outline;
 
-  // Internal, non-serialized data. Keyed by tile pyramid level (see
-  // tiles.hz's tilemath namespace) rather than a single cached value --
-  // the same shape can be visible in tiles at different native
-  // resolutions (or in the live in-progress-stroke overlay at yet another,
-  // live-zoom-derived level), and a single fixed-tolerance tesselation
-  // reused across all of them is either wastefully fine when zoomed out or
-  // visibly faceted when zoomed in. Lives on the shape rather than in an
-  // external cache keyed by some shape id (shapes don't have one today) --
-  // this way the cache's lifetime is automatically tied to the shape's
-  // own, with no separate cleanup needed when a shape is mutated or
-  // deleted.
+  // Internal, non-serialized data: the stroke tessellated at the tile pyramid
+  // levels (see tiles.hz's tilemath namespace) it was last drawn at. One
+  // fixed-tolerance tessellation for every level would be either wastefully
+  // fine when zoomed out or visibly faceted when zoomed in. Only the
+  // maxTesselatedLevels most recent levels are kept, so zooming through the
+  // whole range does not leave every stroke holding a mesh per level.
   [[json.ignore]]
-  tesselationCache?: LinearMap<int, TesselationResult> = none;
+  tesselations: []LevelTesselation = [];
   // Left out of the page's tiles while the editor draws it itself -- as it
   // is being moved or resized, or has been erased and not yet removed. See
   // DocumentRenderer.render and EditorControls.
   [[json.ignore]]
   hidden: bool = false;
 
-  // The stroke's outline polygon in page mm, as [x, y] pairs: what the
-  // eraser hit-tests against, and what the bbox is derived from.
-  fn getOutline(): [][]real {
+  // The stroke's outline polygon in page mm: what the eraser hit-tests
+  // against, and what the bbox and the tesselations are derived from.
+  fn getOutline(): []Vec2 {
     if let cached = this.cachedOutline {
-      return cached;
+      return cached.points;
     }
-    let outline: [][]real = [];
-    for p in constructStrokeOutline({ shape: this }) {
-      outline.push([p.x, p.y]);
-    }
-    this.cachedOutline = outline;
+    let outline = constructStrokeOutline({ shape: this });
+    this.cachedOutline = Outline { points: outline };
     return outline;
   }
 
@@ -108,15 +152,15 @@ ref struct LineShape {
       return empty;
     }
 
-    let minX = outline[0][0];
-    let maxX = outline[0][0];
-    let minY = outline[0][1];
-    let maxY = outline[0][1];
+    let minX = outline[0].x;
+    let maxX = outline[0].x;
+    let minY = outline[0].y;
+    let maxY = outline[0].y;
     for p in outline {
-      minX = min(minX, p[0]);
-      maxX = max(maxX, p[0]);
-      minY = min(minY, p[1]);
-      maxY = max(maxY, p[1]);
+      minX = min(minX, p.x);
+      maxX = max(maxX, p.x);
+      minY = min(minY, p.y);
+      maxY = max(maxY, p.y);
     }
 
     let result = BBox { left: minX, right: maxX, top: minY, bottom: maxY };
@@ -124,33 +168,46 @@ ref struct LineShape {
     return result;
   }
 
-  // Lazily computes and caches this stroke's tesselation at the given
-  // tile pyramid level, shared by the tile renderer and the live in-stroke
-  // overlay so neither has to duplicate the "already tesselated at this
-  // level?" check. Tolerance is derived from the level's native px/mm
-  // (tilemath.nativeZoomForLevel) so curve flattening targets roughly one
-  // native pixel of deviation regardless of how zoomed in/out that level
-  // is -- coarser (cheaper) tesselation when zoomed out, finer when zoomed
-  // in, instead of one fixed tolerance that's either wasteful or visibly
-  // faceted depending on zoom.
-  fn ensureTesselated(level: int): TesselationResult {
-    if !this.tesselationCache {
-      this.tesselationCache = LinearMap<int, TesselationResult>();
+  fn hasTesselation(level: int): bool {
+    for t in this.tesselations {
+      if t.level == level {
+        return true;
+      }
     }
-    assert(this.tesselationCache);
-    if let cached = this.tesselationCache.get(level) {
-      return cached;
+    return false;
+  }
+
+  // This stroke's tesselation at the given tile pyramid level, computed on
+  // first use -- shared by the tile renderer and the live overlay. Tolerance
+  // is derived from the level's native px/mm (tilemath.nativeZoomForLevel),
+  // so curve flattening targets roughly one native pixel of deviation
+  // regardless of how zoomed in/out that level is.
+  fn ensureTesselated(level: int): TesselationResult {
+    for t in this.tesselations {
+      if t.level == level {
+        return t.result;
+      }
     }
     let nativeZoom = tilemath.nativeZoomForLevel(level);
     let result = tesselateStroke({ shape: this, tolerance: 1.0 / nativeZoom });
-    this.tesselationCache.set(level, result);
+    if this.tesselations.length >= maxTesselatedLevels {
+      // The level furthest from this one is the least likely to be drawn next.
+      let furthest = 0;
+      for (let i = 1; i < this.tesselations.length; i++) {
+        if levelDistance(this.tesselations[i].level, level) > levelDistance(this.tesselations[furthest].level, level) {
+          furthest = i;
+        }
+      }
+      this.tesselations.remove(furthest);
+    }
+    this.tesselations.push(LevelTesselation { level: level, result: result });
     return result;
   }
 
   fn clearShapeCache() {
     this.bbox = none;
     this.cachedOutline = none;
-    this.tesselationCache?.clear();
+    this.tesselations.clear();
   }
 };
 
@@ -259,16 +316,18 @@ fn translateShape(shape: Shape, d: Vec2) {
         }
         shape.points = moved;
         if let outline = shape.cachedOutline {
-            for p in outline {
-                p[0] = p[0] + d.x;
-                p[1] = p[1] + d.y;
+            let moved: []Vec2 = [];
+            moved.reserve(outline.points.length);
+            for p in outline.points {
+                moved.push(Vec2(p.x + d.x, p.y + d.y));
             }
+            shape.cachedOutline = Outline { points: moved };
         }
         if let b = shape.bbox {
             shape.bbox = b.translated(d);
         }
         // Tesselations are in page mm too, so they would all be off by d.
-        shape.tesselationCache?.clear();
+        shape.tesselations.clear();
     }
     else if shape is ImageShape {
         shape.position = Vec2(shape.position.x + d.x, shape.position.y + d.y);
@@ -365,27 +424,6 @@ ref struct DocumentFile {
     data: DocumentBody;
 }
 
-fn loadDocument(path: str): Result<DocumentFile, none> {
-    let file = fs.readText(path);
-    if !file { return none; }
-
-    let result = json.parse<DocumentFile>(file);
-    if result {
-        return result;
-    }
-    else {
-      fmt.println("Document failed to load:", result.error());
-    }
-    return none;
-}
-
-fn saveDocument(path: str, document: DocumentFile): Result<none, none> {
-    if !fs.writeText(path, json.stringify(document)) {
-        return Result<none, none>.Err(none);
-    }
-    return Result<none, none>.Ok(none);
-}
-
 struct StrokeConstructArgs {
   accuracyScaling: real = 10.0;
   shape: LineShape;
@@ -430,8 +468,20 @@ struct TesselationResult {
 	indices: []i32 = [];
 }
 
+struct LevelTesselation {
+  level: int;
+  result: TesselationResult;
+}
+
+// How many zoom levels' tesselations a stroke keeps -- the level being zoomed
+// from and the one being zoomed to.
+const comptime maxTesselatedLevels = 2;
+
+fn levelDistance(a: int, b: int): int {
+  return a > b ? a - b : b - a;
+}
+
 struct StrokeTesselateArgs {
-  accuracyScaling: real = 10.0;
   shape: LineShape;
   // Curve-flattening tolerance, in the same mm units the curve itself is
   // drawn in (post accuracyScaling division). 0.25 (the old default) was
@@ -446,11 +496,9 @@ struct StrokeTesselateArgs {
 }
 
 fn tesselateStroke(args: StrokeTesselateArgs): TesselationResult {
-    let outline = constructStrokeOutline({
-        shape: args.shape,
-        accuracyScaling: args.accuracyScaling,
-    });
-
+    // The outline is the stroke's own cached one (stored in the file, too), so
+    // tessellating at another level never reruns perfect-freehand.
+    let outline = args.shape.getOutline();
     if outline.length == 0 {
         return {};
     }

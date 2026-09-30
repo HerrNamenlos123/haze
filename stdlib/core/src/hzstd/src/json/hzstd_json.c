@@ -130,7 +130,9 @@ hzstd_json_get_string_result_t hzstd_json_get_string_value(hzstd_allocator_t all
   if (!value) {
     return (hzstd_json_get_string_result_t){.found = false};
   }
-  return (hzstd_json_get_string_result_t){.found = true, .value = hzstd_str_from_cstr_ref(value)};
+  // A copy owned by `allocator`, not a slice of the node: a parsed value's
+  // strings would otherwise keep the whole parse tree alive with them.
+  return (hzstd_json_get_string_result_t){.found = true, .value = hzstd_str_from_cstr_dup(allocator, value)};
 }
 
 double hzstd_json_get_number_value(hzstd_allocator_t allocator,
@@ -156,6 +158,14 @@ hzstd_json_node_t *hzstd_json_get_array_item(hzstd_allocator_t allocator,
                                              size_t index) {
   hzstd_json_use_arena(allocator);
   return (hzstd_json_node_t *)cJSON_GetArrayItem((cJSON *)json, index);
+}
+
+hzstd_json_node_t *hzstd_json_get_first_child(hzstd_json_node_t *json) {
+  return (hzstd_json_node_t *)((cJSON *)json)->child;
+}
+
+hzstd_json_node_t *hzstd_json_get_next_sibling(hzstd_json_node_t *json) {
+  return (hzstd_json_node_t *)((cJSON *)json)->next;
 }
 
 hzstd_bool_t hzstd_json_add_item_to_object(hzstd_allocator_t allocator,
