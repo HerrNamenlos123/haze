@@ -21,10 +21,17 @@ export ref struct Error {
 // Encodes arbitrary bytes into a Base64 (RFC 4648) string. Always succeeds --
 // any byte sequence has a valid Base64 representation.
 export fn encode(data: Bytes): str {
+    // A one-byte Bytes holds its byte inline and has no buffer to point at.
+    let single: u8 = 0;
     let ptr = none as cptr;
-    let length = 0;
-    __c__("ptr = data.basePtr + data.offset;");
-    __c__("length = data.length;");
+    let length = data.length;
+    if length == 1 {
+        single = data[0];
+        __c__("ptr = &single;");
+    }
+    else {
+        __c__("ptr = data.basePtr + data.offset;");
+    }
 
     return ffi.haze_base64_encode(ptr, length);
 }
@@ -39,7 +46,7 @@ export fn decode(data: str): Result<Bytes, Error> {
     }
 
     do unsafe {
-        let bytes: Bytes = uninitialized;
+        let bytes = Bytes(); // not `uninitialized`: that leaves the inline single-byte form set
         __c__("bytes.basePtr = result.data;");
         __c__("bytes.offset = 0;");
         __c__("bytes.length = result.length;");

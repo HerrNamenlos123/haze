@@ -12,4 +12,9 @@ typedef struct {
   hzstd_int_t sourceChannels; // channel count stb_image found in the source file
 } haze_image_result_t;
 
+typedef struct {
+  void* data; // GC-owned PNG file bytes, or NULL on failure
+  hzstd_int_t length;
+} haze_image_png_result_t;
+
 #endif // HAZE_IMAGE_H

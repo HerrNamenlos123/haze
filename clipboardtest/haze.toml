@@ -1,0 +1,12 @@
+name = "clipboardtest"
+id = "cLbTsT01"
+version = "0.1.0"
+description = "Test suite for the clipboard module"
+license = "MIT"
+authors = []
+src = "src"
+type = "exe"
+
+[dependencies]
+clipboard = { path = "../stdlib/clipboard" }
+image = { path = "../stdlib/image" }

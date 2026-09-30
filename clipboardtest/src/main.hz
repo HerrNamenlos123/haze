@@ -1,0 +1,440 @@
+import clipboard
+import image
+
+// Test driver for the `clipboard` module, through its public Haze API.
+//
+//   bun run src/main.ts run --dir clipboardtest
+//
+// It uses the real system clipboard -- do not copy anything while it runs,
+// and expect your clipboard to hold test data afterwards. On Linux it needs
+// an X11 display (Xwayland counts); the interop section also needs xclip.
+//
+// The C core has its own tests in clipboardtest/native (format conversions,
+// X11 interop in depth, the Xlib ABI check); see the top of each file.
+
+__c__("#include <gc/gc.h>");
+
+let failures = 0;
+let checks = 0;
+
+fn check(condition: bool, label: str) {
+    checks = checks + 1;
+    if !condition {
+        failures = failures + 1;
+        fmt.println(f"  FAIL  {label}");
+    }
+}
+
+fn checkEq(actual: str, expected: str, label: str) {
+    checks = checks + 1;
+    if actual != expected {
+        failures = failures + 1;
+        fmt.println(f"  FAIL  {label}");
+        fmt.println(f"        expected: {expected}");
+        fmt.println(f"        actual:   {actual}");
+    }
+}
+
+fn checkEqInt(actual: int, expected: int, label: str) {
+    checks = checks + 1;
+    if actual != expected {
+        failures = failures + 1;
+        fmt.println(f"  FAIL  {label}: expected {expected}, got {actual}");
+    }
+}
+
+fn section(name: str) {
+    fmt.println(f"— {name}");
+}
+
+fn totalAllocatedBytes(): int {
+    let n = 0;
+    __c__("n = (hzstd_int_t)GC_get_total_bytes();");
+    return n;
+}
+
+fn contains(list: []str, wanted: str): bool {
+    for item in list {
+        if item == wanted {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn join(list: []str): str {
+    let out = "";
+    for item in list {
+        out = out + item + " ";
+    }
+    return out;
+}
+
+// Bytes from small integers; for building test images by hand.
+fn bytesOf(values: []int): Bytes {
+    let buffer = ByteBuffer();
+    for v in values {
+        if v >= 0 && v <= 255 {
+            buffer.push(Bytes(v as u8));
+        }
+    }
+    buffer.commit();
+    return buffer.bytes();
+}
+
+// A 2x2 RGBA test picture with every channel distinct and one transparent
+// pixel, so a lost channel, a flipped row or dropped alpha all show.
+fn testPicture(): image.Image {
+    let rgba: []int = [
+        255, 0, 0, 255,     0, 255, 0, 255,
+        0, 0, 255, 128,     10, 20, 30, 0,
+    ];
+    return image.Image.fromPixels(2, 2, 4, bytesOf(rgba));
+}
+
+fn shell(command: str): bool {
+    let result = process.run("sh", ["-c", command]);
+    if result {
+        return true;
+    }
+    return false;
+}
+
+fn capture(command: str): str {
+    let result = process.runCaptured("sh", ["-c", command]);
+    return result.stdoutResult;
+}
+
+// A foreign copy is noticed asynchronously; give it a moment.
+fn waitForChange(before: int) {
+    let deadline = time.now() + 2.0;
+    while clipboard.changeCount() == before && time.now() < deadline {
+        time.sleep(0.005);
+    }
+}
+
+fn testText() {
+    section("text");
+    let written = clipboard.writeText("Grüße 👋\nline two\n");
+    check(written as bool, "writeText");
+    let text = clipboard.readText();
+    check(text as bool, "readText");
+    if text {
+        checkEq(text, "Grüße 👋\nline two\n", "text round trip, UTF-8 and \\n preserved");
+    }
+    check(clipboard.has("text/plain"), "has text/plain");
+    check(clipboard.isOwner(), "we own what we wrote");
+
+    clipboard.writeText("");
+    let empty = clipboard.readText();
+    check(empty as bool, "empty text is still text");
+    if empty {
+        checkEqInt(empty.length, 0, "empty text round trip");
+    }
+}
+
+fn testRich() {
+    section("html, rtf, svg");
+    let written = clipboard.write({
+        html: "<p>Hello <b>world</b></p>",
+        text: "Hello world",
+        rtf: "{\\rtf1\\ansi Hello {\\b world}}",
+        svg: "<svg xmlns='http://www.w3.org/2000/svg'/>",
+    });
+    check(written as bool, "write several representations");
+
+    let types = clipboard.types();
+    check(contains(types, "text/html") && contains(types, "text/plain") && contains(types, "text/rtf") &&
+          contains(types, "image/svg+xml"), f"all four types listed: {join(types)}");
+
+    let html = clipboard.readHtml();
+    check(html as bool, "readHtml");
+    if html {
+        checkEq(html.markup, "<p>Hello <b>world</b></p>", "html markup round trip");
+        checkEq(html.fragment, "<p>Hello <b>world</b></p>", "unmarked html is all fragment");
+    }
+    let text = clipboard.readText();
+    if text {
+        checkEq(text, "Hello world", "plain text alongside html");
+    }
+    let rtf = clipboard.readRtf();
+    if rtf {
+        checkEq(rtf, "{\\rtf1\\ansi Hello {\\b world}}", "rtf round trip");
+    }
+    let svg = clipboard.readSvg();
+    if svg {
+        checkEq(svg, "<svg xmlns='http://www.w3.org/2000/svg'/>", "svg round trip");
+    }
+
+    clipboard.write({ html: "<ul><li>x</li></ul><!--StartFragment--><i>sel</i><!--EndFragment-->" });
+    let marked = clipboard.readHtml();
+    if marked {
+        checkEq(marked.fragment, "<i>sel</i>", "fragment markers honoured");
+    }
+}
+
+fn testImages() {
+    section("images");
+    let picture = testPicture();
+    let written = clipboard.writeImage(picture);
+    check(written as bool, "writeImage");
+    check(clipboard.has("image/png"), "has image/png");
+
+    let back = clipboard.readImage();
+    check(back as bool, "readImage");
+    if back {
+        checkEqInt(back.width, 2, "width");
+        checkEqInt(back.height, 2, "height");
+        checkEqInt(back.channels, 4, "RGBA");
+        check(back.pixels == picture.pixels, "pixels survive exactly, alpha included");
+    }
+
+    let png = clipboard.readPng();
+    check(png as bool, "readPng");
+    if png {
+        check(png.length > 8 && png[1] == b"P" && png[2] == b"N" && png[3] == b"G", "readPng gives a PNG file");
+        let rewritten = clipboard.writePng(png);
+        check(rewritten as bool, "writePng of that file");
+        let again = clipboard.readPng();
+        if again {
+            check(again == png, "a PNG file is stored byte for byte");
+        }
+    }
+
+    // A grey picture keeps working through the RGBA-only paths.
+    let grey = image.Image.fromPixels(2, 1, 1, bytesOf([0, 200]));
+    clipboard.writeImage(grey);
+    let greyBack = clipboard.readImage();
+    if greyBack {
+        checkEqInt(greyBack.channels, 4, "read back as RGBA");
+        check(greyBack.pixels[4] == 200 as u8 && greyBack.pixels[7] == 255 as u8, "grey expanded");
+    }
+
+    // A single byte of pixels is the Bytes edge case (it may be held inline).
+    let tiny = image.Image.fromPixels(1, 1, 1, Bytes(77 as u8));
+    check(clipboard.writeImage(tiny) as bool, "1x1 grey picture");
+    let tinyBack = clipboard.readImage();
+    if tinyBack {
+        check(tinyBack.width == 1 && tinyBack.pixels[0] == 77 as u8, "1x1 grey round trip");
+    }
+
+    let bad = clipboard.writePng(Bytes("this is not a png"));
+    check(!bad, "writePng rejects a non-PNG");
+    if !bad {
+        check(bad.kind == clipboard.ErrorKind.InvalidData, "as InvalidData");
+    }
+}
+
+fn testCustom() {
+    section("custom types");
+    let payload = bytesOf([0, 1, 2, 255, 0, 42]);
+    let written = clipboard.write({
+        text: "fallback",
+        data: [
+            clipboard.Data { mimeType: "application/x-haze-test", data: payload },
+            clipboard.Data { mimeType: "application/json", data: Bytes("{\"a\":1}") },
+        ],
+    });
+    check(written as bool, "write custom types");
+    check(clipboard.has("application/x-haze-test"), "custom type listed");
+    let back = clipboard.readData("application/x-haze-test");
+    check(back as bool, "readData");
+    if back {
+        check(back == payload, "binary payload with NULs round trips");
+    }
+    let json = clipboard.readData("application/json");
+    if json {
+        checkEq(json.string(), "{\"a\":1}", "second custom type");
+    }
+    let missing = clipboard.readData("application/x-not-there");
+    check(!missing, "a missing type fails");
+    if !missing {
+        check(missing.kind == clipboard.ErrorKind.NotFound, "as NotFound");
+    }
+
+    let invalid = clipboard.write({ data: [clipboard.Data { mimeType: "no slash", data: payload }] });
+    check(!invalid, "a malformed MIME type is refused");
+    check(clipboard.supports("text/plain") && clipboard.supports("application/x-anything"), "supports well-formed types");
+    check(!clipboard.supports("nonsense") && !clipboard.supports(""), "supports rejects malformed ones");
+
+    // One byte is the Bytes edge case (it may be stored inline).
+    clipboard.write({ data: [clipboard.Data { mimeType: "application/x-one", data: Bytes(7 as u8) }] });
+    let one = clipboard.readData("application/x-one");
+    if one {
+        check(one.length == 1 && one[0] == 7 as u8, "single-byte payload");
+    }
+}
+
+fn testFiles() {
+    section("files");
+    let written = clipboard.writeFiles(["/tmp/clipboard test/a file.txt", "/tmp/b.txt"], true);
+    check(written as bool, "writeFiles");
+    check(clipboard.has("text/uri-list"), "files show as text/uri-list");
+    let files = clipboard.readFiles();
+    check(files as bool, "readFiles");
+    if files {
+        checkEqInt(files.paths.length, 2, "two paths");
+        if files.paths.length == 2 {
+            checkEq(files.paths[0], "/tmp/clipboard test/a file.txt", "path with spaces");
+            checkEq(files.paths[1], "/tmp/b.txt", "second path");
+        }
+        check(files.cut, "cut survives");
+    }
+    let uris = clipboard.readData("text/uri-list");
+    if uris {
+        checkEq(uris.string(), "file:///tmp/clipboard%20test/a%20file.txt\r\nfile:///tmp/b.txt\r\n", "raw uri-list");
+    }
+
+    clipboard.writeFiles(["/tmp/c.txt"]);
+    let copied = clipboard.readFiles();
+    if copied {
+        check(!copied.cut, "copy is not cut");
+    }
+
+    let relative = clipboard.writeFiles(["relative/path.txt"]);
+    check(!relative, "relative paths are refused");
+
+    clipboard.writeText("no files here");
+    let noFiles = clipboard.readFiles();
+    check(!noFiles, "no files in plain text");
+}
+
+fn testState() {
+    section("state");
+    let before = clipboard.changeCount();
+    clipboard.writeText("change");
+    waitForChange(before);
+    check(clipboard.changeCount() != before, "our own write moves the change count");
+
+    let cleared = clipboard.clear();
+    check(cleared as bool, "clear");
+    let after = clipboard.readText();
+    check(!after, "nothing to read after clear");
+    check(!clipboard.has("text/plain"), "has nothing after clear");
+    checkEqInt(clipboard.types().length, 0, "no types after clear");
+    check(!clipboard.isOwner(), "clear gives up ownership");
+
+    clipboard.write({ text: "hunter2", sensitive: true });
+    let secret = clipboard.readText();
+    if secret {
+        checkEq(secret, "hunter2", "sensitive text still pastes");
+    }
+    let types = clipboard.types();
+    check(contains(types, "text/plain") && types.length == 1, f"the sensitivity marker is not a type: {join(types)}");
+}
+
+fn testPrimary() {
+    section("primary selection");
+    check(clipboard.primary.isAvailable(), "available");
+    clipboard.writeText("in the clipboard");
+    let written = clipboard.primary.writeText("in the primary selection");
+    check(written as bool, "primary.writeText");
+    let primary = clipboard.primary.readText();
+    if primary {
+        checkEq(primary, "in the primary selection", "primary round trip");
+    }
+    let main = clipboard.readText();
+    if main {
+        checkEq(main, "in the clipboard", "the clipboard is independent");
+    }
+    check(clipboard.primary.has("text/plain"), "primary has text");
+}
+
+fn testInterop() {
+    section("interop with xclip");
+    clipboard.writeText("from haze ✓");
+    checkEq(capture("xclip -selection clipboard -o"), "from haze ✓", "xclip reads our text");
+    clipboard.write({ html: "<b>x</b>" });
+    checkEq(capture("xclip -selection clipboard -o -t text/html"), "<meta charset='utf-8'><b>x</b>",
+            "html carries its charset like Chromium's");
+
+    let before = clipboard.changeCount();
+    check(shell("printf 'from xclip \\303\\251' | xclip -selection clipboard -i"), "xclip -i");
+    waitForChange(before);
+    check(clipboard.changeCount() != before, "a foreign copy moves the change count");
+    check(!clipboard.isOwner(), "and we are no longer the owner");
+    let text = clipboard.readText();
+    if text {
+        checkEq(text, "from xclip é", "we read xclip's text");
+    }
+
+    // A 2x1 24-bit BMP, as older programs put on the clipboard: it must be
+    // offered as image/png and converted on the way in.
+    let bmp = bytesOf([
+        66, 77, 62, 0, 0, 0, 0, 0, 0, 0, 54, 0, 0, 0,
+        40, 0, 0, 0, 2, 0, 0, 0, 1, 0, 0, 0, 1, 0, 24, 0, 0, 0, 0, 0, 8, 0, 0, 0,
+        19, 11, 0, 0, 19, 11, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        255, 0, 0, 0, 0, 255, 0, 0,
+    ]);
+    fs.writeBinary("/tmp/haze-clipboardtest.bmp", bmp);
+    before = clipboard.changeCount();
+    check(shell("xclip -selection clipboard -t image/bmp -i < /tmp/haze-clipboardtest.bmp"), "xclip -i bmp");
+    waitForChange(before);
+    check(clipboard.has("image/png"), "a BMP is offered as image/png");
+    check(clipboard.has("image/bmp"), "and under its own name");
+    let picture = clipboard.readImage();
+    check(picture as bool, "readImage converts the BMP");
+    if picture {
+        checkEqInt(picture.width, 2, "bmp width");
+        check(picture.pixels[2] == 255 as u8 && picture.pixels[4] == 255 as u8 && picture.pixels[5] == 0 as u8, "bmp colours (blue, then red)");
+    }
+    let png = clipboard.readPng();
+    check(png as bool, "readPng converts the BMP");
+    if png {
+        check(png[1] == b"P", "into a PNG file");
+    }
+}
+
+fn testAllocation() {
+    section("allocation");
+    clipboard.writeText("steady");
+    // Warm up: the first call fills the types cache.
+    clipboard.has("text/plain");
+    clipboard.changeCount();
+    let start = totalAllocatedBytes();
+    let hits = 0;
+    for (let i = 0; i < 10000; i++) {
+        if clipboard.has("text/plain") && !clipboard.has("image/png") {
+            hits = hits + 1;
+        }
+        clipboard.changeCount();
+        clipboard.isOwner();
+        clipboard.isAvailable();
+    }
+    let allocated = totalAllocatedBytes() - start;
+    checkEqInt(hits, 10000, "has() answers correctly from the cache");
+    checkEqInt(allocated, 0, "per-frame queries allocate nothing (bytes over 10000 frames)");
+}
+
+fn main(): int {
+    fmt.println(f"clipboard backend: {clipboard.backendName()}");
+    if !clipboard.isAvailable() {
+        fmt.println("no clipboard available (on Linux: is DISPLAY set?)");
+        return 1;
+    }
+
+    testText();
+    testRich();
+    testImages();
+    testCustom();
+    testFiles();
+    testState();
+    if sys.isLinux() {
+        testPrimary();
+        if shell("command -v xclip >/dev/null 2>&1") {
+            testInterop();
+        }
+        else {
+            fmt.println("— interop with xclip: skipped (xclip not installed)");
+        }
+    }
+    testAllocation();
+
+    fmt.println("");
+    if failures == 0 {
+        fmt.println(f"{checks} checks passed");
+        return 0;
+    }
+    fmt.println(f"{failures} of {checks} checks FAILED");
+    return 1;
+}

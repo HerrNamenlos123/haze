@@ -1,10 +1,10 @@
-
 __c__("#include \"ffi/haze_image.c\"");
 export __c__("#include \"ffi/public/haze_image.h\"");
 
 namespace ffi {
     export extern C fn haze_image_load_memory(data: cptr, length: int, desiredChannels: int): haze_image_result_t :: final;
     export extern C fn haze_image_failure_reason(): str :: final;
+    export extern C fn haze_image_encode_png(pixels: cptr, width: int, height: int, channels: int): haze_image_png_result_t :: final;
 
     export extern C noemit struct haze_image_result_t {
         pixels: cptr;
@@ -13,6 +13,15 @@ namespace ffi {
         channels: int;
         sourceChannels: int;
     }
+
+    export extern C noemit struct haze_image_png_result_t {
+        data: cptr;
+        length: int;
+    }
+}
+
+export ref struct Error {
+    message: str;
 }
 
 // Decoded once at construction into GC-owned memory (see haze_image.c) --
@@ -30,6 +39,10 @@ export opaque ref struct Image {
     // desiredChannels: 0 keeps whatever channel count the file itself has
     // (see Image.sourceChannels); 1=grey, 2=grey+alpha, 3=RGB, 4=RGBA.
     // Defaults to RGBA since that's what a GPU texture upload usually wants.
+    //
+    // Both constructors panic on a file that doesn't decode, which suits
+    // assets shipped with the program. For data from outside -- a download,
+    // a paste -- use decode(), which reports it instead.
     fn constructor(path: str, desiredChannels: int = 4) {
         if let d = fs.readBinary(path) {
             return Image.fromMemory(path, d, desiredChannels);
@@ -42,33 +55,125 @@ export opaque ref struct Image {
     }
 
     static fn fromMemory(label: str, data: Bytes, desiredChannels: int): Image {
+        let decoded = Image.decode(data, desiredChannels);
+        if decoded {
+            return decoded;
+        }
+        sys.panic(f"Failed to decode image '{label}': {decoded.message}");
+    }
+
+    // The body of decode() below; a method because an opaque struct can only
+    // be built inside its own definition.
+    static fn decode(data: Bytes, desiredChannels: int): Result<Image, Error> {
+        if desiredChannels < 0 || desiredChannels > 4 {
+            return Error { message: f"desiredChannels must be 0 to 4, not {desiredChannels}" };
+        }
+
+        // A one-byte Bytes holds its byte inline and has no buffer to point
+        // at; hand C a pointer to a copy instead.
+        let single: u8 = 0;
         let ptr = none as cptr;
-        let length = 0;
-        __c__("ptr = data.basePtr + data.offset;");
-        __c__("length = data.length;");
+        let length = data.length;
+        if length == 1 {
+            single = data[0];
+            __c__("ptr = &single;");
+        }
+        else {
+            __c__("ptr = data.basePtr + data.offset;");
+        }
 
         let result = ffi.haze_image_load_memory(ptr, length, desiredChannels);
 
         let valid = false;
         __c__("valid = result.pixels != NULL;");
         if !valid {
-            let reason = ffi.haze_image_failure_reason();
-            sys.panic(f"Failed to decode image '{label}': {reason}");
+            return Error { message: ffi.haze_image_failure_reason() };
         }
 
         do unsafe {
-            let pixels: Bytes = uninitialized;
+            // Bytes() rather than `uninitialized`: the pointer fields are set
+            // below, but a Bytes also carries an inline single-byte form, and
+            // left uninitialized that reads as set -- every index and every
+            // comparison would then see one garbage byte instead of the buffer.
+            let pixels = Bytes();
             __c__("pixels.basePtr = result.pixels;");
             __c__("pixels.offset = 0;");
             __c__("pixels.length = result.width * result.height * result.channels;");
 
-            return Image {
+            let image = Image {
                 width: result.width,
                 height: result.height,
                 channels: result.channels,
                 sourceChannels: result.sourceChannels,
                 pixels: pixels,
             };
+            return Result<Image, Error>.Ok(image);
         };
     }
+
+    // Wraps pixels that are already decoded -- rendered, captured, or taken
+    // from a clipboard bitmap -- in the same layout decoding produces:
+    // width * height * channels bytes, rows top to bottom. Panics if the
+    // buffer is the wrong size for the dimensions, which is a programming
+    // error rather than bad input.
+    static fn fromPixels(width: int, height: int, channels: int, pixels: Bytes): Image {
+        if width <= 0 || height <= 0 || channels < 1 || channels > 4 {
+            sys.panic(f"Image.fromPixels: invalid shape {width}x{height} with {channels} channels");
+        }
+        if pixels.length != width * height * channels {
+            sys.panic(f"Image.fromPixels: {width}x{height}x{channels} needs {width * height * channels} bytes, got {pixels.length}");
+        }
+        return Image {
+            width: width,
+            height: height,
+            channels: channels,
+            sourceChannels: channels,
+            pixels: pixels,
+        };
+    }
+}
+
+// Decodes an image file held in memory: PNG, JPEG, BMP, GIF (first frame),
+// TGA, PSD, PNM. desiredChannels works as in the Image constructors.
+export fn decode(data: Bytes, desiredChannels: int = 4): Result<Image, Error> {
+    return Image.decode(data, desiredChannels);
+}
+
+// Encodes an image as a PNG file, keeping its channel count (grey, grey with
+// alpha, RGB or RGBA).
+export fn encodePng(img: Image): Result<Bytes, Error> {
+    if img.width <= 0 || img.height <= 0 || img.channels < 1 || img.channels > 4 {
+        return Error { message: f"cannot encode a {img.width}x{img.height} image with {img.channels} channels" };
+    }
+    if img.pixels.length != img.width * img.height * img.channels {
+        return Error { message: f"pixel buffer holds {img.pixels.length} bytes, the image needs {img.width * img.height * img.channels}" };
+    }
+
+    let pixels = img.pixels;
+    let single: u8 = 0;
+    let ptr = none as cptr;
+    if pixels.length == 1 {
+        // A 1x1 grey image: the byte may be held inline (see decode).
+        single = pixels[0];
+        __c__("ptr = &single;");
+    }
+    else {
+        __c__("ptr = pixels.basePtr + pixels.offset;");
+    }
+
+    let result = ffi.haze_image_encode_png(ptr, img.width, img.height, img.channels);
+
+    let valid = false;
+    __c__("valid = result.data != NULL;");
+    if !valid {
+        return Error { message: "PNG encoding failed" };
+    }
+
+    do unsafe {
+        let png = Bytes();
+        __c__("png.basePtr = result.data;");
+        __c__("png.offset = 0;");
+        __c__("png.length = result.length;");
+        return Result<Bytes, Error>.Ok(png);
+    };
 }
