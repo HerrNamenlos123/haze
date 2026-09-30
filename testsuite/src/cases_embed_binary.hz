@@ -1,0 +1,101 @@
+// ============================================================================
+// REGRESSION TEST — this is a real, load-bearing test, not a placeholder.
+//
+// Bug: embed.binary() built its Bytes with a C compound literal naming only
+// basePtr, offset and length. The literal zeroes every other member, and
+// Bytes has one more, `singleByte: u8 | none`, whose tag 0 is the u8 -- so
+// every embedded file came out as "one inline byte, 0". C code that reads
+// basePtr directly (image.decode) still saw the file, which is why it went
+// unnoticed; everything that goes through Bytes itself -- indexing, slices,
+// string(), ByteBuffer.push, a FileWriter -- saw a single zero byte. A PDF
+// exporter copying an embedded JPEG into its output wrote 150 KB of zeros.
+//
+// Fix: the synthetic function starts from Bytes(), like every other place
+// that wraps a C buffer (see image.hz), and only sets the three fields.
+//
+// Multi-module so the case has a fixed file layout to embed (src/main.hz,
+// embedlib/src/lib.hz), and so embedding in a dependency is covered too.
+// ============================================================================
+
+namespace cases_embed_binary {
+
+    export fn register(s: mut testsuite.Suite) {
+
+        s.runWithModules(
+            "embed binary: the Bytes read back as the file, however they are used",
+            [
+                testsuite.TestModule {
+                    name: "embedlib",
+                    source: """
+// The first line of this file, read back through embed.binary.
+export fn ownSource(): Bytes {
+    return embed.binary("src/lib.hz");
+}
+
+export fn ownText(): str {
+    return embed.text("src/lib.hz");
+}
+""",
+                },
+            ],
+            """
+import embedlib;
+
+fn sameAsText(bytes: Bytes, text: str): bool {
+    if bytes.length != text.length {
+        return false;
+    }
+    for (let i = 0; i < bytes.length; i++) {
+        if bytes[i] != text[i] {
+            return false;
+        }
+    }
+    return true;
+}
+
+fn firstNonNewline(bytes: Bytes): int {
+    let i = 0;
+    while i < bytes.length && (bytes[i] == b"\n" || bytes[i] == b"\r") {
+        i += 1;
+    }
+    return i;
+}
+
+fn main(): int {
+    let bytes = embed.binary("src/main.hz");
+    let text = embed.text("src/main.hz");
+
+    // Indexing reads the file, not one stray byte.
+    assert(bytes.length == text.length);
+    assert(bytes.length > 100);
+    assert(sameAsText(bytes, text));
+    // The first line is "import embedlib;".
+    assert(bytes[firstNonNewline(bytes)] == b"i");
+
+    // As a string, and sliced.
+    assert(bytes.string() == text);
+    let tail = bytes.slice(7, bytes.length);
+    assert(tail[0] == text[7]);
+    assert(tail.length == text.length - 7);
+
+    // Copied through a ByteBuffer -- what a FileWriter does with it.
+    let copy = ByteBuffer();
+    copy.push(bytes);
+    copy.commit();
+    assert(sameAsText(copy.bytes(), text));
+    assert(copy.bytes() == bytes);
+
+    // Embedded in a dependency.
+    let lib = embedlib.ownSource();
+    assert(sameAsText(lib, embedlib.ownText()));
+    // Its first line is a comment.
+    assert(lib[firstNonNewline(lib)] == b"/");
+
+    fmt.println("ok");
+    return 0;
+}
+""",
+            "ok\n",
+        );
+    }
+}

@@ -110,6 +110,9 @@ ref struct Tile {
     hasContent: bool = false;
     // Its picture is outdated or missing, so it has to be drawn (again).
     dirty: bool = true;
+    // It was drawn without images that were still loading, so it is drawn
+    // again once they are there.
+    waitingForImages: bool = false;
 
     fn constructor(gfx: mut renderer.gfx.Context) {
         return Tile {
@@ -140,6 +143,7 @@ ref struct Tile {
         this.localSize = size;
         this.hasContent = false;
         this.dirty = true;
+        this.waitingForImages = false;
     }
 
     fn isAt(level: int, tx: int, ty: int): bool {

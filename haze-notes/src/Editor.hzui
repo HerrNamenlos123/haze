@@ -37,6 +37,7 @@ ui.watch(() => rx.get(currentDocumentPath), (old, new) => {
 // spread the save over, but the window is already gone.
 onExit(() => {
     controls.finishSaves();
+    controls.finishExport();
 });
 
 let loadingText = computed((): str => {
@@ -163,6 +164,12 @@ div if=sidepanelOpen [absolute col top-0 left-0 h-grow w-[props.cache.data.sidep
     }
 
     FileTree if=[props.cache.data.vault] [] expandedEntries=[props.cache.data.expandedFolders] entries=[props.cache.data.vault.entries] @select=openFile {}
+
+    // Asks where to, then exports the open document as a PDF -- see
+    // EditorControls.exportPdf.
+    div if=[rx.get(controls.documentOpen)] [w-grow justify-center pt-2] {
+        Button [] icon="file-pdf" label=[rx.get(controls.exportLabel)] enabled=[!rx.get(controls.exportBusy)] @click=[() => { controls.exportPdf(); }] {}
+    }
 }
 
 div else [absolute top-0 left-0 p-4] {

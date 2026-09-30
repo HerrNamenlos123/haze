@@ -1,0 +1,524 @@
+import pdf
+import image
+import base64
+
+// Exporting a document as a PDF, a piece per frame.
+//
+// The drawing is the web app's (technicalsketcher.web, store.ts
+// exportDocumentAsPdf, which drew it with pdf-lib), operator for operator, so
+// a document exports the same from both:
+//
+//   - the paper texture covers the page, stretched, and upside down (pdf-lib
+//     drew it with a negative height).
+//   - ruled lines every 10 mm from the top edge, 0.2 thick, in gridColor,
+//     whatever the gridType.
+//   - a stroke is its outline as the SVG path "M p0 Q p1 m12 Q p2 m23 ... Z"
+//     (m12 the midpoint of p1 and p2), filled; pdf-lib writes each Q as the
+//     `v` operator, a cubic curve whose first control point is the current
+//     point -- so that is what is written here, not a true quadratic.
+//   - pages without shapes are left out, and text blocks draw nothing.
+//
+// What differs: a page is its real size -- the web app made a page size_mm
+// POINTS, 210 x 297 pt for A4, a quarter of an A4 sheet by area; here the
+// same drawing is scaled up to 210 x 297 mm. And, invisibly, the texture goes
+// in as the JPEG it is (pdf-lib re-encoded its decoded pixels, a few MB per
+// file), and a pasted JPEG is embedded too, where pdf-lib failed the whole
+// export.
+
+// The web app's ruled lines -- store.ts gridLineDistanceMm and
+// gridLineThicknessMm -- and its DEFAULT_GRID_COLOR, for a gridColor that
+// does not parse.
+const comptime pdfGridLineDistanceMm = 10.0;
+const comptime pdfGridLineThicknessMm = 0.2;
+const comptime pdfDefaultGridColor = "#5252524f";
+// A PDF measures in points, 72 to the inch; a page is drawn in mm.
+const comptime pdfPointsPerMm = 72.0 / 25.4;
+// Decimal places of the numbers written. pdf-lib wrote every coordinate in
+// full; at 8 places a page renders pixel for pixel the same as the web app's
+// export, where the pdf module's default of 4 moves the odd antialiased edge
+// pixel by a shade.
+const comptime pdfDecimals = 8;
+// Outline points a stroke is drawn with between checks of the step's
+// deadline: a long stroke has thousands.
+const comptime pdfStrokePointsPerRound = 128;
+// zlib level. Page content is mostly the digits of coordinates, which level
+// 6 packs only 5% tighter than level 1, at 2.6 times the time.
+const comptime pdfCompressionLevel = 1;
+
+// A color as the web app's parseColor read it: channels 0 to 255, alpha 0
+// to 1.
+struct ExportColor {
+    r: real = 0.0;
+    g: real = 0.0;
+    b: real = 0.0;
+    a: real = 1.0;
+}
+
+fn colorHexDigit(c: u8): int {
+    let v = c as int;
+    if v >= 48 && v <= 57 { return v - 48; }
+    if v >= 97 && v <= 102 { return v - 87; }
+    if v >= 65 && v <= 70 { return v - 55; }
+    return -1;
+}
+
+// Two hex digits at `at`, or -1.
+fn colorHexByte(text: str, at: int): int {
+    let high = colorHexDigit(text[at]);
+    let low = colorHexDigit(text[at + 1]);
+    if high < 0 || low < 0 {
+        return -1;
+    }
+    return high * 16 + low;
+}
+
+fn colorIsSpace(c: u8): bool {
+    return c == b" " || c == b"\t" || c == b"\n" || c == b"\r";
+}
+
+fn colorIsDigit(c: u8): bool {
+    return c >= b"0" && c <= b"9";
+}
+
+// Reads "rgba(r, g, b, a)" the way the web app did: it had to start with
+// "rgba(", then its regex took whole numbers of up to three digits and an
+// alpha of 0, 1 or 0?.digits.
+fn parseRgba(text: str): ExportColor | none {
+    let prefix = "rgba(";
+    if text.length < prefix.length || text.slice(0, prefix.length) != prefix {
+        return none;
+    }
+    let pos = prefix.length;
+    let channels: []real = [];
+    for (let k = 0; k < 3; k++) {
+        while pos < text.length && colorIsSpace(text[pos]) { pos += 1; }
+        let start = pos;
+        let value = 0;
+        while pos < text.length && colorIsDigit(text[pos]) && pos - start < 3 {
+            value = value * 10 + (text[pos] as int - 48);
+            pos += 1;
+        }
+        if pos == start {
+            return none;
+        }
+        while pos < text.length && colorIsSpace(text[pos]) { pos += 1; }
+        if pos >= text.length || text[pos] != b"," {
+            return none;
+        }
+        pos += 1;
+        channels.push(value as real);
+    }
+    while pos < text.length && colorIsSpace(text[pos]) { pos += 1; }
+
+    let alpha = -1.0;
+    if pos < text.length && (text[pos] == b"1" || text[pos] == b"0") && (pos + 1 >= text.length || text[pos + 1] != b".") {
+        alpha = text[pos] == b"1" ? 1.0 : 0.0;
+        pos += 1;
+    }
+    else {
+        if pos < text.length && text[pos] == b"0" {
+            pos += 1;
+        }
+        if pos >= text.length || text[pos] != b"." {
+            return none;
+        }
+        pos += 1;
+        let digitsStart = pos;
+        alpha = 0.0;
+        let scale = 0.1;
+        while pos < text.length && colorIsDigit(text[pos]) {
+            alpha = alpha + (text[pos] as int - 48) as real * scale;
+            scale = scale / 10.0;
+            pos += 1;
+        }
+        if pos == digitsStart {
+            return none;
+        }
+    }
+    while pos < text.length && colorIsSpace(text[pos]) { pos += 1; }
+    if pos >= text.length || text[pos] != b")" {
+        return none;
+    }
+    return ExportColor { r: channels[0], g: channels[1], b: channels[2], a: alpha };
+}
+
+// The web app's parseColor: "rgba(...)", "#RGB", "#RRGGBB" or "#RRGGBBAA".
+// It threw on anything else, failing the export; here that is none.
+fn parseExportColor(color: str): ExportColor | none {
+    let start = 0;
+    let end = color.length;
+    while start < end && colorIsSpace(color[start]) { start += 1; }
+    while end > start && colorIsSpace(color[end - 1]) { end -= 1; }
+    let text = color.slice(start, end);
+    if text.length == 0 {
+        return none;
+    }
+    if text[0] == b"r" {
+        return parseRgba(text);
+    }
+    if text[0] != b"#" {
+        return none;
+    }
+    if text.length == 4 {
+        let r = colorHexDigit(text[1]);
+        let g = colorHexDigit(text[2]);
+        let b = colorHexDigit(text[3]);
+        if r < 0 || g < 0 || b < 0 {
+            return none;
+        }
+        return ExportColor { r: (r * 17) as real, g: (g * 17) as real, b: (b * 17) as real, a: 1.0 };
+    }
+    if text.length == 7 || text.length == 9 {
+        let r = colorHexByte(text, 1);
+        let g = colorHexByte(text, 3);
+        let b = colorHexByte(text, 5);
+        let a = text.length == 9 ? colorHexByte(text, 7) : 255;
+        if r < 0 || g < 0 || b < 0 || a < 0 {
+            return none;
+        }
+        return ExportColor { r: r as real, g: g as real, b: b as real, a: a as real / 255.0 };
+    }
+    return none;
+}
+
+// pdf-lib's rgb() only takes 0 to 1; the web app passed channel / 255.
+fn unitChannel(value: real): real {
+    return min(max(value / 255.0, 0.0), 1.0);
+}
+
+// Where the web app put a document's PDF: beside it, with .pdf for its
+// extension -- the export dialog's suggestion.
+fn pdfPathFor(documentPath: str): str {
+    for (let i = documentPath.length - 1; i >= 0; i--) {
+        let c = documentPath[i];
+        if c == b"/" || c == b"\\" {
+            break;
+        }
+        if c == b"." {
+            if i < documentPath.length - 1 && i > 0 && documentPath[i - 1] != b"/" && documentPath[i - 1] != b"\\" {
+                return f"{documentPath.slice(0, i)}.pdf";
+            }
+            break;
+        }
+    }
+    return f"{documentPath}.pdf";
+}
+
+// `path`, ending in .pdf -- the save dialog does not add it when a name is
+// typed without it.
+fn withPdfExtension(path: str): str {
+    let n = path.length;
+    if n >= 4 && path[n - 4] == b"." {
+        let p = path[n - 3];
+        let d = path[n - 2];
+        let f = path[n - 1];
+        if (p == b"p" || p == b"P") && (d == b"d" || d == b"D") && (f == b"f" || f == b"F") {
+            return path;
+        }
+    }
+    return f"{path}.pdf";
+}
+
+// Writes `doc` to `path` as a PDF, a few shapes per step() -- like
+// DocumentSave, it exports the pages' shapes as they were when it began,
+// each as it is when its turn comes. The file is written beside `path` and
+// moved over it once complete, so a failed export leaves what was there.
+ref struct PdfExport {
+    path: str;
+    pageWidth: real;
+    pageHeight: real;
+    gridColor: ExportColor;
+    pages: [][]Shape;
+    totalShapes: int = 0;
+    doneShapes: int = 0;
+
+    writer?: mut pdf.Writer;
+    texture: pdf.Image | none = none;
+    // Images by their base64ImageData, embedded once however often pasted.
+    images: LinearMap<str, pdf.Image> = {};
+    // Images that could not be embedded, which are left out.
+    skipped: LinearMap<str, bool> = {};
+    // The image being embedded, which the page waits for.
+    decoding: image.ImageDecode | none = none;
+    encoder?: mut pdf.ImageEncoder;
+    imageKey: str = "";
+
+    page: int = 0;
+    shape: int = 0;
+    current?: mut pdf.Page;
+    // The stroke being drawn, and the next of its outline points -- 0 while
+    // none is. Its own outline, so an edit to the shape meanwhile cannot
+    // change it half way.
+    strokeOutline: []Vec2 = [];
+    strokePoint: int = 0;
+    finished: bool = false;
+    failed: bool = false;
+
+    fn constructor(path: str, doc: DocumentFile): mut PdfExport {
+        let pages: [][]Shape = [];
+        let total = 0;
+        for page in doc.data.pages {
+            let shapes: []Shape = [];
+            shapes.reserve(page.shapes.length);
+            for shape in page.shapes {
+                shapes.push(shape);
+            }
+            total += shapes.length;
+            pages.push(shapes);
+        }
+        let grid = parseExportColor(doc.data.gridColor);
+        if !grid {
+            grid = parseExportColor(pdfDefaultGridColor);
+        }
+        let gridColor: ExportColor = {};
+        if let g = grid {
+            gridColor = g;
+        }
+        return PdfExport {
+            path: path,
+            pageWidth: doc.data.pageWidthMm,
+            pageHeight: doc.data.pageHeightMm,
+            gridColor: gridColor,
+            pages: pages,
+            totalShapes: total,
+        };
+    }
+
+    // How far along it is, 0 to 1 -- for a progress display.
+    fn progress(): real {
+        if this.finished || this.totalShapes == 0 {
+            return 1.0;
+        }
+        return this.doneShapes as real / this.totalShapes as real;
+    }
+
+    fn temporaryPath(): str {
+        return f"{this.path}.exporting";
+    }
+
+    mut fn fail(message: str) {
+        fmt.println(f"Failed to export {this.path}: {message}");
+        this.failed = true;
+        this.finished = true;
+    }
+
+    // Exports until `deadline` (time.now() seconds). True once the export is
+    // over -- done or failed.
+    mut fn step(deadline: real): bool {
+        if this.finished {
+            return true;
+        }
+        if !this.writer {
+            let created = pdf.createFile(this.temporaryPath(), { decimals: pdfDecimals, compressionLevel: pdfCompressionLevel });
+            if created is pdf.Error {
+                this.fail(created.message);
+                return true;
+            }
+            this.writer = created;
+        }
+        let writer = this.writer;
+        assert(writer);
+        if !this.texture {
+            let jpeg = writer.addJpeg(embed.binary("resources/paper-texture.jpg"));
+            if !jpeg {
+                this.fail(f"paper texture: {jpeg.message}");
+                return true;
+            }
+            this.texture = jpeg;
+        }
+
+        while this.page < this.pages.length {
+            let shapes = this.pages[this.page];
+            // The web app skipped a page with nothing on it -- counting a
+            // text block, which then draws nothing.
+            if shapes.length == 0 {
+                this.page += 1;
+                continue;
+            }
+            if !this.current {
+                let begun = writer.beginPage(this.pageWidth * pdfPointsPerMm, this.pageHeight * pdfPointsPerMm);
+                // Everything on the page is drawn in its mm from here on.
+                begun.scale(pdfPointsPerMm, pdfPointsPerMm);
+                this.current = begun;
+                this.drawPaper();
+            }
+            let page = this.current;
+            assert(page);
+            while this.shape < shapes.length {
+                let shape = shapes[this.shape];
+                if shape is LineShape {
+                    if !this.drawStroke(page, shape, deadline) {
+                        return false;
+                    }
+                }
+                else if shape is ImageShape {
+                    // Waits, over as many steps as it takes, for the image
+                    // to be embedded.
+                    if !this.embedImage(writer, shape, deadline) {
+                        return false;
+                    }
+                    if let img = this.images.get(shape.base64ImageData) {
+                        page.drawImage(img, shape.position.x, this.pageHeight - shape.size.y - shape.position.y, shape.size.x, shape.size.y);
+                    }
+                }
+                this.shape += 1;
+                this.doneShapes += 1;
+                if time.now() >= deadline {
+                    return false;
+                }
+            }
+            writer.endPage(page);
+            if !writer.ok() {
+                this.fail("cannot write the file");
+                return true;
+            }
+            this.current = none;
+            this.shape = 0;
+            this.page += 1;
+            if time.now() >= deadline {
+                return false;
+            }
+        }
+
+        let result = writer.finish();
+        if !result {
+            this.fail(result.message);
+            return true;
+        }
+        if !fs.move(this.temporaryPath(), this.path, { overwrite: true }) {
+            this.fail("cannot replace the file");
+            return true;
+        }
+        this.finished = true;
+        return true;
+    }
+
+    // Exports the rest now, however long it takes -- when the app is closing.
+    mut fn finish() {
+        while !this.step(time.now() + 1000000.0) {}
+    }
+
+    // The texture and the ruled lines, as pdf-lib drew them.
+    mut fn drawPaper() {
+        let page = this.current;
+        assert(page);
+        let w = this.pageWidth;
+        let h = this.pageHeight;
+        if let texture = this.texture {
+            page.drawImage(texture, 0.0, h, w, -h);
+        }
+        let c = this.gridColor;
+        for (let y = 0.0; y < h; y += pdfGridLineDistanceMm) {
+            page.save();
+            page.setStrokeOpacity(c.a);
+            page.setStrokeColor(unitChannel(c.r), unitChannel(c.g), unitChannel(c.b));
+            page.setLineWidth(pdfGridLineThicknessMm);
+            page.moveTo(0.0, h - y);
+            page.lineTo(w, h - y);
+            page.stroke();
+            page.restore();
+        }
+    }
+
+    // A stroke's outline, filled, in the page's own mm with y down -- the
+    // flip is the transform, as pdf-lib's drawSvgPath did it. Draws until
+    // `deadline`; false if the stroke is not finished yet -- call again, it
+    // goes on where it stopped.
+    mut fn drawStroke(page: mut pdf.Page, shape: LineShape, deadline: real): bool {
+        if this.strokePoint == 0 {
+            let outline = shape.getOutline();
+            if outline.length == 0 {
+                return true;
+            }
+            let color: ExportColor = {};
+            if let parsed = parseExportColor(shape.penColor) {
+                color = parsed;
+            }
+            page.save();
+            page.setFillOpacity(color.a);
+            page.translate(0.0, this.pageHeight);
+            page.scale(1.0, -1.0);
+            page.setFillColor(unitChannel(color.r), unitChannel(color.g), unitChannel(color.b));
+            page.moveTo(outline[0].x, outline[0].y);
+            this.strokeOutline = outline;
+            this.strokePoint = 1;
+        }
+        let outline = this.strokeOutline;
+        let last = outline.length - 1;
+        while this.strokePoint < last {
+            let end = min(this.strokePoint + pdfStrokePointsPerRound, last);
+            for (let i = this.strokePoint; i < end; i++) {
+                let p = outline[i];
+                let next = outline[i + 1];
+                page.curveToV(p.x, p.y, (p.x + next.x) / 2.0, (p.y + next.y) / 2.0);
+            }
+            this.strokePoint = end;
+            if end < last && time.now() >= deadline {
+                return false;
+            }
+        }
+        page.closePath();
+        page.fill();
+        page.restore();
+        this.strokeOutline = [];
+        this.strokePoint = 0;
+        return true;
+    }
+
+    // Makes sure the shape's image is in the file. False while it is still
+    // being decoded or compressed: call again on the next step.
+    mut fn embedImage(writer: mut pdf.Writer, shape: ImageShape, deadline: real): bool {
+        let key = shape.base64ImageData;
+        if this.images.has(key) || this.skipped.has(key) {
+            return true;
+        }
+        if let encoder = this.encoder {
+            if !encoder.step(deadline) {
+                return false;
+            }
+            this.images.set(this.imageKey, encoder.result());
+            this.encoder = none;
+            return true;
+        }
+        if let decoding = this.decoding {
+            if !decoding.done() {
+                return false;
+            }
+            this.decoding = none;
+            let decoded = decoding.result();
+            if !decoded {
+                fmt.println(f"PDF export: an image did not decode: {decoded.message}");
+                this.skipImage(key);
+                return true;
+            }
+            let pixels: image.Image = decoded;
+            this.imageKey = key;
+            this.encoder = writer.addImage(pixels);
+            return false;
+        }
+
+        let data = base64.decode(stripDataUrlPrefix(key));
+        if !data {
+            fmt.println(f"PDF export: an image is not valid base64: {data.message}");
+            this.skipImage(key);
+            return true;
+        }
+        let bytes: Bytes = data;
+        // A JPEG goes in as it is. pdf-lib only took PNGs, and failed the
+        // whole export on anything else.
+        if bytes.length > 2 && bytes[0] == 0xFF && bytes[1] == 0xD8 {
+            let jpeg = writer.addJpeg(bytes);
+            if jpeg {
+                this.images.set(key, jpeg);
+                return true;
+            }
+        }
+        this.decoding = image.decodeAsync(bytes, 4);
+        return false;
+    }
+
+    // An image that cannot be embedded is left out, rather than the export.
+    mut fn skipImage(key: str) {
+        this.skipped.set(key, true);
+    }
+}

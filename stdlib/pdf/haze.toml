@@ -1,0 +1,12 @@
+name = "pdf"
+id = "AYiV5e9D"
+version = "1.0.0"
+description = "Writing PDF files: pages of vector paths and images, streamed out an object at a time"
+license = "MIT"
+authors = ["HerrNamenlos123"]
+type = "lib"
+
+[dependencies]
+zlib = { path = "../zlib" }
+# addImage takes decoded pixels as an image.Image.
+image = { path = "../image" }

@@ -144,7 +144,9 @@ int runCommandArray(char** stdOut, int* stdOutByteCount, int* returnCode, int in
           *stdOutByteCount = dataReadFromChildUsed;
         }
         if (returnCode != NULL) {
-          *returnCode = WEXITSTATUS(status);
+          // A child killed by a signal has no exit status; WEXITSTATUS
+          // would read 0, success.
+          *returnCode = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
         }
 
         return COMMAND_RAN_OK;

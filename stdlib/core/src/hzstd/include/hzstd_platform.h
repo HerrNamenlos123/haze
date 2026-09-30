@@ -42,6 +42,14 @@ void hzstd_wait_for_semaphore(hzstd_semaphore_t *semaphore);
 // non-blocking poll, useful for draining an already-signaled semaphore.
 bool hzstd_wait_for_semaphore_timed(hzstd_semaphore_t *semaphore, uint64_t timeout_ns);
 
+// Runs fn(arg) on a thread of its own, which ends when fn returns: for C work
+// too slow for the thread that would otherwise wait for it (decoding an image,
+// filtering pixels). fn must not run Haze code. It may allocate from the GC
+// heap -- the thread is registered with the collector -- and whatever `arg`
+// points at stays alive while it runs. Returns false, without running fn,
+// if no thread could be started.
+bool hzstd_run_on_worker_thread(void (*fn)(void *arg), void *arg);
+
 void hzstd_initialize_platform(void);
 _Noreturn void hzstd_block_thread_forever(void);
 void hzstd_setup_panic_handler(void);

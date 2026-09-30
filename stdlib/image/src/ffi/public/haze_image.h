@@ -17,4 +17,8 @@ typedef struct {
   hzstd_int_t length;
 } haze_image_png_result_t;
 
+// An image being decoded on a worker thread. GC-owned: it holds the encoded
+// bytes for the worker, and the decoded pixels once it is done.
+typedef struct haze_image_decode_job_t haze_image_decode_job_t;
+
 #endif // HAZE_IMAGE_H

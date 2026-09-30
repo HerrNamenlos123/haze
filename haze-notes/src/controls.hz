@@ -1,5 +1,6 @@
 import ui_components
 import renderer
+import filedialog
 
 // Everything the editor does with the pen, the mouse, fingers and the
 // keyboard: drawing, erasing, lasso and tap selection, moving and resizing a
@@ -45,6 +46,10 @@ const comptime saveMaxDelaySeconds = 5.0;
 // there), a save runs beside the editing.
 const comptime saveBudgetSeconds = 0.003;
 const comptime loadBudgetSeconds = 0.008;
+// How long a frame may spend exporting a PDF -- see pdfexport.hz.
+const comptime exportBudgetSeconds = 0.006;
+// How long the export button says the export is done.
+const comptime exportDoneSeconds = 3.0;
 
 fn penThicknesses(): []real {
     return [0.1, 0.3, 0.5, 0.7, 0.9];
@@ -194,6 +199,18 @@ ref struct EditorControls {
     // document stays in memory until its last one is done.
     saves: []DocumentSave = [];
 
+    // ── Exporting a PDF ─────────────────────────────────────────────
+    // The save dialog while it is open, and the document it is for -- the
+    // one open when Export was clicked.
+    exportDialog: filedialog.PendingDialog | none = none;
+    exportDocument: DocumentFile | none = none;
+    exporting?: mut PdfExport;
+    // What the export button shows, and whether it can be clicked.
+    exportLabel: rx.Reactive<str>;
+    exportBusy: rx.Reactive<bool>;
+    // When the button goes back to its label after saying how it went.
+    exportLabelResetAt: real = -1.0;
+
     // ── Tools, and what the template shows ──────────────────────────
     selectionTool: rx.Reactive<bool>;
     eraserTool: rx.Reactive<bool>;
@@ -269,6 +286,8 @@ ref struct EditorControls {
             popup: rx.shallowReactive<Vec2 | none>(none),
             selectionScreenBox: rx.shallowReactive<BBox | none>(none),
             resizeCursor: rx.reactive<bool>(false),
+            exportLabel: rx.reactive<str>("Export PDF"),
+            exportBusy: rx.reactive<bool>(false),
         };
     }
 
@@ -394,6 +413,88 @@ ref struct EditorControls {
             if this.saves[0].step(time.now() + saveBudgetSeconds) {
                 this.saves.remove(0);
             }
+        }
+    }
+
+    // ── Exporting ───────────────────────────────────────────────────
+
+    // Asks where to export the open document to, then exports it over the
+    // next frames -- see stepExport.
+    fn exportPdf() {
+        if rx.get(this.exportBusy) {
+            return;
+        }
+        let doc = this.doc;
+        if !doc {
+            return;
+        }
+        let suggestion = this.path.length > 0 ? pdfPathFor(this.path) : "";
+        this.exportDocument = doc;
+        this.exportDialog = filedialog.saveFileAsync({ filters: "pdf", defaultPath: suggestion });
+        this.exportBusy := true;
+        this.setExportLabel("Choose where to save...");
+    }
+
+    fn setExportLabel(label: str) {
+        if rx.get(this.exportLabel) != label {
+            this.exportLabel := label;
+        }
+    }
+
+    fn stepExport() {
+        if let dialog = this.exportDialog {
+            if !dialog.done() {
+                return;
+            }
+            this.exportDialog = none;
+            let doc = this.exportDocument;
+            this.exportDocument = none;
+            let result = dialog.result();
+            if result is filedialog.DialogSuccess {
+                if let d = doc {
+                    this.exporting = PdfExport(withPdfExtension(result.path), d);
+                }
+            }
+            else if result is filedialog.DialogError {
+                fmt.println(f"Export dialog failed: {result.error}");
+                this.finishExportWith("PDF export failed");
+                return;
+            }
+            if !this.exporting {
+                // Cancelled.
+                this.exportBusy := false;
+                this.setExportLabel("Export PDF");
+                return;
+            }
+        }
+        if let job = this.exporting {
+            if job.step(time.now() + exportBudgetSeconds) {
+                this.exporting = none;
+                this.finishExportWith(job.failed ? "PDF export failed" : "PDF exported");
+                return;
+            }
+            let percent = (job.progress() * 100.0) as int;
+            this.setExportLabel(f"Exporting... {percent}%");
+            return;
+        }
+        if this.exportLabelResetAt >= 0.0 && time.now() >= this.exportLabelResetAt {
+            this.exportLabelResetAt = -1.0;
+            this.setExportLabel("Export PDF");
+        }
+    }
+
+    fn finishExportWith(label: str) {
+        this.exportBusy := false;
+        this.setExportLabel(label);
+        this.exportLabelResetAt = time.now() + exportDoneSeconds;
+    }
+
+    // Finishes an export in progress now, however long it takes -- the app
+    // is closing. One whose dialog is still open is dropped.
+    fn finishExport() {
+        if let job = this.exporting {
+            job.finish();
+            this.exporting = none;
         }
     }
 
@@ -1008,6 +1109,7 @@ ref struct EditorControls {
     // here. `mouseLocal` is the pointer in canvas px.
     fn frame(ui: ui_components.UIContext, mouseLocal: Vec2) {
         this.stepLoadAndSaves();
+        this.stepExport();
         let doc = this.doc;
         if !doc {
             return;
@@ -1183,6 +1285,7 @@ ref struct EditorControls {
         }
         this.selected.clear();
         for shape in clip.shapes {
+            forgetStoredOutline(shape);
             translateShape(shape, Vec2(10.0, 10.0));
             doc.data.pages[page].shapes.push(shape);
             this.view.markShapeDirty(page, shape);

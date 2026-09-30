@@ -1369,11 +1369,15 @@ export class SemanticElaborator {
             this.sr.cc.config.id
           );
 
-          const innerCode = isBinary
-            ? `__c__("data = (_H${Semantic.mangleTypeUse(this.sr, returnType).name}){ .offset = 0, .basePtr = (void*)__hz_${moduleName}_embedded_binary_${embeddedFileId}_data, .length = __hz_${moduleName}_embedded_binary_${embeddedFileId}_size };");`
-            : `__c__("data = HZSTD_STRING((const char*)__hz_${moduleName}_embedded_text_${embeddedFileId}_data, __hz_${moduleName}_embedded_text_${embeddedFileId}_size);");`;
-
-          const code = `do unsafe { let data: ${Semantic.serializeTypeUse(this.sr, returnType)} = uninitialized; ${innerCode} return data; };`;
+          // Bytes starts from Bytes() and has only its buffer set: it has
+          // more members than basePtr, offset and length, and a C literal
+          // naming just those zeroes the rest -- `singleByte: u8 | none`
+          // included, whose tag 0 is the u8, so every embedded file read as
+          // one inline zero byte (cases_embed_binary.hz).
+          const returnTypeName = Semantic.serializeTypeUse(this.sr, returnType);
+          const code = isBinary
+            ? `do unsafe { let data: ${returnTypeName} = ${returnTypeName}(); __c__("data.basePtr = (void*)__hz_${moduleName}_embedded_binary_${embeddedFileId}_data; data.offset = 0; data.length = __hz_${moduleName}_embedded_binary_${embeddedFileId}_size;"); return data; };`
+            : `do unsafe { let data: ${returnTypeName} = uninitialized; __c__("data = HZSTD_STRING((const char*)__hz_${moduleName}_embedded_text_${embeddedFileId}_data, __hz_${moduleName}_embedded_text_${embeddedFileId}_size);"); return data; };`;
 
           const [_func, newFuncId] = this.sr.b.syntheticFunctionFromCode({
             functionTypeId: functionType,

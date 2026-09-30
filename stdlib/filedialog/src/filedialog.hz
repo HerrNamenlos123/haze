@@ -23,6 +23,13 @@ namespace filedialog_ffi {
     extern C fn hz_filedialog_open_dialog_multiple(filters: str, defaultPath: str, outPaths: []str): hz_filedialog_multiple_result_t :: final;
     extern C fn hz_filedialog_save_dialog(filters: str, defaultPath: str): hz_filedialog_path_result_t :: final;
     extern C fn hz_filedialog_open_folder_dialog(defaultPath: str): hz_filedialog_path_result_t :: final;
+
+    // A job is a C struct in GC memory: holding it keeps it alive.
+    extern C fn hz_filedialog_open_dialog_async(filters: str, defaultPath: str): cptr :: final;
+    extern C fn hz_filedialog_save_dialog_async(filters: str, defaultPath: str): cptr :: final;
+    extern C fn hz_filedialog_open_folder_dialog_async(defaultPath: str): cptr :: final;
+    extern C fn hz_filedialog_job_done(job: cptr): bool :: final;
+    extern C fn hz_filedialog_job_result(job: cptr): hz_filedialog_path_result_t :: final;
 }
 
 export struct DialogOpenArgs {
@@ -108,4 +115,48 @@ export fn pickFolder(args: DialogOpenFolderArgs = {}): DialogResult {
     else {
         return DialogError { error: result.error };
     }
+}
+fn toDialogResult(result: filedialog_ffi.hz_filedialog_path_result_t): DialogResult {
+    if result.result == filedialog_ffi.hz_filedialog_result_ok {
+        return DialogSuccess { path: result.path };
+    }
+    else if result.result == filedialog_ffi.hz_filedialog_result_cancel {
+        return DialogCancel {};
+    }
+    else {
+        return DialogError { error: result.error };
+    }
+}
+
+// A dialog open on a worker thread -- see pickFileAsync, saveFileAsync and
+// pickFolderAsync. The calls above block until the dialog is closed, which
+// in an app's frame loop freezes its window meanwhile; with these the app
+// keeps drawing, and checks done() once a frame.
+export ref struct PendingDialog {
+    job: cptr;
+
+    // Whether the user has closed the dialog.
+    fn done(): bool {
+        return filedialog_ffi.hz_filedialog_job_done(this.job);
+    }
+
+    // What the blocking call would have returned. Panics before done().
+    fn result(): DialogResult {
+        if !this.done() {
+            sys.panic("PendingDialog.result() while the dialog is still open -- check done() first");
+        }
+        return toDialogResult(filedialog_ffi.hz_filedialog_job_result(this.job));
+    }
+}
+
+export fn pickFileAsync(args: DialogOpenArgs = {}): PendingDialog {
+    return PendingDialog { job: filedialog_ffi.hz_filedialog_open_dialog_async(args.filters, args.defaultPath) };
+}
+
+export fn saveFileAsync(args: DialogOpenArgs = {}): PendingDialog {
+    return PendingDialog { job: filedialog_ffi.hz_filedialog_save_dialog_async(args.filters, args.defaultPath) };
+}
+
+export fn pickFolderAsync(args: DialogOpenFolderArgs = {}): PendingDialog {
+    return PendingDialog { job: filedialog_ffi.hz_filedialog_open_folder_dialog_async(args.defaultPath) };
 }

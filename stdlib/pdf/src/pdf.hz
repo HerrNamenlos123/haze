@@ -1,0 +1,785 @@
+import zlib
+import image
+
+__c__("#include \"ffi/hz_pdf.c\"");
+export __c__("#include \"ffi/public/hz_pdf.h\"");
+
+namespace ffi {
+    // The buffer is a C struct in GC memory: holding it keeps it alive.
+    export extern C fn hz_pdf_buffer_create(decimals: int): cptr :: final;
+    export extern C fn hz_pdf_buffer_number(b: cptr, value: real): void :: final;
+    export extern C fn hz_pdf_buffer_text(b: cptr, text: str): void :: final;
+    export extern C fn hz_pdf_buffer_length(b: cptr): int :: final;
+    export extern C fn hz_pdf_buffer_take(b: cptr): cptr :: final;
+    export extern C fn hz_pdf_format_number(value: real, decimals: int): str :: final;
+    export extern C fn hz_pdf_jpeg_info(data: cptr, length: int): hz_pdf_jpeg_info_t :: final;
+    export extern C fn hz_pdf_extract_channels(pixels: cptr, pixelCount: int, channels: int, first: int, count: int): cptr :: final;
+    export extern C fn hz_pdf_any_below_255(data: cptr, length: int): bool :: final;
+
+    export extern C noemit struct hz_pdf_jpeg_info_t {
+        ok: bool;
+        width: int;
+        height: int;
+        components: int;
+        adobe: bool;
+        error: str;
+    }
+}
+
+// Writing PDF files.
+//
+// A Writer produces the file front to back: every object -- an image, a
+// page's content, the page itself -- is written out as soon as it is
+// complete, so memory holds one page at a time however long the document,
+// and the parts that take real time (compressing a page's content or an
+// image) can be spread over as many steps as the caller likes.
+//
+//     let w = pdf.createFile("out.pdf");
+//     if w is pdf.Error { ... }
+//     let page = w.beginPage(595.0, 842.0);   // A4, in points
+//     page.setFillColor(1.0, 0.0, 0.0);
+//     page.rect(100.0, 100.0, 200.0, 50.0);
+//     page.fill();
+//     w.endPage(page);
+//     let done = w.finish();                 // Result<none, pdf.Error>
+//
+// Images: addJpeg() embeds a JPEG file as it is; addImage() compresses
+// decoded pixels a piece per ImageEncoder.step().
+//
+// Pages are drawn in PDF's own terms: operators named after what they do,
+// in PDF user space -- points (1/72 inch), origin at the bottom left, y up.
+// Content and images are compressed (FlateDecode); JPEGs go in as they are.
+
+// How much page content is collected before it is compressed: small enough
+// that compressing it is a short step, large enough to cost little per call.
+const comptime contentChunkBytes = 8192;
+// Pixels an ImageEncoder takes per round -- a millisecond or two of
+// compression.
+const comptime imagePixelsPerRound = 8192;
+
+export ref struct Error {
+    message: str;
+}
+
+export enum LineCap { Butt, Round, Square }
+export enum LineJoin { Miter, Round, Bevel }
+
+export struct WriterOptions {
+    // zlib level for page content and images: 1 (fastest) to 9 (smallest).
+    compressionLevel: int = 6;
+    // Decimal places numbers are written with, 0 to 8. Four is a ten-
+    // thousandth of a point, far below anything a viewer can show.
+    decimals: int = 4;
+    // The document information's Producer entry.
+    producer: str = "Haze";
+}
+
+// An image in the file, to draw on any number of pages.
+export struct Image {
+    object: int;
+    width: int;
+    height: int;
+}
+
+// A PDF literal string: (text), with the characters it treats specially
+// escaped.
+fn literalString(text: str): str {
+    let result = String("(");
+    let start = 0;
+    for (let i = 0; i < text.length; i++) {
+        let c = text[i];
+        if c == b"(" || c == b")" || c == b"\\" {
+            result.append(text.slice(start, i));
+            result.append("\\");
+            start = i;
+        }
+    }
+    result.append(text.slice(start, text.length));
+    result.append(")");
+    return result.cloneString();
+}
+
+// A byte offset as the cross-reference table wants it: ten digits.
+fn tenDigits(value: int): str {
+    let digits = f"{value}";
+    let result = String();
+    for (let i = digits.length; i < 10; i++) {
+        result.append("0");
+    }
+    result.append(digits);
+    return result.cloneString();
+}
+
+// Writes a PDF file -- to disk (createFile) or into memory (the
+// constructor, then bytes() once finished).
+export ref struct Writer {
+    options: WriterOptions;
+    file?: mut fs.FileWriter;
+    memory: mut ByteBuffer;
+    // Bytes written so far: where the next object starts.
+    position: int = 0;
+    // Where each object starts, by object number - 1; -1 until it is
+    // written. 1 is the catalog and 2 the page tree, written last.
+    offsets: []int = [];
+    // The finished pages, in order.
+    pages: []int = [];
+    failure: str | none = none;
+    finished: bool = false;
+
+    fn constructor(options: WriterOptions = {}): mut Writer {
+        let w = Writer { options: options, memory: ByteBuffer() };
+        w.start();
+        return w;
+    }
+
+    static fn toFile(file: mut fs.FileWriter, options: WriterOptions): mut Writer {
+        let w = Writer { options: options, file: file, memory: ByteBuffer() };
+        w.start();
+        return w;
+    }
+
+    mut fn start() {
+        let header = ByteBuffer();
+        header.push("%PDF-1.7\n%");
+        // Four bytes above 127, so that tools treat the file as binary.
+        header.push(Bytes(0xE2 as u8));
+        header.push(Bytes(0xE3 as u8));
+        header.push(Bytes(0xCF as u8));
+        header.push(Bytes(0xD3 as u8));
+        header.push("\n");
+        header.commit();
+        this.output(header.bytes());
+        this.reserveObject();
+        this.reserveObject();
+    }
+
+    // Whether everything so far was written; see failure for why not.
+    fn ok(): bool {
+        if let failure = this.failure {
+            return false;
+        }
+        return true;
+    }
+
+    mut fn fail(message: str) {
+        if let failure = this.failure {
+            return;
+        }
+        this.failure = message;
+    }
+
+    mut fn output(data: Bytes) {
+        if !this.ok() {
+            return;
+        }
+        if let file = this.file {
+            if file.write(data) != fs.Error.None {
+                this.fail("cannot write the file");
+                return;
+            }
+        }
+        else {
+            this.memory.push(data);
+        }
+        this.position += data.length;
+    }
+
+    mut fn output(text: str) {
+        this.output(Bytes(text));
+    }
+
+    // A number as the writer writes them.
+    fn number(value: real): str {
+        return ffi.hz_pdf_format_number(value, this.options.decimals);
+    }
+
+    // An object number for an object written later -- so that others can
+    // refer to it first.
+    mut fn reserveObject(): int {
+        this.offsets.push(-1);
+        return this.offsets.length;
+    }
+
+    mut fn beginObject(object: int) {
+        if this.offsets[object - 1] >= 0 {
+            sys.panic(f"pdf: object {object} written twice");
+        }
+        this.offsets[object - 1] = this.position;
+        this.output(f"{object} 0 obj\n");
+    }
+
+    // Writes a whole object: `body` is its value, a dictionary say.
+    mut fn writeObject(object: int, body: str) {
+        this.beginObject(object);
+        this.output(body);
+        this.output("\nendobj\n");
+    }
+
+    // Writes a stream object: `dictionary` holds its entries but /Length,
+    // without the << >>.
+    mut fn writeStream(object: int, dictionary: str, data: Bytes) {
+        this.beginObject(object);
+        this.output(f"<< {dictionary} /Length {data.length} >>\nstream\n");
+        this.output(data);
+        this.output("\nendstream\nendobj\n");
+    }
+
+    // Adds a JPEG file as an image, as it is: the viewer decodes it.
+    mut fn addJpeg(data: Bytes): Result<Image, Error> {
+        if data.length < 4 {
+            return Error { message: "not a JPEG file" };
+        }
+        let ptr = none as cptr;
+        let length = data.length;
+        __c__("ptr = data.basePtr + data.offset;");
+        let info = ffi.hz_pdf_jpeg_info(ptr, length);
+        if !info.ok {
+            return Error { message: info.error };
+        }
+        let colorSpace = "/DeviceRGB";
+        let decode = "";
+        if info.components == 1 {
+            colorSpace = "/DeviceGray";
+        }
+        else if info.components == 4 {
+            colorSpace = "/DeviceCMYK";
+            // Adobe's CMYK JPEGs store the channels inverted.
+            if info.adobe {
+                decode = " /Decode [1 0 1 0 1 0 1 0]";
+            }
+        }
+        let object = this.reserveObject();
+        this.writeStream(object, f"/Type /XObject /Subtype /Image /Width {info.width} /Height {info.height} /ColorSpace {colorSpace} /BitsPerComponent 8{decode} /Filter /DCTDecode", data);
+        return Image { object: object, width: info.width, height: info.height };
+    }
+
+    // Starts adding decoded pixels as an image: step() the result until it
+    // is done, then take its result(). Alpha, if the image has any below
+    // opaque, becomes a soft mask.
+    mut fn addImage(source: image.Image): mut ImageEncoder {
+        return ImageEncoder(this, source);
+    }
+
+    // addImage, done at once -- time grows with the image's size.
+    mut fn addImageNow(source: image.Image): Image {
+        let encoder = this.addImage(source);
+        while !encoder.step(time.now() + 1000000.0) {}
+        return encoder.result();
+    }
+
+    // Starts a page `width` by `height` points. It is written at endPage.
+    mut fn beginPage(width: real, height: real): mut Page {
+        if this.finished {
+            sys.panic("pdf: beginPage() after finish()");
+        }
+        return Page(this, width, height);
+    }
+
+    // Writes the page, after the last thing drawn on it.
+    mut fn endPage(page: mut Page) {
+        page.writeTo(this);
+        this.pages.push(page.object);
+    }
+
+    // Writes what closes the file: the page tree, the catalog and the
+    // cross-reference table. A page begun but not ended is left out.
+    mut fn finish(): Result<none, Error> {
+        if this.finished {
+            sys.panic("pdf: finish() twice");
+        }
+        this.finished = true;
+
+        // An object reserved and never written -- an image abandoned half
+        // way -- is still in the table, so it has to exist.
+        for (let i = 2; i < this.offsets.length; i++) {
+            if this.offsets[i] < 0 {
+                this.writeObject(i + 1, "null");
+            }
+        }
+
+        let kids = String();
+        for (let i = 0; i < this.pages.length; i++) {
+            if i > 0 {
+                kids.append(" ");
+            }
+            kids.append(f"{this.pages[i]} 0 R");
+        }
+        this.writeObject(2, f"<< /Type /Pages /Kids [{kids.cloneString()}] /Count {this.pages.length} >>");
+        this.writeObject(1, "<< /Type /Catalog /Pages 2 0 R >>");
+        let info = this.reserveObject();
+        this.writeObject(info, f"<< /Producer {literalString(this.options.producer)} >>");
+
+        let xrefStart = this.position;
+        let count = this.offsets.length + 1;
+        let table = String(f"xref\n0 {count}\n0000000000 65535 f \n");
+        for offset in this.offsets {
+            table.append(tenDigits(offset));
+            table.append(" 00000 n \n");
+        }
+        this.output(table.cloneString());
+        this.output(f"trailer\n<< /Size {count} /Root 1 0 R /Info {info} 0 R >>\nstartxref\n{xrefStart}\n%%EOF\n");
+
+        if let file = this.file {
+            if file.close() != fs.Error.None {
+                this.fail("cannot write the file");
+            }
+        }
+        if let failure = this.failure {
+            return Result<none, Error>.Err(Error { message: failure });
+        }
+        return Result<none, Error>.Ok(none);
+    }
+
+    // The whole file, for a writer made with the constructor, once finished.
+    mut fn bytes(): Bytes {
+        if !this.finished {
+            sys.panic("pdf: bytes() before finish()");
+        }
+        this.memory.commit();
+        return this.memory.bytes();
+    }
+}
+
+// Opens `path` for writing a PDF into. The file is complete once finish()
+// has returned.
+export fn createFile(path: str, options: WriterOptions = {}): mut Writer | Error {
+    let opened = fs.openWrite(path);
+    if opened is fs.Error {
+        return Error { message: f"cannot create {path}" };
+    }
+    return Writer.toFile(opened, options);
+}
+
+// A page being drawn -- see Writer.beginPage.
+export ref struct Page {
+    width: real;
+    height: real;
+    object: int;
+    contentObject: int;
+    decimals: int;
+    // Operators not compressed yet.
+    buffer: cptr;
+    compressor: mut zlib.Compressor;
+    // What the content refers to by name: /Im<i> is images[i], /GS<i> the
+    // graphics state with the entries states[i].
+    images: []int = [];
+    states: []str = [];
+    written: bool = false;
+
+    fn constructor(writer: mut Writer, width: real, height: real): mut Page {
+        return Page {
+            width: width,
+            height: height,
+            object: writer.reserveObject(),
+            contentObject: writer.reserveObject(),
+            decimals: writer.options.decimals,
+            buffer: ffi.hz_pdf_buffer_create(writer.options.decimals),
+            compressor: zlib.Compressor(writer.options.compressionLevel),
+        };
+    }
+
+    mut fn number(value: real) {
+        ffi.hz_pdf_buffer_number(this.buffer, value);
+    }
+
+    // Ends an operator. Content is compressed as it accumulates, a chunk at
+    // a time, so no one call does much of it.
+    mut fn op(text: str) {
+        if this.written {
+            sys.panic("pdf: drawing on a page after endPage()");
+        }
+        let buffer = this.buffer;
+        ffi.hz_pdf_buffer_text(buffer, text);
+        if ffi.hz_pdf_buffer_length(buffer) >= contentChunkBytes {
+            this.compressBuffered();
+        }
+    }
+
+    mut fn compressBuffered() {
+        let buffer = this.buffer;
+        let length = ffi.hz_pdf_buffer_length(buffer);
+        if length == 0 {
+            return;
+        }
+        let data = ffi.hz_pdf_buffer_take(buffer);
+        do unsafe {
+            let bytes = Bytes();
+            __c__("bytes.basePtr = data;");
+            __c__("bytes.offset = 0;");
+            __c__("bytes.length = length;");
+            this.compressor.write(bytes);
+        };
+    }
+
+    // ── Graphics state ──────────────────────────────────────────────
+
+    // Saves the graphics state (transform, colors, line style, clip); the
+    // matching restore() brings it back.
+    mut fn save() {
+        this.op("q\n");
+    }
+
+    mut fn restore() {
+        this.op("Q\n");
+    }
+
+    // Multiplies the transform by [a b c d e f]: x' = a*x + c*y + e,
+    // y' = b*x + d*y + f.
+    mut fn transform(a: real, b: real, c: real, d: real, e: real, f: real) {
+        this.number(a);
+        this.number(b);
+        this.number(c);
+        this.number(d);
+        this.number(e);
+        this.number(f);
+        this.op("cm\n");
+    }
+
+    mut fn translate(x: real, y: real) {
+        this.transform(1.0, 0.0, 0.0, 1.0, x, y);
+    }
+
+    mut fn scale(x: real, y: real) {
+        this.transform(x, 0.0, 0.0, y, 0.0, 0.0);
+    }
+
+    // Colors are RGB, each 0 to 1.
+    mut fn setFillColor(r: real, g: real, b: real) {
+        this.number(r);
+        this.number(g);
+        this.number(b);
+        this.op("rg\n");
+    }
+
+    mut fn setStrokeColor(r: real, g: real, b: real) {
+        this.number(r);
+        this.number(g);
+        this.number(b);
+        this.op("RG\n");
+    }
+
+    mut fn setLineWidth(width: real) {
+        this.number(width);
+        this.op("w\n");
+    }
+
+    mut fn setLineCap(cap: LineCap) {
+        if cap == LineCap.Round {
+            this.op("1 J\n");
+        } else if cap == LineCap.Square {
+            this.op("2 J\n");
+        } else {
+            this.op("0 J\n");
+        }
+    }
+
+    mut fn setLineJoin(join: LineJoin) {
+        if join == LineJoin.Round {
+            this.op("1 j\n");
+        } else if join == LineJoin.Bevel {
+            this.op("2 j\n");
+        } else {
+            this.op("0 j\n");
+        }
+    }
+
+    mut fn setMiterLimit(limit: real) {
+        this.number(limit);
+        this.op("M\n");
+    }
+
+    // Dashes: lengths of dash and gap, alternating, starting `phase` into
+    // the pattern. An empty pattern draws solid lines.
+    mut fn setDash(pattern: []real, phase: real) {
+        this.op("[");
+        for length in pattern {
+            this.number(length);
+        }
+        this.op("] ");
+        this.number(phase);
+        this.op("d\n");
+    }
+
+    // Opacity of what fill() and stroke() paint, 0 to 1.
+    mut fn setFillOpacity(opacity: real) {
+        this.useState(f"/ca {ffi.hz_pdf_format_number(opacity, this.decimals)}");
+    }
+
+    mut fn setStrokeOpacity(opacity: real) {
+        this.useState(f"/CA {ffi.hz_pdf_format_number(opacity, this.decimals)}");
+    }
+
+    // Sets a graphics state parameter dictionary with these entries --
+    // one per distinct set of entries, however often it is used.
+    mut fn useState(entries: str) {
+        let index = -1;
+        for (let i = 0; i < this.states.length; i++) {
+            if this.states[i] == entries {
+                index = i;
+                break;
+            }
+        }
+        if index < 0 {
+            this.states.push(entries);
+            index = this.states.length - 1;
+        }
+        this.op(f"/GS{index} gs\n");
+    }
+
+    // ── Paths ───────────────────────────────────────────────────────
+
+    mut fn moveTo(x: real, y: real) {
+        this.number(x);
+        this.number(y);
+        this.op("m\n");
+    }
+
+    mut fn lineTo(x: real, y: real) {
+        this.number(x);
+        this.number(y);
+        this.op("l\n");
+    }
+
+    // A cubic Bezier curve to (x3, y3), with control points (x1, y1) and
+    // (x2, y2).
+    mut fn curveTo(x1: real, y1: real, x2: real, y2: real, x3: real, y3: real) {
+        this.number(x1);
+        this.number(y1);
+        this.number(x2);
+        this.number(y2);
+        this.number(x3);
+        this.number(y3);
+        this.op("c\n");
+    }
+
+    // A cubic Bezier curve to (x3, y3) whose first control point is the
+    // current point: PDF's `v`.
+    mut fn curveToV(x2: real, y2: real, x3: real, y3: real) {
+        this.number(x2);
+        this.number(y2);
+        this.number(x3);
+        this.number(y3);
+        this.op("v\n");
+    }
+
+    // A cubic Bezier curve to (x3, y3) whose second control point is
+    // (x3, y3) itself: PDF's `y`.
+    mut fn curveToY(x1: real, y1: real, x3: real, y3: real) {
+        this.number(x1);
+        this.number(y1);
+        this.number(x3);
+        this.number(y3);
+        this.op("y\n");
+    }
+
+    mut fn closePath() {
+        this.op("h\n");
+    }
+
+    mut fn rect(x: real, y: real, width: real, height: real) {
+        this.number(x);
+        this.number(y);
+        this.number(width);
+        this.number(height);
+        this.op("re\n");
+    }
+
+    // Paints the path; each of these also ends it.
+    mut fn fill() {
+        this.op("f\n");
+    }
+
+    mut fn fillEvenOdd() {
+        this.op("f*\n");
+    }
+
+    mut fn stroke() {
+        this.op("S\n");
+    }
+
+    mut fn fillAndStroke() {
+        this.op("B\n");
+    }
+
+    // Ends the path without painting it -- after clip(), say.
+    mut fn endPath() {
+        this.op("n\n");
+    }
+
+    // Intersects the clip with the path, once the path ends.
+    mut fn clip() {
+        this.op("W\n");
+    }
+
+    mut fn clipEvenOdd() {
+        this.op("W*\n");
+    }
+
+    // ── Images ──────────────────────────────────────────────────────
+
+    // Draws `img` into the rectangle at (x, y), `width` by `height`. The
+    // image's top row goes to y + height: a negative height flips it.
+    mut fn drawImage(img: Image, x: real, y: real, width: real, height: real) {
+        this.op("q\n");
+        this.transform(width, 0.0, 0.0, height, x, y);
+        this.paintImage(img);
+        this.op("Q\n");
+    }
+
+    // Paints `img` into the unit square of the current transform.
+    mut fn paintImage(img: Image) {
+        let index = -1;
+        for (let i = 0; i < this.images.length; i++) {
+            if this.images[i] == img.object {
+                index = i;
+                break;
+            }
+        }
+        if index < 0 {
+            this.images.push(img.object);
+            index = this.images.length - 1;
+        }
+        this.op(f"/Im{index} Do\n");
+    }
+
+    // Appends operators as they are, for what the methods above lack.
+    mut fn raw(operators: str) {
+        this.op(operators);
+    }
+
+    // ── Writing ─────────────────────────────────────────────────────
+
+    mut fn writeTo(writer: mut Writer) {
+        if this.written {
+            sys.panic("pdf: endPage() twice for one page");
+        }
+        this.compressBuffered();
+        this.written = true;
+        this.compressor.finish();
+        writer.writeStream(this.contentObject, "/Filter /FlateDecode", this.compressor.take());
+
+        let resources = String("<<");
+        if this.images.length > 0 {
+            resources.append(" /XObject <<");
+            for (let i = 0; i < this.images.length; i++) {
+                resources.append(f" /Im{i} {this.images[i]} 0 R");
+            }
+            resources.append(" >>");
+        }
+        if this.states.length > 0 {
+            resources.append(" /ExtGState <<");
+            for (let i = 0; i < this.states.length; i++) {
+                resources.append(f" /GS{i} << /Type /ExtGState {this.states[i]} >>");
+            }
+            resources.append(" >>");
+        }
+        resources.append(" >>");
+        writer.writeObject(this.object, f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {writer.number(this.width)} {writer.number(this.height)}] /Resources {resources.cloneString()} /Contents {this.contentObject} 0 R >>");
+    }
+}
+
+// Adds decoded pixels to a PDF, compressing a piece per step() -- see
+// Writer.addImage. Its object is reserved from the start, so pages can
+// draw it before it is written.
+export ref struct ImageEncoder {
+    writer: mut Writer;
+    source: image.Image;
+    object: int;
+    color: mut zlib.Compressor;
+    alpha: mut zlib.Compressor;
+    // The next pixel to compress.
+    next: int = 0;
+    // Whether any alpha is below opaque: only then is there a soft mask.
+    transparent: bool = false;
+    done: bool = false;
+
+    fn constructor(writer: mut Writer, source: image.Image): mut ImageEncoder {
+        if source.channels < 1 || source.channels > 4 {
+            sys.panic(f"pdf: an image with {source.channels} channels");
+        }
+        return ImageEncoder {
+            writer: writer,
+            source: source,
+            object: writer.reserveObject(),
+            color: zlib.Compressor(writer.options.compressionLevel),
+            alpha: zlib.Compressor(writer.options.compressionLevel),
+        };
+    }
+
+    // The image, to draw -- usable at once, though the file only has it
+    // once step() has returned true.
+    fn result(): Image {
+        return Image { object: this.object, width: this.source.width, height: this.source.height };
+    }
+
+    // Compresses until `deadline` (time.now() seconds). True once the image
+    // is written.
+    mut fn step(deadline: real): bool {
+        if this.done {
+            return true;
+        }
+        let pixels = this.source.pixels;
+        let channels = this.source.channels;
+        let total = this.source.width * this.source.height;
+        // Grey or grey+alpha keep one color channel, RGB or RGBA three.
+        let colorChannels = channels >= 3 ? 3 : 1;
+        let hasAlpha = channels == 2 || channels == 4;
+        while this.next < total {
+            let start = this.next;
+            let count = min(imagePixelsPerRound, total - start);
+            // A one-byte Bytes holds its byte inline, with no buffer to
+            // point at.
+            let single: u8 = 0;
+            let ptr = none as cptr;
+            if pixels.length == 1 {
+                single = pixels[0];
+                __c__("ptr = &single;");
+            }
+            else {
+                __c__("ptr = (char*)pixels.basePtr + pixels.offset + start * channels;");
+            }
+
+            let colorLength = count * colorChannels;
+            let colorData = ffi.hz_pdf_extract_channels(ptr, count, channels, 0, colorChannels);
+            do unsafe {
+                let bytes = Bytes();
+                __c__("bytes.basePtr = colorData;");
+                __c__("bytes.offset = 0;");
+                __c__("bytes.length = colorLength;");
+                this.color.write(bytes);
+            };
+            if hasAlpha {
+                let alphaData = ffi.hz_pdf_extract_channels(ptr, count, channels, channels - 1, 1);
+                if ffi.hz_pdf_any_below_255(alphaData, count) {
+                    this.transparent = true;
+                }
+                do unsafe {
+                    let bytes = Bytes();
+                    __c__("bytes.basePtr = alphaData;");
+                    __c__("bytes.offset = 0;");
+                    __c__("bytes.length = count;");
+                    this.alpha.write(bytes);
+                };
+            }
+            this.next = start + count;
+            if this.next < total && time.now() >= deadline {
+                return false;
+            }
+        }
+
+        let width = this.source.width;
+        let height = this.source.height;
+        let colorSpace = colorChannels == 3 ? "/DeviceRGB" : "/DeviceGray";
+        let mask = "";
+        if this.transparent {
+            this.alpha.finish();
+            let maskObject = this.writer.reserveObject();
+            this.writer.writeStream(maskObject, f"/Type /XObject /Subtype /Image /Width {width} /Height {height} /ColorSpace /DeviceGray /BitsPerComponent 8 /Decode [0 1] /Filter /FlateDecode", this.alpha.take());
+            mask = f" /SMask {maskObject} 0 R";
+        }
+        this.color.finish();
+        this.writer.writeStream(this.object, f"/Type /XObject /Subtype /Image /Width {width} /Height {height} /ColorSpace {colorSpace} /BitsPerComponent 8{mask} /Filter /FlateDecode", this.color.take());
+        this.done = true;
+        return true;
+    }
+}

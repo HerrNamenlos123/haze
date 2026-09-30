@@ -5,6 +5,9 @@ export __c__("#include \"ffi/public/haze_base64.h\"");
 namespace ffi {
     export extern C fn haze_base64_encode(data: cptr, length: int): str :: final;
     export extern C fn haze_base64_decode(data: str): haze_base64_decode_result_t :: final;
+    export extern C fn haze_base64_decode_start(text: str): cptr :: final;
+    export extern C fn haze_base64_decode_done(job: cptr): bool :: final;
+    export extern C fn haze_base64_decode_result(job: cptr): haze_base64_decode_result_t :: final;
 
     export extern C noemit struct haze_base64_decode_result_t {
         success: bool;
@@ -40,7 +43,40 @@ export fn encode(data: Bytes): str {
 // length isn't a multiple of 4, or it contains characters outside the Base64
 // alphabet (or a misplaced '=' padding character).
 export fn decode(data: str): Result<Bytes, Error> {
-    let result = ffi.haze_base64_decode(data);
+    return bytesOf(ffi.haze_base64_decode(data));
+}
+
+// A Base64 string being decoded on a worker thread -- see decodeAsync.
+export opaque ref struct Base64Decode {
+    job: cptr;
+    // The text, which the worker reads until it is done.
+    text: str;
+
+    static fn start(text: str): Base64Decode {
+        return Base64Decode { job: ffi.haze_base64_decode_start(text), text: text };
+    }
+
+    fn done(): bool {
+        return ffi.haze_base64_decode_done(this.job);
+    }
+
+    // What decode() would have returned. Panics before done().
+    fn result(): Result<Bytes, Error> {
+        if !this.done() {
+            sys.panic("Base64Decode.result() before the text is decoded -- check done() first");
+        }
+        return bytesOf(ffi.haze_base64_decode_result(this.job));
+    }
+}
+
+// decode() on a worker thread, for a caller that must not wait for it: a
+// megabyte of text takes tens of milliseconds in an unoptimized build. Poll
+// done() (once a frame, say), then take the result().
+export fn decodeAsync(data: str): Base64Decode {
+    return Base64Decode.start(data);
+}
+
+fn bytesOf(result: ffi.haze_base64_decode_result_t): Result<Bytes, Error> {
     if !result.success {
         return Error { message: result.error };
     }

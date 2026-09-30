@@ -5,6 +5,10 @@ namespace ffi {
     export extern C fn haze_image_load_memory(data: cptr, length: int, desiredChannels: int): haze_image_result_t :: final;
     export extern C fn haze_image_failure_reason(): str :: final;
     export extern C fn haze_image_encode_png(pixels: cptr, width: int, height: int, channels: int): haze_image_png_result_t :: final;
+    export extern C fn haze_image_decode_start(data: cptr, length: int, desiredChannels: int): cptr :: final;
+    export extern C fn haze_image_decode_done(job: cptr): bool :: final;
+    export extern C fn haze_image_decode_result(job: cptr): haze_image_result_t :: final;
+    export extern C fn haze_image_decode_failure(job: cptr): str :: final;
 
     export extern C noemit struct haze_image_result_t {
         pixels: cptr;
@@ -89,7 +93,11 @@ export opaque ref struct Image {
         if !valid {
             return Error { message: ffi.haze_image_failure_reason() };
         }
+        return Image.fromDecoded(result);
+    }
 
+    // Wraps what haze_image_load_memory decoded, which has pixels.
+    static fn fromDecoded(result: ffi.haze_image_result_t): Result<Image, Error> {
         do unsafe {
             // Bytes() rather than `uninitialized`: Bytes has more fields than
             // the three set below, and a garbage singleByte reads as present,
@@ -132,10 +140,64 @@ export opaque ref struct Image {
     }
 }
 
+// An image being decoded on a worker thread -- see decodeAsync.
+export opaque ref struct ImageDecode {
+    job: cptr;
+    // The encoded image, which the worker reads until it is done.
+    data: Bytes;
+
+    static fn start(data: Bytes, desiredChannels: int): ImageDecode {
+        // A one-byte Bytes holds its byte inline (see Image.decode), where
+        // the worker could not read it once this returns -- and one byte is
+        // no image anyway, so the worker is given none, and says so.
+        let ptr = none as cptr;
+        let length = data.length;
+        if length == 1 {
+            length = 0;
+        }
+        else {
+            __c__("ptr = data.basePtr + data.offset;");
+        }
+        return ImageDecode {
+            job: ffi.haze_image_decode_start(ptr, length, desiredChannels),
+            data: data,
+        };
+    }
+
+    fn done(): bool {
+        return ffi.haze_image_decode_done(this.job);
+    }
+
+    // What decode() would have returned. Panics before done().
+    fn result(): Result<Image, Error> {
+        if !this.done() {
+            sys.panic("ImageDecode.result() before the image is decoded -- check done() first");
+        }
+        let result = ffi.haze_image_decode_result(this.job);
+        let valid = false;
+        __c__("valid = result.pixels != NULL;");
+        if !valid {
+            return Error { message: ffi.haze_image_decode_failure(this.job) };
+        }
+        return Image.fromDecoded(result);
+    }
+}
+
 // Decodes an image file held in memory: PNG, JPEG, BMP, GIF (first frame),
 // TGA, PSD, PNM. desiredChannels works as in the Image constructors.
 export fn decode(data: Bytes, desiredChannels: int = 4): Result<Image, Error> {
     return Image.decode(data, desiredChannels);
+}
+
+// decode() on a worker thread, for a caller that must not wait for it: a
+// megapixel takes tens of milliseconds. Poll done() (once a frame, say),
+// then take the result(). The work goes on even if the ImageDecode is
+// dropped; it is simply never read.
+export fn decodeAsync(data: Bytes, desiredChannels: int = 4): ImageDecode {
+    if desiredChannels < 0 || desiredChannels > 4 {
+        sys.panic(f"decodeAsync: desiredChannels must be 0 to 4, not {desiredChannels}");
+    }
+    return ImageDecode.start(data, desiredChannels);
 }
 
 // Encodes an image as a PNG file, keeping its channel count (grey, grey with

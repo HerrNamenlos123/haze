@@ -23,6 +23,7 @@ nothing else.
 | --- | --- | --- | --- |
 | [`stdlib/renderer/resources/ProggyClean.ttf`](stdlib/renderer/resources/ProggyClean.ttf) | Default text font, [`renderer.hz`](stdlib/renderer/src/renderer.hz#L175) | MIT | Yes -- copyright notice + license text |
 | [`stdlib/ui_widgets/resources/codicon.ttf`](stdlib/ui_widgets/resources/codicon.ttf) | Codicon icons, [`Codicon.hzui`](stdlib/ui_widgets/src/Codicon.hzui) | CC BY 4.0 | Yes -- credit + license link |
+| [`stdlib/perfect_freehand/src/ffi/perfect_freehand.c`](stdlib/perfect_freehand/src/ffi/perfect_freehand.c) | Stroke outlines, [`perfect_freehand.hz`](stdlib/perfect_freehand/src/perfect_freehand.hz) | MIT | Yes -- copyright notice + license text |
 
 Everything else in this repository is MIT, Copyright (c) 2025 Florian Zachs;
 see [`LICENSE`](LICENSE).
@@ -59,6 +60,20 @@ The short version: Microsoft licenses the *icons* under CC BY 4.0 and the
 repository's *code* under MIT. The font is icons, so CC BY 4.0 applies. It is a
 common and easy mistake to state this the other way around.
 
+### perfect_freehand.c
+
+Not an asset but code, with the same effect: a C port of perfect-freehand
+1.2.2 (<https://github.com/steveruizok/perfect-freehand>, the npm package, its
+`dist/cjs/index.js` SHA-256
+`34f7a6ee87cf16446c5608179a4f94022126b50216066f8dd57bb16138eee710`),
+MIT, Copyright (c) 2021 Stephen Ruiz Ltd. It is a translation, so the
+copyright and license carry over; the notice is at the top of the file and
+the license text is
+[`LICENSE-perfect-freehand-MIT.txt`](stdlib/perfect_freehand/src/ffi/LICENSE-perfect-freehand-MIT.txt).
+It replaced a Rust crate port (also MIT) that was linked in the same way and
+was never listed here. Only applications that import `perfect_freehand` carry
+it.
+
 ## If you ship an application built with Haze
 
 Put something equivalent to this where a user can find it -- an About box, a
@@ -75,6 +90,10 @@ Licensed under the MIT License. https://proggyfonts.net
 Codicons — © Microsoft Corporation, licensed under CC BY 4.0, unmodified.
 https://github.com/microsoft/vscode-codicons
 https://creativecommons.org/licenses/by/4.0/
+
+perfect-freehand (ported to C) — Copyright (c) 2021 Stephen Ruiz Ltd.
+Licensed under the MIT License. https://github.com/steveruizok/perfect-freehand
+(Only for applications that use the perfect_freehand module.)
 
 Both are provided "as-is", without warranties of any kind.
 ```

@@ -276,6 +276,14 @@ fn process_textured_quad(in: VSOut) -> vec4<f32> {
     // a whole composited canvas in/out).
     let sampled = textureSample(colorTexture,colorSampler,in.uv);
     let a = sampled.a * in.fillColor.a;
+    // What shows nothing must not hide anything either: a transparent texel
+    // would still write depth, and whatever is drawn after it at a lower
+    // zIndex -- or in the triangle pass, which runs after this one -- would
+    // vanish under an invisible rectangle (a PNG's transparent background,
+    // the empty part of a composited canvas).
+    if (a <= 0.0) {
+        discard;
+    }
     return vec4(sampled.rgb * in.fillColor.rgb * in.fillColor.a, a);
 }
 

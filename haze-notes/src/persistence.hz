@@ -487,6 +487,7 @@ ref struct DocumentLoad {
                 this.fail(f"shape {k}: {shape.error()}");
                 return true;
             }
+            forgetStoredOutline(shape);
             doc.data.pages[this.shapePage[k]].shapes.push(shape);
             this.parsedShapes += 1;
             if time.now() >= deadline {

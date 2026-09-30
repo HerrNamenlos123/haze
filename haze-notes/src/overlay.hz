@@ -49,19 +49,30 @@ fn overlayDashedPolyline(r: mut renderer.gfx.Renderer, points: []Vec2, closed: b
         if len <= 0.0 {
             continue;
         }
+        // Each pass either finishes the segment or ends exactly on the next
+        // dash/gap boundary, with the phase set to that boundary rather than
+        // accumulated. Accumulating could leave it a rounding error short of
+        // one, a step too small to move `t` at all -- the loop then never
+        // advanced, and a mouse lasso froze the app.
         let t = 0.0;
         while t < len {
             let inDash = phase < dash;
-            let step = inDash ? dash - phase : period - phase;
-            let end = min(len, t + step);
+            let boundary = inDash ? dash : period;
+            let end = t + (boundary - phase);
+            let finishesSegment = end >= len;
+            if finishesSegment {
+                end = len;
+            }
             if inDash {
                 overlayLine(r, Vec2(a.x + dx * t / len, a.y + dy * t / len), Vec2(a.x + dx * end / len, a.y + dy * end / len), width, color);
             }
-            phase = phase + (end - t);
-            if phase >= period {
-                phase = phase - period;
+            if finishesSegment {
+                phase = phase + (len - t);
+                t = len;
+            } else {
+                phase = inDash ? dash : 0.0;
+                t = end;
             }
-            t = end;
         }
     }
 }

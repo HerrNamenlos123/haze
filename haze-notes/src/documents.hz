@@ -279,6 +279,18 @@ ref struct TextblockShape {
 [[json.discriminator="variant"]]
 type Shape = LineShape | ImageShape | TextblockShape;
 
+// Drops a stroke's stored outline and bbox, for a shape coming in from a file
+// or the clipboard: an outline is only ever used as computed here, from the
+// points. The web app's stored outlines are exactly what that computes
+// anyway; but haze-notes builds before the outline matched the web app's
+// stored their own, a little thicker, and those must not be shown, exported
+// or saved again.
+fn forgetStoredOutline(shape: Shape) {
+    if shape is LineShape {
+        shape.clearShapeCache();
+    }
+}
+
 // Identity, not contents: `==` on ref structs compares them member by member,
 // and two strokes drawn alike are still two strokes.
 fn shapeAddress(shape: Shape): u64 {
@@ -429,26 +441,30 @@ struct StrokeConstructArgs {
   shape: LineShape;
 }
 
-// The stroke's outline polygon, in the same mm as its points. perfect_freehand
-// runs on points scaled up by accuracyScaling, and its outline comes back in
-// that scaled space -- scaled down again here, so no caller has to know about
-// it. getBBox once used it unscaled, which put every bbox 10x further out than
-// the stroke: the tile cull then dropped nearly every stroke from its own tile.
+// The stroke's outline polygon, in the same mm as its points -- exactly the
+// one the web app draws: its getPath (store.ts), perfect-freehand 1.2.2 with
+// the same options, points and pressures, so a stroke looks the same in both
+// and the outline the web app stored in a file is the one computed here.
+// That means simulated pressure (the library's default) and not `last`, as
+// the web app called it; the pen's own pressure only seeds the first point.
+//
+// perfect_freehand runs on points scaled up by accuracyScaling, and its
+// outline comes back in that scaled space -- scaled down again here, so no
+// caller has to know about it. getBBox once used it unscaled, which put every
+// bbox 10x further out than the stroke: the tile cull then dropped nearly
+// every stroke from its own tile.
 fn constructStrokeOutline(args: StrokeConstructArgs): []Vec2 {
     let pf = perfect_freehand.PerfectFreehand({
         size: args.shape.penThickness * args.accuracyScaling,
         thinning: 0.1,
         smoothing: 0.0,
         streamline: 0.6,
-        simulatePressure: false,
-        last: true,
+        simulatePressure: true,
+        last: false,
     });
 
     for point in args.shape.points {
-        pf.addPoint({
-            x: point.x * args.accuracyScaling,
-            y: point.y * args.accuracyScaling,
-        });
+        pf.addPointWithPressure(Vec2(point.x * args.accuracyScaling, point.y * args.accuracyScaling), point.pressure);
     }
 
     let outline = pf.compute();

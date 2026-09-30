@@ -1,0 +1,114 @@
+__c__("#include \"ffi/hz_zlib.c\"");
+export __c__("#include \"ffi/public/hz_zlib.h\"");
+
+namespace ffi {
+    // The handle is a C struct in GC memory: holding it keeps it alive.
+    export extern C fn hz_zlib_deflater_create(level: int): cptr :: final;
+    export extern C fn hz_zlib_deflater_write(d: cptr, data: cptr, length: int): void :: final;
+    export extern C fn hz_zlib_deflater_finish(d: cptr): void :: final;
+    export extern C fn hz_zlib_deflater_output_length(d: cptr): int :: final;
+    export extern C fn hz_zlib_deflater_take_output(d: cptr): cptr :: final;
+    export extern C fn hz_zlib_deflater_total_in(d: cptr): int :: final;
+    export extern C fn hz_zlib_deflater_total_out(d: cptr): int :: final;
+}
+
+// Compresses a zlib stream (RFC 1950: the deflate format with a header and
+// a checksum) a piece at a time -- what PDF's FlateDecode and PNG's IDAT
+// hold. Each write() compresses what it is given before it returns, so the
+// time a call takes is the caller's to choose: to compress something large
+// without a pause, feed it in pieces over several frames. The stream is the
+// same however it is split.
+//
+//     let c = zlib.Compressor();
+//     c.write(part1);
+//     c.write(part2);
+//     c.finish();
+//     let compressed = c.take();
+//
+// take() may also be called between writes, to pass output on as it comes.
+//
+// Everything it holds is garbage collected; one that is dropped half way
+// needs no cleanup.
+export ref struct Compressor {
+    handle: cptr;
+    finished: bool = false;
+
+    // `level` 1 (fastest) to 9 (smallest), as in zlib.
+    fn constructor(level: int = 6): mut Compressor {
+        return Compressor { handle: ffi.hz_zlib_deflater_create(level) };
+    }
+
+    mut fn write(data: Bytes) {
+        if this.finished {
+            sys.panic("zlib.Compressor: write() after finish()");
+        }
+        if data.length == 0 {
+            return;
+        }
+        // A one-byte Bytes holds its byte inline and has no buffer to point
+        // at; hand C a pointer to a copy instead.
+        let single: u8 = 0;
+        let ptr = none as cptr;
+        let length = data.length;
+        if length == 1 {
+            single = data[0];
+            __c__("ptr = &single;");
+        }
+        else {
+            __c__("ptr = data.basePtr + data.offset;");
+        }
+        ffi.hz_zlib_deflater_write(this.handle, ptr, length);
+    }
+
+    mut fn write(text: str) {
+        this.write(Bytes(text));
+    }
+
+    // Ends the stream. The rest of the output is ready to take() after it.
+    mut fn finish() {
+        if this.finished {
+            return;
+        }
+        ffi.hz_zlib_deflater_finish(this.handle);
+        this.finished = true;
+    }
+
+    // The compressed bytes produced since the last take(). They are the
+    // compressor's own buffer, handed over, so this copies nothing.
+    mut fn take(): Bytes {
+        let handle = this.handle;
+        let length = ffi.hz_zlib_deflater_output_length(handle);
+        if length == 0 {
+            return Bytes();
+        }
+        let data = ffi.hz_zlib_deflater_take_output(handle);
+        do unsafe {
+            // Bytes() rather than `uninitialized`: a garbage singleByte would
+            // read as present, and every index would return it.
+            let bytes = Bytes();
+            __c__("bytes.basePtr = data;");
+            __c__("bytes.offset = 0;");
+            __c__("bytes.length = length;");
+            return bytes;
+        };
+    }
+
+    // Bytes written so far, and compressed bytes produced so far (taken or
+    // not).
+    fn totalIn(): int {
+        return ffi.hz_zlib_deflater_total_in(this.handle);
+    }
+
+    fn totalOut(): int {
+        return ffi.hz_zlib_deflater_total_out(this.handle);
+    }
+}
+
+// Compresses `data` into a zlib stream in one call -- time grows with the
+// size of `data`; see Compressor to spread it out.
+export fn compress(data: Bytes, level: int = 6): Bytes {
+    let c = Compressor(level);
+    c.write(data);
+    c.finish();
+    return c.take();
+}

@@ -1,0 +1,7 @@
+name = "zlib"
+id = "Z80hyjqG"
+version = "1.0.0"
+description = "zlib stream (RFC 1950) compression for Haze, in one call or a piece at a time"
+license = "MIT"
+authors = ["HerrNamenlos123"]
+type = "lib"

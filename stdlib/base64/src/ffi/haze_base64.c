@@ -1,6 +1,9 @@
 
 #include "hzstd/include/hzstd_memory.h"
+#include "hzstd/include/hzstd_platform.h"
 #include "hzstd/include/hzstd_string.h"
+
+#include <stdatomic.h>
 
 #include "public/haze_base64.h"
 
@@ -124,3 +127,40 @@ haze_base64_decode_result_t haze_base64_decode(hzstd_str_t data)
   result.length = outLength;
   return result;
 }
+
+// A decode on a worker thread. GC memory: it holds the text for the worker,
+// and the decoded bytes once it is done.
+typedef struct {
+  hzstd_str_t text;
+  haze_base64_decode_result_t result;
+  atomic_int done;
+} haze_base64_decode_job_t;
+
+static void haze_base64_decode_job_run(void* job_)
+{
+  haze_base64_decode_job_t* job = job_;
+  job->result = haze_base64_decode(job->text);
+  atomic_store_explicit(&job->done, 1, memory_order_release);
+}
+
+// Starts decoding `text` on a worker thread -- or right here, if no thread
+// can be started -- and returns the job. (Jobs are passed as hzstd_cptr_t,
+// which is how the Haze side declares them.)
+hzstd_cptr_t haze_base64_decode_start(hzstd_str_t text)
+{
+  haze_base64_decode_job_t* job = hzstd_heap_allocate(sizeof(haze_base64_decode_job_t), "base64 decode job");
+  job->text = text;
+  atomic_init(&job->done, 0);
+  if (!hzstd_run_on_worker_thread(haze_base64_decode_job_run, job)) {
+    haze_base64_decode_job_run(job);
+  }
+  return job;
+}
+
+hzstd_bool_t haze_base64_decode_done(hzstd_cptr_t job)
+{
+  return atomic_load_explicit(&((haze_base64_decode_job_t*)job)->done, memory_order_acquire) != 0;
+}
+
+// Only once haze_base64_decode_done.
+haze_base64_decode_result_t haze_base64_decode_result(hzstd_cptr_t job) { return ((haze_base64_decode_job_t*)job)->result; }

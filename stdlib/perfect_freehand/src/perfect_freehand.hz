@@ -1,22 +1,26 @@
-__c__("#include \"perfect_freehand.h\"");
+__c__("#include \"ffi/perfect_freehand.c\"");
+export __c__("#include \"ffi/public/perfect_freehand.h\"");
+
+// perfect-freehand 1.2.2, the JavaScript library technicalsketcher.web draws
+// its strokes with, ported to C so that it computes the very same outlines,
+// bit for bit -- see ffi/perfect_freehand.c.
 
 namespace ffi {
-	export extern C ref struct PfContext {};
-
-	extern C fn pf_create(): PfContext :: final;
-	extern C fn pf_destroy(ctx: PfContext): void :: final;
-	extern C fn pf_clear_points(ctx: PfContext): void :: final;
-	extern C fn pf_add_point(ctx: PfContext, x: f64, y: f64, pressure: f64): void :: final;
-	extern C fn pf_set_size(ctx: PfContext, size: f64): void :: final;
-	extern C fn pf_set_thinning(ctx: PfContext, thinning: f64): void :: final;
-	extern C fn pf_set_smoothing(ctx: PfContext, smoothing: f64): void :: final;
-	extern C fn pf_set_streamline(ctx: PfContext, streamline: f64): void :: final;
-	extern C fn pf_set_simulate_pressure(ctx: PfContext, val: i32): void :: final;
-	extern C fn pf_set_last(ctx: PfContext, val: i32): void :: final;
-	extern C fn pf_compute(ctx: PfContext): i32 :: final;
-	extern C fn pf_get_outline_count(ctx: PfContext): i32 :: final;
-	extern C fn pf_get_outline_x(ctx: PfContext, index: i32): f64 :: final;
-	extern C fn pf_get_outline_y(ctx: PfContext, index: i32): f64 :: final;
+	// The handle is malloc'd; PerfectFreehand.destroy() frees it.
+	extern C fn pf_create(): cptr :: final;
+	extern C fn pf_destroy(ctx: cptr): void :: final;
+	extern C fn pf_clear_points(ctx: cptr): void :: final;
+	extern C fn pf_add_point(ctx: cptr, x: f64, y: f64, pressure: f64): void :: final;
+	extern C fn pf_set_size(ctx: cptr, size: f64): void :: final;
+	extern C fn pf_set_thinning(ctx: cptr, thinning: f64): void :: final;
+	extern C fn pf_set_smoothing(ctx: cptr, smoothing: f64): void :: final;
+	extern C fn pf_set_streamline(ctx: cptr, streamline: f64): void :: final;
+	extern C fn pf_set_simulate_pressure(ctx: cptr, val: i32): void :: final;
+	extern C fn pf_set_last(ctx: cptr, val: i32): void :: final;
+	extern C fn pf_compute(ctx: cptr): i32 :: final;
+	extern C fn pf_get_outline_count(ctx: cptr): i32 :: final;
+	extern C fn pf_get_outline_x(ctx: cptr, index: i32): f64 :: final;
+	extern C fn pf_get_outline_y(ctx: cptr, index: i32): f64 :: final;
 }
 
 export ref struct StrokeOptions {
@@ -40,7 +44,7 @@ export ref struct StrokeOptions {
 }
 
 export ref struct PerfectFreehand {
-	handle: ffi.PfContext;
+	handle: cptr;
 
 	fn constructor(options: StrokeOptions): PerfectFreehand {
 		let ctx = ffi.pf_create();

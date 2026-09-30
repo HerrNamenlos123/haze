@@ -122,12 +122,35 @@ ZenityCommon(char** command, int commandLen, const char* defaultPath, const char
     NFDi_SetError(NO_ZENITY_MSG);
     result = NFD_ERROR;
   }
-  else {
-    if (exitCode == 1) {
-      result = NFD_CANCEL;
-    }
+  else if (exitCode != 0) {
+    // 1 is Cancel or the window closed. Anything else -- a timeout, an
+    // error, killed (see runCommandArray) -- did not choose a file either.
+    result = NFD_CANCEL;
   }
 
+  return result;
+}
+
+// The path zenity printed, without its final newline, into *outPath; it
+// frees stdOut. Zenity prints nothing on Cancel, so an empty output is no
+// path at all -- taking the newline off an empty string wrote a byte before
+// the buffer on every Cancel.
+static nfdresult_t ZenityTakePath(nfdresult_t result, char* stdOut, nfdchar_t** outPath)
+{
+  *outPath = NULL;
+  if (stdOut == NULL) {
+    return result == NFD_OKAY ? NFD_CANCEL : result;
+  }
+  size_t len = strlen(stdOut);
+  if (result == NFD_OKAY && len > 1) {
+    *outPath = NFDi_Malloc(len);
+    memcpy(*outPath, stdOut, len - 1);
+    (*outPath)[len - 1] = '\0';
+  }
+  else if (result == NFD_OKAY) {
+    result = NFD_CANCEL;
+  }
+  free(stdOut);
   return result;
 }
 
@@ -186,18 +209,7 @@ nfdresult_t NFD_OpenDialog(const char* filterList, const nfdchar_t* defaultPath,
   char* stdOut = NULL;
   nfdresult_t result = ZenityCommon(command, commandLen, defaultPath, filterList, &stdOut);
 
-  if (stdOut != NULL) {
-    size_t len = strlen(stdOut);
-    *outPath = NFDi_Malloc(len);
-    memcpy(*outPath, stdOut, len);
-    (*outPath)[len - 1] = '\0'; // trim out the final \n with a null terminator
-    free(stdOut);
-  }
-  else {
-    *outPath = NULL;
-  }
-
-  return result;
+  return ZenityTakePath(result, stdOut, outPath);
 }
 
 nfdresult_t NFD_OpenDialogMultiple(const nfdchar_t* filterList, const nfdchar_t* defaultPath, nfdpathset_t* outPaths)
@@ -216,10 +228,15 @@ nfdresult_t NFD_OpenDialogMultiple(const nfdchar_t* filterList, const nfdchar_t*
 
   if (stdOut != NULL) {
     size_t len = strlen(stdOut);
-    stdOut[len - 1] = '\0'; // remove trailing newline
-
-    if (AllocPathSet(stdOut, outPaths) == NFD_ERROR) {
-      result = NFD_ERROR;
+    // Nothing printed is no files -- see ZenityTakePath.
+    if (result == NFD_OKAY && len > 1) {
+      stdOut[len - 1] = '\0'; // remove trailing newline
+      if (AllocPathSet(stdOut, outPaths) == NFD_ERROR) {
+        result = NFD_ERROR;
+      }
+    }
+    else if (result == NFD_OKAY) {
+      result = NFD_CANCEL;
     }
 
     free(stdOut);
@@ -245,18 +262,7 @@ nfdresult_t NFD_SaveDialog(const nfdchar_t* filterList, const nfdchar_t* default
   char* stdOut = NULL;
   nfdresult_t result = ZenityCommon(command, commandLen, defaultPath, filterList, &stdOut);
 
-  if (stdOut != NULL) {
-    size_t len = strlen(stdOut);
-    *outPath = NFDi_Malloc(len);
-    memcpy(*outPath, stdOut, len);
-    (*outPath)[len - 1] = '\0'; // trim out the final \n with a null terminator
-    free(stdOut);
-  }
-  else {
-    *outPath = NULL;
-  }
-
-  return result;
+  return ZenityTakePath(result, stdOut, outPath);
 }
 
 nfdresult_t NFD_PickFolder(const nfdchar_t* defaultPath, nfdchar_t** outPath)
@@ -273,16 +279,5 @@ nfdresult_t NFD_PickFolder(const nfdchar_t* defaultPath, nfdchar_t** outPath)
   char* stdOut = NULL;
   nfdresult_t result = ZenityCommon(command, commandLen, defaultPath, "", &stdOut);
 
-  if (stdOut != NULL) {
-    size_t len = strlen(stdOut);
-    *outPath = NFDi_Malloc(len);
-    memcpy(*outPath, stdOut, len);
-    (*outPath)[len - 1] = '\0'; // trim out the final \n with a null terminator
-    free(stdOut);
-  }
-  else {
-    *outPath = NULL;
-  }
-
-  return result;
+  return ZenityTakePath(result, stdOut, outPath);
 }

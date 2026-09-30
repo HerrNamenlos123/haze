@@ -382,6 +382,19 @@ export namespace fs {
             return Error.None;
         }
 
+        // The same for bytes that are not text -- a binary file format.
+        mut fn write(data: Bytes): Error {
+            if this.closed {
+                return Error.IOError;
+            }
+            this.pending.push(data);
+            this.pendingBytes = this.pendingBytes + data.length;
+            if this.pendingBytes >= 262144 {
+                return this.flush();
+            }
+            return Error.None;
+        }
+
         mut fn flush(): Error {
             if this.pendingBytes == 0 {
                 return Error.None;

@@ -1,6 +1,8 @@
 import fontstash;
 import wgpu;
 
+__c__("#include \"ffi/haze_mip_chain.c\"");
+
 export namespace gfx {
 
 fn max<T>(a: T, b: T): T => {
@@ -248,98 +250,144 @@ export ref struct SharedAttachment {
     users: int = 0;
 }
 
-// One level of a CPU-built RGBA8 mip chain (see buildMipChain below).
+// One level of a CPU-built RGBA8 mip chain (see ffi/haze_mip_chain.c).
 struct MipLevel {
     pixels: Bytes;
     width: int;
     height: int;
 }
 
-// Box-filters `src` (width x height, RGBA8, 4 bytes/px) down to half size in
-// each dimension (rounding up, so odd sizes still shrink every level down to
-// 1x1 instead of getting stuck). Each destination texel is the average of
-// the 2x2 source block it covers; the last row/column of an odd-sized
-// source is sampled twice (clamped) rather than reading out of bounds --
-// equivalent to clamp-to-edge for the purposes of this filter.
-//
-// The pixel loops here and in buildMipChain are C over raw pointers: as
-// checked Bytes/ByteBuffer accesses, one call per byte, they took ~230 ms for
-// a 1 MP image -- a frozen frame whenever an image is first shown.
-fn downsampleHalf(src: Bytes, width: int, height: int): MipLevel {
-    let dstWidth = width / 2;
-    if dstWidth < 1 { dstWidth = 1; }
-    let dstHeight = height / 2;
-    if dstHeight < 1 { dstHeight = 1; }
-
-    let pixels = Bytes();
-    __c__("""
-        const uint8_t *s = (const uint8_t *)src.basePtr + src.offset;
-        uint8_t *d = hzstd_heap_allocate_atomic((size_t)dstWidth * (size_t)dstHeight * 4, "mip level");
-        for (int64_t y = 0; y < dstHeight; y++) {
-            int64_t y0 = y * 2;
-            int64_t y1 = y0 + 1 < height ? y0 + 1 : y0;
-            for (int64_t x = 0; x < dstWidth; x++) {
-                int64_t x0 = x * 2;
-                int64_t x1 = x0 + 1 < width ? x0 + 1 : x0;
-                const uint8_t *p00 = s + (y0 * width + x0) * 4;
-                const uint8_t *p10 = s + (y0 * width + x1) * 4;
-                const uint8_t *p01 = s + (y1 * width + x0) * 4;
-                const uint8_t *p11 = s + (y1 * width + x1) * 4;
-                uint8_t *o = d + (y * dstWidth + x) * 4;
-                for (int c = 0; c < 4; c++) {
-                    o[c] = (uint8_t)(((int)p00[c] + p10[c] + p01[c] + p11[c] + 2) / 4);
-                }
-            }
-        }
-        pixels.basePtr = d;
-        pixels.offset = 0;
-        pixels.length = dstWidth * dstHeight * 4;
-    """);
-    return MipLevel { pixels: pixels, width: dstWidth, height: dstHeight };
-}
-
-// Builds a full CPU-side RGBA8 mip chain down to 1x1, optionally
+// The full mip chain of an RGBA8 image, down to 1x1, optionally
 // premultiplying straight alpha into RGB first (see
 // Context.createRGBATexture for why premultiplication happens here rather
-// than in the image-decoding layer). Every coarser level is filtered from
-// the previous one (not from level 0 each time), which is what makes this
-// a proper box-filter pyramid instead of repeated nearest-neighbor
-// shrinking.
+// than in the image-decoding layer).
 fn buildMipChain(pixels: Bytes, width: int, height: int, premultiply: bool): []MipLevel {
     assert(pixels.length >= width * height * 4, "buildMipChain: fewer pixels than width x height");
-    let base = pixels;
-    if premultiply {
-        let premultiplied = Bytes();
-        __c__("""
-            size_t count = (size_t)width * (size_t)height;
-            const uint8_t *s = (const uint8_t *)pixels.basePtr + pixels.offset;
-            uint8_t *d = hzstd_heap_allocate_atomic(count * 4, "premultiplied pixels");
-            for (size_t i = 0; i < count; i++) {
-                unsigned a = s[i * 4 + 3];
-                d[i * 4 + 0] = (uint8_t)((s[i * 4 + 0] * a) / 255);
-                d[i * 4 + 1] = (uint8_t)((s[i * 4 + 1] * a) / 255);
-                d[i * 4 + 2] = (uint8_t)((s[i * 4 + 2] * a) / 255);
-                d[i * 4 + 3] = (uint8_t)a;
-            }
-            premultiplied.basePtr = d;
-            premultiplied.offset = 0;
-            premultiplied.length = (int64_t)(count * 4);
-        """);
-        base = premultiplied;
-    }
+    let chain = none as cptr;
+    __c__("""
+        haze_mip_chain_t *built = haze_mip_chain_new((const uint8_t *)pixels.basePtr + pixels.offset, width, height, premultiply);
+        haze_mip_chain_build(built);
+        chain = built;
+    """);
+    return mipLevelsOf(chain);
+}
 
-    let levels: []MipLevel = [MipLevel { pixels: base, width: width, height: height }];
-    let cur = base;
-    let w = width;
-    let h = height;
-    while w > 1 || h > 1 {
-        let next = downsampleHalf(cur, w, h);
-        levels.push(next);
-        cur = next.pixels;
-        w = next.width;
-        h = next.height;
+// The levels of a haze_mip_chain_t that is done.
+fn mipLevelsOf(chain: cptr): []MipLevel {
+    let count = 0;
+    __c__("count = ((haze_mip_chain_t *)chain)->count;");
+    let levels: []MipLevel = [];
+    for (let i = 0; i < count; i++) {
+        let index = i;
+        let pixels = Bytes();
+        let width = 0;
+        let height = 0;
+        __c__("""
+            haze_mip_level_t level = ((haze_mip_chain_t *)chain)->levels[index];
+            pixels.basePtr = (void *)level.pixels;
+            pixels.offset = 0;
+            pixels.length = level.width * level.height * 4;
+            width = level.width;
+            height = level.height;
+        """);
+        levels.push(MipLevel { pixels: pixels, width: width, height: height });
     }
     return levels;
+}
+
+// A texture of `levels`, a mip chain made by buildMipChain or mipLevelsOf.
+fn uploadMipChain(gfx: Context, levels: []MipLevel, width: int, height: int): Texture {
+    let texture = gfx.device.createTexture({
+        usage: wgpu.TextureUsage.TextureBinding | wgpu.TextureUsage.CopyDst,
+        size: { width: width, height: height, depthOrArrayLayers: 1 },
+        format: wgpu.TextureFormat.RGBA8Unorm,
+        mipLevelCount: levels.length,
+        sampleCount: 1,
+    });
+    let view = texture.createView();
+    assert(view);
+
+    let sampler = gfx.device.createSampler({
+        magFilter: wgpu.FilterMode.Linear,
+        minFilter: wgpu.FilterMode.Linear,
+        mipmapFilter: wgpu.MipmapFilterMode.Linear,
+        lodMinClamp: 0.0,
+        lodMaxClamp: levels.length as real,
+        maxAnisotropy: 1,
+    });
+
+    let bindGroup = gfx.device.createBindGroup({
+        layout: gfx.textureLayout,
+        entries: {
+            { binding: 0, textureView: view },
+            { binding: 1, sampler: sampler },
+        },
+    });
+
+    for (let level = 0; level < levels.length; level++) {
+        let mip = levels[level];
+        let mipPixels = mip.pixels;
+        let mipPtr = none as cptr;
+        __c__("mipPtr = mipPixels.basePtr + mipPixels.offset;");
+        gfx.queue.writeTexture(
+            { texture: texture, mipLevel: level },
+            mipPtr,
+            mip.width * mip.height * 4,
+            { offset: 0, bytesPerRow: mip.width * 4, rowsPerImage: mip.height },
+            { width: mip.width, height: mip.height, depthOrArrayLayers: 1 }
+        );
+    }
+
+    return Texture(gfx.allocTextureId(), texture, view, bindGroup, width, height, true, sampler);
+}
+
+// A texture whose mip chain is being built on a worker thread -- see
+// Context.createRGBATextureAsync.
+export opaque ref struct PendingTexture {
+    gfx: Context;
+    // The haze_mip_chain_t, until the texture is made from it.
+    chain: cptr;
+    // The pixels the worker reads.
+    source: Bytes;
+    width: int;
+    height: int;
+    texture?: Texture;
+
+    static fn start(gfx: Context, pixels: Bytes, width: int, height: int, premultiply: bool): PendingTexture {
+        let chain = none as cptr;
+        __c__("""
+            haze_mip_chain_t *started = haze_mip_chain_new((const uint8_t *)pixels.basePtr + pixels.offset, width, height, premultiply);
+            haze_mip_chain_start_async(started);
+            chain = started;
+        """);
+        return PendingTexture {
+            gfx: gfx,
+            chain: chain,
+            source: pixels,
+            width: width,
+            height: height,
+        };
+    }
+
+    // The texture, or none while its mip chain is still being built. The
+    // first call to find the chain done uploads it -- a copy, a few ms for a
+    // megapixel -- and lets go of the CPU-side pixels.
+    fn poll(): Texture | none {
+        if let texture = this.texture {
+            return texture;
+        }
+        let chain = this.chain;
+        let done = false;
+        __c__("done = haze_mip_chain_done((haze_mip_chain_t *)chain);");
+        if !done {
+            return none;
+        }
+        let texture = uploadMipChain(this.gfx, mipLevelsOf(chain), this.width, this.height);
+        this.texture = texture;
+        this.chain = none as cptr;
+        this.source = Bytes();
+        return texture;
+    }
 }
 
 const depthFormat = wgpu.TextureFormat.Depth32Float;
@@ -900,50 +948,16 @@ export opaque ref struct Context {
     // those at their zero-mip-only defaults since every other texture in
     // this renderer (font atlas, tile composites) only ever has one level.
     fn createRGBATexture(pixels: Bytes, width: int, height: int, premultiply: bool = false): Texture {
-        let levels = buildMipChain(pixels, width, height, premultiply);
+        return uploadMipChain(this, buildMipChain(pixels, width, height, premultiply), width, height);
+    }
 
-        let texture = this.device.createTexture({
-            usage: wgpu.TextureUsage.TextureBinding | wgpu.TextureUsage.CopyDst,
-            size: { width: width, height: height, depthOrArrayLayers: 1 },
-            format: wgpu.TextureFormat.RGBA8Unorm,
-            mipLevelCount: levels.length,
-            sampleCount: 1,
-        });
-        let view = texture.createView();
-        assert(view);
-
-        let sampler = this.device.createSampler({
-            magFilter: wgpu.FilterMode.Linear,
-            minFilter: wgpu.FilterMode.Linear,
-            mipmapFilter: wgpu.MipmapFilterMode.Linear,
-            lodMinClamp: 0.0,
-            lodMaxClamp: levels.length as real,
-            maxAnisotropy: 1,
-        });
-
-        let bindGroup = this.device.createBindGroup({
-            layout: this.textureLayout,
-            entries: {
-                { binding: 0, textureView: view },
-                { binding: 1, sampler: sampler },
-            },
-        });
-
-        for (let level = 0; level < levels.length; level++) {
-            let mip = levels[level];
-            let mipPixels = mip.pixels;
-            let mipPtr = none as cptr;
-            __c__("mipPtr = mipPixels.basePtr + mipPixels.offset;");
-            this.queue.writeTexture(
-                { texture: texture, mipLevel: level },
-                mipPtr,
-                mip.width * mip.height * 4,
-                { offset: 0, bytesPerRow: mip.width * 4, rowsPerImage: mip.height },
-                { width: mip.width, height: mip.height, depthOrArrayLayers: 1 }
-            );
-        }
-
-        return Texture(this.allocTextureId(), texture, view, bindGroup, width, height, true, sampler);
+    // createRGBATexture without the wait: the premultiplying and mip
+    // filtering -- tens of ms for a megapixel in an unoptimized build -- run
+    // on a worker thread, and PendingTexture.poll() hands out the texture once
+    // they are done. `pixels` must not change until then.
+    fn createRGBATextureAsync(pixels: Bytes, width: int, height: int, premultiply: bool = false): PendingTexture {
+        assert(pixels.length >= width * height * 4, "createRGBATextureAsync: fewer pixels than width x height");
+        return PendingTexture.start(this, pixels, width, height, premultiply);
     }
 
     // Re-uploads the font atlas to the GPU if any text was drawn (through any
@@ -1633,6 +1647,11 @@ export ref struct TextureOpts {
     pos: Vec2;
     size: Vec2;
     tint: Color = { r: 1, g: 1, b: 1, a: 1 };
+    // The part of the texture shown on the quad, in 0..1 texture coordinates
+    // -- all of it by default. A smaller rect crops it: an image covering a
+    // box of another aspect ratio, a sprite out of a sheet.
+    uvMin: Vec2 = { x: 0, y: 0 };
+    uvMax: Vec2 = { x: 1, y: 1 };
     zIndex: real = 0;
     // Places this textured quad anywhere -- including as a flat panel
     // somewhere in a 3D scene when the canvas's own viewProj is a perspective
@@ -2048,8 +2067,8 @@ export opaque ref struct Renderer {
                 a: opts.tint.a as f32,
             },
             borderColor: { r: 0, g: 0, b: 0, a: 0 },
-            uvMin: { x: 0, y: 0 },
-            uvMax: { x: 1, y: 1 },
+            uvMin: { x: opts.uvMin.x as f32, y: opts.uvMin.y as f32 },
+            uvMax: { x: opts.uvMax.x as f32, y: opts.uvMax.y as f32 },
             z: zIndexToLocalZ(opts.zIndex),
             transformIndex: transformIndex,
             clipRect: this.currentClip(),

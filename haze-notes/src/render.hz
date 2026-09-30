@@ -12,8 +12,10 @@ const comptime pageGapMm = 10.0;
 const comptime zoomSettleFrames = 8;
 const comptime zoomEpsilon = 0.0001;
 
-// How long render() may spend per frame drawing tiles, and tessellating the
-// strokes and decoding the images on them. Whatever does not fit is drawn in
+// How long render() may spend per frame drawing tiles, tessellating the
+// strokes on them and uploading their images (decoded on worker threads --
+// see ImageLoad; a tile is drawn without the ones still loading, and again
+// once they are there). Whatever does not fit is drawn in
 // the following frames, nearest the middle of the view first; until then a
 // square shows another zoom level's tiles stretched over it, or the blank
 // page. This is what keeps the editor responsive however much a zoom, a
@@ -28,6 +30,18 @@ const comptime maxFallbackTiles = 96;
 // Unused tile canvases (1 MB of GPU memory each) kept for reuse; the rest are
 // freed.
 const comptime maxFreeTiles = 16;
+
+// The ruled lines on every page, as the web app draws them: horizontal only,
+// from the top edge down, in the document's gridColor.
+const comptime gridLineDistanceMm = 10.0;
+const comptime gridLineThicknessMm = 0.2;
+
+// Paper, lines and content are stacked by zIndex, not by drawing order: a
+// Renderer draws all its rects and textures before any triangles, so the
+// lines (triangles) would otherwise cover pasted images -- and, on the
+// panel, the tiles.
+const comptime paperZIndex = -2.0;
+const comptime gridLineZIndex = -1.0;
 
 fn pageOriginY(doc: DocumentFile, pageIndex: int): real {
     return pageIndex as real * (doc.data.pageHeightMm + pageGapMm);
@@ -76,65 +90,173 @@ ref struct ImageTextureCache {
     // image is only ever attempted once rather than every frame.
     failed: LinearMap<str, bool> = {};
 
-    // Images decoded but not uploaded yet -- see prepare().
-    decodedKeys: []str = [];
-    decodedImages: []image.Image = [];
+    // Images on their way to the GPU.
+    loads: LinearMap<str, ImageLoad> = {};
 
-    // Whether getOrCreate() would return at once, without decoding.
+    // Whether the image has arrived -- or failed to, so it never will.
     fn isReady(shape: ImageShape): bool {
         return this.textures.has(shape.base64ImageData) || this.failed.has(shape.base64ImageData);
     }
 
-    // Does the next step of getting a shape's image onto the GPU -- decoding
-    // it, or uploading it (with its mip chain) -- so a caller on a frame
-    // budget can check the clock in between: each is ~10 ms for a 1 MP
-    // image. Nothing to do once isReady().
-    fn prepare(gfx: mut renderer.gfx.Context, shape: ImageShape) {
-        let key = shape.base64ImageData;
-        if this.isReady(shape) {
-            return;
-        }
-        for (let i = 0; i < this.decodedKeys.length; i++) {
-            if this.decodedKeys[i] == key {
-                // stb_image (via the `image` package) returns straight alpha;
-                // createRGBATexture's premultiply=true converts it to the
-                // premultiplied form this renderer's textured-quad shader
-                // assumes.
-                let img = this.decodedImages[i];
-                this.textures.set(key, gfx.createRGBATexture(img.pixels, img.width, img.height, true));
-                this.decodedKeys.remove(i);
-                this.decodedImages.remove(i);
-                return;
-            }
-        }
-        let decoded = base64.decode(stripDataUrlPrefix(key));
-        if decoded {
-            this.decodedKeys.push(key);
-            this.decodedImages.push(image.Image(decoded));
-            return;
-        }
-        fmt.println("Image shape: failed to decode base64 image data");
-        this.failed.set(key, true);
+    fn isLoading(): bool {
+        return this.loads.size() > 0;
     }
 
-    // The shape's texture, decoding and uploading it first if need be.
-    fn getOrCreate(gfx: mut renderer.gfx.Context, shape: ImageShape): renderer.gfx.Texture | none {
-        while !this.isReady(shape) {
-            this.prepare(gfx, shape);
+    // Starts getting the shape's image onto the GPU, unless it is there or
+    // on its way. Cheap: the work is all done on worker threads.
+    fn request(shape: ImageShape) {
+        let key = shape.base64ImageData;
+        if this.isReady(shape) || this.loads.has(key) {
+            return;
         }
+        this.loads.set(key, ImageLoad(key));
+    }
+
+    // Moves every load along, collecting what the workers finished. The
+    // one expensive step is the upload of a finished mip chain (~1 ms per
+    // megapixel), so after `deadline` the rest wait for the next call.
+    fn advance(gfx: mut renderer.gfx.Context, deadline: real) {
+        let finished: []str = [];
+        for (let i = 0; i < this.loads.keys.length; i++) {
+            if time.now() >= deadline {
+                break;
+            }
+            let key = this.loads.keys[i];
+            let load = this.loads.values[i];
+            if !load.step(gfx) {
+                continue;
+            }
+            if let texture = load.texture {
+                this.textures.set(key, texture);
+            } else {
+                fmt.println("Image shape: failed to decode the image data");
+                this.failed.set(key, true);
+            }
+            finished.push(key);
+        }
+        for key in finished {
+            this.loads.delete(key);
+        }
+    }
+
+    // The shape's texture: none while it is loading, or if it failed to.
+    fn get(shape: ImageShape): renderer.gfx.Texture | none {
         return this.textures.get(shape.base64ImageData);
     }
 
     // Frees every texture -- the document they came from is gone. Nothing
-    // drawn with one may still be waiting for its commit().
+    // drawn with one may still be waiting for its commit(). Loads still
+    // running are dropped; their workers finish and are never read.
     fn releaseAll() {
         for texture in this.textures.values {
             texture.release();
         }
         this.textures.clear();
         this.failed.clear();
-        this.decodedKeys.clear();
-        this.decodedImages.clear();
+        this.loads.clear();
+    }
+}
+
+// One image on its way to the GPU: its base64 text decoded, then the PNG or
+// JPEG in it, then its mip chain built -- each on a worker thread, as each
+// takes tens of ms per megapixel. A step only ever starts one of them, or
+// collects one that is done.
+ref struct ImageLoad {
+    text?: base64.Base64Decode;
+    decoding?: image.ImageDecode;
+    uploading?: renderer.gfx.PendingTexture;
+    texture?: renderer.gfx.Texture;
+    failed: bool = false;
+
+    fn constructor(base64ImageData: str): ImageLoad {
+        return ImageLoad { text: base64.decodeAsync(stripDataUrlPrefix(base64ImageData)) };
+    }
+
+    // Moves the load along. True once it has its texture, or has failed.
+    fn step(gfx: mut renderer.gfx.Context): bool {
+        if let pending = this.uploading {
+            if let texture = pending.poll() {
+                this.texture = texture;
+                this.uploading = none;
+                return true;
+            }
+            return false;
+        }
+        if let decode = this.decoding {
+            if !decode.done() {
+                return false;
+            }
+            this.decoding = none;
+            if let img = decode.result() {
+                // stb_image returns straight alpha; premultiply=true converts
+                // it to the premultiplied form this renderer's textured-quad
+                // shader assumes.
+                this.uploading = gfx.createRGBATextureAsync(img.pixels, img.width, img.height, true);
+                return false;
+            }
+            this.failed = true;
+            return true;
+        }
+        if let text = this.text {
+            if !text.done() {
+                return false;
+            }
+            this.text = none;
+            if let bytes = text.result() {
+                this.decoding = image.decodeAsync(bytes);
+                return false;
+            }
+            this.failed = true;
+            return true;
+        }
+        return true;
+    }
+}
+
+// The web app's paper texture, which every page is drawn on.
+ref struct PaperTexture {
+    texture?: renderer.gfx.Texture;
+    decoding?: image.ImageDecode;
+    uploading?: renderer.gfx.PendingTexture;
+    // It did not decode: pages are plain white instead.
+    failed: bool = false;
+
+    fn isReady(): bool {
+        if this.texture {
+            return true;
+        }
+        return this.failed;
+    }
+
+    // Moves the texture along towards the GPU. Decoding the 2 MP JPEG and
+    // filtering its mip chain take ~100 ms, all of it on worker threads, so
+    // a call only ever starts a step or finds one done. Call it every frame
+    // until isReady().
+    fn prepare(gfx: mut renderer.gfx.Context) {
+        if this.isReady() {
+            return;
+        }
+        if let pending = this.uploading {
+            if let texture = pending.poll() {
+                this.texture = texture;
+                this.uploading = none;
+            }
+            return;
+        }
+        if let decode = this.decoding {
+            if !decode.done() {
+                return;
+            }
+            this.decoding = none;
+            if let img = decode.result() {
+                this.uploading = gfx.createRGBATextureAsync(img.pixels, img.width, img.height, true);
+            } else {
+                fmt.println("Paper texture: failed to decode");
+                this.failed = true;
+            }
+            return;
+        }
+        this.decoding = image.decodeAsync(embed.binary("resources/paper-texture.jpg"));
     }
 }
 
@@ -144,7 +266,7 @@ ref struct ImageTextureCache {
 // `level` is the tile pyramid level this content is being rendered at --
 // see LineShape.ensureTesselated for why tesselation is cached per
 // level rather than once per shape.
-fn drawShapeInto(r: mut renderer.gfx.Renderer, gfx: mut renderer.gfx.Context, shape: Shape, level: int, imageCache: mut ImageTextureCache) {
+fn drawShapeInto(r: mut renderer.gfx.Renderer, shape: Shape, level: int, imageCache: ImageTextureCache) {
     if shape is LineShape {
         let tess = shape.ensureTesselated(level);
         if tess.indices.length > 0 {
@@ -152,9 +274,13 @@ fn drawShapeInto(r: mut renderer.gfx.Renderer, gfx: mut renderer.gfx.Context, sh
         }
     }
     else if shape is ImageShape {
+        // One still loading is left out; the tile is drawn again when it
+        // arrives (Tile.waitingForImages).
+        if !imageCache.isReady(shape) {
+            return;
+        }
         let bbox = shape.getBBox();
-        let texture = imageCache.getOrCreate(gfx, shape);
-        if texture {
+        if let texture = imageCache.get(shape) {
             r.drawTexture({
                 texture: texture,
                 pos: Vec2(bbox.left, bbox.top),
@@ -208,6 +334,7 @@ ref struct DocumentRenderer {
     pages: []mut PageTileState = [];
     viewport: Viewport = {};
     imageCache: mut ImageTextureCache = {};
+    paper: mut PaperTexture = {};
 
     // The document the tiles were drawn from -- render()'s documentId. A tile
     // is cached by page, level and position alone, so this is the only thing
@@ -245,10 +372,13 @@ ref struct DocumentRenderer {
     livePages: []int = [];
 
     fn constructor(gfx: mut renderer.gfx.Context) {
-        return DocumentRenderer {
+        let result = DocumentRenderer {
             gfx: gfx,
             pool: TilePool(gfx),
         };
+        // Under way while the first document loads.
+        result.paper.prepare(gfx);
+        return result;
     }
 
     fn ensurePagesArraySized(doc: DocumentFile) {
@@ -357,11 +487,12 @@ ref struct DocumentRenderer {
 
     // Whether render() has work left that only more calls to it finish: a
     // zoom that has not held still for zoomSettleFrames renders yet (its
-    // retile is still to come), tiles the frame budget did not reach, or
-    // edits drawn live until their tiles show them. A caller that only
-    // renders on change has to keep calling until this is false.
+    // retile is still to come), tiles the frame budget did not reach,
+    // edits drawn live until their tiles show them, or images still
+    // loading. A caller that only renders on change has to keep calling
+    // until this is false.
     fn hasPendingWork(): bool {
-        return this.zoomStableFrames < zoomSettleFrames || this.pendingTiles > 0 || this.liveShapes.length > 0;
+        return this.zoomStableFrames < zoomSettleFrames || this.pendingTiles > 0 || this.liveShapes.length > 0 || this.imageCache.isLoading();
     }
 
     // Has the tiles a shape's bbox overlaps drawn again -- not the whole
@@ -402,8 +533,9 @@ ref struct DocumentRenderer {
     }
 
     // Every shape a tile shows is tessellated at the tile's level, and every
-    // image on it decoded -- or false, when the deadline came first. That
-    // work is kept, and the next call goes on from there.
+    // image on it is on its way to the GPU -- or false, when the deadline
+    // came first. That work is kept, and the next call goes on from there.
+    // Images are not waited for: see Tile.waitingForImages.
     fn prepareTile(tile: Tile, page: Page, deadline: real): bool {
         let box = tile.bbox();
         for shape in page.shapes {
@@ -419,27 +551,84 @@ ref struct DocumentRenderer {
                 }
             }
             else if shape is ImageShape {
-                if !this.imageCache.isReady(shape) && shape.getBBox().overlaps(box) {
-                    while !this.imageCache.isReady(shape) {
-                        if time.now() >= deadline {
-                            return false;
-                        }
-                        this.imageCache.prepare(this.gfx, shape);
-                    }
+                if shape.getBBox().overlaps(box) {
+                    this.imageCache.request(shape);
                 }
             }
         }
         return true;
     }
 
-    // (Re)renders one tile's full content at its native resolution: white
-    // page background (clipped to the actual page rect -- a tile's
-    // page-local rect is grid-aligned and routinely extends past the page
-    // edge, since pages are rarely exact multiples of the tile size), then
-    // every shape on the page whose bbox overlaps the tile's page-local rect.
+    // A page's paper and ruled lines, the page's own mm placed by `transform`
+    // (identity inside a tile, the page's place on the panel otherwise),
+    // where a mm is `pxPerMm` physical pixels.
+    fn drawPaper(r: mut renderer.gfx.Renderer, doc: DocumentFile, pxPerMm: real, transform: mat4.Mat4f) {
+        let w = doc.data.pageWidthMm;
+        let h = doc.data.pageHeightMm;
+        if let texture = this.paper.texture {
+            // Stretched to cover the page, centred, with what sticks out
+            // cropped off -- the web app's drawImageCovering.
+            let imageAspect = texture.width as real / texture.height as real;
+            let pageAspect = w / h;
+            let uvMin = Vec2(0.0, 0.0);
+            let uvMax = Vec2(1.0, 1.0);
+            if imageAspect > pageAspect {
+                let crop = (1.0 - pageAspect / imageAspect) / 2.0;
+                uvMin.x = crop;
+                uvMax.x = 1.0 - crop;
+            } else {
+                let crop = (1.0 - imageAspect / pageAspect) / 2.0;
+                uvMin.y = crop;
+                uvMax.y = 1.0 - crop;
+            }
+            r.drawTexture({
+                texture: texture,
+                pos: Vec2(0.0, 0.0),
+                size: Vec2(w, h),
+                uvMin: uvMin,
+                uvMax: uvMax,
+                zIndex: paperZIndex,
+                transform: transform,
+            });
+        } else {
+            r.drawRect({
+                pos: Vec2(0.0, 0.0),
+                size: Vec2(w, h),
+                fillColor: Color(1, 1, 1, 1),
+                zIndex: paperZIndex,
+                transform: transform,
+            });
+        }
+
+        // A line thinner than a pixel covers a varying number of MSAA
+        // samples depending on where it falls, so at a low zoom the lines
+        // would come out unevenly strong. It is drawn a pixel thick instead,
+        // as much fainter as it is thinner.
+        let color = Color.fromHexOrDefault(doc.data.gridColor, Color(0.32, 0.32, 0.32, 0.31));
+        let thickness = gridLineThicknessMm;
+        let minThickness = 1.0 / pxPerMm;
+        if thickness < minThickness {
+            color.a = color.a * thickness / minThickness;
+            thickness = minThickness;
+        }
+        // Centred on its y, like a canvas stroke: the page's edge cuts the
+        // top one in half.
+        for (let y = 0.0; y < h; y += gridLineDistanceMm) {
+            let top = max(0.0, y - thickness / 2.0);
+            let bottom = min(h, y + thickness / 2.0);
+            r.addTriangle(Vec2(0.0, top), Vec2(w, top), Vec2(w, bottom), color, color, color, gridLineZIndex, transform);
+            r.addTriangle(Vec2(0.0, top), Vec2(w, bottom), Vec2(0.0, bottom), color, color, color, gridLineZIndex, transform);
+        }
+    }
+
+    // (Re)renders one tile's full content at its native resolution: the
+    // paper, then every shape on the page whose bbox overlaps the tile's
+    // page-local rect. A tile's rect is grid-aligned and routinely extends
+    // past the page edge (pages are rarely exact multiples of the tile
+    // size); the paper stops at the edge, and the rest stays transparent.
     // Always a full redraw of the tile (not incremental per-shape), which is
     // what makes markShapeDirty()'s "just mark it dirty" enough.
-    fn drawTile(tile: mut Tile, page: Page, pageWidthMm: real, pageHeightMm: real, frame: mut renderer.gfx.Frame) {
+    fn drawTile(tile: mut Tile, doc: DocumentFile, frame: mut renderer.gfx.Frame) {
         if !this.tileRenderer {
             this.tileRenderer = renderer.gfx.Renderer(frame, tile.canvas);
         }
@@ -454,23 +643,11 @@ ref struct DocumentRenderer {
             -100000.0, 100000.0
         ));
 
-        let clipMinX = tile.localMinX;
-        if clipMinX < 0.0 { clipMinX = 0.0; }
-        let clipMinY = tile.localMinY;
-        if clipMinY < 0.0 { clipMinY = 0.0; }
-        let clipMaxX = tile.localMinX + tile.localSize;
-        if clipMaxX > pageWidthMm { clipMaxX = pageWidthMm; }
-        let clipMaxY = tile.localMinY + tile.localSize;
-        if clipMaxY > pageHeightMm { clipMaxY = pageHeightMm; }
-        if clipMaxX > clipMinX && clipMaxY > clipMinY {
-            r.drawRect({
-                pos: Vec2(clipMinX, clipMinY),
-                size: Vec2(clipMaxX - clipMinX, clipMaxY - clipMinY),
-                fillColor: Color(1, 1, 1, 1),
-            });
-        }
+        this.drawPaper(r, doc, tileSizePx as real / tile.localSize, mat4.identity());
 
+        let page = doc.data.pages[tile.pageIndex];
         let tileBBox = tile.bbox();
+        tile.waitingForImages = false;
         for shape in page.shapes {
             // A hidden shape is being drawn by the editor itself -- see
             // LineShape.hidden.
@@ -478,13 +655,35 @@ ref struct DocumentRenderer {
                 continue;
             }
             if shape.getBBox().overlaps(tileBBox) {
-                drawShapeInto(r, this.gfx, shape, tile.level, this.imageCache);
+                if shape is ImageShape {
+                    if !this.imageCache.isReady(shape) {
+                        tile.waitingForImages = true;
+                    }
+                }
+                drawShapeInto(r, shape, tile.level, this.imageCache);
             }
         }
 
         r.commit(true);
         tile.dirty = false;
         tile.hasContent = true;
+    }
+
+    // Whether every image a tile was drawn without has arrived since -- it
+    // is then drawn again, with them.
+    fn imagesArrived(tile: Tile, page: Page): bool {
+        let box = tile.bbox();
+        for shape in page.shapes {
+            if shape is ImageShape {
+                if !isShapeHidden(shape) && shape.getBBox().overlaps(box) {
+                    this.imageCache.request(shape);
+                    if !this.imageCache.isReady(shape) {
+                        return false;
+                    }
+                }
+            }
+        }
+        return true;
     }
 
     // Orders `work` nearest the middle of the view first -- what the budget
@@ -654,6 +853,11 @@ ref struct DocumentRenderer {
         let dpiScale = r.canvas.size.dpiScale as real;
         let targetLevel = tilemath.zoomLevelFor(zoom * dpiScale);
 
+        // The frame's share of image uploads and tile drawing. Images first:
+        // a tile whose images arrive now is drawn again in this same frame.
+        let deadline = time.now() + tileWorkBudgetSeconds;
+        this.imageCache.advance(this.gfx, deadline);
+
         // Which tiles each page needs, and which of those need drawing.
         let work = this._work;
         work.clear();
@@ -718,7 +922,13 @@ ref struct DocumentRenderer {
             }
 
             for tile in page.tiles {
-                if tile.level == page.level && tile.dirty {
+                if tile.level != page.level {
+                    continue;
+                }
+                if !tile.dirty && tile.waitingForImages && this.imagesArrived(tile, doc.data.pages[i]) {
+                    tile.dirty = true;
+                }
+                if tile.dirty {
                     work.push(tile);
                 }
             }
@@ -726,18 +936,19 @@ ref struct DocumentRenderer {
         this.limitFallbackTiles();
 
         // Draw what the budget allows, nearest the middle of the view first.
+        // Every tile shows the paper, so none is drawn before it is on the
+        // GPU.
         this.sortWorkByDistance(doc, panelW / 2.0, panelH / 2.0);
-        let deadline = time.now() + tileWorkBudgetSeconds;
         let drawn = 0;
+        this.paper.prepare(this.gfx);
         for tile in work {
-            if time.now() >= deadline {
+            if time.now() >= deadline || !this.paper.isReady() {
                 break;
             }
-            let page = doc.data.pages[tile.pageIndex];
-            if !this.prepareTile(tile, page, deadline) {
+            if !this.prepareTile(tile, doc.data.pages[tile.pageIndex], deadline) {
                 break;
             }
-            this.drawTile(tile, page, doc.data.pageWidthMm, doc.data.pageHeightMm, r.frame);
+            this.drawTile(tile, doc, r.frame);
             drawn += 1;
         }
         this.pendingTiles = work.length - drawn;
@@ -769,13 +980,11 @@ ref struct DocumentRenderer {
                 }
             }
 
-            let originY = pageOriginY(doc, i);
-            r.drawRect({
-                pos: Vec2(this.viewport.offsetX, originY * zoom + this.viewport.offsetY),
-                size: Vec2(doc.data.pageWidthMm * zoom, doc.data.pageHeightMm * zoom),
-                fillColor: Color(1, 1, 1, 1),
-            });
+            // The page as its tiles show it, less the content: what a square
+            // without a picture yet shows.
+            this.drawPaper(r, doc, zoom * dpiScale, this.pageToScreenTransform(doc, i));
 
+            let originY = pageOriginY(doc, i);
             // Other levels coarse to fine, then the page's own level on top.
             for (let level = minLevel; level <= maxLevel + 1; level++) {
                 let drawLevel = level;
@@ -839,9 +1048,11 @@ ref struct DocumentRenderer {
             r.addTriangles(tess.vertices, tess.indices, fill, 0, transform);
         }
         else if shape is ImageShape {
+            // Nothing until it has loaded (hasPendingWork keeps the frames
+            // coming meanwhile).
+            this.imageCache.request(shape);
             let bbox = shape.getBBox();
-            let texture = this.imageCache.getOrCreate(this.gfx, shape);
-            if texture {
+            if let texture = this.imageCache.get(shape) {
                 r.drawTexture({
                     texture: texture,
                     pos: Vec2(bbox.left, bbox.top),

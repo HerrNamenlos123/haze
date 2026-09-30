@@ -25,6 +25,7 @@ filedialog = { path = "../stdlib/filedialog" }
 image = { path = "../stdlib/image" }
 base64 = { path = "../stdlib/base64" }
 hzui = { path = "../stdlib/hzui" }
+pdf = { path = "../stdlib/pdf" }
 
 [plugins]
 hzui = { path = "../stdlib/hzui" }

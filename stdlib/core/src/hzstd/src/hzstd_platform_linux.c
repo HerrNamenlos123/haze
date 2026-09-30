@@ -132,6 +132,46 @@ _Noreturn void hzstd_block_thread_forever(void)
   abort();
 }
 
+// ── Worker threads ───────────────────────────────────────────────────────────
+
+typedef struct {
+  void (*fn)(void *arg);
+  void *arg;
+  hzstd_semaphore_t *started;
+} hzstd_worker_start_t;
+
+static void *hzstd_worker_thread(void *start_)
+{
+  hzstd_worker_start_t *start = start_;
+  void (*fn)(void *arg) = start->fn;
+  void *arg = start->arg;
+  // `arg` is on this thread's stack now, which the collector scans: the
+  // caller no longer has to hold it.
+  hzstd_trigger_semaphore(start->started);
+  fn(arg);
+  return NULL;
+}
+
+bool hzstd_run_on_worker_thread(void (*fn)(void *arg), void *arg)
+{
+  hzstd_worker_start_t start = { .fn = fn, .arg = arg, .started = hzstd_create_semaphore() };
+  if (!start.started) {
+    return false;
+  }
+  // pthread_create is GC_pthread_create in this translation unit (GC_THREADS),
+  // so the thread is registered with the collector before fn runs.
+  pthread_t thread;
+  bool ok = pthread_create(&thread, NULL, hzstd_worker_thread, &start) == 0;
+  if (ok) {
+    pthread_detach(thread);
+    // Until the thread has `arg` on its own stack, this one is the only
+    // place the collector can see it.
+    hzstd_wait_for_semaphore(start.started);
+  }
+  hzstd_destroy_semaphore(start.started);
+  return ok;
+}
+
 // ── Panic global state ────────────────────────────────────────────────────────
 //
 // DESIGN: hzstd_panic_with_stacktrace and the signal handler do as little as
