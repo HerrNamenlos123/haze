@@ -651,7 +651,7 @@ ref struct EditorControls {
 
         if e.pointerType == "touch" {
             this.touches.push(TouchPoint { id: e.pointerId, pos: local });
-            this.updateTouch(Vec2(0.0, 0.0));
+            this.updateTouch(Vec2(0.0, 0.0), true);
             return;
         }
         // One pen or mouse gesture at a time.
@@ -680,7 +680,7 @@ ref struct EditorControls {
                 if touch.id == e.pointerId {
                     let movement = Vec2(local.x - touch.pos.x, local.y - touch.pos.y);
                     touch.pos = local;
-                    this.updateTouch(movement);
+                    this.updateTouch(movement, false);
                     return;
                 }
             }
@@ -712,7 +712,7 @@ ref struct EditorControls {
                     break;
                 }
             }
-            this.updateTouch(Vec2(0.0, 0.0));
+            this.updateTouch(Vec2(0.0, 0.0), true);
             return;
         }
         if this.gesture != Gesture.None && e.pointerId == this.gesturePointer {
@@ -1048,7 +1048,13 @@ ref struct EditorControls {
     // remaining finger lurch the page. It ends once the count has stayed
     // off two for touchZoomEndGraceSeconds (see frame()), and until then the
     // other fingers do nothing.
-    fn updateTouch(movement: Vec2) {
+    //
+    // `fingersChanged` is a finger landing or lifting. Whenever that leaves
+    // two, the pinch is measured afresh from where they are: they may be a
+    // new pair continuing a pinch still in its grace period (a quick second
+    // pinch right after the first), and comparing their spread and midpoint
+    // with the previous pair's jumped the view by the ratio of the two.
+    fn updateTouch(movement: Vec2, fingersChanged: bool) {
         let n = this.touches.length;
         if n == 2 {
             this.pinchEndPendingSince = -1.0;
@@ -1056,7 +1062,7 @@ ref struct EditorControls {
             let b = this.touches[1].pos;
             let center = Vec2((a.x + b.x) / 2.0, (a.y + b.y) / 2.0);
             let d = distance(a, b);
-            if !this.pinching {
+            if !this.pinching || fingersChanged {
                 this.pinching = true;
                 this.pinchCenter = center;
                 this.pinchDistance = d;
