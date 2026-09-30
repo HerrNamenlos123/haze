@@ -190,6 +190,17 @@ export opaque ref struct App {
     // ui_components.UIContext.updateHoverState, which stops claiming anything
     // is hovered the moment this goes false.
     pointerInside: bool = false;
+
+    // Was the last thing to set mousePosition a finger that has since lifted?
+    //
+    // The primary finger moves mousePosition like the mouse does, so the UI
+    // hover-tests and hit-tests where it is. But a finger that lifted is not
+    // anywhere: there is no pointer resting on the element it tapped, and
+    // treating its last position as one leaves that element looking hovered
+    // until the mouse happens to move -- the "sticky hover" every touch UI
+    // has to work around. So a lifted finger leaves the position unknown
+    // (see mousePosKnown) until a mouse or a pen reports one again.
+    fingerLifted: bool = false;
     resized: bool = false;
 
     // ── Deferred first appearance ────────────────────────────────────
@@ -351,6 +362,7 @@ export opaque ref struct App {
             // First real word on where the pointer is -- see
             // mousePositionKnown.
             app.mousePositionKnown = true;
+            app.fingerLifted = false;
             app.queueMouseMove(e.pos);
             return false;
         });
@@ -366,6 +378,7 @@ export opaque ref struct App {
             app.mousePosition.x = e.pos.x;
             app.mousePosition.y = e.pos.y;
             app.mousePositionKnown = true;
+            app.fingerLifted = false;
             app._pointerEdgeQueue.push({ button: e.button, kind: PointerEdgeKind.Pressed, pos: e.pos, buttons: app.mouseButtons() });
             return false;
         });
@@ -449,6 +462,7 @@ export opaque ref struct App {
 
         this.mousePosition = e.pos;
         this.mousePositionKnown = true;
+        this.fingerLifted = false;
         this._penTipHeld = hasBit(e.buttons, 1);
         this.refreshLeftHeld();
 
@@ -502,6 +516,9 @@ export opaque ref struct App {
             this.mousePositionKnown = true;
             this._touchHeld = kind == PointerEdgeKind.Pressed || kind == PointerEdgeKind.Moved;
             this.refreshLeftHeld();
+            // See fingerLifted: in contact it is where the pointer is, lifted
+            // it is nowhere.
+            this.fingerLifted = !this._touchHeld;
             if kind == PointerEdgeKind.Released || kind == PointerEdgeKind.Cancelled {
                 this._hasPrimaryTouch = false;
             }
@@ -527,8 +544,11 @@ export opaque ref struct App {
     // moment (pointerInside -- otherwise the last position inside would go on
     // answering forever). Either one alone leaves a UI claiming something is
     // hovered when nothing is.
+    //
+    // And a third: the position must not be the one a lifted finger left
+    // behind (see fingerLifted).
     fn mousePosKnown(): bool {
-        return this.mousePositionKnown && this.pointerInside;
+        return this.mousePositionKnown && this.pointerInside && !this.fingerLifted;
     }
 
     fn pointerLeftHeld(): bool {
@@ -548,6 +568,15 @@ export opaque ref struct App {
     // just diffing pointer*Held() frame to frame.
     fn pointerEdges(): []PointerEdge {
         return this._pointerEdgeQueue;
+    }
+
+    // Turn the platform's text entry on or off -- see
+    // sdl.Window.setTextInputActive. Meant to be driven by the UI's own idea
+    // of text focus (ui_components.KeyboardCallbacks.setTextInputActive), so
+    // the on-screen keyboard of a touch device comes up exactly when a text
+    // field is focused.
+    fn setTextInputActive(active: bool) {
+        this.window.setTextInputActive(active);
     }
 
     // Every key press/release queued this frame, in order -- see KeyEdge.

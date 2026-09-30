@@ -22,7 +22,9 @@ fontSize: real = 12.0;
 
 @setup
 let open = reactive<bool>(false);
-let toggle = (event: PointerEvent) => { open := !rx.get(open); };
+// On the press, or on the tap for a finger -- see PointerEvent.activatesOnPress.
+let toggle = (event: PointerEvent) => { if event.activatesOnPress() { open := !rx.get(open); } };
+let tapToggle = (event: PointerEvent) => { if !event.activatesOnPress() { open := !rx.get(open); } };
 let shown = computed(() => !props.collapsed || rx.get(open));
 
 let headline = computed((): str => {
@@ -45,6 +47,7 @@ let signFor = (kind: claude.DiffLineKind): str => {
 
 div [row w-fit h-fit gap-1 items-center cursor-pointer text-color-[props.mutedColor]]
     @pointerdown=toggle
+    @click=tapToggle
 {
     text [text-nowrap] [headline]
 }

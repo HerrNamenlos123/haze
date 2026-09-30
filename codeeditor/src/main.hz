@@ -123,6 +123,13 @@ fn main(): int {
         // per-frame translation costs no allocation after the first frame.
         let pointerEdgeScratch: mut []ui_components.PointerEdge = [];
         let keyEdgeScratch: mut []ui_components.KeyEdge = [];
+        // Text entry follows the UI's text focus, which is what brings a touch
+        // device's on-screen keyboard up for a text field and nowhere else --
+        // see ui_components.KeyboardCallbacks.setTextInputActive. Bound to the
+        // named type so it converts into the optional field.
+        let textInputSwitch: ui_components.TextInputActiveCallback = (active: bool): void => {
+            a.setTextInputActive(active);
+        };
 
         let runtime = ui_runtime.Runtime({
             gfx: a.gfx,
@@ -152,6 +159,7 @@ fn main(): int {
             keyboard: ui_components.KeyboardCallbacks {
                 keyEdgesThisFrame: () => toUIKeyEdges(a, keyEdgeScratch),
                 textInputThisFrame: () => a.textInput(),
+                setTextInputActive: textInputSwitch,
             },
             // The index is a ui_styling.Cursor; app maps it to the platform
             // cursor. Called every frame, and cheap when unchanged.

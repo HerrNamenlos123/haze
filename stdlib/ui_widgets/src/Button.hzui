@@ -42,8 +42,19 @@ let isActive = computed(() => buttonRef?.active() ?? false);
 // :focus-visible, not :focus -- a clicked button must not keep a ring.
 let ringVisible = computed(() => (buttonRef?.focusVisible() ?? false) && props.focusRing > 0.0);
 
-let clicked = (event: PointerEvent) => {
+// Fires on the press, which is what makes a button feel immediate under the
+// mouse -- except for a finger, whose press may be a swipe that scrolls past
+// the button, and which fires on the tap instead (see
+// PointerEvent.activatesOnPress). The press is claimed either way, so the
+// button is never an "outside" press to a popup it sits in.
+let pressed = (event: PointerEvent) => {
     if !props.enabled { return; }
+    event.stopPropagation();
+    if event.activatesOnPress() { emits.click(); }
+};
+
+let tapped = (event: PointerEvent) => {
+    if !props.enabled || event.activatesOnPress() { return; }
     event.stopPropagation();
     emits.click();
 };
@@ -79,7 +90,8 @@ let backgroundColor = computed(() => {
     ]
     ref=buttonRef
     focusable=[props.enabled]
-    @pointerdown=clicked
+    @pointerdown=pressed
+    @click=tapped
     @keydown=keydown
 
 slot content label=[props.label] icon=[props.icon] {

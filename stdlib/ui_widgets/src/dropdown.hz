@@ -312,6 +312,35 @@ export fn Dropdown(ui: ui_components.UIContext, args: DropdownArgs) {
                     let hovered = item.enabled && element ? element.hover() : false;
                     let itemKey = item.key;
 
+                    // Picks this row -- on the press, or on the tap for a
+                    // finger (see PointerEvent.activatesOnPress), whose press
+                    // may be the start of a swipe that scrolls a long menu.
+                    let activate = (): none => {
+                        let current = instance.props();
+                        // Re-read from props rather than trusting the
+                        // `item` captured above: this handler outlives
+                        // the render pass that created it, and the item
+                        // list may have been replaced since.
+                        if current.items {
+                            if index >= current.items.length {
+                                return;
+                            }
+                        }
+                        else {
+                            if index >= 0 {
+                                return;
+                            }
+                        }
+                        assert(current.items);
+                        if !current.items[index].enabled {
+                            return;
+                        }
+                        let onSelect = current.onSelect;
+                        if onSelect {
+                            onSelect(itemKey);
+                        }
+                    };
+
                     ui.div({
                         id: ID_ITEM_BASE + index,
                         elementRef: itemRef,
@@ -332,28 +361,13 @@ export fn Dropdown(ui: ui_components.UIContext, args: DropdownArgs) {
                             if event.button != ui_components.PointerButton.Left {
                                 return;
                             }
-                            let current = instance.props();
-                            // Re-read from props rather than trusting the
-                            // `item` captured above: this handler outlives
-                            // the render pass that created it, and the item
-                            // list may have been replaced since.
-                            if current.items {
-                                if index >= current.items.length {
-                                    return;
-                                }
+                            if event.activatesOnPress() {
+                                activate();
                             }
-                            else {
-                                if index >= 0 {
-                                    return;
-                                }
-                            }
-                            assert(current.items);
-                            if !current.items[index].enabled {
-                                return;
-                            }
-                            let onSelect = current.onSelect;
-                            if onSelect {
-                                onSelect(itemKey);
+                        },
+                        onClick: (event: ui_components.PointerEvent) => {
+                            if !event.activatesOnPress() {
+                                activate();
                             }
                         },
                     }, (): void => {

@@ -168,12 +168,114 @@ static const struct wl_pointer_listener haze_wl_pointer_listener = {
     haze_wl_pointer_axis_relative_direction,
 };
 
+/* The same for touch, which SDL's hit test does not cover at all: its
+   Wayland backend never asks the hit test about a finger, so a custom
+   titlebar could not be dragged by touch. The finger's own grab needs the
+   serial of THAT finger's touch down (a pointer serial is refused), so every
+   down's serial is kept here by wl_touch id -- see
+   haze_sdl_handle_titlebar_touch.
+
+   Never cleared on up: SDL's events are only read after the whole batch has
+   been dispatched, so a down and its up can both have gone through here
+   before the down is looked at. A reused id simply overwrites its slot. */
+static struct wl_touch *g_haze_wl_touch = NULL;
+#define HAZE_WL_MAX_TOUCHES 16
+static struct {
+  int32_t id;
+  uint32_t serial;
+} g_haze_wl_touch_downs[HAZE_WL_MAX_TOUCHES];
+static int g_haze_wl_touch_down_count = 0;
+
+static void haze_wl_touch_down(void *data, struct wl_touch *t, uint32_t serial,
+                               uint32_t time, struct wl_surface *surface,
+                               int32_t id, wl_fixed_t x, wl_fixed_t y) {
+  (void)data;
+  (void)t;
+  (void)time;
+  (void)surface;
+  (void)x;
+  (void)y;
+  for (int i = 0; i < g_haze_wl_touch_down_count; i++) {
+    if (g_haze_wl_touch_downs[i].id == id) {
+      g_haze_wl_touch_downs[i].serial = serial;
+      return;
+    }
+  }
+  int slot = g_haze_wl_touch_down_count < HAZE_WL_MAX_TOUCHES
+                 ? g_haze_wl_touch_down_count++
+                 : HAZE_WL_MAX_TOUCHES - 1;
+  g_haze_wl_touch_downs[slot].id = id;
+  g_haze_wl_touch_downs[slot].serial = serial;
+}
+static void haze_wl_touch_up(void *data, struct wl_touch *t, uint32_t serial,
+                             uint32_t time, int32_t id) {
+  (void)data;
+  (void)t;
+  (void)serial;
+  (void)time;
+  (void)id;
+}
+static void haze_wl_touch_motion(void *data, struct wl_touch *t, uint32_t time,
+                                 int32_t id, wl_fixed_t x, wl_fixed_t y) {
+  (void)data;
+  (void)t;
+  (void)time;
+  (void)id;
+  (void)x;
+  (void)y;
+}
+static void haze_wl_touch_frame(void *data, struct wl_touch *t) {
+  (void)data;
+  (void)t;
+}
+static void haze_wl_touch_cancel(void *data, struct wl_touch *t) {
+  (void)data;
+  (void)t;
+}
+static void haze_wl_touch_shape(void *data, struct wl_touch *t, int32_t id,
+                                wl_fixed_t major, wl_fixed_t minor) {
+  (void)data;
+  (void)t;
+  (void)id;
+  (void)major;
+  (void)minor;
+}
+static void haze_wl_touch_orientation(void *data, struct wl_touch *t,
+                                      int32_t id, wl_fixed_t orientation) {
+  (void)data;
+  (void)t;
+  (void)id;
+  (void)orientation;
+}
+
+static const struct wl_touch_listener haze_wl_touch_listener = {
+    haze_wl_touch_down,  haze_wl_touch_up,    haze_wl_touch_motion,
+    haze_wl_touch_frame, haze_wl_touch_cancel, haze_wl_touch_shape,
+    haze_wl_touch_orientation,
+};
+
+/* The serial of wl_touch point `id`'s latest down, or 0 if none was seen. */
+static uint32_t haze_wl_touch_serial(int32_t id) {
+  for (int i = 0; i < g_haze_wl_touch_down_count; i++) {
+    if (g_haze_wl_touch_downs[i].id == id) {
+      return g_haze_wl_touch_downs[i].serial;
+    }
+  }
+  return 0;
+}
+
 static void haze_wl_seat_capabilities(void *data, struct wl_seat *seat,
                                       uint32_t caps) {
   (void)data;
   if ((caps & WL_SEAT_CAPABILITY_POINTER) && !g_haze_wl_pointer) {
     g_haze_wl_pointer = wl_seat_get_pointer(seat);
     wl_pointer_add_listener(g_haze_wl_pointer, &haze_wl_pointer_listener, NULL);
+  }
+  /* Also on a later capabilities event: a touchscreen can appear after
+     startup (a tablet docked, a USB panel plugged in). */
+  if ((caps & WL_SEAT_CAPABILITY_TOUCH) && !g_haze_wl_touch) {
+    g_haze_wl_touch = wl_seat_get_touch(seat);
+    wl_touch_add_listener(g_haze_wl_touch, &haze_wl_touch_listener, NULL);
   }
 }
 static void haze_wl_seat_name(void *data, struct wl_seat *seat,
@@ -614,6 +716,152 @@ static bool haze_sdl_handle_titlebar_event(SDL_Window *window,
   wl_display_flush(display);
   return true;
 }
+
+/* A finger on a draggable region, on Wayland -- the touch half of the above,
+   and the same three gestures a touch toolkit's titlebar reads:
+
+     drag        once the finger has travelled past the slop, the compositor
+                 takes the window over (xdg_toplevel_move with the finger's
+                 own down serial), exactly as for a mouse drag
+     double tap  maximize / restore
+     long press  the window menu -- the touch screen's right click
+
+   The move waits for the slop, unlike the pointer's, because a finger has no
+   second button: moving at once would leave no way to long-press for the
+   menu, and a move grab that has already begun takes every later event of
+   that finger away from this process.
+
+   Thresholds are ui_components' own (TOUCH_SLOP_PX, LONG_PRESS_SECONDS,
+   DOUBLE_TAP_SLOP_PX, DOUBLE_CLICK_TIME_SECONDS), so a titlebar reads a
+   finger the same way the rest of the UI does. */
+#define HAZE_TITLEBAR_TOUCH_SLOP 10.0f
+#define HAZE_TITLEBAR_LONG_PRESS_NS 500000000ull
+#define HAZE_TITLEBAR_DOUBLE_TAP_NS 500000000ull
+#define HAZE_TITLEBAR_DOUBLE_TAP_SLOP 24.0f
+
+static struct {
+  /* A finger went down on the titlebar and has not lifted. */
+  bool active;
+  /* ...and has become a move, or brought up the menu: nothing else it does
+     is a gesture any more. */
+  bool claimed;
+  SDL_FingerID finger;
+  SDL_WindowID window;
+  uint32_t serial;
+  float x, y;
+  Uint64 downNs;
+  /* The previous tap on the titlebar, for the double tap. */
+  bool tapped;
+  Uint64 tapNs;
+  float tapX, tapY;
+} g_haze_titlebar_touch;
+
+static float haze_absf(float v) { return v < 0.0f ? -v : v; }
+
+/* Returns true when the finger event was the titlebar's and must not reach
+   the UI. `kind` is haze_sdl_dispatch_pointer's: 0 down, 1 up, 2 move,
+   3 cancel. `x`/`y` are logical window coordinates. */
+static bool haze_sdl_handle_titlebar_touch(SDL_Window *window, int kind,
+                                           SDL_FingerID finger, float x,
+                                           float y) {
+  if (g_haze_titlebar_touch.active) {
+    if (finger != g_haze_titlebar_touch.finger) {
+      return false;
+    }
+    SDL_Window *owner = SDL_GetWindowFromID(g_haze_titlebar_touch.window);
+    struct xdg_toplevel *toplevel = owner ? haze_wl_toplevel_of(owner) : NULL;
+    struct wl_display *display = owner ? haze_wl_display_of(owner) : NULL;
+    if (kind == 2) {
+      if (!g_haze_titlebar_touch.claimed && toplevel && display &&
+          (haze_absf(x - g_haze_titlebar_touch.x) > HAZE_TITLEBAR_TOUCH_SLOP ||
+           haze_absf(y - g_haze_titlebar_touch.y) > HAZE_TITLEBAR_TOUCH_SLOP)) {
+        xdg_toplevel_move(toplevel, g_haze_wl_seat,
+                          g_haze_titlebar_touch.serial);
+        wl_display_flush(display);
+        g_haze_titlebar_touch.claimed = true;
+        g_haze_titlebar_touch.tapped = false;
+      }
+      return true;
+    }
+    if (kind == 1 && !g_haze_titlebar_touch.claimed && owner) {
+      Uint64 now = SDL_GetTicksNS();
+      bool doubleTap =
+          g_haze_titlebar_touch.tapped &&
+          now - g_haze_titlebar_touch.tapNs <= HAZE_TITLEBAR_DOUBLE_TAP_NS &&
+          haze_absf(x - g_haze_titlebar_touch.tapX) <=
+              HAZE_TITLEBAR_DOUBLE_TAP_SLOP &&
+          haze_absf(y - g_haze_titlebar_touch.tapY) <=
+              HAZE_TITLEBAR_DOUBLE_TAP_SLOP;
+      if (doubleTap) {
+        if (SDL_GetWindowFlags(owner) & SDL_WINDOW_MAXIMIZED) {
+          SDL_RestoreWindow(owner);
+        } else {
+          SDL_MaximizeWindow(owner);
+        }
+        g_haze_titlebar_touch.tapped = false;
+      } else {
+        g_haze_titlebar_touch.tapped = true;
+        g_haze_titlebar_touch.tapNs = now;
+        g_haze_titlebar_touch.tapX = x;
+        g_haze_titlebar_touch.tapY = y;
+      }
+    }
+    if (kind == 1 || kind == 3) {
+      g_haze_titlebar_touch.active = false;
+    }
+    return true;
+  }
+
+  if (kind != 0 || !window || !g_haze_wl_seat || !g_haze_wl_touch) {
+    return false;
+  }
+  const haze_sdl_window_regions_t *store = haze_sdl_get_window_regions(window);
+  if (haze_sdl_region_at(store, x, y) != 1) {
+    return false;
+  }
+  /* SDL numbers a Wayland touch point id+1 (touch_handler_down), which is
+     what gets from its finger back to the wl_touch id the serial is kept
+     under. A down whose serial never reached our seat is let through to the
+     UI rather than swallowed for a grab the compositor would ignore. */
+  uint32_t serial = haze_wl_touch_serial((int32_t)finger - 1);
+  if (serial == 0 || !haze_wl_toplevel_of(window)) {
+    return false;
+  }
+  g_haze_titlebar_touch.active = true;
+  g_haze_titlebar_touch.claimed = false;
+  g_haze_titlebar_touch.finger = finger;
+  g_haze_titlebar_touch.window = SDL_GetWindowID(window);
+  g_haze_titlebar_touch.serial = serial;
+  g_haze_titlebar_touch.x = x;
+  g_haze_titlebar_touch.y = y;
+  g_haze_titlebar_touch.downNs = SDL_GetTicksNS();
+  return true;
+}
+
+/* The long press has no event of its own -- a resting finger reports
+   nothing -- so it is checked once per pollEvents, after the queue. */
+static void haze_sdl_titlebar_touch_tick(void) {
+  if (!g_haze_titlebar_touch.active || g_haze_titlebar_touch.claimed) {
+    return;
+  }
+  if (SDL_GetTicksNS() - g_haze_titlebar_touch.downNs <
+      HAZE_TITLEBAR_LONG_PRESS_NS) {
+    return;
+  }
+  SDL_Window *owner = SDL_GetWindowFromID(g_haze_titlebar_touch.window);
+  struct xdg_toplevel *toplevel = owner ? haze_wl_toplevel_of(owner) : NULL;
+  struct wl_display *display = owner ? haze_wl_display_of(owner) : NULL;
+  g_haze_titlebar_touch.claimed = true;
+  g_haze_titlebar_touch.tapped = false;
+  if (!toplevel || !display) {
+    return;
+  }
+  xdg_toplevel_show_window_menu(toplevel, g_haze_wl_seat,
+                                g_haze_titlebar_touch.serial,
+                                (int32_t)g_haze_titlebar_touch.x,
+                                (int32_t)g_haze_titlebar_touch.y);
+  wl_display_flush(display);
+}
 #else
 static bool haze_sdl_handle_titlebar_event(SDL_Window *window,
                                            const SDL_Event *event, bool down) {
@@ -622,6 +870,17 @@ static bool haze_sdl_handle_titlebar_event(SDL_Window *window,
   (void)down;
   return false;
 }
+static bool haze_sdl_handle_titlebar_touch(SDL_Window *window, int kind,
+                                           SDL_FingerID finger, float x,
+                                           float y) {
+  (void)window;
+  (void)kind;
+  (void)finger;
+  (void)x;
+  (void)y;
+  return false;
+}
+static void haze_sdl_titlebar_touch_tick(void) {}
 #endif
 
 /* Installs the hit test and the per-window box store. Returns false when the
@@ -810,11 +1069,12 @@ SDL_Window *haze_sdl_createWindow(int width, int height, const char *title,
   haze_sdl_set_window_size_changed(window, true);
 
   /* Layout/unicode-aware character events (SDL_EVENT_TEXT_INPUT) only fire
-     once text input is "started" for the window -- there's no per-widget
-     text focus concept below the Haze UI layer, so this is enabled
-     unconditionally for the window's whole lifetime; ui_components.hz's
-     focus tracking is what actually decides which element (if any) a
-     frame's text/key events get delivered to. */
+     once text input is "started" for the window. Started here so a host that
+     knows nothing about text focus still gets them for the window's whole
+     lifetime; a host that does know -- ui_components reports whether the
+     focused element takes text -- switches it off and on again through
+     haze_sdl_setTextInputActive, which is what brings the on-screen keyboard
+     up only for a text field. */
   SDL_StartTextInput(window);
 
   if (!noApi) {
@@ -1094,6 +1354,16 @@ static bool haze_sdl_dispatch_finger(const SDL_Event *event) {
   if (e->touchID == SDL_PEN_TOUCHID || e->touchID == SDL_MOUSE_TOUCHID) {
     return true;
   }
+  /* Only a touch SCREEN is a finger on the UI. SDL also reports the fingers on
+     an indirect device -- a macOS trackpad, an X11 touchpad driven through
+     XInput2 (SDL_TOUCH_DEVICE_INDIRECT_RELATIVE/ABSOLUTE) -- with positions
+     normalized to the PAD, not to the window, so passing them on would tap
+     and pan at whatever window position the pad's geometry maps to. Those
+     devices already drive the pointer and the wheel, which is how they are
+     meant to reach the UI. */
+  if (SDL_GetTouchDeviceType(e->touchID) != SDL_TOUCH_DEVICE_DIRECT) {
+    return true;
+  }
 
   /* Touch positions are normalized to the window, unlike every other
      pointer event; scaled back into window coordinates so a finger and the
@@ -1104,6 +1374,13 @@ static bool haze_sdl_dispatch_finger(const SDL_Event *event) {
   }
   int w = 0, h = 0;
   SDL_GetWindowSize(window, &w, &h);
+  /* A finger on a custom titlebar is the window's, not the UI's -- on
+     Wayland, where nobody else would handle it. See
+     haze_sdl_handle_titlebar_touch. */
+  if (haze_sdl_handle_titlebar_touch(window, kind, e->fingerID, e->x * (float)w,
+                                     e->y * (float)h)) {
+    return true;
+  }
   haze_sdl_dispatch_pointer(e->windowID, kind, 2, (int64_t)e->fingerID,
                             e->x * (float)w, e->y * (float)h,
                             kind == 0 || kind == 2 ? e->pressure : 0.0f,
@@ -1276,6 +1553,10 @@ void haze_sdl_pollEvents(void) {
       continue;
     }
   }
+
+  /* A finger resting on a custom titlebar becomes a long press with no event
+     to say so. */
+  haze_sdl_titlebar_touch_tick();
 }
 
 bool haze_sdl_consumeWindowSizeChanged(SDL_Window *window) {
@@ -1324,6 +1605,21 @@ bool haze_sdl_windowHasMouseFocus(SDL_Window *window) {
     return false;
   }
   return SDL_GetMouseFocus() == window;
+}
+
+/* Text entry on or off for this window -- see Window.setTextInputActive.
+   Checked first so a repeated call is free: starting text input again is not
+   a no-op on every backend (it re-sends the input-method state, and on some
+   re-requests the on-screen keyboard). */
+void haze_sdl_setTextInputActive(SDL_Window *window, bool active) {
+  if (!window || SDL_TextInputActive(window) == active) {
+    return;
+  }
+  if (active) {
+    SDL_StartTextInput(window);
+  } else {
+    SDL_StopTextInput(window);
+  }
 }
 
 bool haze_sdl_makeContextCurrent(SDL_Window *window) {

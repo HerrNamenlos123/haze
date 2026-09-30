@@ -26,7 +26,9 @@ followThinking: bool = true;
 
 @setup
 let expanded = reactive<bool>(false);
-let toggle = (event: PointerEvent) => { expanded := !rx.get(expanded); };
+// On the press, or on the tap for a finger -- see PointerEvent.activatesOnPress.
+let toggle = (event: PointerEvent) => { if event.activatesOnPress() { expanded := !rx.get(expanded); } };
+let tapToggle = (event: PointerEvent) => { if !event.activatesOnPress() { expanded := !rx.get(expanded); } };
 
 let isThinking = computed(() => props.block.kind == claude.BlockKind.Thinking);
 let isTool = computed(() => props.block.kind == claude.BlockKind.ToolUse
@@ -78,6 +80,7 @@ div else-if=isThinking [col w-grow h-fit gap-1] {
     div [row w-fit h-fit gap-1 items-center cursor-pointer
             text-color-[props.mutedColor]]
         @pointerdown=toggle
+        @click=tapToggle
     {
         Codicon [] icon=[showBody ? "chevron-down" : "chevron-right"] {}
         text [] [thinkingLabel]
@@ -96,7 +99,7 @@ div else-if=isTool [col w-grow h-fit gap-1 p-2 rounded-[props.rounded]px
         text if=[summary.detail.length > 0] [text-color-[props.mutedColor]]
             [summary.detail]
     }
-    ClaudeDiff if=diff [] diff=[do { let value = rx.get(diff); assert(value); value }]
+    ClaudeDiff if=diff [] diff=[rx.get(diff)]
         revision=[props.revision] collapsed=[true] textColor=[props.textColor]
         mutedColor=[props.mutedColor] fontFamily=[props.codeFontFamily]
         fontSize=[props.fontSize - 1.0] {}
