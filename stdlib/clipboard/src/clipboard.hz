@@ -1,0 +1,665 @@
+import image
+
+// clipboard -- the system clipboard, for text, HTML, RTF, images, files and
+// any custom type, on Windows and Linux (X11 and Wayland).
+//
+// The model is the web's Async Clipboard API (navigator.clipboard and
+// ClipboardItem): what is on the clipboard is one item offered in several
+// representations, each keyed by a MIME type, written all at once and read
+// one type at a time. This module translates that to every platform's native
+// formats and back, so a Haze program exchanges data with browsers, office
+// suites, file managers and image editors in both directions.
+//
+// === Getting started ======================================================
+//
+//     clipboard.writeText("hello");
+//     let text = clipboard.readText();
+//     if text { fmt.println(text); }
+//
+//     // several representations at once; each program pastes the best one
+//     clipboard.write({ html: "<b>hello</b>", text: "hello" });
+//
+//     // images go through the image module
+//     let picture = clipboard.readImage();       // an image.Image
+//     if picture { clipboard.writeImage(picture); }
+//
+//     // files, as a file manager copies them
+//     clipboard.writeFiles(["/home/me/report.pdf"]);
+//     let files = clipboard.readFiles();         // .paths, .cut
+//
+//     // enable a Paste button -- cheap enough for every frame
+//     let canPaste = clipboard.has("text/plain");
+//
+// === Types ================================================================
+//
+//   text/plain      readText / writeText. Always UTF-8 with "\n" line ends,
+//                   whatever the platform stores.
+//   text/html       readHtml / write({ html }). On Windows the CF_HTML
+//                   envelope is added and removed for you.
+//   text/rtf        readRtf / write({ rtf })
+//   image/png       readPng / readImage / writePng / writeImage. Offered
+//                   whenever ANY image is on the clipboard -- a Windows
+//                   bitmap, a JPEG from a browser -- and converted on read.
+//   image/svg+xml   readSvg / write({ svg })
+//   text/uri-list   readFiles / writeFiles, plus the raw list via readData.
+//   anything else   readData / write({ data: [...] }), stored natively under
+//                   its own name, so other programs can use the type too.
+//
+// types() lists what is available, normalized to these names; has() asks
+// about one. The platform's own spellings (UTF8_STRING, CF_UNICODETEXT,
+// "HTML Format", ...) never appear.
+//
+// === Beyond the browser ===================================================
+//
+//   - Files, with cut versus copy, interoperable with Explorer, Nautilus,
+//     Dolphin and friends.
+//   - The X11/Wayland primary selection (select to copy, middle-click to
+//     paste): clipboard.primary.
+//   - write({ sensitive: true }) keeps passwords out of Windows clipboard
+//     history and cloud sync, KDE's Klipper, and X11 clipboard managers.
+//   - changeCount() notices every change, including other programs' copies.
+//   - A command-line program with no window can use it too (see Platform).
+//
+// === Platform notes =======================================================
+//
+// Windows: native Win32 formats; the data is owned by the system and stays
+// after the program exits. The primary selection does not exist there.
+//
+// Linux, Wayland: the compositor only accepts clipboard changes from the
+// focused window, so a program with a window uses SDL's clipboard (which is
+// what every Haze GUI app runs on) and the clipboard follows focus like in
+// any Wayland app. A write must be tied to user input: one made before the
+// window has received any key press or click (say, at startup) is published
+// to other programs at the first one -- a copy triggered by Ctrl+C or a
+// button is always fine. SDL carries only text on the primary selection.
+//
+// Linux, X11 (and programs without a window, through Xwayland on Wayland
+// desktops): a full X11 selection owner runs on a background thread, so
+// pastes are answered even while the program is busy. When the program exits
+// the clipboard would die with it; a clipboard manager, if running, is handed
+// the data, and a program that copies and exits at once lingers up to a
+// second so the desktop can take a copy.
+//
+// Reading from another program is synchronous: it asks the owner and waits
+// for the answer (at most 1.5 seconds on X11, if the owner hangs).
+//
+// === Allocation ===========================================================
+//
+// has(), changeCount(), isOwner() and isAvailable() allocate nothing and are
+// meant to be called every frame. Everything that returns data allocates it.
+
+__c__("#include \"ffi/haze_clipboard.c\"");
+export __c__("#include \"ffi/public/haze_clipboard.h\"");
+
+namespace clipboard_ffi {
+    export extern C noemit struct haze_clipboard_status_t {
+        status: i32;
+        message: str;
+    }
+
+    export extern C noemit struct haze_clipboard_bytes_t {
+        status: i32;
+        message: str;
+        data: cptr;
+        length: int;
+    }
+
+    export extern C noemit struct haze_clipboard_html_t {
+        status: i32;
+        message: str;
+        markup: str;
+        fragmentStart: int;
+        fragmentEnd: int;
+        sourceUrl: str;
+    }
+
+    export extern C noemit struct haze_clipboard_files_t {
+        status: i32;
+        message: str;
+        cut: bool;
+    }
+
+    export extern C noemit struct haze_clipboard_image_t {
+        status: i32;
+        message: str;
+        kind: i32;
+        data: cptr;
+        length: int;
+        width: int;
+        height: int;
+        channels: int;
+    }
+
+    export extern C fn haze_clipboard_content_new(): cptr :: final;
+    export extern C fn haze_clipboard_content_add(content: cptr, mimeType: str, data: cptr, length: int): bool :: final;
+    export extern C fn haze_clipboard_content_add_str(content: cptr, mimeType: str, value: str): bool :: final;
+    export extern C fn haze_clipboard_content_add_file(content: cptr, path: str): bool :: final;
+    export extern C fn haze_clipboard_content_set_pixels(content: cptr, width: int, height: int, channels: int, pixels: cptr): bool :: final;
+    export extern C fn haze_clipboard_content_set_flags(content: cptr, cut: bool, sensitive: bool): void :: final;
+    export extern C fn haze_clipboard_content_free(content: cptr): void :: final;
+    export extern C fn haze_clipboard_write(selection: i32, content: cptr): haze_clipboard_status_t :: final;
+    export extern C fn haze_clipboard_clear(selection: i32): haze_clipboard_status_t :: final;
+    export extern C fn haze_clipboard_types(selection: i32, out: []str): haze_clipboard_status_t :: final;
+    export extern C fn haze_clipboard_has(selection: i32, mimeType: str): bool :: final;
+    export extern C fn haze_clipboard_read(selection: i32, mimeType: str): haze_clipboard_bytes_t :: final;
+    export extern C fn haze_clipboard_read_html(selection: i32): haze_clipboard_html_t :: final;
+    export extern C fn haze_clipboard_read_files(selection: i32, outPaths: []str): haze_clipboard_files_t :: final;
+    export extern C fn haze_clipboard_read_image(selection: i32): haze_clipboard_image_t :: final;
+    export extern C fn haze_clipboard_change_count(selection: i32): int :: final;
+    export extern C fn haze_clipboard_owns(selection: i32): bool :: final;
+    export extern C fn haze_clipboard_available(selection: i32): bool :: final;
+    export extern C fn haze_clipboard_needs_pixels(): bool :: final;
+    export extern C fn haze_clipboard_backend_name(): str :: final;
+    export extern C fn haze_clipboard_is_mime_type(mimeType: str): bool :: final;
+}
+
+// ── Vocabulary ───────────────────────────────────────────────────────────────
+
+// The MIME types this module translates to and from native formats. Not
+// exported: the compiler does not carry constants across modules, so callers
+// spell the types out, as they would in JavaScript.
+namespace mime {
+    const comptime Text = "text/plain";
+    const comptime Html = "text/html";
+    const comptime Rtf = "text/rtf";
+    const comptime Png = "image/png";
+    const comptime Svg = "image/svg+xml";
+}
+
+// What went wrong. The numbering mirrors hzcb_status_t in ffi/hzcb.h.
+export enum ErrorKind {
+    // No clipboard is reachable: no X11 display and no Wayland window, or a
+    // platform without one.
+    Unavailable,
+    // Nothing of the requested type is on the clipboard (or it is empty).
+    NotFound,
+    // Another program is holding the clipboard open (Windows); try again.
+    Busy,
+    // The program that owns the clipboard did not answer in time (X11).
+    Timeout,
+    // The data is not what its type says -- a PNG that is not a PNG, an
+    // invalid MIME type, a relative path in a file list.
+    InvalidData,
+    // The platform has no such thing, like the primary selection on Windows.
+    Unsupported,
+    Failed,
+}
+
+export ref struct Error {
+    kind: ErrorKind = ErrorKind.Failed;
+    message: str = "";
+}
+
+// One representation under a MIME type of your choosing.
+export struct Data {
+    mimeType: str;
+    data: Bytes;
+}
+
+// Everything a single write can put on the clipboard. Fill in any subset;
+// together they are ONE item in several representations, so offer the same
+// content in as many forms as are useful -- say html and text -- and each
+// program that pastes picks the richest one it understands.
+export struct Content {
+    text?: str;
+    html?: str;
+    rtf?: str;
+    // A PNG file.
+    png?: Bytes;
+    // Pixels, encoded to PNG for you. Ignored when png is set.
+    picture?: image.Image;
+    svg?: str;
+    // Absolute paths, for pasting into a file manager.
+    files?: []str;
+    // The files are being cut (moved on paste), not copied.
+    cut: bool = false;
+    // Any other types.
+    data?: []Data;
+    // A password or similar: keep it out of clipboard history, clipboard
+    // managers and cloud clipboard sync, on every platform that has a way to
+    // say so. Pasting works as usual.
+    sensitive: bool = false;
+}
+
+export struct Html {
+    // The HTML as the source put it on the clipboard.
+    markup: str;
+    // The part the user actually selected, which the source marks inside the
+    // markup; the whole markup when it does not. A view into markup.
+    fragment: str;
+    // The page it was copied from, when the source says (browsers on Windows
+    // do); "" otherwise.
+    sourceUrl: str;
+}
+
+export struct Files {
+    paths: []str;
+    // The source cut the files (the paste should move them) rather than
+    // copied them.
+    cut: bool;
+}
+
+// ── Internals ────────────────────────────────────────────────────────────────
+
+const comptime CLIPBOARD: i32 = 0;
+const comptime PRIMARY: i32 = 1;
+
+// Values of haze_clipboard_image_t.kind (HZCB_IMAGE_* in ffi/hzcb.h).
+const comptime IMAGE_PNG: i32 = 1;
+const comptime IMAGE_ENCODED: i32 = 2;
+
+fn errorOf(status: i32, message: str): Error {
+    let kind = ErrorKind.Failed;
+    if status == 1 {
+        kind = ErrorKind.Unavailable;
+    }
+    else if status == 2 {
+        kind = ErrorKind.NotFound;
+    }
+    else if status == 3 {
+        kind = ErrorKind.Busy;
+    }
+    else if status == 4 {
+        kind = ErrorKind.Timeout;
+    }
+    else if status == 5 {
+        kind = ErrorKind.InvalidData;
+    }
+    else if status == 6 {
+        kind = ErrorKind.Unsupported;
+    }
+    return Error { kind: kind, message: message };
+}
+
+fn invalid(message: str): Error {
+    return Error { kind: ErrorKind.InvalidData, message: message };
+}
+
+// Wraps GC-owned bytes the C side returned.
+fn bytesOf(data: cptr, length: int): Bytes {
+    let bytes = Bytes();
+    if length > 0 {
+        __c__("bytes.basePtr = data;");
+        __c__("bytes.offset = 0;");
+        __c__("bytes.length = length;");
+    }
+    return bytes;
+}
+
+// Hands a Bytes to C without copying. A one-byte Bytes may keep its byte
+// inline rather than in a buffer, so that case goes through a local.
+fn addBytes(native: cptr, mimeType: str, data: Bytes): bool {
+    let length = data.length;
+    let single: u8 = 0;
+    let ptr = none as cptr;
+    if length == 1 {
+        single = data[0];
+        __c__("ptr = &single;");
+    }
+    else if length > 1 {
+        __c__("ptr = (char*)data.basePtr + data.offset;");
+    }
+    return clipboard_ffi.haze_clipboard_content_add(native, mimeType, ptr, length);
+}
+
+fn setPixels(native: cptr, picture: image.Image): bool {
+    let pixels = picture.pixels;
+    let single: u8 = 0;
+    let ptr = none as cptr;
+    if pixels.length == 1 {
+        // A 1x1 grey image: the one byte may be held inline (see addBytes).
+        single = pixels[0];
+        __c__("ptr = &single;");
+    }
+    else if pixels.length > 1 {
+        __c__("ptr = (char*)pixels.basePtr + pixels.offset;");
+    }
+    if pixels.length != picture.width * picture.height * picture.channels {
+        return false;
+    }
+    return clipboard_ffi.haze_clipboard_content_set_pixels(native, picture.width, picture.height, picture.channels, ptr);
+}
+
+// The PNG representation of a write, and -- on platforms whose native image
+// format is a bitmap (Windows) -- the decoded pixels to build it from.
+fn addImage(native: cptr, content: Content): Error | none {
+    let needsPixels = clipboard_ffi.haze_clipboard_needs_pixels();
+    if content.png {
+        let png = content.png;
+        if !addBytes(native, mime.Png, png) {
+            return Error { message: "out of memory" };
+        }
+        if needsPixels {
+            let decoded = image.decode(png);
+            if !decoded {
+                return invalid(f"png is not a readable image: {decoded.message}");
+            }
+            if !setPixels(native, decoded) {
+                return invalid("png has an unusable size");
+            }
+        }
+        return none;
+    }
+    if content.picture {
+        let picture = content.picture;
+        let png = image.encodePng(picture);
+        if !png {
+            return invalid(f"cannot encode the picture: {png.message}");
+        }
+        if !addBytes(native, mime.Png, png) {
+            return Error { message: "out of memory" };
+        }
+        if needsPixels && !setPixels(native, picture) {
+            return invalid("the picture has an unusable size");
+        }
+    }
+    return none;
+}
+
+fn fill(native: cptr, content: Content): Error | none {
+    let ok = true;
+    if content.text {
+        ok = ok && clipboard_ffi.haze_clipboard_content_add_str(native, mime.Text, content.text);
+    }
+    if content.html {
+        ok = ok && clipboard_ffi.haze_clipboard_content_add_str(native, mime.Html, content.html);
+    }
+    if content.rtf {
+        ok = ok && clipboard_ffi.haze_clipboard_content_add_str(native, mime.Rtf, content.rtf);
+    }
+    if content.svg {
+        ok = ok && clipboard_ffi.haze_clipboard_content_add_str(native, mime.Svg, content.svg);
+    }
+    if !ok {
+        return Error { message: "out of memory" };
+    }
+    let imageError = addImage(native, content);
+    if imageError {
+        return imageError;
+    }
+    if content.data {
+        let entries: []Data = content.data;
+        for entry in entries {
+            if !clipboard_ffi.haze_clipboard_is_mime_type(entry.mimeType) {
+                return invalid(f"'{entry.mimeType}' is not a MIME type (type/subtype)");
+            }
+            if !addBytes(native, entry.mimeType, entry.data) {
+                return Error { message: "out of memory" };
+            }
+        }
+    }
+    if content.files {
+        let paths: []str = content.files;
+        for path in paths {
+            if !clipboard_ffi.haze_clipboard_content_add_file(native, path) {
+                return Error { message: "out of memory" };
+            }
+        }
+    }
+    clipboard_ffi.haze_clipboard_content_set_flags(native, content.cut, content.sensitive);
+    return none;
+}
+
+fn writeTo(selection: i32, content: Content): Result<none, Error> {
+    let native = clipboard_ffi.haze_clipboard_content_new();
+    let failure = fill(native, content);
+    if failure {
+        clipboard_ffi.haze_clipboard_content_free(native);
+        return failure;
+    }
+    // The C side takes the content over from here, success or not.
+    let result = clipboard_ffi.haze_clipboard_write(selection, native);
+    if result.status != 0 {
+        return errorOf(result.status, result.message);
+    }
+    return none;
+}
+
+fn clearOf(selection: i32): Result<none, Error> {
+    let result = clipboard_ffi.haze_clipboard_clear(selection);
+    if result.status != 0 {
+        return errorOf(result.status, result.message);
+    }
+    return none;
+}
+
+fn readFrom(selection: i32, mimeType: str): Result<Bytes, Error> {
+    let result = clipboard_ffi.haze_clipboard_read(selection, mimeType);
+    if result.status != 0 {
+        return errorOf(result.status, result.message);
+    }
+    return bytesOf(result.data, result.length);
+}
+
+fn readStringFrom(selection: i32, mimeType: str): Result<str, Error> {
+    let result = clipboard_ffi.haze_clipboard_read(selection, mimeType);
+    if result.status != 0 {
+        return errorOf(result.status, result.message);
+    }
+    return bytesOf(result.data, result.length).string();
+}
+
+fn typesOf(selection: i32): []str {
+    let types: []str = [];
+    clipboard_ffi.haze_clipboard_types(selection, types);
+    return types;
+}
+
+// ── Writing ──────────────────────────────────────────────────────────────────
+
+// Replaces the clipboard's contents with `content`, in one step.
+export fn write(content: Content): Result<none, Error> {
+    return writeTo(CLIPBOARD, content);
+}
+
+export fn writeText(text: str): Result<none, Error> {
+    return writeTo(CLIPBOARD, Content { text: text });
+}
+
+// `png` must be a PNG file.
+export fn writePng(png: Bytes): Result<none, Error> {
+    return writeTo(CLIPBOARD, Content { png: png });
+}
+
+export fn writeImage(picture: image.Image): Result<none, Error> {
+    return writeTo(CLIPBOARD, Content { picture: picture });
+}
+
+// Puts files on the clipboard the way a file manager's Copy (or, with cut,
+// Cut) does. Paths must be absolute.
+export fn writeFiles(paths: []str, cut: bool = false): Result<none, Error> {
+    return writeTo(CLIPBOARD, Content { files: paths, cut: cut });
+}
+
+// Empties the clipboard.
+export fn clear(): Result<none, Error> {
+    return clearOf(CLIPBOARD);
+}
+
+// ── Reading ──────────────────────────────────────────────────────────────────
+
+// The clipboard's text. NotFound when it holds none.
+export fn readText(): Result<str, Error> {
+    return readStringFrom(CLIPBOARD, mime.Text);
+}
+
+export fn readHtml(): Result<Html, Error> {
+    let result = clipboard_ffi.haze_clipboard_read_html(CLIPBOARD);
+    if result.status != 0 {
+        return errorOf(result.status, result.message);
+    }
+    let html = Html {
+        markup: result.markup,
+        fragment: result.markup.slice(result.fragmentStart, result.fragmentEnd),
+        sourceUrl: result.sourceUrl,
+    };
+    return html;
+}
+
+export fn readRtf(): Result<str, Error> {
+    return readStringFrom(CLIPBOARD, mime.Rtf);
+}
+
+export fn readSvg(): Result<str, Error> {
+    return readStringFrom(CLIPBOARD, mime.Svg);
+}
+
+// The clipboard's image as a PNG file, whatever form the source put it in.
+export fn readPng(): Result<Bytes, Error> {
+    let found = clipboard_ffi.haze_clipboard_read_image(CLIPBOARD);
+    if found.status != 0 {
+        return errorOf(found.status, found.message);
+    }
+    let data = bytesOf(found.data, found.length);
+    if found.kind == IMAGE_PNG {
+        return data;
+    }
+    let picture = pictureOf(found, data);
+    if !picture {
+        return picture;
+    }
+    let png = image.encodePng(picture);
+    if !png {
+        return invalid(f"cannot encode the clipboard image: {png.message}");
+    }
+    return png;
+}
+
+// The clipboard's image, decoded (RGBA).
+export fn readImage(): Result<image.Image, Error> {
+    let found = clipboard_ffi.haze_clipboard_read_image(CLIPBOARD);
+    if found.status != 0 {
+        return errorOf(found.status, found.message);
+    }
+    return pictureOf(found, bytesOf(found.data, found.length));
+}
+
+// The decoded form of whatever read_image found.
+fn pictureOf(found: clipboard_ffi.haze_clipboard_image_t, data: Bytes): Result<image.Image, Error> {
+    if found.kind == IMAGE_PNG || found.kind == IMAGE_ENCODED {
+        let decoded = image.decode(data);
+        if !decoded {
+            return invalid(f"cannot decode the clipboard image: {decoded.message}");
+        }
+        return decoded;
+    }
+    return image.Image.fromPixels(found.width, found.height, found.channels, data);
+}
+
+// Files a file manager copied or cut.
+export fn readFiles(): Result<Files, Error> {
+    let paths: []str = [];
+    let result = clipboard_ffi.haze_clipboard_read_files(CLIPBOARD, paths);
+    if result.status != 0 {
+        return errorOf(result.status, result.message);
+    }
+    let files = Files { paths: paths, cut: result.cut };
+    return files;
+}
+
+// The raw bytes of one type. image/png converts other images like readPng.
+export fn readData(mimeType: str): Result<Bytes, Error> {
+    if mimeType == mime.Png {
+        return readPng();
+    }
+    return readFrom(CLIPBOARD, mimeType);
+}
+
+// The types on the clipboard, normalized (see the top of this file), most
+// useful first. Empty when the clipboard is empty or cannot be reached.
+// Allocates; for a per-frame check use has().
+export fn types(): []str {
+    return typesOf(CLIPBOARD);
+}
+
+// Whether the clipboard holds `mimeType`, by its normalized name. Allocates
+// nothing and only asks the platform again after the clipboard changed, so
+// it can decide every frame whether Paste is enabled.
+export fn has(mimeType: str): bool {
+    return clipboard_ffi.haze_clipboard_has(CLIPBOARD, mimeType);
+}
+
+// ── State ────────────────────────────────────────────────────────────────────
+
+// A number that changes whenever the clipboard's contents may have changed --
+// another program's copy, our own write, a clear. Compare it with the value
+// you saw last to react to changes (the browser's clipboardchange event).
+// Never allocates.
+//
+// On Wayland this advances when SDL processes events, i.e. with your frame
+// loop.
+export fn changeCount(): int {
+    return clipboard_ffi.haze_clipboard_change_count(CLIPBOARD);
+}
+
+// Whether what is on the clipboard is what this program last wrote.
+export fn isOwner(): bool {
+    return clipboard_ffi.haze_clipboard_owns(CLIPBOARD);
+}
+
+// Whether there is a system clipboard to talk to at all.
+export fn isAvailable(): bool {
+    return clipboard_ffi.haze_clipboard_available(CLIPBOARD);
+}
+
+// Which implementation serves the calls: "win32", "x11", "wayland", "sdl"
+// (SDL's in-process clipboard, on a driver with no system clipboard), or
+// "none". For diagnostics.
+export fn backendName(): str {
+    return clipboard_ffi.haze_clipboard_backend_name();
+}
+
+// Whether `mimeType` can be written -- the ClipboardItem.supports() question.
+// Every well-formed MIME type can: those this module knows are translated to
+// native formats, and the rest are stored under their own names.
+export fn supports(mimeType: str): bool {
+    return clipboard_ffi.haze_clipboard_is_mime_type(mimeType);
+}
+
+// ── The primary selection ────────────────────────────────────────────────────
+
+// X11 and Wayland keep a second clipboard: selecting text copies it, the
+// middle mouse button pastes it. It is independent of the clipboard proper.
+// Windows has none (every call reports ErrorKind.Unsupported), and on Wayland
+// it carries text only.
+export namespace primary {
+    export fn write(content: Content): Result<none, Error> {
+        return writeTo(PRIMARY, content);
+    }
+
+    export fn writeText(text: str): Result<none, Error> {
+        return writeTo(PRIMARY, Content { text: text });
+    }
+
+    export fn readText(): Result<str, Error> {
+        return readStringFrom(PRIMARY, mime.Text);
+    }
+
+    export fn readData(mimeType: str): Result<Bytes, Error> {
+        return readFrom(PRIMARY, mimeType);
+    }
+
+    export fn clear(): Result<none, Error> {
+        return clearOf(PRIMARY);
+    }
+
+    export fn types(): []str {
+        return typesOf(PRIMARY);
+    }
+
+    export fn has(mimeType: str): bool {
+        return clipboard_ffi.haze_clipboard_has(PRIMARY, mimeType);
+    }
+
+    export fn changeCount(): int {
+        return clipboard_ffi.haze_clipboard_change_count(PRIMARY);
+    }
+
+    export fn isOwner(): bool {
+        return clipboard_ffi.haze_clipboard_owns(PRIMARY);
+    }
+
+    export fn isAvailable(): bool {
+        return clipboard_ffi.haze_clipboard_available(PRIMARY);
+    }
+}

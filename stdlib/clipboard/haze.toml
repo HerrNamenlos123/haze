@@ -1,0 +1,15 @@
+name = "clipboard"
+id = "CLpBrd01"
+version = "1.0.0"
+description = "The system clipboard -- text, HTML, RTF, images, files and custom types, plus the X11/Wayland primary selection -- on Windows and Linux"
+license = "MIT"
+authors = ["HerrNamenlos123"]
+type = "lib"
+
+[dependencies]
+image = { path = "../image" }
+
+# Xlib is dlopen'ed, not linked (see hzcb_x11.c); SDL is bound through weak
+# symbols (see hzcb_sdl.c). Neither is a dependency.
+[linker.linux]
+flags = ["-ldl", "-lpthread"]
