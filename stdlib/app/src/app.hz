@@ -253,9 +253,11 @@ export opaque ref struct App {
     _mouseLeftHeld: bool = false;
     _penTipHeld: bool = false;
     _touchHeld: bool = false;
-    // Per pen: the buttons its last event reported, which is what tells a
-    // release of the tip from a release of the eraser (the up itself only
-    // says what is still down afterwards).
+    // Per pen IN CONTACT: the buttons its last event reported, which is what
+    // tells a release of the tip from a release of the eraser (the up itself
+    // only says what is still down afterwards). Only pens in contact are
+    // kept: SDL may give a pen a new id each time it comes into range, so an
+    // entry per id ever seen would grow for as long as the app runs.
     _penButtons: LinearMap<int, int> = {};
     // The fingers currently down, in landing order, and whether the first
     // of them -- the primary one -- is still among them. A finger that lands
@@ -458,7 +460,11 @@ export opaque ref struct App {
     // does -- a pen is how a tablet user clicks buttons, too.
     fn handlePen(e: sdl.PointerEvent) {
         let previous = this._penButtons.get(e.id) ?? 0;
-        this._penButtons.set(e.id, e.buttons);
+        if hasBit(e.buttons, 1) || hasBit(e.buttons, 32) {
+            this._penButtons.set(e.id, e.buttons);
+        } else {
+            this._penButtons.delete(e.id);
+        }
 
         this.mousePosition = e.pos;
         this.mousePositionKnown = true;

@@ -341,9 +341,10 @@ export enum PointerEventKind { Down, Up, Move, Cancel }
 // platform took away (a system gesture, say) that will never see an Up.
 //
 // `buttons` is the DOM's PointerEvent.buttons after this event: 1 = tip or
-// finger in contact, 2 = first barrel button, 4 = second, 32 = eraser end in
-// contact. `id` tells pens apart from each other and fingers apart from each
-// other, not a pen from a finger -- pair it with `device`.
+// finger in contact, 2 = the barrel button the pen right-clicks with, 4 = its
+// other barrel button, 32 = eraser end in contact. `id` tells pens apart from
+// each other and fingers apart from each other, not a pen from a finger --
+// pair it with `device`.
 export struct PointerEvent {
 	kind: PointerEventKind;
 	device: PointerDevice;

@@ -3,6 +3,9 @@ fn main(): int {
         let binaryDir = env.get("HAZE_MODULE_BINARY_DIR");
         if !binaryDir { raise f"HAZE_MODULE_BINARY_DIR not defined"; }
 
+        let sourceDir = env.get("HAZE_MODULE_SOURCE_DIR");
+        if !sourceDir { raise f"HAZE_MODULE_SOURCE_DIR not defined"; }
+
         let cCompiler = env.get("HAZE_C_COMPILER");
         if !cCompiler { raise f"HAZE_C_COMPILER not defined"; }
 
@@ -17,10 +20,27 @@ fn main(): int {
             })?!;
         }
 
-        process.run("git", { "-c", "advice.detachedHead=false", "checkout", "release-3.2.8" }, {
+        // --force drops the patches below from the previous run, so they
+        // apply to a clean tree every time.
+        process.run("git", { "-c", "advice.detachedHead=false", "checkout", "--force", "release-3.2.8" }, {
             inherit_stdio: true,
             cwd: repoPath,
         })?!;
+
+        // Fixes to SDL itself. Each is listed as an input in haze.toml, so
+        // changing one rebuilds SDL.
+        //   wayland-pen-eraser: SDL never reported a Wayland pen's eraser end
+        //   as the eraser (its FIXME "how do we know what tip is in use?",
+        //   still there in 3.4) -- the eraser drew like the tip.
+        let patches: []str = [
+            "wayland-pen-eraser.patch",
+        ];
+        for patch in patches {
+            process.run("git", { "apply", f"{sourceDir}/patches/{patch}" }, {
+                inherit_stdio: true,
+                cwd: repoPath,
+            })?!;
+        }
 
         // This is for building with Wayland support on a fresh non-desktop linux:
         // sudo apt install \

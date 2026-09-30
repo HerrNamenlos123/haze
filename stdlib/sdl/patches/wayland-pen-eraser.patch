@@ -1,0 +1,31 @@
+diff --git a/src/video/wayland/SDL_waylandevents.c b/src/video/wayland/SDL_waylandevents.c
+index 83c414fb3..0291f5f22 100644
+--- a/src/video/wayland/SDL_waylandevents.c
++++ b/src/video/wayland/SDL_waylandevents.c
+@@ -2954,19 +2954,23 @@ static void tablet_tool_handle_frame(void *data, struct zwp_tablet_tool_v2 *tool
+     const Uint64 timestamp = Wayland_GetEventTimestamp(SDL_MS_TO_NS(time));
+     const SDL_PenID instance_id = sdltool->instance_id;
+     SDL_Window *window = sdltool->tool_focus;
++    // The compositor reports a pen's eraser end as a tool of its own, of type
++    // ERASER, rather than as a flag on the pen's events -- so a touch from that
++    // tool is the eraser tip in contact.
++    const bool eraser = (sdltool->info.subtype == SDL_PEN_TYPE_ERASER);
+ 
+     // I don't know if this is necessary (or makes sense), but send motion before pen downs, but after pen ups, so you don't get unexpected lines drawn.
+     if (sdltool->frame_motion_set && (sdltool->frame_pen_down != -1)) {
+         if (sdltool->frame_pen_down) {
+             SDL_SendPenMotion(timestamp, instance_id, window, sdltool->x, sdltool->y);
+-            SDL_SendPenTouch(timestamp, instance_id, window, false, true);  // !!! FIXME: how do we know what tip is in use?
++            SDL_SendPenTouch(timestamp, instance_id, window, eraser, true);
+         } else {
+-            SDL_SendPenTouch(timestamp, instance_id, window, false, false); // !!! FIXME: how do we know what tip is in use?
++            SDL_SendPenTouch(timestamp, instance_id, window, eraser, false);
+             SDL_SendPenMotion(timestamp, instance_id, window, sdltool->x, sdltool->y);
+         }
+     } else {
+         if (sdltool->frame_pen_down != -1) {
+-            SDL_SendPenTouch(timestamp, instance_id, window, false, (sdltool->frame_pen_down != 0));  // !!! FIXME: how do we know what tip is in use?
++            SDL_SendPenTouch(timestamp, instance_id, window, eraser, (sdltool->frame_pen_down != 0));
+         }
+ 
+         if (sdltool->frame_motion_set) {

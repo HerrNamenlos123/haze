@@ -1203,10 +1203,10 @@ void haze_sdl_setWindowShouldClose(SDL_Window *window, bool value) {
      id       SDL's pen instance id / finger id, unique per device kind
      x, y     window coordinates, the same space mouse events use
      buttons  the DOM's PointerEvent.buttons AFTER this event: 1 = the tip
-              (or a finger) is in contact, 2 = the pen's first barrel button,
-              4 = its second, 32 = the eraser end is in contact. The DOM
-              uses exactly these bits for a pen, which is what lets the UI
-              layer hand them on untouched.
+              (or a finger) is in contact, 2 = the barrel button (the one the
+              pen right-clicks with), 4 = its other barrel button, 32 = the
+              eraser end is in contact. The DOM uses exactly these bits for a
+              pen, which is what lets the UI layer hand them on untouched.
 
    SDL synthesizes mouse events from both (SDL_PEN_MOUSEID/SDL_TOUCH_MOUSEID)
    and touch events from the pen (SDL_PEN_TOUCHID). Those are dropped in
@@ -1239,6 +1239,27 @@ static float *haze_sdl_pen_pressure_slot(SDL_PenID id) {
   return &g_haze_pen_pressure[slot].pressure;
 }
 
+/* An SDL pen button (1 or 2) -> its DOM bit: 2 for the barrel button a pen
+   right-clicks with, 4 for its other one. SDL passes on the platform's
+   numbering, and the platforms mean different things by it:
+
+   - Linux (Wayland and X11): the number says what the button DOES, not where
+     it sits. SDL's 2 (BTN_STYLUS2) is the right click and its 1 (BTN_STYLUS)
+     the middle click -- SDL's own mouse emulation turns pen button n into
+     mouse button n + 1 -- and the desktop assigns the physical buttons to
+     them in its stylus settings. GNOME's default makes the lower barrel
+     button the right click, so it arrives as 2. Read the other way round, a
+     Wacom pen's barrel button did nothing the UI looks for.
+   - Windows and macOS: 1 is the barrel button (PEN_FLAG_BARREL on Windows,
+     the lower side button on macOS). */
+static int haze_sdl_pen_button_bit(int button) {
+#if defined(__linux__) && !defined(__ANDROID__)
+  return button == 2 ? 2 : button == 1 ? 4 : 0;
+#else
+  return button == 1 ? 2 : button == 2 ? 4 : 0;
+#endif
+}
+
 /* SDL_PenInputFlags -> DOM buttons. The tip is reported as 1 or 32
    depending on which end is down, as in the DOM, rather than as "down" plus
    a separate eraser flag. */
@@ -1248,10 +1269,10 @@ static int haze_sdl_pen_buttons(SDL_PenInputFlags state) {
     buttons |= (state & SDL_PEN_INPUT_ERASER_TIP) ? 32 : 1;
   }
   if (state & SDL_PEN_INPUT_BUTTON_1) {
-    buttons |= 2;
+    buttons |= haze_sdl_pen_button_bit(1);
   }
   if (state & SDL_PEN_INPUT_BUTTON_2) {
-    buttons |= 4;
+    buttons |= haze_sdl_pen_button_bit(2);
   }
   return buttons;
 }
@@ -1313,7 +1334,7 @@ static bool haze_sdl_dispatch_pen(const SDL_Event *event) {
     const SDL_PenButtonEvent *e = &event->pbutton;
     float pressure = *haze_sdl_pen_pressure_slot(e->which);
     int buttons = haze_sdl_pen_buttons(e->pen_state);
-    int bit = e->button == 1 ? 2 : e->button == 2 ? 4 : 0;
+    int bit = haze_sdl_pen_button_bit(e->button);
     buttons = e->down ? (buttons | bit) : (buttons & ~bit);
     haze_sdl_dispatch_pointer(e->windowID, 2, 1, (int64_t)e->which, e->x, e->y,
                               buttons & (1 | 32) ? pressure : 0.0f, buttons);
