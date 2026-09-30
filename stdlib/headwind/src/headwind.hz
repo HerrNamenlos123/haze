@@ -550,4 +550,22 @@ namespace presets {
     export fn osTitlebarNone(): ui_styling.OSTitlebarOp {
         return ui_styling.OSTitlebarOp { value: ui_styling.OSTitlebar.NoDrag };
     }
+
+    // What a finger may do here -- see ui_styling.TouchAction. Tailwind's
+    // `touch-auto`, `touch-none`, `touch-pan-x` and `touch-pan-y`.
+    export fn touchAuto(): ui_styling.TouchActionOp {
+        return ui_styling.TouchActionOp { value: ui_styling.TouchAction.Auto };
+    }
+
+    export fn touchNone(): ui_styling.TouchActionOp {
+        return ui_styling.TouchActionOp { value: ui_styling.TouchAction.None };
+    }
+
+    export fn touchPanX(): ui_styling.TouchActionOp {
+        return ui_styling.TouchActionOp { value: ui_styling.TouchAction.PanX };
+    }
+
+    export fn touchPanY(): ui_styling.TouchActionOp {
+        return ui_styling.TouchActionOp { value: ui_styling.TouchAction.PanY };
+    }
 }

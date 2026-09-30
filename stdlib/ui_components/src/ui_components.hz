@@ -105,6 +105,58 @@ const comptime DOUBLE_CLICK_SLOP_PX = 2.0;
 // press reports 3 again rather than climbing. See PointerEvent.detail.
 const comptime MAX_CLICK_COUNT = 3;
 
+// ── Touch gestures ───────────────────────────────────────────────────────
+//
+// A finger is not a mouse. It cannot hover, it cannot press without
+// wobbling, it has no second button, and the one thing people do with it
+// most -- drag the content along -- is something a mouse has a wheel for. So
+// the primary finger's down/move/up stream is READ as one of four gestures,
+// the way every touch platform reads it (see UIContext._touch):
+//
+//   tap         down and up without travelling further than TOUCH_SLOP_PX
+//               -> click; two in quick succession -> dblclick
+//   long press  down, and still within the slop LONG_PRESS_SECONDS later
+//               -> contextmenu, i.e. the right click
+//   pan         past the slop, on an element whose touch-action allows it
+//               (ui_styling.TouchAction, the default) -> the content under
+//               the finger scrolls with it, and coasts on when flicked
+//   drag        past the slop where panning is not allowed (`touch-none`)
+//               -> ordinary pointer moves and no click, like a mouse drag
+//
+// A touch press ALSO defers what a mouse press does at once -- moving focus,
+// dismissing popups -- until it turns out to be a tap or a long press:
+// otherwise every swipe across a list would focus the text field it started
+// on, and scrolling past an open menu would close it.
+//
+// How far a finger may drift and still be tapping, in logical pixels.
+// Android's touch slop is 8dp; a desktop touchscreen is held at arm's length
+// and is less precise, so a little more.
+const comptime TOUCH_SLOP_PX = 10.0;
+// How long a finger has to rest before it is a long press. GTK's default
+// gtk-long-press-time; Android uses 400-500 ms.
+const comptime LONG_PRESS_SECONDS = 0.5;
+// How close the second tap of a double tap has to land to the first, per
+// axis. DOUBLE_CLICK_SLOP_PX describes a hand holding a mouse still; this
+// describes a fingertip, which is several millimetres wide and never lands
+// on the same pixel twice.
+const comptime DOUBLE_TAP_SLOP_PX = 24.0;
+// A pan released while moving keeps going and slows down exponentially with
+// this time constant (seconds): the distance it coasts is its speed times
+// this.
+const comptime FLING_TIME_CONSTANT = 0.325;
+// Slower than this (px/s) at release is a finger that was put down, not one
+// that flicked.
+const comptime FLING_MIN_VELOCITY = 50.0;
+// The coasting ends below this speed (px/s)...
+const comptime FLING_STOP_VELOCITY = 10.0;
+// ...and never starts faster than this, however hard the flick.
+const comptime FLING_MAX_VELOCITY = 8000.0;
+// A finger that stopped moving this long (seconds) before it lifted was
+// placed, not flicked, however fast it went before.
+const comptime FLING_MAX_REST_SECONDS = 0.05;
+// e, for the fling's decay -- core's math has pow but no exp.
+const comptime EULER = 2.718281828459045;
+
 // Platform-independent pointer event, modelled after the HTML PointerEvent API.
 // Covers mouse, touch, and stylus in one type. stopPropagation() halts both
 // the remaining capture and bubble phases -- see dispatchCapturing()/
@@ -150,21 +202,71 @@ export ref struct PointerEvent {
     fn stopPropagation() {
         this._stopped = true;
     }
+
+    // Should a control that acts on the PRESS -- a menu row, a tab, a
+    // disclosure toggle, a button that fires on mousedown -- act on this one?
+    // True for the mouse and a pen. False for a finger, whose press may be
+    // the start of a swipe that scrolls the list the control sits in: such a
+    // control acts on the finger's tap instead, i.e. its onClick, and
+    // otherwise nobody could scroll a list of buttons without pressing one.
+    //
+    //     onPointerDown: if e.activatesOnPress() { act(); }
+    //     onClick:       if !e.activatesOnPress() { act(); }
+    fn activatesOnPress(): bool {
+        return this.pointerType != "touch";
+    }
 }
+
+// What a WheelEvent's delta counts -- the DOM's WheelEvent.deltaMode.
+//
+//   Notch  wheel detents, as the platform reports them (fractional for a
+//          smooth wheel or a touchpad). How far one notch scrolls is the
+//          scroller's own choice -- ScrollState.wheelStep.
+//   Pixel  logical pixels, exactly. A finger panning the content (and the
+//          fling after it) arrives this way, because the content has to stay
+//          under the finger: a scroller that multiplied these by its notch
+//          size would run away from it.
+//
+// WheelEvent.pixels() folds both into pixels, which is all most scrollers
+// need.
+export enum WheelDeltaMode { Notch, Pixel }
 
 // Scroll-wheel event. Not a PointerEventKind variant -- it has no
 // button/pressure semantics, it's a distinct interaction the same way
 // hover/hit already get their own dedicated (non-PointerEventKind) handling
-// below. delta.y > 0 is scroll "away" from the user (matches SDL's
-// convention, see sdl.hz's MouseWheelEvent).
+// below. delta.y > 0 is scroll "away" from the user, i.e. towards the top,
+// and delta.x > 0 is scroll to the right -- SDL's convention (see sdl.hz's
+// MouseWheelEvent), so the content moves DOWN for a positive y but LEFT for a
+// positive x. A finger panning the content carries it along, so its pan
+// arrives as (-dx, +dy) of the finger's own movement.
+//
+// A handler that scrolled in response calls stopPropagation(). That is not
+// only good manners towards an outer scroller: it is how a touch pan finds
+// its scroller. The first handler that consumes a pan's wheel gets every
+// later wheel of that pan to itself (the browser's scroll latching, so a
+// list that reaches its end does not start dragging the page behind it), and
+// a fling ends the moment nothing consumes it any more.
 export ref struct WheelEvent {
     pos: Vec2;
     delta: Vec2;
     modifiers: KeyModifiers;
+    deltaMode: WheelDeltaMode = WheelDeltaMode.Notch;
     _stopped: bool = false;
+    // Where along the dispatch path the handler that stopped this event sits
+    // -- see UIContext._scroll.latch. -1 while nobody has.
+    _consumedAt: int = -1;
 
     fn stopPropagation() {
         this._stopped = true;
+    }
+
+    // The delta in logical pixels, whatever deltaMode it came in: a notch
+    // counts `notchSize` pixels, a pixel counts one.
+    fn pixels(notchSize: real): Vec2 {
+        if this.deltaMode == WheelDeltaMode.Pixel {
+            return this.delta;
+        }
+        return Vec2(this.delta.x * notchSize, this.delta.y * notchSize);
     }
 }
 
@@ -317,9 +419,24 @@ export ref struct KeyEdge {
 // Optional keyboard callbacks bundled as a struct, same reasoning as
 // PointerHeldCallbacks. keyEdgesThisFrame()/textInputThisFrame() are this
 // frame's queues, in order -- see KeyEdge and TextInputEvent above.
+//
+// setTextInputActive is an OUTPUT, like CursorCallback: the UI tells the host
+// whether text entry is wanted right now -- true exactly while the focused
+// element (or an ancestor on its focus path) has an onTextInput handler, i.e.
+// while something that takes typed text has focus. A host hands that to the
+// platform's text input switch (SDL_StartTextInput/StopTextInput), and that
+// is what brings up the on-screen keyboard when a text field is tapped on a
+// touchscreen, and puts it away again when focus leaves it -- rather than
+// either never showing it or showing it for every tap anywhere. It also keeps
+// an IME from composing into a window whose focus cannot take text.
+// Called only when the answer changes. Optional: a host that leaves it out
+// keeps text input on for the window's whole life, as before.
+export type TextInputActiveCallback = (active: bool) => void;
+
 export ref struct KeyboardCallbacks {
     keyEdgesThisFrame: () => []KeyEdge;
     textInputThisFrame: () => []str;
+    setTextInputActive: TextInputActiveCallback | none = none;
 }
 
 export struct DivProps {
@@ -349,6 +466,11 @@ export struct DivProps {
     // like it: a middle or right press that completes here fires onAuxClick
     // below instead, so a handler written for "the user clicked this button"
     // never has to defend itself against a right-click it did not mean.
+    //
+    // For a finger this is the TAP: down and up without travelling far (a
+    // swipe scrolls instead and clicks nothing). Focus moves, and popups are
+    // dismissed, at the tap rather than at the finger's press -- see the
+    // touch constants at the top of this file.
     onClick?: (e: PointerEvent) => none;
 
     // The second press of a double click, after that press's own onClick --
@@ -372,6 +494,10 @@ export struct DivProps {
     // The right press ALSO produces the ordinary onPointerDown/onPointerUp/
     // onAuxClick sequence, exactly as in a browser; stopPropagation() on
     // this event stops only the contextmenu chain.
+    //
+    // A finger's LONG PRESS fires this too -- the touch screen's right click,
+    // with button Right and pointerType "touch" -- while the finger is still
+    // down, and the finger's release then clicks nothing.
     onContextMenu?: (e: PointerEvent) => none;
 
     // Capture phase (root -> target). Always runs, even if a descendant's
@@ -1716,6 +1842,71 @@ export ref struct PointerCapture {
     path: []ui_elements.Element = [];
 }
 
+// Where the primary finger's gesture stands -- see the touch constants at the
+// top of this file. Exported only because UIContext holds one.
+//
+//   Pending      down, still within the slop: may yet be a tap or a long press
+//   LongPressed  the long press fired; the finger is still down
+//   Dragging     past the slop where panning is not allowed -- a raw drag
+//   Panning      past the slop and scrolling; the pointer was cancelled
+export enum TouchGestureState { None, Pending, LongPressed, Dragging, Panning }
+
+// Which axis a pan follows. A pan that starts mostly vertical is locked to
+// vertical for its whole life (and the same for horizontal), so a slightly
+// crooked swipe down a page that can also scroll sideways does not wander
+// sideways -- the browser's "scroll rails". Only a clearly diagonal start
+// pans freely.
+export enum PanAxis { Free, X, Y }
+
+// The primary finger's gesture, from its down to its up. A value, reset with
+// every new primary touch.
+export struct TouchGesture {
+    state: TouchGestureState = TouchGestureState.None;
+    pointerId: int = 0;
+    downPos: Vec2 = {};
+    downTime: real = 0.0;
+    // Where the finger was last seen -- the pan's reference point.
+    lastPos: Vec2 = {};
+    // The touch-action in force where it went down -- see resolveTouchAction.
+    action: ui_styling.TouchAction = ui_styling.TouchAction.Auto;
+    axis: PanAxis = PanAxis.Free;
+    // Another finger landed while this one was still Pending. Two fingers are
+    // neither a tap nor a long press (they are the start of a pinch, or of a
+    // two-finger scroll), so this rules both out -- panning still works.
+    multi: bool = false;
+    // This finger landed on content still coasting from a fling and stopped
+    // it. That press meant "stop", not "click whatever is under the finger",
+    // so it does not click even if it lifts as a tap -- as on every phone.
+    stoppedFling: bool = false;
+}
+
+// The scrolling a finger drives: the pan while it is down, the fling after it
+// lifts. Both are delivered as Pixel-mode wheel events along
+// UIContext._touchPath, at most one per frame.
+export struct ScrollGesture {
+    // The finger's movement since the last delivered wheel, already in the
+    // wheel's convention (see UIContext.accumulatePan).
+    frameDelta: Vec2 = {};
+    // Where the wheel events say they happen: the finger, then where it lifted.
+    pos: Vec2 = {};
+    // Index into _touchPath of the element that consumed this gesture's first
+    // wheel, which then gets all the rest -- see WheelEvent. -1 until one has.
+    latch: int = -1;
+    // The pan's speed in px/s, in the wheel's convention like frameDelta,
+    // smoothed over the frames it moved in -- what a fling starts from.
+    velocity: Vec2 = {};
+    hasVelocity: bool = false;
+    lastSampleTime: real = 0.0;
+    lastMoveTime: real = 0.0;
+    flinging: bool = false;
+    // When the fling began -- its first step is the frame after.
+    flingStart: real = 0.0;
+}
+
+// The clock process() runs on. Optional, for tests: a gesture test has to
+// step time without sleeping through it. Omitted, it is time.now().
+export type ClockCallback = () => real;
+
 export opaque ref struct UIContext {
     _mousePosCb: (() => Vec2);
     // Optional: when supplied, says whether _mousePosCb's answer is
@@ -1723,6 +1914,7 @@ export opaque ref struct UIContext {
     // meaningful", which is what a headless/test context wants and what
     // every existing caller got before this existed.
     _mousePosKnownCb?: MousePosKnownCallback;
+    _clockCb?: ClockCallback;
     _pointerButtons?: PointerHeldCallbacks;
     _inputExtras?: InputExtrasCallbacks;
     _keyboard?: KeyboardCallbacks;
@@ -1792,6 +1984,29 @@ export opaque ref struct UIContext {
     // rather than dropped, so a stroke costs no allocation after the first.
     _pointerCaptures: []PointerCapture = [];
 
+    // ── Touch gestures (see the constants at the top of this file) ────
+    //
+    // The primary finger's gesture, and the scrolling it drives.
+    _touch: TouchGesture = {};
+    _scroll: ScrollGesture = {};
+    // The element path the primary finger's down hit, kept past the pointer's
+    // own capture: a pan cancels the pointer (releasing that capture) and a
+    // fling outlives the finger, yet both keep scrolling along this path.
+    _touchPath: []ui_elements.Element = [];
+    // The primary finger's pointerdown, kept until its gesture resolves. The
+    // dismissal a mouse press queues at once is queued with THIS event at the
+    // tap or long press instead, so a handler that stopped the pointerdown
+    // (a popup's own trigger) still keeps its layer open.
+    _touchDownEvent: PointerEvent | none = none;
+
+    // Whether the focused element takes text -- see
+    // KeyboardCallbacks.setTextInputActive. Worked out whenever focus moves
+    // (applyFocusChange), published at the end of the frame when it differs
+    // from what the host was last told. The host starts out with text input
+    // on (sdl.createWindow starts it), hence the initial `true`.
+    _wantsTextInput: bool = false;
+    _textInputActive: bool = true;
+
     // Per-frame scratch buffers, allocated once and cleared each frame
     // (clear() keeps the capacity). An idle frame used to build six fresh
     // arrays plus a closure in process(); now it allocates nothing.
@@ -1855,6 +2070,8 @@ export opaque ref struct UIContext {
         // See UIContext._mousePosKnownCb. Optional; omitting it means the
         // pointer position is always trusted.
         mousePosKnown?: MousePosKnownCallback;
+        // See ClockCallback. Optional; omitting it means time.now().
+        clock?: ClockCallback;
         pointerButtons?: PointerHeldCallbacks;
         inputExtras?: InputExtrasCallbacks;
         keyboard?: KeyboardCallbacks;
@@ -1878,9 +2095,10 @@ export opaque ref struct UIContext {
             _framecount: rx.reactive<int>(0),
             _deltaTime: rx.reactive<real>(0),
             _timeNow: rx.reactive<real>(0),
-            _prevTime: time.now(),
+            _prevTime: args.clock ? args.clock() : time.now(),
             _mousePosCb: args.mousePos,
             _mousePosKnownCb: args.mousePosKnown,
+            _clockCb: args.clock,
             _pointerButtons: args.pointerButtons,
             _inputExtras: args.inputExtras,
             _keyboard: args.keyboard,
@@ -1920,8 +2138,13 @@ export opaque ref struct UIContext {
     // cursor has moved off the element, or outside the OS window
     // entirely. Per-element onPointerMove cannot do that, because it only
     // fires while the cursor is actually over that element.
+    //
+    // A finger counts, as the primary pointer, until the moment it starts
+    // panning: from then on it is scrolling the content, not dragging
+    // whatever it first touched, and a drag that polls this must let go --
+    // exactly as its pointer got a cancel.
     fn leftMouseHeld(): bool {
-        return this._leftHeld;
+        return this._leftHeld && this._touch.state != TouchGestureState.Panning;
     }
 
     fn middleMouseHeld(): bool {
@@ -2205,6 +2428,26 @@ export opaque ref struct UIContext {
             i = i - 1;
         }
         return ui_styling.Cursor.Default;
+    }
+
+    // The touch-action in force at the end of a hit path -- see
+    // ui_styling.TouchAction. Resolved like the cursor: the deepest element
+    // that says anything decides, and Auto when none does.
+    fn resolveTouchAction(hitPath: []ui_elements.Element): ui_styling.TouchAction :: final {
+        let i = hitPath.length - 1;
+        while i >= 0 {
+            let element = hitPath[i];
+            if element is ui_elements.DivElement {
+                let action = element.style.touchAction;
+                if action { return action; }
+            }
+            else if element is ui_elements.CanvasElement {
+                let action = element.style.touchAction;
+                if action { return action; }
+            }
+            i = i - 1;
+        }
+        return ui_styling.TouchAction.Auto;
     }
 
     // Returns ordered path [root, ..., focused-element], mirroring
@@ -2500,6 +2743,19 @@ export opaque ref struct UIContext {
             newData.focusVisible = !pointerDriven;
             newData.focusVersion := !newData.focusVersion;
             this.buildFocusPathInto(newPath, tree);
+        }
+
+        // Does the new focus take typed text? Asked of the whole path, because
+        // text input is dispatched along it (see dispatchTextInputCapturing) --
+        // an ancestor's handler receives it just as well. Published to the
+        // host at the end of the frame; see KeyboardCallbacks.setTextInputActive.
+        this._wantsTextInput = false;
+        for el in newPath {
+            let d = runtimeDataOf(el);
+            if d.onTextInput is not none || d.onTextInputCapture is not none {
+                this._wantsTextInput = true;
+                break;
+            }
         }
 
         // HTML's focus update steps, in order:
@@ -2848,36 +3104,49 @@ export opaque ref struct UIContext {
     // dispatchBubbling exactly -- wheel isn't a PointerEventKind (no
     // button/pressure), so it has no `kind` to switch on and just reads
     // onWheelCapture/onWheel unconditionally.
-    fn dispatchWheelCapturing(hitPath: []ui_elements.Element, event: WheelEvent, eventQueue: [](() => void)): void :: final {
+    //
+    // Both also note which element stopped the event (WheelEvent._consumedAt),
+    // which is how a touch pan latches onto its scroller. `depth`, when not -1,
+    // cuts the path off below that index -- the capture phase runs down to it
+    // and the bubble phase visits it alone -- which is how every later wheel
+    // of a latched pan reaches that scroller and nothing beneath or above it.
+    fn dispatchWheelCapturing(hitPath: []ui_elements.Element, event: WheelEvent, eventQueue: [](() => void), depth: int = -1): void :: final {
+        let end = depth >= 0 && depth < hitPath.length ? depth + 1 : hitPath.length;
         let i = 0;
-        while i < hitPath.length {
+        while i < end {
             let data = runtimeDataOf(hitPath[i]);
             let cb = data.onWheelCapture;
             if cb {
                 // Narrowed copy for the closure: an enclosing narrowing does not
                 // reach into a closure that runs later (the FIRE phase).
                 let fire = cb;
+                let index = i;
                 eventQueue.push((): void => {
                     if event._stopped { return; }
                     fire(event);
+                    if event._stopped && event._consumedAt < 0 { event._consumedAt = index; }
                 });
             }
             i = i + 1;
         }
     }
 
-    fn dispatchWheelBubbling(hitPath: []ui_elements.Element, event: WheelEvent, eventQueue: [](() => void)): void :: final {
-        let i = hitPath.length - 1;
-        while i >= 0 {
+    fn dispatchWheelBubbling(hitPath: []ui_elements.Element, event: WheelEvent, eventQueue: [](() => void), depth: int = -1): void :: final {
+        let latched = depth >= 0 && depth < hitPath.length;
+        let i = latched ? depth : hitPath.length - 1;
+        let lowest = latched ? depth : 0;
+        while i >= lowest {
             let data = runtimeDataOf(hitPath[i]);
             let cb = data.onWheel;
             if cb {
                 // Narrowed copy for the closure: an enclosing narrowing does not
                 // reach into a closure that runs later (the FIRE phase).
                 let fire = cb;
+                let index = i;
                 eventQueue.push((): void => {
                     if event._stopped { return; }
                     fire(event);
+                    if event._stopped && event._consumedAt < 0 { event._consumedAt = index; }
                 });
             }
             i = i - 1;
@@ -3094,7 +3363,10 @@ export opaque ref struct UIContext {
     // Folds one press into the running click sequence -- see _clickCount for
     // the thresholds and why they live here rather than in the platform
     // layer. Called once per Pressed edge, in the order they arrived.
-    fn _advanceClickCount(button: PointerButton, pos: Vec2, now: real): void :: final {
+    // `slop` is how far (per axis) the press may land from the previous one
+    // and still continue the sequence -- DOUBLE_CLICK_SLOP_PX for a mouse or a
+    // pen, DOUBLE_TAP_SLOP_PX for a finger.
+    fn _advanceClickCount(button: PointerButton, pos: Vec2, now: real, slop: real): void :: final {
         let dx = pos.x - this._lastPressPos.x;
         let dy = pos.y - this._lastPressPos.y;
         if dx < 0.0 { dx = -dx; }
@@ -3102,8 +3374,8 @@ export opaque ref struct UIContext {
         let continues = this._clickCount > 0
             && button == this._lastPressButton
             && (now - this._lastPressTime) <= DOUBLE_CLICK_TIME_SECONDS
-            && dx <= DOUBLE_CLICK_SLOP_PX
-            && dy <= DOUBLE_CLICK_SLOP_PX;
+            && dx <= slop
+            && dy <= slop;
         if continues {
             if this._clickCount < MAX_CLICK_COUNT {
                 this._clickCount = this._clickCount + 1;
@@ -3116,6 +3388,303 @@ export opaque ref struct UIContext {
         this._lastPressButton = button;
     }
 
+    // ── Touch gestures ──────────────────────────────────────────────
+    //
+    // The recognizer behind the touch constants at the top of this file. It
+    // reads only the PRIMARY finger (the first one down), as every touch
+    // platform does: further fingers are pointers of their own, captured and
+    // dispatched as they always were, and simply rule out a tap or a long
+    // press while they are down.
+
+    // A primary finger just landed: its gesture starts out Pending.
+    fn beginTouchGesture(pointerId: int, pos: Vec2, now: real, hitPath: []ui_elements.Element, downEvent: PointerEvent, stoppedFling: bool): void :: final {
+        this._touch = TouchGesture {
+            state: TouchGestureState.Pending,
+            pointerId: pointerId,
+            downPos: pos,
+            downTime: now,
+            lastPos: pos,
+            action: this.resolveTouchAction(hitPath),
+            stoppedFling: stoppedFling,
+        };
+        this._scroll = ScrollGesture { pos: pos };
+        this._touchDownEvent = downEvent;
+        // A copy: hitPath is this frame's reusable buffer.
+        let path = this._touchPath;
+        path.clear();
+        for element in hitPath {
+            path.push(element);
+        }
+    }
+
+    // Click-to-focus: the nearest focusable element on the path (innermost
+    // wins), or nothing -- which blurs whatever had focus. See
+    // DivProps.focusable and applyFocusChange.
+    fn focusFromPress(tree: ui_elements.Element, path: []ui_elements.Element, eventQueue: [](() => void)): void :: final {
+        let newFocusTarget = none as ui_elements.Element | none;
+        for (let fi = path.length - 1; fi >= 0; fi--) {
+            if runtimeDataOf(path[fi]).focusable {
+                newFocusTarget = path[fi];
+                break;
+            }
+        }
+        this.applyFocusChange(tree, newFocusTarget, eventQueue, true);
+    }
+
+    // What a mouse press does the moment it lands, done for a finger once its
+    // gesture has turned out to be a press after all -- a tap or a long press:
+    // focus moves to what it pressed, and every layer it landed outside of is
+    // told. The dismissal carries the finger's own pointerdown, so a trigger
+    // that stopped that event keeps its layer open exactly as it does for the
+    // mouse.
+    fn pressFromGesture(tree: ui_elements.Element, path: []ui_elements.Element, eventQueue: [](() => void)): void :: final {
+        this.focusFromPress(tree, path, eventQueue);
+        let downEvent = this._touchDownEvent;
+        if downEvent {
+            this.dispatchPointerDownOutside(path, downEvent, eventQueue);
+        }
+    }
+
+    // Has the primary finger rested long enough to be a long press? Two
+    // fingers never are one.
+    fn longPressDue(now: real): bool :: final {
+        return this._touch.state == TouchGestureState.Pending
+            && !this._touch.multi
+            && now - this._touch.downTime >= LONG_PRESS_SECONDS;
+    }
+
+    // The long press: the touch screen's right click. It presses (focus,
+    // dismissal) and then asks for a context menu along the path the finger
+    // went down on, with the right button -- the same contextmenu a right
+    // click produces, and the one thing on a touch screen that can produce it.
+    // The finger stays down; what it does next is a raw drag, and lifting it
+    // clicks nothing.
+    fn fireLongPress(tree: ui_elements.Element, eventQueue: [](() => void)): void :: final {
+        this._touch.state = TouchGestureState.LongPressed;
+        // Nor the first half of a double tap, whatever comes next.
+        this._clickCount = 0;
+        let path = this._touchPath;
+        this.pressFromGesture(tree, path, eventQueue);
+        // The release will not click, so nothing is being pressed-to-click any
+        // more -- and a pressed button should stop looking pressed now, not
+        // when the finger lifts.
+        for d in this._pointerDownTargets {
+            setPointerDownHere(d, false);
+        }
+        this._pointerDownTargets.clear();
+        let event = PointerEvent {
+            pointerId: this._touch.pointerId,
+            pointerType: "touch",
+            pos: this._touch.lastPos,
+            button: PointerButton.Right,
+            // The finger is still in contact.
+            buttons: PointerButtons.Left,
+            pressure: 0.5,
+            isPrimary: true,
+            modifiers: this.currentModifiers(),
+            detail: 1,
+        };
+        this.dispatchContextMenuCapturing(path, event, eventQueue);
+        this.dispatchContextMenuBubbling(path, event, eventQueue);
+    }
+
+    // Adds the finger's movement to `pos` onto this frame's pan, along the
+    // axis the pan is locked to.
+    fn accumulatePan(pos: Vec2): void :: final {
+        // In the wheel's convention (see WheelEvent): the content follows the
+        // finger, which for y is the finger's own sign and for x the opposite.
+        let dx = this._touch.lastPos.x - pos.x;
+        let dy = pos.y - this._touch.lastPos.y;
+        if this._touch.axis == PanAxis.X { dy = 0.0; }
+        else if this._touch.axis == PanAxis.Y { dx = 0.0; }
+        this._scroll.frameDelta = Vec2(this._scroll.frameDelta.x + dx, this._scroll.frameDelta.y + dy);
+        this._scroll.pos = pos;
+        this._touch.lastPos = pos;
+    }
+
+    // One move of the gesture's finger. Returns true when the gesture took it
+    // -- it began or continued a pan -- and it must not be dispatched.
+    //
+    // Past the slop, the touch-action where the finger went down decides: a
+    // pan cancels the pointer (the DOM's pointercancel, dispatched as an Up
+    // that clicks nothing, like any cancelled pointer) and turns its movement
+    // into scrolling from then on; anything else leaves it a raw drag.
+    fn trackTouchMove(pos: Vec2, now: real, targetPath: []ui_elements.Element, eventQueue: [](() => void)): bool :: final {
+        let state = this._touch.state;
+        if state == TouchGestureState.Panning {
+            this.accumulatePan(pos);
+            return true;
+        }
+        this._touch.lastPos = pos;
+        if state != TouchGestureState.Pending {
+            return false;
+        }
+        let dx = pos.x - this._touch.downPos.x;
+        let dy = pos.y - this._touch.downPos.y;
+        if dx * dx + dy * dy <= TOUCH_SLOP_PX * TOUCH_SLOP_PX {
+            return false;
+        }
+
+        // Past the slop: no longer a tap, a long press, or the first tap of a
+        // double tap.
+        this._clickCount = 0;
+        let adx = dx < 0.0 ? -dx : dx;
+        let ady = dy < 0.0 ? -dy : dy;
+        let action = this._touch.action;
+        let axis = PanAxis.Free;
+        if action == ui_styling.TouchAction.Auto {
+            // Rails: a start within about 27 degrees of an axis locks to it.
+            if ady > adx * 2.0 { axis = PanAxis.Y; }
+            else if adx > ady * 2.0 { axis = PanAxis.X; }
+        }
+        else if action == ui_styling.TouchAction.PanY && ady >= adx {
+            axis = PanAxis.Y;
+        }
+        else if action == ui_styling.TouchAction.PanX && adx >= ady {
+            axis = PanAxis.X;
+        }
+        else {
+            // touch-none, or a swipe along the axis the element keeps for
+            // itself: the element gets the drag.
+            this._touch.state = TouchGestureState.Dragging;
+            return false;
+        }
+
+        this._touch.state = TouchGestureState.Panning;
+        this._touch.axis = axis;
+        // The pan starts HERE, not at the down: the slop is swallowed, so the
+        // content does not jump by it the moment the pan takes over.
+        this._scroll = ScrollGesture { pos: pos, lastSampleTime: now, lastMoveTime: now };
+
+        let cancel = PointerEvent {
+            pointerId: this._touch.pointerId,
+            pointerType: "touch",
+            pos: pos,
+            button: PointerButton.Left,
+            buttons: PointerButtons.None,
+            pressure: 0.0,
+            isPrimary: true,
+            modifiers: this.currentModifiers(),
+        };
+        this.dispatchCapturing(targetPath, cancel, PointerEventKind.Up, eventQueue);
+        this.dispatchBubbling(targetPath, cancel, PointerEventKind.Up, eventQueue);
+        for d in this._pointerDownTargets {
+            setPointerDownHere(d, false);
+        }
+        this._pointerDownTargets.clear();
+        this.releasePointer(this._touch.pointerId);
+        return true;
+    }
+
+    // Folds the pan's movement since the last sample into its velocity.
+    // Called once a frame while panning and once more at the release; a frame
+    // the finger did not move in adds nothing (the rest check in endPan is
+    // what notices a finger that stopped).
+    fn samplePanVelocity(now: real): void :: final {
+        let d = this._scroll.frameDelta;
+        if d.x == 0.0 && d.y == 0.0 {
+            return;
+        }
+        let dt = now - this._scroll.lastSampleTime;
+        if dt <= 0.0 {
+            return;
+        }
+        let vx = d.x / dt;
+        let vy = d.y / dt;
+        if this._scroll.hasVelocity {
+            let old = this._scroll.velocity;
+            this._scroll.velocity = Vec2(old.x * 0.4 + vx * 0.6, old.y * 0.4 + vy * 0.6);
+        } else {
+            this._scroll.velocity = Vec2(vx, vy);
+            this._scroll.hasVelocity = true;
+        }
+        this._scroll.lastSampleTime = now;
+        this._scroll.lastMoveTime = now;
+    }
+
+    // The panning finger lifted at `pos`. If it was still moving fast, the
+    // content flings on (see deliverScrollGesture); the last bit of movement
+    // is delivered at the end of this frame either way.
+    fn endPan(pos: Vec2, now: real): void :: final {
+        this.accumulatePan(pos);
+        this.samplePanVelocity(now);
+        let v = this._scroll.velocity;
+        let speed = math.sqrt(v.x * v.x + v.y * v.y);
+        let resting = now - this._scroll.lastMoveTime > FLING_MAX_REST_SECONDS;
+        if !this._scroll.hasVelocity || resting || speed < FLING_MIN_VELOCITY {
+            return;
+        }
+        if speed > FLING_MAX_VELOCITY {
+            let k = FLING_MAX_VELOCITY / speed;
+            this._scroll.velocity = Vec2(v.x * k, v.y * k);
+        }
+        this._scroll.flinging = true;
+        this._scroll.flingStart = now;
+    }
+
+    // Delivers this frame's pan movement, or the fling's next step, as one
+    // Pixel-mode wheel along the finger's down path -- latched to its scroller
+    // once one consumed it (see WheelEvent). Returns the event so process()
+    // can see after the FIRE phase who took it; none when nothing moved.
+    fn deliverScrollGesture(now: real, elapsed: real, eventQueue: [](() => void)): WheelEvent | none :: final {
+        if this._touch.state == TouchGestureState.Panning {
+            this.samplePanVelocity(now);
+        }
+        let dx = this._scroll.frameDelta.x;
+        let dy = this._scroll.frameDelta.y;
+        this._scroll.frameDelta = Vec2(0.0, 0.0);
+
+        // Not on the frame the fling began: that frame already delivers the
+        // finger's own last movement.
+        if this._scroll.flinging && this._scroll.flingStart < now {
+            let decay = math.pow(EULER, -elapsed / FLING_TIME_CONSTANT);
+            // Exactly how far a velocity decaying like this travels in
+            // `elapsed`, so a slow frame covers the same ground as several
+            // fast ones.
+            let travel = FLING_TIME_CONSTANT * (1.0 - decay);
+            let v = this._scroll.velocity;
+            dx = dx + v.x * travel;
+            dy = dy + v.y * travel;
+            let next = Vec2(v.x * decay, v.y * decay);
+            this._scroll.velocity = next;
+            if math.sqrt(next.x * next.x + next.y * next.y) < FLING_STOP_VELOCITY {
+                this._scroll.flinging = false;
+            }
+        }
+
+        if dx == 0.0 && dy == 0.0 {
+            return none;
+        }
+        let wheel = WheelEvent {
+            pos: this._scroll.pos,
+            delta: Vec2(dx, dy),
+            deltaMode: WheelDeltaMode.Pixel,
+            modifiers: this.currentModifiers(),
+        };
+        let path = this._touchPath;
+        this.dispatchWheelCapturing(path, wheel, eventQueue, this._scroll.latch);
+        this.dispatchWheelBubbling(path, wheel, eventQueue, this._scroll.latch);
+        return wheel;
+    }
+
+    // Tells the host whether text entry is wanted, when that changed -- see
+    // KeyboardCallbacks.setTextInputActive.
+    fn publishTextInputActive(): void :: final {
+        let keyboard = this._keyboard;
+        if !keyboard {
+            return;
+        }
+        let setActive = keyboard.setTextInputActive;
+        if !setActive {
+            return;
+        }
+        if this._wantsTextInput == this._textInputActive {
+            return;
+        }
+        this._textInputActive = this._wantsTextInput;
+        setActive(this._wantsTextInput);
+    }
+
     fn process() {
         // The platform's own window state, re-read before this frame's gate
         // rather than after it -- the window can be maximized, restored or
@@ -3123,7 +3692,7 @@ export opaque ref struct UIContext {
         // itself a reason to render a frame. See WindowApi.poll.
         this.window.poll();
 
-        let now = time.now();
+        let now = this._clockCb ? this._clockCb() : time.now();
         let elapsed = now - this._prevTime;
         this._prevTime = now;
 
@@ -3144,7 +3713,11 @@ export opaque ref struct UIContext {
         this.mousePos = this._mousePosCb();
         // Sampled with the position, so every consumer this frame agrees
         // on whether it means anything. No callback = always trusted.
-        this.mousePosKnown = this._mousePosKnownCb ? this._mousePosKnownCb() : true;
+        //
+        // A panning finger hovers nothing: it is carrying the content along,
+        // and whatever slides under it is not being pointed at.
+        this.mousePosKnown = (this._mousePosKnownCb ? this._mousePosKnownCb() : true)
+            && this._touch.state != TouchGestureState.Panning;
         this.dmousePos = {
             x: this.mousePos.x - this.pmousePos.x,
             y: this.mousePos.y - this.pmousePos.y,
@@ -3211,7 +3784,8 @@ export opaque ref struct UIContext {
                 // sequence.
                 let detail = 0;
                 if edge.isPrimary {
-                    this._advanceClickCount(edge.button, edge.pos, now);
+                    let slop = edge.pointerType == "touch" ? DOUBLE_TAP_SLOP_PX : DOUBLE_CLICK_SLOP_PX;
+                    this._advanceClickCount(edge.button, edge.pos, now, slop);
                     detail = this._clickCount;
                 }
                 let downButtons = isMouse ? makeButtons(runningLeft, runningMiddle, runningRight) : edge.buttons;
@@ -3286,11 +3860,17 @@ export opaque ref struct UIContext {
         // is hovered without moving -- see mousePosKnown.
         let pointerKnownChanged = this.mousePosKnown != prevMousePosKnown;
 
+        // The two touch gestures that happen with no input at all: a finger
+        // resting until it becomes a long press, and content coasting on
+        // after a fling. Either is this frame's input.
+        let touchTimerDue = this.longPressDue(now) || this._scroll.flinging;
+
         let hasInput = pendingEvents.length > 0
             || keyEdges.length > 0
             || textChunks.length > 0
             || wheelDelta.x != 0.0 || wheelDelta.y != 0.0
-            || pointerKnownChanged;
+            || pointerKnownChanged
+            || touchTimerDue;
 
         if !hasInput && !this.needsUpdate() {
             if !this.rootComponent {
@@ -3320,6 +3900,10 @@ export opaque ref struct UIContext {
         // first, then fire it all only once the walk is fully done.
         let eventQueue = this._eventQueue;
         eventQueue.clear();
+
+        // The wheel a touch pan or fling delivers this frame, if any -- read
+        // back after the FIRE phase to see who consumed it.
+        let gestureWheel = none as WheelEvent | none;
 
         if this.rootComponent {
             let tree = this.rootComponent.rootElement;
@@ -3433,9 +4017,35 @@ export opaque ref struct UIContext {
                     detail: pe.detail,
                 };
 
+                // Is this the primary finger whose gesture is being read? Its
+                // moves and its up go through the gesture first -- see the
+                // touch constants at the top of this file.
+                let gestureTouch = pe.pointerType == "touch"
+                    && this._touch.state != TouchGestureState.None
+                    && pe.pointerId == this._touch.pointerId;
+
                 if pe.kind == PointerEventKind.Down {
+                    // Any press stops a fling where it is -- the content halts
+                    // under whatever touched it.
+                    let stoppedFling = this._scroll.flinging;
+                    this._scroll.flinging = false;
+
                     if capturable {
                         this.capturePointer(pe.pointerId, hitPath);
+                    }
+
+                    // A finger press defers focus and dismissal until the
+                    // gesture turns out to be a tap or a long press -- see
+                    // the touch constants. A second finger rules both out.
+                    let deferred = false;
+                    if pe.pointerType == "touch" {
+                        if pe.isPrimary {
+                            this.beginTouchGesture(pe.pointerId, pe.pos, now, hitPath, event, stoppedFling);
+                            deferred = true;
+                        }
+                        else if this._touch.state == TouchGestureState.Pending {
+                            this._touch.multi = true;
+                        }
                     }
 
                     // Clicks, focus and dismissal follow the PRIMARY pointer
@@ -3466,14 +4076,9 @@ export opaque ref struct UIContext {
                         // in this Down's hitPath (innermost wins), or blur
                         // whatever's focused if there isn't one -- see
                         // DivProps.focusable and applyFocusChange.
-                        let newFocusTarget = none as ui_elements.Element | none;
-                        for (let fi = hitPath.length - 1; fi >= 0; fi--) {
-                            if runtimeDataOf(hitPath[fi]).focusable {
-                                newFocusTarget = hitPath[fi];
-                                break;
-                            }
+                        if !deferred {
+                            this.focusFromPress(tree, hitPath, eventQueue);
                         }
-                        this.applyFocusChange(tree, newFocusTarget, eventQueue, true);
                     }
 
                     this.dispatchCapturing(hitPath, event, PointerEventKind.Down, eventQueue);
@@ -3499,11 +4104,34 @@ export opaque ref struct UIContext {
                     // Strictly last: a trigger's own handler must have already
                     // run (and had its chance to stopPropagation) before any
                     // layer is told this press was outside it.
-                    if pe.isPrimary {
+                    if pe.isPrimary && !deferred {
                         this.dispatchPointerDownOutside(hitPath, event, eventQueue);
                     }
                 }
                 else if pe.kind == PointerEventKind.Up {
+                    // Whether this up may complete a click. Always, for a mouse
+                    // or a pen; for the gesture's finger, only if it was a tap.
+                    let clickAllowed = true;
+                    let tap = false;
+                    if gestureTouch {
+                        let state = this._touch.state;
+                        this._touch.state = TouchGestureState.None;
+                        if state == TouchGestureState.Panning {
+                            // Its pointer was cancelled when the pan began, and
+                            // the DOM sends nothing after a pointercancel. What
+                            // lifts here is the pan -- which may fling, unless
+                            // the platform took the finger away mid-swipe.
+                            if !pe.cancelled {
+                                this.endPan(pe.pos, now);
+                            }
+                            this._touchDownEvent = none;
+                            continue;
+                        }
+                        tap = state == TouchGestureState.Pending && !pe.cancelled
+                            && !this._touch.multi && !this._touch.stoppedFling;
+                        clickAllowed = tap;
+                    }
+
                     this.dispatchCapturing(targetPath, event, PointerEventKind.Up, eventQueue);
                     this.dispatchBubbling(targetPath, event, PointerEventKind.Up, eventQueue);
 
@@ -3534,9 +4162,17 @@ export opaque ref struct UIContext {
                         }
                         this._pointerDownTargets.clear();
 
+                        // A tap is where a finger's press finally counts as one:
+                        // it focuses and dismisses now, after the pointerup and
+                        // before the click -- the order a browser's compatibility
+                        // mousedown lands in for a tap.
+                        if tap {
+                            this.pressFromGesture(tree, hitPath, eventQueue);
+                        }
+
                         // A cancelled pointer never completes a click -- it did
                         // not lift, the platform took it away.
-                        if !pe.cancelled {
+                        if !pe.cancelled && clickAllowed {
                             let clickEvent = PointerEvent {
                                 pointerId: pe.pointerId, pointerType: pe.pointerType, pos: pe.pos,
                                 button: pe.button, buttons: pe.buttons,
@@ -3572,16 +4208,37 @@ export opaque ref struct UIContext {
                     if capturable {
                         this.releasePointer(pe.pointerId);
                     }
+                    if gestureTouch {
+                        this._touchDownEvent = none;
+                    }
                 }
                 else if pe.kind == PointerEventKind.Move {
+                    // A move the gesture took (it started or continued a pan)
+                    // goes no further: the pointer is cancelled, and its
+                    // movement arrives as scrolling instead.
+                    if gestureTouch && this.trackTouchMove(pe.pos, now, targetPath, eventQueue) {
+                        continue;
+                    }
                     this.dispatchCapturing(targetPath, event, PointerEventKind.Move, eventQueue);
                     this.dispatchBubbling(targetPath, event, PointerEventKind.Move, eventQueue);
                 }
             }
 
+            // A finger that has rested long enough, and is still down and
+            // still Pending after this frame's edges, is a long press now.
+            if this.longPressDue(now) {
+                this.fireLongPress(tree, eventQueue);
+            }
+
+            // One wheel for this frame's pan movement, or for the fling's next
+            // step -- see ScrollGesture.
+            gestureWheel = this.deliverScrollGesture(now, elapsed, eventQueue);
+
             // Wheel: acts on whatever's currently under the cursor, so it
             // reuses this frame's finalHitPath rather than computing its own.
+            // The wheel stops a fling, as a press does.
             if wheelDelta.x != 0.0 || wheelDelta.y != 0.0 {
+                this._scroll.flinging = false;
                 let wheelEvent = WheelEvent {
                     pos: this.mousePos,
                     delta: wheelDelta,
@@ -3659,10 +4316,28 @@ export opaque ref struct UIContext {
         // (and whatever they captured) alive until next frame's clear().
         eventQueue.clear();
 
+        // Who took this frame's pan or fling wheel? The first taker latches
+        // the gesture (see WheelEvent); a fling nobody takes any more is over
+        // -- the scroller it was moving reached its end.
+        if gestureWheel {
+            if gestureWheel._consumedAt >= 0 {
+                if this._scroll.latch < 0 {
+                    this._scroll.latch = gestureWheel._consumedAt;
+                }
+            }
+            else {
+                this._scroll.flinging = false;
+            }
+        }
+
         // FLUSH PHASE -- Vue's flushJobs: every watcher triggered since the
         // last flush runs around this frame's template pass, and the
         // template pass itself happens in here.
         this.flushJobs();
+
+        // Tell the host whether text entry is wanted, if that changed this
+        // frame -- see KeyboardCallbacks.setTextInputActive.
+        this.publishTextInputActive();
 
         if !this.rootComponent {
             return none;

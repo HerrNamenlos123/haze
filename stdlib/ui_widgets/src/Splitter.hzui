@@ -7,6 +7,9 @@
 // The pointer is polled rather than tracked with @pointermove, because move is
 // dispatched along the current hit path -- the drag would freeze the moment it
 // left this four-pixel strip.
+//
+// `touch-none`, so a finger drags the splitter rather than scrolling whatever
+// is behind it.
 
 @props
 thickness: real = 4.0;
@@ -42,7 +45,7 @@ ui.onFrame(() => {
         [props.vertical]?w-[props.thickness]px [props.vertical]?h-grow
         [!props.vertical]?h-[props.thickness]px [!props.vertical]?w-grow
         [props.vertical]?cursor-resize-e-w [!props.vertical]?cursor-resize-n-s
-        bg-[tint]
+        bg-[tint] touch-none
     ]
     ref=rootRef
     @pointerdown=down

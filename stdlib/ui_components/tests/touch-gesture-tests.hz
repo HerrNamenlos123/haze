@@ -1,0 +1,562 @@
+import ui_components
+import ui_elements
+import ui_styling
+
+// Drives the component system headlessly to verify how the primary finger's
+// down/move/up is read as a gesture (see the touch constants at the top of
+// ui_components.hz):
+//
+//   * a tap clicks, and only then focuses and dismisses -- the press itself
+//     does neither, so a swipe never focuses what it started on;
+//   * a finger that travels past the slop pans: its pointer is cancelled and
+//     its movement arrives as Pixel wheels, locked to one axis when it starts
+//     along one, latched to the first scroller that consumed it, and flung on
+//     when it lifts while moving;
+//   * a finger that rests is a long press: a right-button contextmenu, and no
+//     click when it lifts;
+//   * `touch-none` and `touch-pan-y` keep the drag for the element;
+//   * two taps close together are a double tap;
+//   * the mouse is untouched by all of this;
+//   * the host is told whether the focused element takes text.
+//
+// Time is the test's own (UIContextArgs.clock), so a long press or a fling is
+// stepped through rather than slept through. Bounding boxes are applied by
+// hand, as in pen-touch-tests.hz.
+
+ref struct TestArgs {}
+
+ref struct State {
+    log: str = "";
+    now: real = 100.0;
+    mouseX: real = 0.0;
+    mouseY: real = 0.0;
+    leftHeld: bool = false;
+    failures: int = 0;
+    checks: int = 0;
+
+    mut fn check(name: str, ok: bool, detail: str) {
+        this.checks = this.checks + 1;
+        if !ok {
+            this.failures = this.failures + 1;
+            fmt.println(f"FAIL: {name}\n  {detail}");
+        }
+    }
+
+    mut fn checkStr(name: str, actual: str, expected: str) {
+        this.check(name, actual == expected, f"expected '{expected}'\n  got      '{actual}'");
+    }
+
+    mut fn record(what: str) {
+        this.log = f"{this.log}{what};";
+    }
+}
+
+// Cumulative bytes the collector has handed out -- see the zero-allocation
+// checks at the end.
+fn allocatedBytes(): int :: final {
+    do unsafe {
+        let result: int = 0;
+        __c__("{ extern size_t GC_get_total_bytes(void); result = (hzstd_int_t)GC_get_total_bytes(); }");
+        return result;
+    };
+}
+
+fn buttonName(b: ui_components.PointerButton): str {
+    if b == ui_components.PointerButton.Right { return "right"; }
+    if b == ui_components.PointerButton.Left { return "left"; }
+    return "other";
+}
+
+fn main(): int {
+    let state = State {};
+
+    let rootRef: ui_components.ElementRef<ui_elements.DivElement> =
+        rx.shallowReactive<ui_components.ElementWrapper<ui_elements.DivElement> | null>(null);
+    let outerRef: ui_components.ElementRef<ui_elements.DivElement> =
+        rx.shallowReactive<ui_components.ElementWrapper<ui_elements.DivElement> | null>(null);
+    let innerRef: ui_components.ElementRef<ui_elements.DivElement> =
+        rx.shallowReactive<ui_components.ElementWrapper<ui_elements.DivElement> | null>(null);
+    let canvasRef: ui_components.ElementRef<ui_elements.DivElement> =
+        rx.shallowReactive<ui_components.ElementWrapper<ui_elements.DivElement> | null>(null);
+    let sliderRef: ui_components.ElementRef<ui_elements.DivElement> =
+        rx.shallowReactive<ui_components.ElementWrapper<ui_elements.DivElement> | null>(null);
+    let popupRef: ui_components.ElementRef<ui_elements.DivElement> =
+        rx.shallowReactive<ui_components.ElementWrapper<ui_elements.DivElement> | null>(null);
+    let plainRef: ui_components.ElementRef<ui_elements.DivElement> =
+        rx.shallowReactive<ui_components.ElementWrapper<ui_elements.DivElement> | null>(null);
+
+    // Two scrollers, one inside the other, as real ScrollStates.
+    let outerScroll = ui_components.ScrollState();
+    let innerScroll = ui_components.ScrollState();
+
+    let edges: []ui_components.PointerEdge = [];
+    // What the host hands over each frame -- reused, as a real host's
+    // buffers are, so the zero-allocation checks measure the framework and
+    // not this harness.
+    let frameEdges: []ui_components.PointerEdge = [];
+    let noKeys: []ui_components.KeyEdge = [];
+    let noText: []str = [];
+
+    let textInputChanged: ui_components.TextInputActiveCallback = (active: bool): void => {
+        state.record(f"textinput({active})");
+    };
+
+    // Layout (all boxes set by hand below):
+    //
+    //   root    (0,0)-(400,400)
+    //     outer   (0,0)-(200,400)   scroller, content 5000 tall
+    //       inner   (0,0)-(200,200) scroller, content 300 tall; focusable, takes text
+    //         canvas  (0,150)-(100,200)  touch-none
+    //       slider  (0,300)-(200,350)    touch-pan-y
+    //     popup   (300,0)-(400,50)  a dismissable layer
+    //     plain   (300,100)-(400,150) focusable, takes no text
+    let ui = ui_components.UIContext({
+        ui: (ctx: ui_components.UIContext) => {
+            ctx.defineComponent(0, {} as TestArgs, (instance: ui_components.InstanceData<TestArgs>) => {
+                return (): ui_components.DivProps => {
+                    ctx.div({ id: 1, elementRef: rootRef }, () => {
+                        ctx.div({
+                            id: 2,
+                            elementRef: outerRef,
+                            onWheel: (e: ui_components.WheelEvent) => {
+                                if outerScroll.handleWheelEvent(e) {
+                                    e.stopPropagation();
+                                    state.record(f"outer-wheel({e.delta.y})");
+                                }
+                            },
+                            onClick: (e: ui_components.PointerEvent) => { state.record("outer-click"); },
+                        }, () => {
+                            ctx.div({
+                                id: 3,
+                                elementRef: innerRef,
+                                focusable: true,
+                                onWheel: (e: ui_components.WheelEvent) => {
+                                    let pixel = e.deltaMode == ui_components.WheelDeltaMode.Pixel;
+                                    if innerScroll.handleWheelEvent(e) {
+                                        e.stopPropagation();
+                                        state.record(f"inner-wheel({e.delta.x},{e.delta.y},{pixel})");
+                                    }
+                                },
+                                onPointerDown: (e: ui_components.PointerEvent) => { state.record("inner-down"); },
+                                onPointerMove: (e: ui_components.PointerEvent) => { state.record("inner-move"); },
+                                onPointerUp: (e: ui_components.PointerEvent) => { state.record("inner-up"); },
+                                onClick: (e: ui_components.PointerEvent) => { state.record(f"inner-click({e.detail})"); },
+                                onDoubleClick: (e: ui_components.PointerEvent) => { state.record(f"inner-dblclick({e.detail})"); },
+                                onContextMenu: (e: ui_components.PointerEvent) => {
+                                    state.record(f"inner-contextmenu({buttonName(e.button)},{e.pointerType})");
+                                },
+                                onFocus: (e: ui_components.FocusEvent) => { state.record("inner-focus"); },
+                                onTextInput: (e: ui_components.TextInputEvent) => {},
+                            }, () => {
+                                ctx.div({
+                                    id: 4,
+                                    elementRef: canvasRef,
+                                    style: { touchAction: ui_styling.TouchAction.None },
+                                    onPointerDown: (e: ui_components.PointerEvent) => { state.record("canvas-down"); },
+                                    onPointerMove: (e: ui_components.PointerEvent) => { state.record("canvas-move"); },
+                                    onPointerUp: (e: ui_components.PointerEvent) => { state.record("canvas-up"); },
+                                    onClick: (e: ui_components.PointerEvent) => { state.record("canvas-click"); },
+                                }, () => {});
+                            });
+                            ctx.div({
+                                id: 6,
+                                elementRef: sliderRef,
+                                style: { touchAction: ui_styling.TouchAction.PanY },
+                                onPointerMove: (e: ui_components.PointerEvent) => { state.record("slider-move"); },
+                                onPointerUp: (e: ui_components.PointerEvent) => { state.record("slider-up"); },
+                            }, () => {});
+                        });
+                        ctx.div({
+                            id: 5,
+                            elementRef: popupRef,
+                            onPointerDownOutside: (e: ui_components.PointerEvent) => { state.record("dismiss"); },
+                        }, () => {});
+                        ctx.div({
+                            id: 7,
+                            elementRef: plainRef,
+                            focusable: true,
+                            onFocus: (e: ui_components.FocusEvent) => { state.record("plain-focus"); },
+                        }, () => {});
+                    });
+                    return { id: 0 };
+                };
+            });
+        },
+        mousePos: (): Vec2 => { return Vec2(state.mouseX, state.mouseY); },
+        clock: (): real => { return state.now; },
+        pointerButtons: ui_components.PointerHeldCallbacks {
+            leftHeld: (): bool => { return state.leftHeld; },
+            middleHeld: (): bool => { return false; },
+            rightHeld: (): bool => { return false; },
+            edgesThisFrame: (): []ui_components.PointerEdge => {
+                frameEdges.clear();
+                for e in edges { frameEdges.push(e); }
+                edges.clear();
+                return frameEdges;
+            },
+            reportsMotion: true,
+        },
+        keyboard: ui_components.KeyboardCallbacks {
+            keyEdgesThisFrame: (): []ui_components.KeyEdge => { return noKeys; },
+            textInputThisFrame: (): []str => { return noText; },
+            setTextInputActive: textInputChanged,
+        },
+    });
+
+    ui.process();
+    let root = rx.get(rootRef);
+    let outer = rx.get(outerRef);
+    let inner = rx.get(innerRef);
+    let canvas = rx.get(canvasRef);
+    let slider = rx.get(sliderRef);
+    let popup = rx.get(popupRef);
+    let plainBox = rx.get(plainRef);
+    assert(root);
+    assert(outer);
+    assert(inner);
+    assert(canvas);
+    assert(slider);
+    assert(popup);
+    assert(plainBox);
+    ui_components.applyRenderFeedback(root._element, Vec2(0.0, 0.0), Vec2(400.0, 400.0));
+    ui_components.applyRenderFeedback(outer._element, Vec2(0.0, 0.0), Vec2(200.0, 400.0));
+    ui_components.applyRenderFeedback(inner._element, Vec2(0.0, 0.0), Vec2(200.0, 200.0));
+    ui_components.applyRenderFeedback(canvas._element, Vec2(0.0, 150.0), Vec2(100.0, 50.0));
+    ui_components.applyRenderFeedback(slider._element, Vec2(0.0, 300.0), Vec2(200.0, 50.0));
+    ui_components.applyRenderFeedback(popup._element, Vec2(300.0, 0.0), Vec2(100.0, 50.0));
+    ui_components.applyRenderFeedback(plainBox._element, Vec2(300.0, 100.0), Vec2(100.0, 50.0));
+    outerScroll.setMetrics(Vec2(200.0, 400.0), Vec2(200.0, 5000.0));
+    innerScroll.setMetrics(Vec2(200.0, 200.0), Vec2(200.0, 300.0));
+
+    // The first frame reported "nothing takes text" to a host that starts
+    // with text input on.
+    state.checkStr("an unfocused UI turns text input off", state.log, "textinput(false);");
+
+    // One frame, `dt` seconds after the last.
+    let frame = (dt: real): none => {
+        state.now = state.now + dt;
+        ui.process();
+    };
+    let finger = (id: int, primary: bool, kind: ui_components.PointerEdgeKind, x: real, y: real): none => {
+        let button = kind == ui_components.PointerEdgeKind.Moved ? ui_components.PointerButton.None : ui_components.PointerButton.Left;
+        let down = kind == ui_components.PointerEdgeKind.Pressed || kind == ui_components.PointerEdgeKind.Moved;
+        let buttons = down ? ui_components.PointerButtons.Left : ui_components.PointerButtons.None;
+        if primary {
+            // As app.App does: the primary finger moves the polled position
+            // and holds the primary level.
+            state.mouseX = x;
+            state.mouseY = y;
+            state.leftHeld = down;
+        }
+        edges.push({ button: button, kind: kind, pos: Vec2(x, y), pointerId: 100000 + id, pointerType: "touch", buttons: buttons, pressure: 1.0, isPrimary: primary });
+    };
+    let mouse = (kind: ui_components.PointerEdgeKind, x: real, y: real): none => {
+        state.mouseX = x;
+        state.mouseY = y;
+        state.leftHeld = kind == ui_components.PointerEdgeKind.Pressed;
+        edges.push({ button: ui_components.PointerButton.Left, kind: kind, pos: Vec2(x, y) });
+    };
+    let Pressed = ui_components.PointerEdgeKind.Pressed;
+    let Moved = ui_components.PointerEdgeKind.Moved;
+    let Released = ui_components.PointerEdgeKind.Released;
+
+    // --- A tap clicks, and only then focuses and dismisses ------------------
+    state.log = "";
+    finger(1, true, Pressed, 50.0, 50.0);
+    frame(0.016);
+    state.checkStr("a finger's press alone neither focuses nor dismisses", state.log, "inner-down;");
+    state.log = "";
+    finger(1, true, Released, 52.0, 53.0);
+    frame(0.1);
+    state.checkStr("a tap: up, then focus and dismissal, then the click",
+        state.log, "inner-up;inner-focus;dismiss;inner-click(1);outer-click;textinput(true);");
+
+    // --- A pan: cancelled pointer, Pixel wheels, locked to its axis ----------
+    state.log = "";
+    finger(1, true, Pressed, 50.0, 100.0);
+    frame(0.5);
+    finger(1, true, Moved, 50.0, 95.0);
+    frame(0.016);
+    finger(1, true, Moved, 52.0, 80.0);
+    frame(0.016);
+    finger(1, true, Moved, 60.0, 60.0);
+    frame(0.016);
+    let heldWhilePanning = ui.leftMouseHeld();
+    finger(1, true, Moved, 61.0, 40.0);
+    frame(0.016);
+    frame(0.2);
+    finger(1, true, Released, 61.0, 40.0);
+    frame(0.016);
+    frame(0.016);
+    state.checkStr("a swipe: a move within the slop, a cancel, then the rest as vertical Pixel wheels",
+        state.log, "inner-down;inner-move;inner-up;inner-wheel(0,-20,true);inner-wheel(0,-20,true);");
+    state.check("the pan scrolled exactly as far as the finger moved after the slop",
+        rx.get(innerScroll.scrollTop) == 40.0, f"scrollTop {rx.get(innerScroll.scrollTop)}");
+    state.check("a panning finger no longer holds the primary button", !heldWhilePanning, "leftMouseHeld() was true");
+
+    // --- A sideways pan carries the content sideways --------------------------
+    //
+    // The wheel's x counts to the RIGHT (SDL's convention), so a finger moving
+    // right -- dragging the content right, towards its start -- is a negative
+    // x, and scrollLeft goes down.
+    innerScroll.setMetrics(Vec2(200.0, 200.0), Vec2(400.0, 300.0));
+    innerScroll.scrollTo(0.0, 100.0);
+    state.log = "";
+    finger(1, true, Pressed, 100.0, 100.0);
+    frame(0.5);
+    finger(1, true, Moved, 120.0, 101.0);
+    frame(0.016);
+    finger(1, true, Moved, 160.0, 103.0);
+    frame(0.016);
+    frame(0.2);
+    finger(1, true, Released, 160.0, 103.0);
+    frame(0.016);
+    state.checkStr("a sideways swipe is a horizontal pan", state.log, "inner-down;inner-up;inner-wheel(-40,0,true);");
+    state.check("the content followed the finger to the right", rx.get(innerScroll.scrollLeft) == 60.0,
+        f"scrollLeft {rx.get(innerScroll.scrollLeft)}");
+    state.check("and did not wander vertically", rx.get(innerScroll.scrollTop) == 0.0,
+        f"scrollTop {rx.get(innerScroll.scrollTop)}");
+    innerScroll.setMetrics(Vec2(200.0, 200.0), Vec2(200.0, 300.0));
+
+    // --- Latching: a scroller at its end does not hand the pan on -----------
+    state.log = "";
+    innerScroll.scrollTo(90.0, 0.0);
+    finger(1, true, Pressed, 100.0, 180.0);
+    frame(0.5);
+    finger(1, true, Moved, 100.0, 160.0);
+    frame(0.016);
+    finger(1, true, Moved, 100.0, 140.0);
+    frame(0.016);
+    finger(1, true, Moved, 100.0, 120.0);
+    frame(0.016);
+    frame(0.2);
+    finger(1, true, Released, 100.0, 120.0);
+    frame(0.016);
+    state.checkStr("the pan stays with the scroller it started, even at its end",
+        state.log, "inner-down;inner-up;inner-wheel(0,-20,true);");
+    state.check("the inner scroller reached its end", rx.get(innerScroll.scrollTop) == 100.0,
+        f"inner scrollTop {rx.get(innerScroll.scrollTop)}");
+    state.check("the outer scroller did not move", rx.get(outerScroll.scrollTop) == 0.0,
+        f"outer scrollTop {rx.get(outerScroll.scrollTop)}");
+
+    // --- A flick flings, and slows to a stop ----------------------------------
+    state.log = "";
+    finger(1, true, Pressed, 100.0, 260.0);
+    frame(0.5);
+    finger(1, true, Moved, 100.0, 240.0);
+    frame(0.016);
+    finger(1, true, Moved, 100.0, 200.0);
+    frame(0.016);
+    finger(1, true, Moved, 100.0, 160.0);
+    finger(1, true, Released, 100.0, 160.0);
+    frame(0.016);
+    let afterPan = rx.get(outerScroll.scrollTop);
+    for (let i = 0; i < 200; i++) {
+        frame(0.016);
+    }
+    let afterFling = rx.get(outerScroll.scrollTop);
+    state.check("the pan itself scrolled 80px", afterPan == 80.0, f"outer scrollTop {afterPan}");
+    // 2500 px/s coasting with a 0.325 s time constant travels ~812px.
+    state.check("the fling coasted on about speed x time constant",
+        afterFling > 850.0 && afterFling < 900.0, f"outer scrollTop {afterFling}");
+    state.log = "";
+    frame(0.016);
+    frame(0.016);
+    state.checkStr("a fling that slowed down has ended", state.log, "");
+
+    // --- A tap on a moving fling stops it, and clicks nothing ------------------
+    state.log = "";
+    finger(1, true, Pressed, 100.0, 260.0);
+    frame(0.5);
+    finger(1, true, Moved, 100.0, 240.0);
+    frame(0.016);
+    finger(1, true, Moved, 100.0, 200.0);
+    frame(0.016);
+    finger(1, true, Moved, 100.0, 160.0);
+    finger(1, true, Released, 100.0, 160.0);
+    frame(0.016);
+    frame(0.016);
+    frame(0.016);
+    finger(1, true, Pressed, 100.0, 260.0);
+    frame(0.016);
+    let stoppedAt = rx.get(outerScroll.scrollTop);
+    finger(1, true, Released, 100.0, 260.0);
+    frame(0.05);
+    frame(0.016);
+    state.check("a press stops the fling where it is", rx.get(outerScroll.scrollTop) == stoppedAt,
+        f"moved on from {stoppedAt} to {rx.get(outerScroll.scrollTop)}");
+    state.check("the press that stopped a fling does not click", !state.log.contains("outer-click"), state.log);
+
+    // --- A fling that runs into the end stops there -----------------------------
+    outerScroll.scrollTo(4550.0, 0.0);
+    finger(1, true, Pressed, 100.0, 260.0);
+    frame(0.5);
+    finger(1, true, Moved, 100.0, 240.0);
+    frame(0.016);
+    finger(1, true, Moved, 100.0, 200.0);
+    frame(0.016);
+    finger(1, true, Moved, 100.0, 160.0);
+    finger(1, true, Released, 100.0, 160.0);
+    frame(0.016);
+    for (let i = 0; i < 30; i++) {
+        frame(0.016);
+    }
+    state.check("the fling ran up to the end", rx.get(outerScroll.scrollTop) == 4600.0,
+        f"outer scrollTop {rx.get(outerScroll.scrollTop)}");
+    state.log = "";
+    frame(0.016);
+    state.checkStr("and ended there", state.log, "");
+    outerScroll.scrollTo(0.0, 0.0);
+    innerScroll.scrollTo(0.0, 0.0);
+
+    // --- A long press is the right click ---------------------------------------
+    // Focus somewhere else first, so the long press has focus to move.
+    finger(1, true, Pressed, 350.0, 120.0);
+    frame(0.5);
+    finger(1, true, Released, 350.0, 120.0);
+    frame(0.016);
+    state.log = "";
+    finger(1, true, Pressed, 50.0, 50.0);
+    frame(0.016);
+    frame(0.2);
+    frame(0.2);
+    let beforeDeadline = state.log;
+    frame(0.2);
+    let atDeadline = state.log;
+    finger(1, true, Released, 50.0, 50.0);
+    frame(0.016);
+    state.checkStr("nothing fires before the long-press time", beforeDeadline, "inner-down;");
+    state.checkStr("a resting finger becomes a right-button contextmenu, which presses",
+        atDeadline, "inner-down;inner-focus;dismiss;inner-contextmenu(right,touch);textinput(true);");
+    state.checkStr("lifting after a long press clicks nothing",
+        state.log, "inner-down;inner-focus;dismiss;inner-contextmenu(right,touch);textinput(true);inner-up;");
+
+    // --- Moving first rules the long press out --------------------------------
+    state.log = "";
+    finger(1, true, Pressed, 50.0, 50.0);
+    frame(0.016);
+    finger(1, true, Moved, 50.0, 70.0);
+    frame(0.2);
+    frame(0.6);
+    finger(1, true, Released, 50.0, 70.0);
+    frame(0.016);
+    state.check("a finger that moved is never a long press", !state.log.contains("contextmenu"), state.log);
+    innerScroll.scrollTo(0.0, 0.0);
+
+    // --- touch-none keeps the drag -----------------------------------------------
+    state.log = "";
+    finger(1, true, Pressed, 20.0, 160.0);
+    frame(0.016);
+    finger(1, true, Moved, 60.0, 190.0);
+    frame(0.016);
+    finger(1, true, Moved, 80.0, 195.0);
+    frame(0.016);
+    finger(1, true, Released, 80.0, 195.0);
+    frame(0.016);
+    state.checkStr("on touch-none a travelling finger is a raw drag, and clicks nothing",
+        state.log, "canvas-down;inner-down;canvas-move;inner-move;canvas-move;inner-move;canvas-up;inner-up;");
+    state.check("and nothing scrolled", rx.get(innerScroll.scrollTop) == 0.0,
+        f"inner scrollTop {rx.get(innerScroll.scrollTop)}");
+
+    // --- touch-pan-y: a sideways swipe is the element's, a vertical one pans ----
+    state.log = "";
+    finger(1, true, Pressed, 20.0, 320.0);
+    frame(0.016);
+    finger(1, true, Moved, 60.0, 322.0);
+    frame(0.016);
+    finger(1, true, Released, 60.0, 322.0);
+    frame(0.016);
+    state.checkStr("touch-pan-y: a horizontal swipe is a drag", state.log, "slider-move;slider-up;");
+    state.log = "";
+    finger(1, true, Pressed, 100.0, 330.0);
+    frame(0.016);
+    finger(1, true, Moved, 100.0, 310.0);
+    frame(0.016);
+    finger(1, true, Moved, 100.0, 300.0);
+    frame(0.016);
+    frame(0.2);
+    finger(1, true, Released, 100.0, 300.0);
+    frame(0.016);
+    state.checkStr("touch-pan-y: a vertical swipe pans", state.log, "slider-up;outer-wheel(-10);");
+    outerScroll.scrollTo(0.0, 0.0);
+
+    // --- A double tap ---------------------------------------------------------
+    state.log = "";
+    finger(1, true, Pressed, 60.0, 60.0);
+    frame(0.5);
+    finger(1, true, Released, 60.0, 60.0);
+    frame(0.05);
+    finger(1, true, Pressed, 75.0, 70.0);
+    frame(0.15);
+    finger(1, true, Released, 75.0, 70.0);
+    frame(0.05);
+    state.checkStr("two taps close together are a double tap",
+        state.log,
+        "inner-down;inner-up;dismiss;inner-click(1);outer-click;inner-down;inner-up;dismiss;inner-click(2);outer-click;inner-dblclick(2);");
+
+    // --- A swipe dismisses nothing ----------------------------------------------
+    state.log = "";
+    finger(1, true, Pressed, 100.0, 260.0);
+    frame(0.5);
+    finger(1, true, Moved, 100.0, 240.0);
+    frame(0.016);
+    finger(1, true, Moved, 100.0, 230.0);
+    frame(0.016);
+    frame(0.2);
+    finger(1, true, Released, 100.0, 230.0);
+    frame(0.016);
+    state.check("panning past an open layer does not dismiss it", !state.log.contains("dismiss"), state.log);
+    outerScroll.scrollTo(0.0, 0.0);
+
+    // --- The mouse presses at once, as before -----------------------------------
+    state.log = "";
+    mouse(Pressed, 350.0, 120.0);
+    frame(0.016);
+    let mouseDown = state.log;
+    mouse(Released, 350.0, 120.0);
+    frame(0.016);
+    state.checkStr("a mouse press focuses and dismisses on the press itself",
+        mouseDown, "plain-focus;dismiss;textinput(false);");
+    state.log = "";
+    mouse(Pressed, 50.0, 50.0);
+    frame(0.016);
+    mouse(Moved, 50.0, 90.0);
+    frame(0.016);
+    frame(1.0);
+    mouse(Released, 50.0, 90.0);
+    frame(0.016);
+    state.checkStr("a mouse drag neither pans nor long-presses",
+        state.log, "inner-focus;inner-down;dismiss;textinput(true);inner-move;inner-up;inner-click(1);outer-click;");
+
+    // --- Waiting costs nothing ----------------------------------------------
+    //
+    // An idle frame allocates nothing, and neither does a frame in which a
+    // finger merely rests on the way to becoming a long press: the timer is
+    // plain state, checked before the frame gate.
+    frame(0.016);
+    frame(0.016);
+    let idleBefore = allocatedBytes();
+    for (let i = 0; i < 1000; i++) {
+        frame(0.016);
+    }
+    let idleBytes = allocatedBytes() - idleBefore;
+    state.check("1000 idle frames allocate nothing", idleBytes == 0, f"{idleBytes} bytes");
+    finger(1, true, Pressed, 50.0, 50.0);
+    frame(0.016);
+    frame(0.001);
+    let restBefore = allocatedBytes();
+    for (let i = 0; i < 100; i++) {
+        frame(0.001);
+    }
+    let restBytes = allocatedBytes() - restBefore;
+    state.check("a resting finger allocates nothing while it waits", restBytes == 0, f"{restBytes} bytes");
+    finger(1, true, Released, 50.0, 50.0);
+    frame(0.016);
+
+    if state.failures > 0 {
+        fmt.println(f"\n{state.failures} FAILURES out of {state.checks} checks");
+        return 1;
+    }
+    fmt.println(f"\nALL {state.checks} TOUCH GESTURE CHECKS PASS");
+    return 0;
+}

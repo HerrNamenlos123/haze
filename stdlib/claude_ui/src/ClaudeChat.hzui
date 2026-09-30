@@ -90,8 +90,8 @@ div [col w-grow h-fit gap-2 px-[props.padding]px pb-[props.padding]px] {
         Button [] icon="link-external" @click=openRemote {}
     }
 
-    // `if=` does not narrow a computed's union for the props below it.
-    ClaudeAsk if=ask [] request=[do { let request = rx.get(ask); assert(request); request }]
+    // `if=` narrows the computed's union for the props below it.
+    ClaudeAsk if=ask [] request=[rx.get(ask)]
         revision=[chat.revision]
         feedback=[chat.prompt] mutedColor=[props.mutedColor]
         accent=[props.accent] fontSize=[props.fontSize] {}

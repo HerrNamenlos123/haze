@@ -541,30 +541,34 @@ let noteKeyboardActivity = () => {
     inputSerial := rx.get(inputSerial) + 1;
 };
 
+// A finger's pan arrives here too, as Pixel wheels that handleWheelEvent
+// applies 1:1. Stopping the event when it scrolled is what keeps the pan (and
+// its fling) with the editor -- see ui_components.WheelEvent.
 let onWheel = (event: ui_components.WheelEvent) => {
-    scroll.handleWheel(event.delta);
+    if scroll.handleWheelEvent(event) {
+        event.stopPropagation();
+    }
     dismissHover();
 };
 
-let onPointerDown = (event: ui_components.PointerEvent) => {
-    if scroll.isDragging() {
-        return;
-    }
-    dismissHover();
-    if event.button != ui_components.PointerButton.Left {
-        return;
-    }
+// Where a press puts the caret and what it selects, from the click count --
+// shared by the mouse's press and a finger's tap and long press. `drag` arms
+// the pointer-capture pump (pumpPointerCapture), which extends the selection
+// for as long as the button, or the finger, stays down.
+let selectFromPointer = (event: ui_components.PointerEvent, clicks: int, drag: bool): none => {
     let target = documentPositionAt(event.pos);
-    let granularity = textedit_behavior.granularityForClickCount(event.detail);
+    let granularity = textedit_behavior.granularityForClickCount(clicks);
     let extending = hasModifier(event.modifiers, KeyModifiers.Shift);
 
-    mouseSelecting := true;
-    dragOriginPx := event.pos;
-    dragOrigin := target;
-    // A double or triple press has already selected something, so the drag is
-    // live from the first frame rather than needing a cell of slack.
-    dragMoved := extending
-        || granularity != textedit_behavior.SelectionGranularity.Character;
+    if drag {
+        mouseSelecting := true;
+        dragOriginPx := event.pos;
+        dragOrigin := target;
+        // A double or triple press has already selected something, so the drag
+        // is live from the first frame rather than needing a cell of slack.
+        dragMoved := extending
+            || granularity != textedit_behavior.SelectionGranularity.Character;
+    }
 
     if rx.get(vimOn) {
         if !extending {
@@ -587,6 +591,42 @@ let onPointerDown = (event: ui_components.PointerEvent) => {
     } else {
         texteditBehavior.beginSelection(target, granularity);
     }
+};
+
+let onPointerDown = (event: ui_components.PointerEvent) => {
+    if scroll.isDragging() {
+        return;
+    }
+    dismissHover();
+    if event.button != ui_components.PointerButton.Left {
+        return;
+    }
+    // A finger's press may be a swipe that scrolls the file, so it leaves the
+    // caret alone; its tap or long press places it instead (below).
+    if !event.activatesOnPress() {
+        return;
+    }
+    selectFromPointer(event, event.detail, true);
+};
+
+// A finger's tap: a click without the drag -- the finger has already lifted.
+// A double tap selects the word, as a double click does.
+let onTap = (event: ui_components.PointerEvent) => {
+    if event.activatesOnPress() {
+        return;
+    }
+    selectFromPointer(event, event.detail, false);
+};
+
+// A finger's long press selects the word under it, and dragging the finger on
+// extends the selection word by word -- the touch screen's
+// double-click-and-drag.
+let onLongPress = (event: ui_components.PointerEvent) => {
+    if event.activatesOnPress() {
+        return;
+    }
+    dismissHover();
+    selectFromPointer(event, 2, true);
 };
 
 let onTextInput = (event: ui_components.TextInputEvent) => {
@@ -1191,6 +1231,8 @@ div [
     @blur=onBlur
     @wheel=onWheel
     @pointerdown=onPointerDown
+    @click=onTap
+    @contextmenu=onLongPress
     @textinput=onTextInput
     @keydown=onKeyDown
 {
@@ -1216,9 +1258,10 @@ div [
     div [absolute top-[caret.top] left-[caret.left]
         w-[caret.width]px h-[caret.height]px bg-[caretColor]] {}
 
-    // After the text, so it paints over it and wins the hit test.
+    // After the text, so it paints over it and wins the hit test. `touch-none`:
+    // a finger on the bar drags the thumb rather than panning the text.
     div if=[scroll.showsVerticalBar()] [
-            absolute top-[0] left-[scrollBarLeft] cursor-default
+            absolute top-[0] left-[scrollBarLeft] cursor-default touch-none
             w-[scroll.style.size]px h-[scroll.verticalTrackLength()]px
             bg-[scroll.style.trackColor]
         ]

@@ -193,6 +193,36 @@ export enum Cursor {
     ResizeNESW = 11,
 }
 
+// What a finger may do to this element by itself -- CSS's `touch-action`, with
+// the same vocabulary as Tailwind's `touch-*` utilities.
+//
+// A finger that lands and then travels further than a tap allows is either a
+// PAN, which scrolls whatever scroll container is under it (the browser's
+// default, and this toolkit's), or it is left alone and every move goes to the
+// element it pressed, the way a mouse drag does. Scrolling is the right default
+// for nearly everything and the wrong one for the few things a finger
+// manipulates directly: a drawing canvas, a slider, a splitter, a scrollbar's
+// thumb. Those say `touch-none` -- or `touch-pan-y` for a horizontal slider in
+// a vertical list, which should still let a vertical swipe scroll the list.
+//
+// A tap is a click and a long press is a context menu whatever this says; only
+// panning is governed by it, exactly as in CSS.
+//
+// Unlike CSS this is not an intersection over the ancestors: the element
+// nearest the finger that says anything decides, which is the same rule
+// `cursor` follows (see ui_components's resolveTouchAction) and lets a
+// scrollable list sit inside a `touch-none` canvas without further ceremony.
+export enum TouchAction {
+    // `touch-action: auto` -- pan in either direction.
+    Auto,
+    // `touch-action: none` -- never pan; the element gets the raw drag.
+    None,
+    // `touch-action: pan-x` / `pan-y` -- pan only when the swipe runs mostly
+    // along this axis; a swipe along the other one is a raw drag.
+    PanX,
+    PanY,
+}
+
 // Cursor crosses to the platform as a plain int (see the enum's comment).
 // Raw C for the same reason hasButton does it: there's no language-level
 // enum-to-int conversion.
@@ -507,6 +537,11 @@ export struct DivStyle {
     // and only the second one punches a hole in a titlebar around it.
     osTitlebar?: OSTitlebar;
 
+    // What a finger may do here -- see TouchAction. Unset means "whatever an
+    // ancestor says", and stays unset through ComputedDivStyle for the same
+    // reason `cursor` does.
+    touchAction?: TouchAction;
+
     borderWidth: BorderWidthValues = {};
     borderColor?: Color;
 
@@ -552,6 +587,7 @@ export struct DivStyle {
         this.anchorTarget = other.anchorTarget;
         this.cursor = other.cursor;
         this.osTitlebar = other.osTitlebar;
+        this.touchAction = other.touchAction;
         this.borderWidth = other.borderWidth;
         this.borderColor = other.borderColor;
         this.outlineWidth = other.outlineWidth;
@@ -582,6 +618,7 @@ export struct DivStyle {
             this.zIndex == other.zIndex &&
             this.cursor == other.cursor &&
             this.osTitlebar == other.osTitlebar &&
+            this.touchAction == other.touchAction &&
             this.fontFamily == other.fontFamily &&
             this.fontSize == other.fontSize &&
             this.fontWeight == other.fontWeight &&
@@ -676,6 +713,9 @@ export struct ComputedDivStyle {
     // does -- see DivStyle.osTitlebar.
     osTitlebar?: OSTitlebar;
 
+    // Optional after resolution too -- see DivStyle.touchAction.
+    touchAction?: TouchAction;
+
     borderWidth: BorderWidth = {};
     borderColor: Color = {};
 
@@ -713,6 +753,7 @@ export struct ComputedDivStyle {
         this.anchorTarget = other.anchorTarget;
         this.cursor = other.cursor;
         this.osTitlebar = other.osTitlebar;
+        this.touchAction = other.touchAction;
         this.borderWidth = other.borderWidth;
         this.borderColor = other.borderColor;
         this.outlineWidth = other.outlineWidth;
@@ -849,6 +890,7 @@ export struct ZIndexOp { value: int; }
 export struct AnchorToOp { target: AnchorTarget; }
 export struct CursorOp { value: Cursor; }
 export struct OSTitlebarOp { value: OSTitlebar; }
+export struct TouchActionOp { value: TouchAction; }
 export struct BorderWidthOp { value: real; }
 export struct BorderTopWidthOp { value: real; }
 export struct BorderRightWidthOp { value: real; }
@@ -891,7 +933,7 @@ export type DivStyleOp =
     | DirectionOp | CornerRadiusOp | RoundedOp | WidthOp | HeightOp | WidthLengthOp | HeightLengthOp
     | PositionOp | TopOp | RightOp | BottomOp | LeftOp
     | TranslateOp | TranslateXOp | TranslateYOp
-    | ZIndexOp | AnchorToOp | CursorOp | OSTitlebarOp
+    | ZIndexOp | AnchorToOp | CursorOp | OSTitlebarOp | TouchActionOp
     | BorderWidthOp | BorderTopWidthOp | BorderRightWidthOp | BorderBottomWidthOp | BorderLeftWidthOp
     | BorderColorOp | OutlineWidthOp | OutlineColorOp | OutlineOffsetOp | TextWrapOp
     | FontFamilyOp | FontSizeOp | FontSizeLengthOp | FontWeightOp | LineHeightOp | LetterSpacingOp
@@ -977,6 +1019,7 @@ export fn applyDivOp(working: mut stackref DivStyle, op: DivStyleOp) {
     else if op is AnchorToOp { working.anchorTarget = op.target; }
     else if op is CursorOp { working.cursor = op.value; }
     else if op is OSTitlebarOp { working.osTitlebar = op.value; }
+    else if op is TouchActionOp { working.touchAction = op.value; }
     else if op is BorderWidthOp {
         working.borderWidth.top = op.value;
         working.borderWidth.right = op.value;
@@ -1009,6 +1052,7 @@ export fn finishDivStyle(working: DivStyle): ComputedDivStyle {
         anchorTarget: working.anchorTarget,
         cursor: working.cursor,
         osTitlebar: working.osTitlebar,
+        touchAction: working.touchAction,
         borderWidth: resolveBorderWidth(working.borderWidth),
         fontFamily: working.fontFamily,
         fontSize: working.fontSize,
@@ -1075,6 +1119,7 @@ export fn overlayExplicitDiv(working: mut stackref DivStyle, raw: DivStyle) {
     if raw.anchorTarget { working.anchorTarget = raw.anchorTarget; }
     if raw.cursor { working.cursor = raw.cursor; }
     if raw.osTitlebar { working.osTitlebar = raw.osTitlebar; }
+    if raw.touchAction { working.touchAction = raw.touchAction; }
     if raw.borderColor { working.borderColor = raw.borderColor; }
     if raw.outlineWidth { working.outlineWidth = raw.outlineWidth; }
     if raw.outlineColor { working.outlineColor = raw.outlineColor; }

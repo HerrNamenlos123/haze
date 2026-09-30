@@ -1200,20 +1200,22 @@ ref struct EditorControls {
     // ── Wheel ───────────────────────────────────────────────────────
 
     fn wheel(e: ui_components.WheelEvent, local: Vec2) {
+        // In pixels whatever the event's deltaMode: a notch is panSpeed pixels.
+        let delta = e.pixels(panSpeed);
         if hasModifier(e.modifiers, KeyModifiers.Ctrl) {
             // SDL's wheel delta.y is positive scrolling away from the user
-            // (scroll up/forward) -- that zooms in.
-            this.view.zoomBy(math.pow(1.1, e.delta.y), local.x, local.y);
+            // (scroll up/forward) -- that zooms in, 10% a notch.
+            this.view.zoomBy(math.pow(1.1, delta.y / panSpeed), local.x, local.y);
         } else {
-            let dx = e.delta.x;
-            let dy = e.delta.y;
+            let dx = delta.x;
+            let dy = delta.y;
             if hasModifier(e.modifiers, KeyModifiers.Shift) {
                 dx = e.delta.y;
                 dy = e.delta.x;
             }
             // X and Y need opposite signs here: SDL reports y positive away
             // from the user and x positive to the right.
-            this.view.pan(-dx * panSpeed, dy * panSpeed);
+            this.view.pan(-dx, dy);
         }
         this.viewportChanged();
     }

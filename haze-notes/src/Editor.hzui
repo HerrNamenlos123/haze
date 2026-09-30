@@ -142,8 +142,11 @@ div else-if=[!rx.get(controls.documentOpen)] [w-grow h-grow justify-center items
     text [] ["No document is selected"]
 }
 
+// `touch-none`: the canvas reads fingers itself -- one pans the page, two
+// pinch-zoom it (see EditorControls) -- so the framework must not turn a
+// finger's drag into a scroll and cancel it.
 div else [w-grow h-grow] {
-    div [w-grow h-grow [rx.get(controls.resizeCursor)]?cursor-resize-n-w-s-e] ref=canvasAreaRef
+    div [w-grow h-grow touch-none [rx.get(controls.resizeCursor)]?cursor-resize-n-w-s-e] ref=canvasAreaRef
         focusable=[true]
         @pointerdown=onPointerDown
         @pointermove=onPointerMove

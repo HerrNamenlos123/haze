@@ -242,19 +242,39 @@ export ref struct ScrollState {
 
     // Feed a wheel event. Returns true if it was consumed, so a caller
     // can let the event bubble when this container is already at its end
-    // (matching how nested scroll areas behave in a browser).
+    // (matching how nested scroll areas behave in a browser) -- and should
+    // call stopPropagation() when it was, which is what latches a touch pan
+    // to this container and keeps a fling going (see WheelEvent).
+    //
+    // Honours the event's deltaMode: a notch scrolls wheelStep pixels, a
+    // finger's pan scrolls exactly as far as the finger moved.
+    mut fn handleWheelEvent(event: WheelEvent): bool {
+        return this.handleWheelPixels(event.pixels(this.wheelStep));
+    }
+
+    // The same, for a delta in wheel notches -- see handleWheelEvent, which
+    // is what a wheel handler should call.
     mut fn handleWheel(delta: Vec2): bool {
+        return this.handleWheelPixels(Vec2(delta.x * this.wheelStep, delta.y * this.wheelStep));
+    }
+
+    // The same, for a delta already in pixels, in the wheel's own convention
+    // (see WheelEvent): positive y scrolls towards the top, positive x towards
+    // the right.
+    mut fn handleWheelPixels(delta: Vec2): bool {
         let consumed = false;
         if this.canScrollY() && delta.y != 0.0 {
             let before = rx.get(this.scrollTop);
-            this.scrollBy(-delta.y * this.wheelStep, 0.0);
+            this.scrollBy(-delta.y, 0.0);
             if rx.get(this.scrollTop) != before {
                 consumed = true;
             }
         }
         if this.canScrollX() && delta.x != 0.0 {
             let before = rx.get(this.scrollLeft);
-            this.scrollBy(0.0, -delta.x * this.wheelStep);
+            // Not negated like y: the wheel's y counts towards the top, its x
+            // towards the right -- SDL's convention, and every platform's.
+            this.scrollBy(0.0, delta.x);
             if rx.get(this.scrollLeft) != before {
                 consumed = true;
             }

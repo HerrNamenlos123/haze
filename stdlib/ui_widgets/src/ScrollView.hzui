@@ -46,8 +46,11 @@ let thumbColor = computed(() => {
     return props.thumbColor;
 });
 
+// Handles a finger's pan too: that arrives as Pixel wheels, which
+// handleWheelEvent applies 1:1 so the content stays under the finger, and
+// stopping the event is what keeps the pan (and its fling) with this view.
 let onWheel = (event: WheelEvent) => {
-    if scroll.handleWheel(event.delta) {
+    if scroll.handleWheelEvent(event) {
         event.stopPropagation();
     }
 };
@@ -103,9 +106,10 @@ div [absolute top-[0.0 - rx.get(scroll.scrollTop)] left-[0] col w-[viewportWidth
 }
 
 // Last, so it paints over the content and wins the hit test against it.
+// `touch-none`: a finger on the bar drags the thumb, it does not pan.
 div if=[scroll.showsVerticalBar()] [absolute top-[0] left-[viewportWidth - props.barSize]
         w-[props.barSize]px h-[scroll.verticalTrackLength()]px
-        bg-[props.barColor] cursor-default]
+        bg-[props.barColor] cursor-default touch-none]
     @pointerdown=grabBar
 {
     div [absolute left-[0] top-[scroll.verticalThumbOffset()]

@@ -459,22 +459,48 @@ let keyPressed = (event: KeyboardEvent) => {
 // the caret and the selection exactly where they are, as a browser does --
 // right-clicking inside a selection must not destroy the thing the user is
 // about to act on.
-let pressed = (event: PointerEvent) => {
-    if !props.enabled { return; }
-    // Before the button check, and for EVERY button: a press inside this box
-    // is never an interaction "outside" the dismissable panel it may live in,
-    // whichever button it was. Only what the press DOES is primary-only.
-    event.stopPropagation();
-    if event.button != PointerButton.Left { return; }
+//
+// A finger does none of it on the way down: its press may be the start of a
+// swipe that scrolls whatever this box sits in, and must not move the caret
+// or start a selection until it turns out to be a tap (`tapped`) or a long
+// press (`longPressed`).
+let placeCaret = (event: PointerEvent, clicks: int): none => {
     let column = columnAtX(event.pos.x - textOriginX());
     let target: Vec2i = { x: column, y: 0 };
 
     if hasModifier(event.modifiers, KeyModifiers.Shift) {
         textedit.extendSelectionTo(target);
     } else {
-        textedit.beginSelection(target, textedit_behavior.granularityForClickCount(event.detail));
+        textedit.beginSelection(target, textedit_behavior.granularityForClickCount(clicks));
     }
     revealCaret();
+};
+
+let pressed = (event: PointerEvent) => {
+    if !props.enabled { return; }
+    // Before the button check, and for EVERY button: a press inside this box
+    // is never an interaction "outside" the dismissable panel it may live in,
+    // whichever button it was. Only what the press DOES is primary-only.
+    event.stopPropagation();
+    if event.button != PointerButton.Left || !event.activatesOnPress() { return; }
+    placeCaret(event, event.detail);
+    dragging := true;
+};
+
+// A finger's tap: what a press does, minus the drag -- the finger has already
+// lifted. A double tap selects the word, as a double click does.
+let tapped = (event: PointerEvent) => {
+    if !props.enabled || event.activatesOnPress() { return; }
+    placeCaret(event, event.detail);
+};
+
+// A finger's long press selects the word under it, and the finger can then
+// be dragged to extend the selection word by word -- the touch screen's
+// double-click-and-drag. The context menu the long press also asks for is
+// left to bubble on to whoever offers one.
+let longPressed = (event: PointerEvent) => {
+    if !props.enabled || event.activatesOnPress() { return; }
+    placeCaret(event, 2);
     dragging := true;
 };
 
@@ -553,6 +579,8 @@ let contentColor = computed(() => {
     ref=rootRef
     focusable=[props.enabled]
     @pointerdown=pressed
+    @click=tapped
+    @contextmenu=longPressed
     @keydown=keyPressed
     @textinput=typed
 

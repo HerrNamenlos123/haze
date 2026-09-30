@@ -59,7 +59,8 @@ div for=[item in list] key=[item.key] [
         bg-[item.key == props.activeKey ? props.tabBgActive : props.tabBg]
         text-color-[item.key == props.activeKey ? props.textColorActive : props.textColor]
     ]
-    @pointerdown=[(e: PointerEvent) => { emits.select(item.key); }]
+    @pointerdown=[(e: PointerEvent) => { if e.activatesOnPress() { emits.select(item.key); } }]
+    @click=[(e: PointerEvent) => { if !e.activatesOnPress() { emits.select(item.key); } }]
 {
     slot tab item=[item] active=[item.key == props.activeKey] {
         Codicon if=[item.icon] [] icon=[item.icon] {}

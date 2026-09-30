@@ -24,6 +24,7 @@ namespace ffi {
 	extern C fn haze_sdl_consumeWindowSizeChanged(window: SDL_Window): bool :: final;
 	extern C fn haze_sdl_windowHasFocus(window: SDL_Window): bool :: final;
 	extern C fn haze_sdl_windowHasMouseFocus(window: SDL_Window): bool :: final;
+	extern C fn haze_sdl_setTextInputActive(window: SDL_Window, active: bool): void :: final;
 
 	// Custom-titlebar / OS window integration -- see the block comment above
 	// haze_sdl_hit_test in sdl_impl.c. The region list is pushed one box at a
@@ -186,6 +187,10 @@ namespace ffi {
 
 	export fn windowHasMouseFocus(window: SDL_Window): bool {
 		return haze_sdl_windowHasMouseFocus(window);
+	}
+
+	export fn setTextInputActive(window: SDL_Window, active: bool) {
+		haze_sdl_setTextInputActive(window, active);
 	}
 
 	export fn enableWindowHitTest(window: SDL_Window): bool {
@@ -752,6 +757,18 @@ export ref struct Window {
 	// the pointer is somewhere else entirely.
 	fn hasMouseFocus(): bool {
 		return ffi.windowHasMouseFocus(this.handle);
+	}
+
+	// Turn text entry for this window on or off -- SDL_StartTextInput /
+	// SDL_StopTextInput. On while something that takes typed text has focus,
+	// off otherwise: that is what brings the on-screen keyboard up (and puts
+	// it away) on a touch device, and what keeps an input method from
+	// composing into a window with nowhere to put the text. A window starts
+	// with it on (see haze_sdl_createWindow), so a host that never calls this
+	// keeps the old always-on behavior. Key events arrive either way; only
+	// TextInputEvent depends on it.
+	fn setTextInputActive(active: bool) {
+		ffi.setTextInputActive(this.handle, active);
 	}
 
 	fn getProcAddress(): ((name: ccstr) -> cptr) {
