@@ -106,9 +106,11 @@ fn main(): int {
             nativeTitlebar: true,
         })?!;
 
+        // Embedded rather than loaded by path: an installed copy runs from
+        // wherever its launcher puts it, not from this repository.
         let font = a.gfx.fontRenderer.fs.addFont(
             "roboto-regular",
-            "test/Roboto-Regular.ttf"
+            embed.binary("../test/Roboto-Regular.ttf")
         );
 
         // Reused every frame by the two edge-queue callbacks below, so the

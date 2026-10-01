@@ -17,6 +17,10 @@ import {
   InternalError,
   UnreachableCode,
 } from "../shared/Errors";
+import {
+  type BuildSettings,
+  DEFAULT_BUILD_SETTINGS,
+} from "../shared/BuildSettings";
 import { HazeErrorCode } from "../shared/ErrorCodes";
 import { acquireBuildLock } from "../ModuleCompiler/Lock";
 import {
@@ -41,6 +45,7 @@ import {
   parseConfig,
 } from "../ModuleCompiler/ModuleCompiler";
 import { CLIPrinter } from "../ModuleCompiler/CLIPrinter";
+import { writeDesktopEntry } from "./DesktopEntry";
 
 const HAZE_BUILD_LOCKFILE = "build.lock";
 
@@ -95,19 +100,22 @@ export class ProjectCompiler {
   strip: boolean;
   showTiming: boolean;
   silent: boolean;
+  settings: BuildSettings;
 
   constructor(
     verbose = false,
     ignoreLock = false,
     strip = false,
     showTiming = false,
-    silent = false
+    silent = false,
+    settings: BuildSettings = DEFAULT_BUILD_SETTINGS
   ) {
     this.verbose = verbose;
     this.ignoreLock = ignoreLock;
     this.strip = strip;
     this.showTiming = showTiming;
     this.silent = silent;
+    this.settings = settings;
   }
 
   async getConfig(
@@ -207,7 +215,8 @@ export class ProjectCompiler {
           this.globalBuildDir,
           join(this.globalBuildDir, c.name),
           this.verbose,
-          this.strip
+          this.strip,
+          this.settings
         );
 
       // -----------------------------------------------------------------------
@@ -376,6 +385,16 @@ export class ProjectCompiler {
 
       if (!singleFilename) {
         await this.cache.save();
+      }
+      if (
+        success &&
+        config.moduleType === ModuleType.Executable &&
+        PLATFORM === Platform.Linux
+      ) {
+        writeDesktopEntry(
+          config,
+          join(this.globalBuildDir, config.name, "bin")
+        );
       }
       return success;
     } finally {

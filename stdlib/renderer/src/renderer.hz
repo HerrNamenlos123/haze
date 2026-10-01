@@ -605,7 +605,9 @@ export opaque ref struct Context {
         });
         let postEffectPreamble = embed.text("resources/posteffect.wgsl");
 
-        let shadercode = embed.watchText("resources/shaders.wgsl");
+        // Watching is a debug feature: a build without it must not load shader
+        // code from a path on disk at runtime.
+        let shadercode = embed.watchTextIf(build.debug, "resources/shaders.wgsl");
         let shader = rx.computed(() => {
             return options.device.createShaderModule({
                 code: shadercode,

@@ -7,6 +7,14 @@ license = "MIT"
 authors = []
 type = "exe"
 
+# How the app presents itself on the desktop (its .desktop entry). The compiler
+# does not read this table.
+[app]
+appId = "io.github.herrnamenlos123.HazeNotes"
+displayName = "Haze Notes"
+icon = "../resources/haze-logo.png"
+categories = ["Office"]
+
 [dependencies]
 # Core runtime and UI framework stuff
 ui_components = { path = "../stdlib/ui_components" }

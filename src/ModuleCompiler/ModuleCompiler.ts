@@ -7,6 +7,7 @@ import fs, {
   existsSync,
   mkdirSync,
   readdirSync,
+  readFileSync,
   realpathSync,
   rmSync,
   statSync,
@@ -29,6 +30,13 @@ import { Parser } from "../Parser/Parser";
 import { releaseNativeParserBinary } from "../Parser/ParserMode";
 import { PluginHost } from "../Plugins/PluginInterface";
 import type { ASTRoot } from "../shared/AST";
+import {
+  BUILD_SETTINGS_FILENAME,
+  type BuildSettings,
+  buildSettingsCacheKey,
+  buildSettingsSource,
+  DEFAULT_BUILD_SETTINGS,
+} from "../shared/BuildSettings";
 import { Semantic } from "../Semantic/SemanticTypes";
 import { ExportCollectedSymbols as ExportSymbols } from "../SymbolCollection/Export";
 import {
@@ -942,7 +950,8 @@ export class ModuleCompiler {
     public hazeWorkspaceDirectory: string,
     public moduleDir: string,
     public verbose: boolean,
-    public strip: boolean
+    public strip: boolean,
+    public settings: BuildSettings = DEFAULT_BUILD_SETTINGS
   ) {
     this.cc = makeCollectionContext(this.config);
     this.cc.moduleCompiler = this;
@@ -1536,6 +1545,24 @@ export class ModuleCompiler {
     return [...files];
   }
 
+  /**
+   * The build settings this module's code sees (src/shared/BuildSettings.ts),
+   * as a source file in its autogen directory. Rewritten only when they
+   * change, because the build cache goes by mtime.
+   */
+  private async writeBuildSettingsSource() {
+    const file = join(
+      this.getModuleAutogenDir(this.config.name),
+      BUILD_SETTINGS_FILENAME
+    );
+    const source = buildSettingsSource(this.settings);
+    if (existsSync(file) && readFileSync(file, "utf8") === source) {
+      return;
+    }
+    await mkdir(dirname(file), { recursive: true });
+    await writeFile(file, source);
+  }
+
   async addProjectSourceFiles() {
     let mode = ECollectionMode.WrapIntoModuleNamespace;
     if (this.config.name === HAZE_STDLIB_NAME) {
@@ -1731,7 +1758,17 @@ export class ModuleCompiler {
 
     const genHandle = this.printer?.beginGenerator(this.config.name, gen.name);
     const logChunks: string[] = [];
-    const project = new ProjectCompiler(false, true, false, false, true);
+    // Same settings as the build running this generator: the generator's own
+    // build shares this workspace, and with other settings it would rebuild
+    // the stdlib the outer build is in the middle of using.
+    const project = new ProjectCompiler(
+      false,
+      true,
+      false,
+      false,
+      true,
+      this.settings
+    );
     const moduleRootDir = this.currentModuleRootDir;
     const printer = this.printer;
     let failed = false;
@@ -2091,7 +2128,12 @@ export class ModuleCompiler {
     }
 
     compilerFlags.addAll("-std=c11");
+    // Kept in release builds too: panics and the profiler resolve file:line
+    // from it at runtime.
     compilerFlags.addAll("-g");
+    if (this.settings.optimize) {
+      compilerFlags.addAll("-O2");
+    }
 
     const [
       archives,
@@ -2304,9 +2346,16 @@ export class ModuleCompiler {
           buildCache.load();
 
           const compilerFingerprint = this.computeCompilerFingerprint();
-          const compilerKey = compilerFingerprint
-            ? `${version}:${compilerFingerprint}`
-            : `${version}`;
+          // The build settings are part of the key: builds with different
+          // settings share this workspace, so a module built with one set is
+          // never reused by a build with another, and changing them rebuilds
+          // everything.
+          const compilerKey =
+            (compilerFingerprint
+              ? `${version}:${compilerFingerprint}`
+              : `${version}`) + buildSettingsCacheKey(this.settings);
+
+          await this.writeBuildSettingsSource();
           const compilerKeyChanged =
             buildCache.getModuleCompilerKey(this.config.name) !== compilerKey;
           const forceFullRebuild = fullRebuild === true || compilerKeyChanged;

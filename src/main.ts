@@ -4,6 +4,7 @@ import pkg from "../package.json" with { type: "json" };
 import { startLsp } from "./lsp";
 import { getFile } from "./ModuleCompiler/ModuleCompiler";
 import { ProjectCompiler } from "./ProjectCompiler/ProjectCompiler";
+import { buildSettingsFromFlags } from "./shared/BuildSettings";
 import { GeneralError, SilentError } from "./shared/Errors";
 import {
   type ParserMode,
@@ -43,6 +44,29 @@ function addProfilingArguments(subparser: ArgumentParser) {
     action: "store_false",
     dest: "profileMemoryStacktraces",
     help: "Disable stack traces for instrumented allocations (cheaper than --no-profile-memory, still records sizes)",
+  });
+}
+
+// The flags behind BuildSettings, shared by every command that builds. They are
+// independent so they combine: --release is a preset, and --debug/--no-debug
+// override the part of it that turns debug features off.
+function addBuildSettingsArguments(subparser: ArgumentParser) {
+  subparser.add_argument("--release", {
+    action: "store_true",
+    dest: "release",
+    help: "Optimized build with debug features off (combine with --debug to keep them)",
+  });
+  subparser.add_argument("--debug", {
+    action: "store_const",
+    const: true,
+    dest: "debug",
+    help: "Keep debug features on (e.g. hot reload of embedded files), even with --release",
+  });
+  subparser.add_argument("--no-debug", {
+    action: "store_const",
+    const: false,
+    dest: "debug",
+    help: "Turn debug features off without optimizing",
   });
 }
 
@@ -115,6 +139,7 @@ async function main(): Promise<number> {
     dest: "strip",
     help: "Strip the final executable after building",
   });
+  addBuildSettingsArguments(build_parser);
   build_parser.add_argument("--show-timing", {
     action: "store_true",
     dest: "showTiming",
@@ -179,6 +204,7 @@ async function main(): Promise<number> {
     dest: "strip",
     help: "Strip the final executable after building",
   });
+  addBuildSettingsArguments(run_parser);
   run_parser.add_argument("--parser", {
     dest: "parser",
     choices: ["antlr", "native", "assert"],
@@ -232,6 +258,7 @@ async function main(): Promise<number> {
     dest: "strip",
     help: "Strip the final executable after building",
   });
+  addBuildSettingsArguments(exec_parser);
   exec_parser.add_argument("--show-timing", {
     action: "store_true",
     dest: "showTiming",
@@ -285,7 +312,8 @@ async function main(): Promise<number> {
         Boolean(args.ignoreLock),
         Boolean(args.strip),
         Boolean(args.showTiming),
-        Boolean(args.quiet)
+        Boolean(args.quiet),
+        buildSettingsFromFlags(Boolean(args.release), args.debug)
       );
 
       if (

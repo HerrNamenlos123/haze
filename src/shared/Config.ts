@@ -173,6 +173,16 @@ export type GeneratorGraphNode = {
   dependsOn: string[];
 };
 
+// [app] -- how an executable presents itself on the desktop. The compiler
+// turns it into a desktop entry next to the binary (see DesktopEntry.ts).
+export type AppConfig = {
+  appId: string;
+  displayName: string;
+  // Absolute; written relative to the haze.toml.
+  icon?: string;
+  categories: string[];
+};
+
 export type ModuleConfig = {
   name: string;
   // 8-character mixed-case alphanumeric module identity, distinct from
@@ -214,6 +224,7 @@ export type ModuleConfig = {
   platform: PlatformString;
   includeSourceloc: boolean;
   generators: GeneratorConfig[];
+  app?: AppConfig;
 };
 
 export type PlatformString = "linux-x64" | "win32-x64";
@@ -699,6 +710,36 @@ export class ConfigParser {
     return plugins;
   }
 
+  getApp(toml: any): AppConfig | undefined {
+    const app = toml["app"];
+    if (app === undefined) {
+      return;
+    }
+    if (typeof app !== "object" || app === null || Array.isArray(app)) {
+      throw new GeneralError(
+        `Field 'app' in file ${this.configPath} must be a table`
+      );
+    }
+    const appId = this.getString(app, "appId");
+    // It names the desktop entry file, and the desktop matches windows to it.
+    if (!/^[A-Za-z0-9_.-]+$/.test(appId)) {
+      throw new GeneralError(
+        `Field 'appId' in file ${this.configPath} may only contain [A-Za-z0-9_.-], ` +
+          `usually in reverse-DNS form like 'io.github.user.AppName' (got '${appId}')`
+      );
+    }
+    const icon = this.getOptionalString(app, "icon");
+    return {
+      appId: appId,
+      displayName: this.getString(app, "displayName"),
+      icon:
+        icon !== undefined
+          ? resolve(dirname(this.configPath), icon)
+          : undefined,
+      categories: this.getOptionalStringArray(app, "categories") ?? [],
+    };
+  }
+
   static readonly MODULE_ID_PATTERN = /^[0-9A-Za-z]{8}$/;
 
   // Validates an existing `id` against the exact schema, or generates and
@@ -826,6 +867,7 @@ export class ConfigParser {
       platform: getCurrentPlatform(),
       includeSourceloc: sourceloc ?? true,
       generators: [],
+      app: this.getApp(toml),
     };
 
     const linker = toml["linker"] as any;
