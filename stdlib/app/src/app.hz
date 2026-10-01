@@ -125,7 +125,11 @@ export enum PointerType { Mouse, Pen, Touch }
 //
 // The fields after `pos` follow the DOM's PointerEvent, and default to the
 // mouse so an edge built from the old three fields still means what it did.
-export ref struct PointerEdge {
+//
+// A value, stored inline in the queue: the queue keeps its buffer from frame
+// to frame, so queuing an edge allocates nothing. As a `ref struct` every
+// mouse move and every pen sample was a heap object of its own.
+export struct PointerEdge {
     // matches sdl.MouseButtonEvent.button: 0=left (a pen's tip, a finger),
     // 1=middle, 2=right; 5 is a pen's eraser end, as in the DOM. -1 on a move.
     button: int;
@@ -485,7 +489,10 @@ export opaque ref struct App {
         if n > 0 {
             let last = this._pointerEdgeQueue[n - 1];
             if last.kind == PointerEdgeKind.Moved && last.pointerType == PointerType.Mouse {
+                // Whole-element assignment: `last` is a copy of a value-typed
+                // element, so writing to it alone would not reach the queue.
                 last.pos = pos;
+                this._pointerEdgeQueue[n - 1] = last;
                 return;
             }
         }

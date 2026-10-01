@@ -1592,7 +1592,10 @@ export enum PointerEdgeKind { Pressed, Released, Moved, Cancelled }
 // For the mouse, the buttons of each event are replayed from the held levels
 // (see process()) and `buttons` here is ignored; a pen or a finger carries its
 // own. See PointerEvent for how pen and touch pointers are captured.
-export ref struct PointerEdge {
+//
+// A value, like PendingPointerEvent: a host fills a buffer it keeps from frame
+// to frame, so an edge costs no allocation of its own.
+export struct PointerEdge {
     button: PointerButton;
     kind: PointerEdgeKind;
     pos: Vec2;
