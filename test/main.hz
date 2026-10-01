@@ -30,8 +30,13 @@ fn main(): int {
             if a.resized {
                 runtime.resize(a.windowState);
             }
-            runtime.render(frame, a.canvas);
-            frame.present();
+            // Only present what was actually drawn -- see Runtime.render.
+            if runtime.render(frame, a.canvas) {
+                frame.present();
+            }
+            else {
+                a.idle();
+            }
         }
 
         a.destroy();

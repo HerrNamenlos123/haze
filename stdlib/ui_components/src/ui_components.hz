@@ -711,6 +711,28 @@ export type CanvasDrawFn = (r: mut renderer.gfx.Renderer) => void;
 //
 // Returns whether it drew, i.e. whether the canvas has a new picture to be
 // committed from blank.
+// Every canvas element reachable in the tree, for UIContext._canvases.
+//
+// Skips `display: none` subtrees for the same reason
+// ui_layout.collectClipsRecursive does: a hidden canvas is never laid out and
+// so never drawn, so an invalidated one sitting in a hidden subtree would
+// report "owed a draw" on every single frame and never get one -- an idle UI
+// pinned awake forever by something the user cannot even see.
+fn collectCanvasesRecursive(element: ui_elements.Element, out: mut []ui_elements.CanvasElement): void :: final {
+    if ui_elements.isDisplayNone(element) {
+        return;
+    }
+    if element is ui_elements.CanvasElement {
+        out.push(element);
+        return;
+    }
+    if element is ui_elements.DivElement {
+        for child in element.children {
+            collectCanvasesRecursive(child, out);
+        }
+    }
+}
+
 export fn drawCanvasIfNeeded(element: ui_elements.CanvasElement, context: mut renderer.gfx.Renderer, contentLost: bool): bool {
     let data = runtimeDataOf(element);
     if !data.drawFn {
@@ -1008,6 +1030,25 @@ struct CanvasLookup {
 // a genuine miss, to compute and permanently store this new element's own
 // full path; an existing element's path is read back off its cache entry
 // instead of being recomputed.
+// An element's own declaration id, across the union. Used to tell whether a
+// child slot is being filled with the SAME element as last frame: ids are
+// unique within one parent (getOrCreate* keys its cache on them, and asserts
+// when an id is reused for a different kind), so equal ids at the same index
+// means the same element, and differing ids mean the children were reordered
+// or replaced. Compared instead of the elements themselves because `==` on a
+// ref struct compares CONTENTS recursively -- which would be both wrong
+// (two distinct elements can hold equal data) and far too expensive to do per
+// child per frame.
+fn elementDeclarationId(element: ui_elements.Element): int {
+    if element is ui_elements.DivElement {
+        return element.id;
+    }
+    if element is ui_elements.TextElement {
+        return element.id;
+    }
+    return element.id;
+}
+
 fn getOrCreateDiv(parent: mut ui_elements.DivElement, id: int, parentPath: str): DivLookup {
     let parentData = runtimeDataOf(parent);
     for n in parentData.childElements {
@@ -2063,6 +2104,46 @@ export opaque ref struct UIContext {
     // Whether mousePos above is a real position yet. Sampled once per
     // frame alongside it, so everything in one frame agrees.
     mousePosKnown: bool = true;
+
+    // ── What this frame actually CHANGED (the render gate) ────────────────
+    //
+    // The frame gate in process() answers "is there anything worth looking
+    // at". These two answer the finer question a renderer actually needs:
+    // "and having looked, did anything come out different from last frame".
+    // The two are not the same. A frame that opens the gate because the
+    // pointer moved, re-runs a template, finds the same hover target and
+    // writes back byte-identical styles has changed NOTHING, and must not
+    // cost a layout solve and a full redraw just for having been examined.
+    //
+    // Accumulated during the build pass by the three element hooks
+    // (divImpl/textImpl/canvasImpl, via ui_styling's layout-vs-paint
+    // classification) and by the tree-shape mutators (attachChild /
+    // truncateChildrenToCursor). Read by the host after process() returns,
+    // through frameNeedsLayout()/frameNeedsPaint().
+    //
+    // `layout` means the layout engine has to re-solve the tree. `paint`
+    // means every box is still exactly where it was and only a colour on it
+    // differs. Layout implies paint (a re-solve repaints by definition), so
+    // the paint flag is only consulted when the layout flag is clear.
+    //
+    // Both start true: the first frame has neither a solved layout nor a
+    // painted image to reuse.
+    _layoutDirty: bool = true;
+    _paintDirty: bool = true;
+
+    // Every canvas element currently in the tree. A canvas is the one thing
+    // that can need redrawing with no style and no tree change at all -- its
+    // drawFn read a reactive value that was written, or something called
+    // invalidate() -- and its draw happens *inside* the render pass, so a
+    // skipped frame would silently drop it. needsUpdate() therefore has to be
+    // able to ask every canvas whether it is owed a draw.
+    //
+    // Rebuilt by a walk of the element tree on frames that already do work,
+    // NOT by canvasImpl: a memoized component does not re-run its template
+    // every frame, so a list rebuilt from the hook would quietly lose that
+    // component's canvas. On a gated-out frame the list is reused, which is
+    // correct because the tree it describes cannot have changed.
+    _canvases: mut []ui_elements.CanvasElement = [];
 
     struct UIContextArgs {
         ui: ((ui: UIContext) => none);
@@ -3873,6 +3954,11 @@ export opaque ref struct UIContext {
             || touchTimerDue;
 
         if !hasInput && !this.needsUpdate() {
+            // Nothing worth looking at, so by definition nothing changed: the
+            // host can reuse last frame's solved layout AND last frame's
+            // image, and need not present at all. See _layoutDirty.
+            this._layoutDirty = false;
+            this._paintDirty = false;
             if !this.rootComponent {
                 return none;
             }
@@ -3889,6 +3975,20 @@ export opaque ref struct UIContext {
         // will produce fresh boxes and the OS titlebar regions are worth
         // re-publishing once it has. See syncWindowRegions.
         this._workedThisFrame = true;
+
+        // Everything from here on -- handlers, watchers, the template pass and
+        // the style writes it makes -- is what decides whether anything
+        // actually came out DIFFERENT this frame. Start from "nothing did" and
+        // let that work prove otherwise (classifyDivStyleChange, attachChild,
+        // truncateChildrenToCursor).
+        //
+        // Only once there is a tree to compare against: on the very first
+        // frame rootComponent is still null, there is no previous layout or
+        // image to reuse, and both flags must stay at their initial `true`.
+        if this.rootComponent {
+            this._layoutDirty = false;
+            this._paintDirty = false;
+        }
 
         // HIT TESTING & EVENT SCHEDULING
         //
@@ -4342,6 +4442,10 @@ export opaque ref struct UIContext {
         if !this.rootComponent {
             return none;
         }
+        // Refreshed here, on a frame that already did the work, so that an
+        // idle frame's needsUpdate() can ask every live canvas whether it is
+        // owed a draw without walking anything. See _canvases.
+        this.refreshCanvasRegistry();
         return this.rootComponent.rootElement;
     }
 
@@ -4394,8 +4498,110 @@ export opaque ref struct UIContext {
     //
     // Purely a query: it evaluates nothing, subscribes to nothing, and
     // clears nothing, so a host may call it as often as it likes.
+    // ── Frame classification (see _layoutDirty / _paintDirty) ─────────────
+
+    // Classify a div/canvas style write BEFORE it lands. Short-circuits once
+    // the layout flag is set: that is already the strongest answer, so there
+    // is nothing further this frame can learn.
+    fn classifyDivStyleChange(old: ui_styling.ComputedDivStyle, next: ui_styling.ComputedDivStyle) {
+        if this._layoutDirty {
+            return;
+        }
+        if ui_styling.divLayoutAffectingDiffers(old, next) {
+            this._layoutDirty = true;
+            return;
+        }
+        // A background crossing full transparency changes the SET of draw
+        // commands the engine emits, not just a colour inside one (Clay emits
+        // no rectangle at all for alpha 0), so it cannot be served by
+        // repainting a cached layout. A border width crossing zero is the
+        // same hazard, and is already covered: borderWidth is
+        // layout-affecting outright.
+        if (old.backgroundColor.a > 0.0) != (next.backgroundColor.a > 0.0) {
+            this._layoutDirty = true;
+            return;
+        }
+        if !this._paintDirty && ui_styling.divPaintAffectingDiffers(old, next) {
+            this._paintDirty = true;
+        }
+    }
+
+    fn classifyTextStyleChange(old: ui_styling.ComputedTextStyle, next: ui_styling.ComputedTextStyle) {
+        if this._layoutDirty {
+            return;
+        }
+        if ui_styling.textLayoutAffectingDiffers(old, next) {
+            this._layoutDirty = true;
+            return;
+        }
+        if !this._paintDirty && ui_styling.textPaintAffectingDiffers(old, next) {
+            this._paintDirty = true;
+        }
+    }
+
+    // Does this frame need the layout engine re-run? Only meaningful once
+    // process() has returned for this frame.
+    fn frameNeedsLayout(): bool {
+        return this._layoutDirty;
+    }
+
+    // Does this frame need painting at all? Only meaningful once process()
+    // has returned. A re-solve repaints by definition, hence the OR.
+    fn frameNeedsPaint(): bool {
+        return this._layoutDirty || this._paintDirty;
+    }
+
+    // Force a full layout pass, for a layout input that is not an element
+    // style at all: today the viewport size and a newly registered font (see
+    // ui_runtime.Runtime.resize / provideFont), both of which change what the
+    // engine computes without any element having changed.
+    fn requestLayout(): none {
+        this._layoutDirty = true;
+        ui_requestUpdate();
+    }
+
+    // Whether any canvas in the tree is owed a draw -- see _canvases. Asked
+    // by needsUpdate(), because a canvas draws *inside* the render pass, so a
+    // frame skipped for being idle would drop the draw silently and the
+    // canvas would stay stale until something unrelated happened.
+    fn anyCanvasNeedsDraw(): bool {
+        for element in this._canvases {
+            let data = runtimeDataOf(element);
+            if data.redrawRequested {
+                return true;
+            }
+            let effect = data.drawEffect;
+            if effect && rx.isDirty(effect) {
+                return true;
+            }
+            // Drawn into directly from its ref, outside any frame: that work
+            // is sitting in the canvas's own Renderer waiting to be committed
+            // (the same question ui_runtime asks before committing it).
+            let handle = data.handle;
+            if handle && handle.get<CanvasHandle>().context.hasPendingWork() {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // Refreshed from the tree on frames that already do work, never from
+    // canvasImpl -- see _canvases for why the hook would lose a memoized
+    // component's canvas.
+    fn refreshCanvasRegistry(): none {
+        this._canvases.clear();
+        if this.rootComponent {
+            collectCanvasesRecursive(this.rootComponent.rootElement, this._canvases);
+        }
+    }
+
     fn needsUpdate(): bool {
         if !this.rootComponent {
+            return true;
+        }
+        // A canvas owed a draw is a reason to run a frame even when nothing
+        // in the tree changed at all.
+        if this.anyCanvasNeedsDraw() {
             return true;
         }
         if ui_updateRequested() {
@@ -4476,8 +4682,16 @@ export opaque ref struct UIContext {
         let parent = this.renderStack[top].currentParent;
         let childIndex = this.renderStack[top].childIndex;
         if childIndex < parent.children.length {
+            // Same slot, different element: the children were reordered or one
+            // was swapped for another. The tree's shape changed, so the layout
+            // has to be re-solved -- no amount of repainting covers it.
+            if !this._layoutDirty && elementDeclarationId(parent.children[childIndex]) != elementDeclarationId(element) {
+                this._layoutDirty = true;
+            }
             parent.children[childIndex] = element;
         } else {
+            // The tree grew a node it did not have last frame.
+            this._layoutDirty = true;
             parent.children.push(element);
         }
         this.renderStack[top].childIndex = childIndex + 1;
@@ -4489,6 +4703,10 @@ export opaque ref struct UIContext {
     // didn't get re-declared this time (e.g. a conditional that's now
     // false). A no-op, no-allocation call when nothing was actually removed.
     fn truncateChildrenToCursor(parent: mut ui_elements.DivElement, cursor: int): void {
+        // Losing a node is a shape change, same as gaining one (attachChild).
+        if parent.children.length > cursor {
+            this._layoutDirty = true;
+        }
         while parent.children.length > cursor {
             parent.children.pop();
         }
@@ -5108,6 +5326,7 @@ export opaque ref struct UIContext {
         let element = lookup.element;
         let idPath = lookup.path;
 
+        this.classifyDivStyleChange(element.style, style);
         element.style := style;
         this.applyDivProps(element, props);
 
@@ -5145,6 +5364,11 @@ export opaque ref struct UIContext {
         let parent = this.getCurrentParent();
         let element = getOrCreateText(parent, props.id, this.getCurrentIdPath()).element;
 
+        // The string itself is a layout input: it is what gets measured.
+        if !this._layoutDirty && element.text != props.text {
+            this._layoutDirty = true;
+        }
+        this.classifyTextStyleChange(element.style, style);
         element.text := props.text;
         element.style := style;
 
@@ -5195,6 +5419,7 @@ export opaque ref struct UIContext {
         let parent = this.getCurrentParent();
         let element = getOrCreateCanvas(parent, props.id, this.getCurrentIdPath()).element;
 
+        this.classifyDivStyleChange(element.style, style);
         element.style := style;
 
         // attach into current parent
@@ -5361,6 +5586,13 @@ export ref struct CanvasWrapper {
     // no call; reading them in the drawFn is enough (see drawCanvasIfNeeded).
     fn invalidate(): void {
         runtimeDataOf(this._element).redrawRequested = true;
+        // A redraw request is exactly the state the reactive graph cannot see,
+        // so it has to open the frame gate itself. Without this an otherwise
+        // idle UI would never run the frame that would honour the request, and
+        // the canvas would sit stale until something unrelated happened to
+        // wake the UI up -- which used to be masked by the host rendering
+        // every frame unconditionally.
+        ui_requestUpdate();
     }
 
     fn hover(): bool {

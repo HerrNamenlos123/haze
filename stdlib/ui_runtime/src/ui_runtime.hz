@@ -123,7 +123,12 @@ export opaque ref struct Runtime {
         // anything, and an otherwise idle UI would sit at its old size until
         // something unrelated happened. Ask for the one frame explicitly.
         // See ui_components.UIContext.needsUpdate.
-        this.ui.requestUpdate();
+        //
+        // requestLayout rather than requestUpdate: the viewport is a layout
+        // input, so this frame must re-SOLVE, not just repaint. No element
+        // style changed, so nothing else would have reported the layout dirty
+        // and the render gate would skip the very frame that resizes.
+        this.ui.requestLayout();
     }
 
     // Runs this frame's component tree + flexbox layout, drawing the result
@@ -132,7 +137,14 @@ export opaque ref struct Runtime {
     // once, after however many Canvases -- screen or offscreen -- it draws
     // this way), since those are renderer-module concerns this runtime has
     // no opinion about.
-    fn render(frame: mut renderer.gfx.Frame, canvas: mut renderer.gfx.Canvas) {
+    // Returns whether this frame drew anything -- i.e. whether the caller must
+    // still present(). False means the UI was idle: last frame's layout still
+    // holds, the image already on screen is still correct, and this call
+    // committed nothing and acquired nothing. The caller must then NOT present
+    // (there is no acquired swapchain image to present) and must idle instead,
+    // because the vsync wait it would otherwise have blocked on lives inside
+    // the commit this skipped -- see app.App.idle.
+    fn render(frame: mut renderer.gfx.Frame, canvas: mut renderer.gfx.Canvas): bool {
         if !this.screenRenderer {
             this.screenRenderer = renderer.gfx.Renderer(frame, canvas);
         }
@@ -147,7 +159,29 @@ export opaque ref struct Runtime {
         if !tree {
             r.commit();
             this.currentFrame = none;
-            return;
+            return true;
+        }
+
+        // THE RENDER GATE.
+        //
+        // The component system has just examined the tree and reports that
+        // nothing came out different: no node was created, destroyed, reordered
+        // or replaced, no layout-affecting attribute changed, no colour
+        // changed, and no canvas is owed a draw (see
+        // ui_components.UIContext.frameNeedsPaint). So neither the solved
+        // layout nor the painted image can have changed, and re-deriving either
+        // would produce exactly what is already on screen.
+        //
+        // Skipping the COMMIT, not just the draw calls, is what makes this
+        // actually free: a commit with zero primitives still acquires the
+        // swapchain image and encodes a full clearing render pass (see
+        // renderer.gfx.Renderer.commit), which is most of what an idle frame
+        // used to cost on the GPU. Acquiring nothing is also what makes it safe
+        // to skip the present -- there is no acquire/present pair to leave
+        // half-finished, and nothing is held across a later resize.
+        if !this.ui.frameNeedsPaint() {
+            this.currentFrame = none;
+            return false;
         }
 
         // Bound methods, deliberately not lambdas: see currentFrame. Every
@@ -170,6 +204,7 @@ export opaque ref struct Runtime {
 
         this.currentFrame = none;
         r.commit();
+        return true;
     }
 
     // ── render callbacks (see render()) ──────────────────────────────────

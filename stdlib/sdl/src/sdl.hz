@@ -16,6 +16,7 @@ namespace ffi {
 	extern C fn haze_sdl_windowShouldClose(window: SDL_Window): bool :: final;
 	extern C fn haze_sdl_setWindowShouldClose(window: SDL_Window, value: bool): void :: final;
 	extern C fn haze_sdl_pollEvents(): void :: final;
+	extern C fn haze_sdl_waitEventTimeout(timeoutMs: i32): void :: final;
 	extern C fn haze_sdl_makeContextCurrent(window: SDL_Window): bool :: final;
 	extern C fn haze_sdl_swapBuffers(window: SDL_Window): void :: final;
 	extern C fn haze_sdl_swapInterval(interval: i32): bool :: final;
@@ -151,6 +152,10 @@ namespace ffi {
 
 	export fn pollEvents() {
 		haze_sdl_pollEvents();
+	}
+
+	export fn waitEventTimeout(timeoutMs: i32) {
+		haze_sdl_waitEventTimeout(timeoutMs);
 	}
 
 	export fn makeContextCurrent(window: SDL_Window): bool {
@@ -1104,6 +1109,14 @@ export fn createWindow(config: WindowConfig): Result<mut Window, str> {
 
 export fn pollEvents() {
 	ffi.pollEvents();
+}
+
+// Block until an event arrives or `timeoutMs` elapses, leaving whatever
+// arrived in the queue for the next pollEvents(). For a host that skipped
+// rendering a frame and therefore has nothing to block on -- see
+// haze_sdl_waitEventTimeout in sdl_impl.c.
+export fn waitEventTimeout(timeoutMs: i32) {
+	ffi.waitEventTimeout(timeoutMs);
 }
 
 export fn getTime(): real {

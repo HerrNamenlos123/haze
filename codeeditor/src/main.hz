@@ -244,8 +244,19 @@ fn main(): int {
             if a.resized {
                 runtime.resize(a.windowState);
             }
-            runtime.render(frame, a.canvas);
-            frame.present();
+            // Only present what was actually drawn. An idle frame commits
+            // nothing and acquires no swapchain image, so there is nothing to
+            // present and the vsync wait that normally paces this loop was
+            // skipped along with it -- idle() takes its place. Everything
+            // below (the highlight engine, the focus/autosave edges, the LSP
+            // pumps) still runs on every tick exactly as before, and idle()
+            // wakes immediately on input, so none of it is delayed.
+            if runtime.render(frame, a.canvas) {
+                frame.present();
+            }
+            else {
+                a.idle();
+            }
 
             let highlightResult = getState().highlightEngine.loop();
             if highlightResult {

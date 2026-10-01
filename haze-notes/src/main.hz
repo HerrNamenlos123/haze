@@ -201,8 +201,17 @@ fn main(): int {
             if a.resized {
                 runtime.resize(a.windowState);
             }
-            runtime.render(frame, a.canvas);
-            frame.present();
+            // Only present what was actually drawn. render() returns false
+            // when the UI was idle: it committed nothing and acquired no
+            // swapchain image, so there is nothing to present -- and the vsync
+            // wait that normally paces this loop lives inside that skipped
+            // commit, so the tick has to be paced explicitly instead.
+            if runtime.render(frame, a.canvas) {
+                frame.present();
+            }
+            else {
+                a.idle();
+            }
 
             if onFrameHandlers {
                 for handler in onFrameHandlers {

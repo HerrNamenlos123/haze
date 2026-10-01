@@ -788,6 +788,126 @@ export struct ComputedTextStyle {
     }
 }
 
+// ── Layout-vs-paint change classification ────────────────────────────────
+//
+// Which fields of a resolved style can change WHAT. The component system asks
+// these once per element per frame to decide whether a changed element needs a
+// new LAYOUT pass (the layout engine has to re-solve the tree) or only a new
+// PAINT (every box is still exactly where it was; something on it is just a
+// different colour). Separating the two is what lets a UI that is only
+// recolouring -- a hover highlight, a focus ring, a blinking caret -- reuse the
+// cached layout instead of re-declaring and re-solving the whole tree, and what
+// lets a UI where NEITHER changed skip the frame altogether.
+//
+// A field is LAYOUT-affecting if ui_layout feeds it to the layout engine as
+// part of the element declaration -- i.e. anything the solver reads. That
+// includes three fields CSS would call purely visual, because Clay still bakes
+// them into the declared element (see ui_layout.resolveFloating /
+// processTreeElementInFlow): `translate` and `zIndex` become a floating config,
+// and `borderWidth` is declared even though it never displaces children.
+// Font fields are layout-affecting too: they cascade down to text elements and
+// change what text MEASURES (see pushCascadingStack).
+//
+// A field is PAINT-affecting if it is only ever read when turning an
+// already-solved box into a draw call: the background, the corner radius, the
+// border colour, the outline triple (drawn post-layout by drawOutline, outside
+// the engine entirely) and the cascading text colour.
+//
+// Deliberately in NEITHER list: `cursor` and `touchAction`. Those are
+// behaviour, not pixels -- they are consumed by the hit-test/dispatch pass,
+// which has already run by the time this question is asked, so changing one
+// neither moves a box nor repaints one. `osTitlebar` IS treated as
+// layout-affecting, not because it paints, but because the window regions are
+// republished from a fresh layout pass (ui_components.syncWindowRegions) and
+// forcing the full pass is the cheapest correct answer for a field that
+// changes essentially never.
+//
+// Adding a field to ComputedDivStyle/ComputedTextStyle means adding it to
+// exactly one of these functions. There is no exhaustiveness check (the same
+// hazard finishDivStyle has), and a forgotten field silently becomes "never
+// triggers anything" -- which surfaces as a stale frame, not as a crash.
+
+// Color declares its own operator==(Color), so a (Color | none) operand does
+// not convert to it; both sides have to be narrowed first.
+fn optColorDiffers(a: Color | none, b: Color | none): bool {
+    if a is none { return b is not none; }
+    if b is none { return true; }
+    return a != b;
+}
+
+// Compared field-by-field rather than with `!=` on the narrowed structs: a
+// struct reached through a union member emits a raw C `!=` on the struct
+// itself, which does not compile. Two reals is the whole type anyway.
+fn optLineHeightDiffers(a: LineHeight | none, b: LineHeight | none): bool {
+    if a is none { return b is not none; }
+    if b is none { return true; }
+    return a.mode != b.mode || a.value != b.value;
+}
+
+fn anchorTargetDiffers(a: AnchorTarget | none, b: AnchorTarget | none): bool {
+    if a is none { return b is not none; }
+    if b is none { return true; }
+    // Identity, not contents: ui_layout resolves the handle itself to a Clay
+    // id, so a different handle is a different anchor even when both are
+    // currently empty.
+    return !rx.sameHandle(a, b);
+}
+
+export fn divLayoutAffectingDiffers(a: ComputedDivStyle, b: ComputedDivStyle): bool {
+    return
+        !sizeEquals(a.width, b.width) ||
+        !sizeEquals(a.height, b.height) ||
+        a.padding != b.padding ||
+        a.margin != b.margin ||
+        a.direction != b.direction ||
+        a.packing != b.packing ||
+        a.crossAlign != b.crossAlign ||
+        a.gap != b.gap ||
+        a.display != b.display ||
+        a.overflowX != b.overflowX ||
+        a.overflowY != b.overflowY ||
+        a.position != b.position ||
+        a.positionValues != b.positionValues ||
+        a.translate != b.translate ||
+        a.zIndex != b.zIndex ||
+        anchorTargetDiffers(a.anchorTarget, b.anchorTarget) ||
+        a.borderWidth != b.borderWidth ||
+        a.osTitlebar != b.osTitlebar ||
+        a.fontFamily != b.fontFamily ||
+        a.fontSize != b.fontSize ||
+        a.fontWeight != b.fontWeight ||
+        optLineHeightDiffers(a.lineHeight, b.lineHeight) ||
+        a.letterSpacing != b.letterSpacing
+    ;
+}
+
+export fn divPaintAffectingDiffers(a: ComputedDivStyle, b: ComputedDivStyle): bool {
+    return
+        a.backgroundColor != b.backgroundColor ||
+        a.cornerRadius != b.cornerRadius ||
+        a.borderColor != b.borderColor ||
+        a.outlineWidth != b.outlineWidth ||
+        a.outlineColor != b.outlineColor ||
+        a.outlineOffset != b.outlineOffset ||
+        optColorDiffers(a.textColor, b.textColor)
+    ;
+}
+
+export fn textLayoutAffectingDiffers(a: ComputedTextStyle, b: ComputedTextStyle): bool {
+    return
+        a.fontFamily != b.fontFamily ||
+        a.fontSize != b.fontSize ||
+        a.fontWeight != b.fontWeight ||
+        optLineHeightDiffers(a.lineHeight, b.lineHeight) ||
+        a.letterSpacing != b.letterSpacing ||
+        a.textWrap != b.textWrap
+    ;
+}
+
+export fn textPaintAffectingDiffers(a: ComputedTextStyle, b: ComputedTextStyle): bool {
+    return optColorDiffers(a.textColor, b.textColor);
+}
+
 // The preset vocabulary: one op per overridable field, not per preset name.
 // ui_styling owns this because it's just ui_styling's own field set restated
 // as data -- it never needs to know what produces these or what they're

@@ -1689,6 +1689,22 @@ void *haze_sdl_getProcAddress(const char *procname) {
 double haze_sdl_getTime(void) {
   return (double)SDL_GetTicksNS() / 1000000000.0;
 }
+
+/* Block until an event arrives or timeoutMs elapses, WITHOUT consuming
+   anything. SDL_WaitEventTimeout(NULL, ...) pumps and waits but leaves the
+   event in the queue, so the haze_sdl_pollEvents() that follows still sees
+   every event, in order -- passing a real SDL_Event* here would silently eat
+   one event per idle tick.
+
+   This is what paces the loop on a frame the renderer SKIPPED. Normally the
+   pacing comes from the blocking swapchain acquire inside the renderer's
+   commit (FIFO/vsync), and a skipped frame never acquires -- without this the
+   loop would spin at 100% CPU doing nothing. Waiting rather than sleeping is
+   what keeps input latency at zero: a click wakes this immediately instead of
+   waiting out the remainder of a sleep. */
+void haze_sdl_waitEventTimeout(int32_t timeoutMs) {
+  SDL_WaitEventTimeout(NULL, timeoutMs);
+}
 /* ---------- Clipboard ----------
 
    SDL_GetClipboardText returns a buffer the CALLER owns and must SDL_free;

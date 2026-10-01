@@ -795,6 +795,25 @@ export opaque ref struct App {
         return this.frame;
     }
 
+    // Idle out a frame the renderer skipped.
+    //
+    // A loop that renders every frame is paced by the GPU: the swapchain
+    // acquire inside the renderer's commit blocks until the next vblank under
+    // FIFO. A frame that changed nothing never commits and never acquires, so
+    // that pacing disappears with it and the loop would spin flat out. This
+    // puts the process to sleep in the OS instead, and an arriving event wakes
+    // it immediately -- so idling costs no CPU without costing any input
+    // latency either.
+    //
+    // The timeout is a CEILING, not a frame target: it only bounds how long
+    // work that arrives through something other than an SDL event (a
+    // filesystem watcher, a timer a component is waiting on) can sit before
+    // the next tick looks at it. One nominal frame keeps that identical to
+    // what a 60fps render loop already guaranteed.
+    fn idle() {
+        sdl.waitEventTimeout(16);
+    }
+
     fn destroy() {
         this.window.destroy();
         sdl.terminate();
