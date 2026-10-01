@@ -1644,7 +1644,10 @@ export struct TextOpts {
     transform?: mat4.Mat4f = none;
 }
 
-export ref struct TextureOpts {
+// A value struct for the same reason as RectOpts above: drawTexture() reads it
+// once and keeps only `texture`. As a `ref struct` every composited canvas
+// cost a heap allocation per frame.
+export struct TextureOpts {
     texture: Texture;
     pos: Vec2;
     size: Vec2;
