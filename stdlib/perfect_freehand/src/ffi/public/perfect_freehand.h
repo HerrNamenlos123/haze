@@ -6,6 +6,10 @@
 // perfect-freehand 1.2.2 (see perfect_freehand.c). A context holds a
 // stroke's input points and options; pf_compute makes its outline. Handles
 // are malloc'd: pf_destroy frees one.
+//
+// A context keeps its buffers: pf_clear_points and the next stroke's points
+// and pf_compute reuse them, so one context for many strokes allocates
+// nothing once it has seen the longest of them.
 
 hzstd_cptr_t pf_create(void);
 void pf_destroy(hzstd_cptr_t ctx);
@@ -23,5 +27,13 @@ hzstd_i32_t pf_compute(hzstd_cptr_t ctx);
 hzstd_i32_t pf_get_outline_count(hzstd_cptr_t ctx);
 hzstd_f64_t pf_get_outline_x(hzstd_cptr_t ctx, hzstd_i32_t index);
 hzstd_f64_t pf_get_outline_y(hzstd_cptr_t ctx, hzstd_i32_t index);
+// The whole outline into `out`, which has room for pf_get_outline_count
+// points, each coordinate divided by `divisor`.
+void pf_copy_outline(hzstd_cptr_t ctx, hzstd_vec2_t* out, hzstd_f64_t divisor);
+// The outline's bounds; all 0 for an outline without points.
+hzstd_f64_t pf_get_outline_min_x(hzstd_cptr_t ctx);
+hzstd_f64_t pf_get_outline_min_y(hzstd_cptr_t ctx);
+hzstd_f64_t pf_get_outline_max_x(hzstd_cptr_t ctx);
+hzstd_f64_t pf_get_outline_max_y(hzstd_cptr_t ctx);
 
 #endif // HZ_PERFECT_FREEHAND_H

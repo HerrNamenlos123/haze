@@ -77,8 +77,19 @@ typedef struct {
   int hasPressure;
 } hz_pf_input_t;
 
+typedef struct {
+  hz_pf_vec_t* items;
+  size_t count;
+  size_t capacity;
+} hz_pf_vec_list_t;
+
 typedef struct hz_pf_context_t hz_pf_context_t;
 
+// Everything pf_compute works in belongs to the context and is kept from one
+// run to the next, so a context that computes stroke after stroke allocates
+// only until it has seen the longest of them. A document has thousands of
+// strokes: with the working arrays malloc'd and freed per run, they were some
+// twenty allocations each.
 struct hz_pf_context_t {
   hz_pf_input_t* points;
   size_t count;
@@ -91,9 +102,19 @@ struct hz_pf_context_t {
   int simulatePressure;
   int last;
 
+  hz_pf_stroke_point_t* strokePoints;
+  size_t strokePointCapacity;
+  hz_pf_vec_list_t leftPts;
+  hz_pf_vec_list_t rightPts;
+
   hz_pf_vec_t* outline;
   size_t outlineCount;
   size_t outlineCapacity;
+
+  // Of the outline, found on first request (see hz_pf_bounds).
+  int hasBounds;
+  hz_pf_vec_t boundsMin;
+  hz_pf_vec_t boundsMax;
 };
 
 // Math.sin and Math.cos of the angles perfect-freehand rotates by, as V8
@@ -252,12 +273,6 @@ static inline double hz_pf_radius(double size, double thinning, double pressure)
 
 // ── Growing arrays ───────────────────────────────────────────────────────
 
-typedef struct {
-  hz_pf_vec_t* items;
-  size_t count;
-  size_t capacity;
-} hz_pf_vec_list_t;
-
 static void hz_pf_push(hz_pf_vec_list_t* list, hz_pf_vec_t v)
 {
   if (list->count == list->capacity) {
@@ -269,6 +284,7 @@ static void hz_pf_push(hz_pf_vec_list_t* list, hz_pf_vec_t v)
 
 // ── getStrokePoints ──────────────────────────────────────────────────────
 
+// The stroke points, in the context's own array: valid until the next run.
 static hz_pf_stroke_point_t* hz_pf_get_stroke_points(hz_pf_context_t* ctx, size_t* outCount)
 {
   *outCount = 0;
@@ -280,27 +296,38 @@ static hz_pf_stroke_point_t* hz_pf_get_stroke_points(hz_pf_context_t* ctx, size_
   double t = 0.15 + (1.0 - ctx->streamline) * 0.85;
 
   // Two points become the first and four interpolated between it and the
-  // second; one point gets a second one pixel off.
+  // second; one point gets a second one pixel off. Only those two cases
+  // change the input, and both fit here.
   size_t n = ctx->count;
-  hz_pf_input_t* pts = malloc((n < 5 ? 5 : n) * sizeof(hz_pf_input_t));
-  memcpy(pts, ctx->points, n * sizeof(hz_pf_input_t));
+  hz_pf_input_t few[5];
+  const hz_pf_input_t* pts = ctx->points;
+  if (n <= 2) {
+    memcpy(few, ctx->points, n * sizeof(hz_pf_input_t));
+    pts = few;
+  }
   if (n == 2) {
-    hz_pf_vec_t last = pts[1].point;
+    hz_pf_vec_t last = few[1].point;
     for (int p = 1; p < 5; p++) {
-      pts[p].point = hz_pf_lrp(pts[0].point, last, p / 4.0);
-      pts[p].hasPressure = 0;
-      pts[p].pressure = 0.0;
+      few[p].point = hz_pf_lrp(few[0].point, last, p / 4.0);
+      few[p].hasPressure = 0;
+      few[p].pressure = 0.0;
     }
     n = 5;
   }
   if (n == 1) {
-    pts[1].point = hz_pf_add(pts[0].point, (hz_pf_vec_t) { 1.0, 1.0 });
-    pts[1].pressure = pts[0].pressure;
-    pts[1].hasPressure = pts[0].hasPressure;
+    few[1].point = hz_pf_add(few[0].point, (hz_pf_vec_t) { 1.0, 1.0 });
+    few[1].pressure = few[0].pressure;
+    few[1].hasPressure = few[0].hasPressure;
     n = 2;
   }
 
-  hz_pf_stroke_point_t* result = malloc(n * sizeof(hz_pf_stroke_point_t));
+  if (n > ctx->strokePointCapacity) {
+    // Nothing of the last run is read again, so there is nothing to keep.
+    free(ctx->strokePoints);
+    ctx->strokePointCapacity = n < 64 ? 64 : n;
+    ctx->strokePoints = malloc(ctx->strokePointCapacity * sizeof(hz_pf_stroke_point_t));
+  }
+  hz_pf_stroke_point_t* result = ctx->strokePoints;
   size_t count = 0;
   result[count++] = (hz_pf_stroke_point_t) {
     .point = pts[0].point,
@@ -338,15 +365,27 @@ static hz_pf_stroke_point_t* hz_pf_get_stroke_points(hz_pf_context_t* ctx, size_
   }
   result[0].vector = count > 1 ? result[1].vector : (hz_pf_vec_t) { 0.0, 0.0 };
 
-  free(pts);
   *outCount = count;
   return result;
 }
 
 // ── getStrokeOutlinePoints ───────────────────────────────────────────────
 
-static void hz_pf_get_stroke_outline_points(hz_pf_context_t* ctx, const hz_pf_stroke_point_t* points, size_t count,
-                                            hz_pf_vec_list_t* out)
+// Makes room for an outline of `count` points, which is known before the
+// first is written: one allocation, of exactly that, where growing by
+// doubling took several and left up to half of the last unused.
+static hz_pf_vec_t* hz_pf_outline_of(hz_pf_context_t* ctx, size_t count)
+{
+  if (count > ctx->outlineCapacity) {
+    free(ctx->outline);
+    ctx->outlineCapacity = count < 64 ? 64 : count;
+    ctx->outline = malloc(ctx->outlineCapacity * sizeof(hz_pf_vec_t));
+  }
+  ctx->outlineCount = count;
+  return ctx->outline;
+}
+
+static void hz_pf_get_stroke_outline_points(hz_pf_context_t* ctx, const hz_pf_stroke_point_t* points, size_t count)
 {
   double size = ctx->size;
   double smoothing = ctx->smoothing;
@@ -359,8 +398,10 @@ static void hz_pf_get_stroke_outline_points(hz_pf_context_t* ctx, const hz_pf_st
   double totalLength = points[count - 1].runningLength;
   double minDistance = (size * smoothing) * (size * smoothing);
 
-  hz_pf_vec_list_t leftPts = { 0 };
-  hz_pf_vec_list_t rightPts = { 0 };
+  hz_pf_vec_list_t* leftPts = &ctx->leftPts;
+  hz_pf_vec_list_t* rightPts = &ctx->rightPts;
+  leftPts->count = 0;
+  rightPts->count = 0;
 
   // The average of the first ten pressures, so that lines do not start fat.
   double prevPressure = points[0].pressure;
@@ -425,9 +466,9 @@ static void hz_pf_get_stroke_outline_points(hz_pf_context_t* ctx, const hz_pf_st
       hz_pf_vec_t offset = hz_pf_mul(hz_pf_per(prevVector), radius);
       for (size_t k = 0; k < sizeof(hz_pf_corner_sin) / sizeof(double); k++) {
         tl = hz_pf_rot_around(hz_pf_sub(point, offset), point, hz_pf_corner_sin[k], hz_pf_corner_cos[k]);
-        hz_pf_push(&leftPts, tl);
+        hz_pf_push(leftPts, tl);
         tr = hz_pf_rot_around(hz_pf_add(point, offset), point, hz_pf_cornerNeg_sin[k], hz_pf_cornerNeg_cos[k]);
-        hz_pf_push(&rightPts, tr);
+        hz_pf_push(rightPts, tr);
       }
       pl = tl;
       pr = tr;
@@ -440,20 +481,20 @@ static void hz_pf_get_stroke_outline_points(hz_pf_context_t* ctx, const hz_pf_st
 
     if (i == count - 1) {
       hz_pf_vec_t offset = hz_pf_mul(hz_pf_per(vector), radius);
-      hz_pf_push(&leftPts, hz_pf_sub(point, offset));
-      hz_pf_push(&rightPts, hz_pf_add(point, offset));
+      hz_pf_push(leftPts, hz_pf_sub(point, offset));
+      hz_pf_push(rightPts, hz_pf_add(point, offset));
       continue;
     }
 
     hz_pf_vec_t offset = hz_pf_mul(hz_pf_per(hz_pf_lrp(nextVector, vector, nextDpr)), radius);
     tl = hz_pf_sub(point, offset);
     if (i <= 1 || hz_pf_dist2(pl, tl) > minDistance) {
-      hz_pf_push(&leftPts, tl);
+      hz_pf_push(leftPts, tl);
       pl = tl;
     }
     tr = hz_pf_add(point, offset);
     if (i <= 1 || hz_pf_dist2(pr, tr) > minDistance) {
-      hz_pf_push(&rightPts, tr);
+      hz_pf_push(rightPts, tr);
       pr = tr;
     }
     prevPressure = pressure;
@@ -467,44 +508,34 @@ static void hz_pf_get_stroke_outline_points(hz_pf_context_t* ctx, const hz_pf_st
     // A dot.
     double dotRadius = hasFirstRadius && firstRadius != 0.0 ? firstRadius : radius;
     hz_pf_vec_t start = hz_pf_prj(firstPoint, hz_pf_uni(hz_pf_per(hz_pf_sub(firstPoint, lastPoint))), -dotRadius);
-    for (size_t k = 0; k < sizeof(hz_pf_dot_sin) / sizeof(double); k++) {
-      hz_pf_push(out, hz_pf_rot_around(start, firstPoint, hz_pf_dot_sin[k], hz_pf_dot_cos[k]));
+    size_t dotCount = sizeof(hz_pf_dot_sin) / sizeof(double);
+    hz_pf_vec_t* out = hz_pf_outline_of(ctx, dotCount);
+    for (size_t k = 0; k < dotCount; k++) {
+      out[k] = hz_pf_rot_around(start, firstPoint, hz_pf_dot_sin[k], hz_pf_dot_cos[k]);
     }
-    free(leftPts.items);
-    free(rightPts.items);
     return;
   }
 
-  // The round start cap: the first right point rotated around the start.
-  hz_pf_vec_list_t startCap = { 0 };
-  for (size_t k = 0; k < sizeof(hz_pf_startCap_sin) / sizeof(double); k++) {
-    hz_pf_push(&startCap, hz_pf_rot_around(rightPts.items[0], firstPoint, hz_pf_startCap_sin[k], hz_pf_startCap_cos[k]));
-  }
+  // Left side, end cap, right side backwards, start cap.
+  size_t startCapCount = sizeof(hz_pf_startCap_sin) / sizeof(double);
+  size_t endCapCount = sizeof(hz_pf_endCap_sin) / sizeof(double);
+  hz_pf_vec_t* out = hz_pf_outline_of(ctx, leftPts->count + endCapCount + rightPts->count + startCapCount);
+
+  memcpy(out, leftPts->items, leftPts->count * sizeof(hz_pf_vec_t));
+  out += leftPts->count;
   // The round end cap, a turn and a half.
-  hz_pf_vec_list_t endCap = { 0 };
   hz_pf_vec_t direction = hz_pf_per(hz_pf_neg(points[count - 1].vector));
   hz_pf_vec_t start = hz_pf_prj(lastPoint, direction, radius);
-  for (size_t k = 0; k < sizeof(hz_pf_endCap_sin) / sizeof(double); k++) {
-    hz_pf_push(&endCap, hz_pf_rot_around(start, lastPoint, hz_pf_endCap_sin[k], hz_pf_endCap_cos[k]));
+  for (size_t k = 0; k < endCapCount; k++) {
+    *out++ = hz_pf_rot_around(start, lastPoint, hz_pf_endCap_sin[k], hz_pf_endCap_cos[k]);
   }
-
-  // Left side, end cap, right side backwards, start cap.
-  for (size_t k = 0; k < leftPts.count; k++) {
-    hz_pf_push(out, leftPts.items[k]);
+  for (size_t k = rightPts->count; k > 0; k--) {
+    *out++ = rightPts->items[k - 1];
   }
-  for (size_t k = 0; k < endCap.count; k++) {
-    hz_pf_push(out, endCap.items[k]);
+  // The round start cap: the first right point rotated around the start.
+  for (size_t k = 0; k < startCapCount; k++) {
+    *out++ = hz_pf_rot_around(rightPts->items[0], firstPoint, hz_pf_startCap_sin[k], hz_pf_startCap_cos[k]);
   }
-  for (size_t k = rightPts.count; k > 0; k--) {
-    hz_pf_push(out, rightPts.items[k - 1]);
-  }
-  for (size_t k = 0; k < startCap.count; k++) {
-    hz_pf_push(out, startCap.items[k]);
-  }
-  free(leftPts.items);
-  free(rightPts.items);
-  free(startCap.items);
-  free(endCap.items);
 }
 
 // ── The C API ────────────────────────────────────────────────────────────
@@ -529,6 +560,9 @@ void pf_destroy(hzstd_cptr_t handle)
     return;
   }
   free(ctx->points);
+  free(ctx->strokePoints);
+  free(ctx->leftPts.items);
+  free(ctx->rightPts.items);
   free(ctx->outline);
   free(ctx);
 }
@@ -538,6 +572,7 @@ void pf_clear_points(hzstd_cptr_t handle)
   hz_pf_context_t* ctx = handle;
   ctx->count = 0;
   ctx->outlineCount = 0;
+  ctx->hasBounds = 0;
 }
 
 void pf_add_point(hzstd_cptr_t handle, hzstd_f64_t x, hzstd_f64_t y, hzstd_f64_t pressure)
@@ -567,17 +602,13 @@ hzstd_i32_t pf_compute(hzstd_cptr_t handle)
 {
   hz_pf_context_t* ctx = handle;
   ctx->outlineCount = 0;
+  ctx->hasBounds = 0;
   if (ctx->count == 0) {
     return -1;
   }
   size_t count = 0;
   hz_pf_stroke_point_t* points = hz_pf_get_stroke_points(ctx, &count);
-  hz_pf_vec_list_t out = { .items = ctx->outline, .count = 0, .capacity = ctx->outline ? ctx->outlineCapacity : 0 };
-  hz_pf_get_stroke_outline_points(ctx, points, count, &out);
-  free(points);
-  ctx->outline = out.items;
-  ctx->outlineCapacity = out.capacity;
-  ctx->outlineCount = out.count;
+  hz_pf_get_stroke_outline_points(ctx, points, count);
   return 0;
 }
 
@@ -586,3 +617,61 @@ hzstd_i32_t pf_get_outline_count(hzstd_cptr_t handle) { return (hzstd_i32_t)((hz
 hzstd_f64_t pf_get_outline_x(hzstd_cptr_t handle, hzstd_i32_t index) { return ((hz_pf_context_t*)handle)->outline[index].x; }
 
 hzstd_f64_t pf_get_outline_y(hzstd_cptr_t handle, hzstd_i32_t index) { return ((hz_pf_context_t*)handle)->outline[index].y; }
+
+void pf_copy_outline(hzstd_cptr_t handle, hzstd_vec2_t* out, hzstd_f64_t divisor)
+{
+  hz_pf_context_t* ctx = handle;
+  for (size_t i = 0; i < ctx->outlineCount; i++) {
+    out[i].x = ctx->outline[i].x / divisor;
+    out[i].y = ctx->outline[i].y / divisor;
+  }
+}
+
+// The outline's bounds, found once per run and only when asked for.
+static void hz_pf_bounds(hz_pf_context_t* ctx)
+{
+  if (ctx->hasBounds) {
+    return;
+  }
+  ctx->hasBounds = 1;
+  if (ctx->outlineCount == 0) {
+    ctx->boundsMin = (hz_pf_vec_t) { 0.0, 0.0 };
+    ctx->boundsMax = (hz_pf_vec_t) { 0.0, 0.0 };
+    return;
+  }
+  hz_pf_vec_t min = ctx->outline[0];
+  hz_pf_vec_t max = ctx->outline[0];
+  for (size_t i = 1; i < ctx->outlineCount; i++) {
+    hz_pf_vec_t p = ctx->outline[i];
+    min.x = hz_pf_min(min.x, p.x);
+    min.y = hz_pf_min(min.y, p.y);
+    max.x = hz_pf_max(max.x, p.x);
+    max.y = hz_pf_max(max.y, p.y);
+  }
+  ctx->boundsMin = min;
+  ctx->boundsMax = max;
+}
+
+hzstd_f64_t pf_get_outline_min_x(hzstd_cptr_t handle)
+{
+  hz_pf_bounds(handle);
+  return ((hz_pf_context_t*)handle)->boundsMin.x;
+}
+
+hzstd_f64_t pf_get_outline_min_y(hzstd_cptr_t handle)
+{
+  hz_pf_bounds(handle);
+  return ((hz_pf_context_t*)handle)->boundsMin.y;
+}
+
+hzstd_f64_t pf_get_outline_max_x(hzstd_cptr_t handle)
+{
+  hz_pf_bounds(handle);
+  return ((hz_pf_context_t*)handle)->boundsMax.x;
+}
+
+hzstd_f64_t pf_get_outline_max_y(hzstd_cptr_t handle)
+{
+  hz_pf_bounds(handle);
+  return ((hz_pf_context_t*)handle)->boundsMax.y;
+}

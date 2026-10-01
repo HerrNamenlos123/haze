@@ -139,31 +139,20 @@ ref struct LineShape {
     return outline;
   }
 
+  // The outline's bounds. Asking for them does not make the stroke hold its
+  // outline: every stroke of a page is asked where it is, to find the few a
+  // tile shows, and only those are ever drawn.
   fn getBBox(): BBox {
     if this.bbox {
       return this.bbox;
     }
 
-    let outline = this.getOutline();
-
-    if outline.length == 0 {
-      let empty = BBox { left: 0, right: 0, top: 0, bottom: 0 };
-      this.bbox = empty;
-      return empty;
+    let result = BBox { left: 0, right: 0, top: 0, bottom: 0 };
+    if let cached = this.cachedOutline {
+      result = outlineBBox(cached.points);
+    } else {
+      result = constructStrokeBBox({ shape: this });
     }
-
-    let minX = outline[0].x;
-    let maxX = outline[0].x;
-    let minY = outline[0].y;
-    let maxY = outline[0].y;
-    for p in outline {
-      minX = min(minX, p.x);
-      maxX = max(maxX, p.x);
-      minY = min(minY, p.y);
-      maxY = max(maxY, p.y);
-    }
-
-    let result = BBox { left: minX, right: maxX, top: minY, bottom: maxY };
     this.bbox = result;
     return result;
   }
@@ -473,30 +462,72 @@ struct StrokeConstructArgs {
 // bbox 10x further out than the stroke: the tile cull then dropped nearly
 // every stroke from its own tile.
 fn constructStrokeOutline(args: StrokeConstructArgs): []Vec2 {
-    let pf = perfect_freehand.PerfectFreehand({
-        size: args.shape.penThickness * args.accuracyScaling,
-        thinning: 0.1,
-        smoothing: 0.0,
-        streamline: 0.6,
-        simulatePressure: true,
-        last: false,
-    });
+    if let outline = strokeContext(args).computeScaledDown(args.accuracyScaling) {
+        return outline;
+    }
+    return [];
+}
 
+// The bounds of that outline, without building it -- perfect_freehand finds
+// them in its own buffers, so this allocates nothing.
+fn constructStrokeBBox(args: StrokeConstructArgs): BBox {
+    if let bounds = strokeContext(args).computeBounds() {
+        return BBox {
+            left: bounds.min.x / args.accuracyScaling,
+            right: bounds.max.x / args.accuracyScaling,
+            top: bounds.min.y / args.accuracyScaling,
+            bottom: bounds.max.y / args.accuracyScaling,
+        };
+    }
+    return BBox { left: 0, right: 0, top: 0, bottom: 0 };
+}
+
+// The bounds of an outline that is already there.
+fn outlineBBox(outline: []Vec2): BBox {
+    if outline.length == 0 {
+        return BBox { left: 0, right: 0, top: 0, bottom: 0 };
+    }
+    let minX = outline[0].x;
+    let maxX = outline[0].x;
+    let minY = outline[0].y;
+    let maxY = outline[0].y;
+    for p in outline {
+        minX = min(minX, p.x);
+        maxX = max(maxX, p.x);
+        minY = min(minY, p.y);
+        maxY = max(maxY, p.y);
+    }
+    return BBox { left: minX, right: maxX, top: minY, bottom: maxY };
+}
+
+// The one perfect_freehand context every stroke is computed in. It keeps its
+// buffers from stroke to stroke, so computing a document's thousands of
+// strokes allocates only what the longest of them needs -- one context made
+// and destroyed per stroke allocated all of it again each time. Strokes are
+// only ever computed on the main thread, so one is enough.
+let strokeOutliner: perfect_freehand.PerfectFreehand | none = none;
+
+// That context, holding `args.shape`'s points and ready to compute.
+fn strokeContext(args: StrokeConstructArgs): perfect_freehand.PerfectFreehand {
+    if !strokeOutliner {
+        strokeOutliner = perfect_freehand.PerfectFreehand({
+            // Set per stroke, below.
+            size: 1.0,
+            thinning: 0.1,
+            smoothing: 0.0,
+            streamline: 0.6,
+            simulatePressure: true,
+            last: false,
+        });
+    }
+    assert(strokeOutliner);
+    let pf = strokeOutliner;
+    pf.clearPoints();
+    pf.setSize(args.shape.penThickness * args.accuracyScaling);
     for point in args.shape.points {
         pf.addPointWithPressure(Vec2(point.x * args.accuracyScaling, point.y * args.accuracyScaling), point.pressure);
     }
-
-    let outline = pf.compute();
-    pf.destroy();
-
-    let result: []Vec2 = [];
-    if outline {
-      result.reserve(outline.length);
-      for p in outline {
-        result.push(Vec2(p.x / args.accuracyScaling, p.y / args.accuracyScaling));
-      }
-    }
-    return result;
+    return pf;
 }
 
 struct TesselationResult {

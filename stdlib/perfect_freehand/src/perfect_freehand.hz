@@ -21,6 +21,16 @@ namespace ffi {
 	extern C fn pf_get_outline_count(ctx: cptr): i32 :: final;
 	extern C fn pf_get_outline_x(ctx: cptr, index: i32): f64 :: final;
 	extern C fn pf_get_outline_y(ctx: cptr, index: i32): f64 :: final;
+	extern C fn pf_get_outline_min_x(ctx: cptr): f64 :: final;
+	extern C fn pf_get_outline_min_y(ctx: cptr): f64 :: final;
+	extern C fn pf_get_outline_max_x(ctx: cptr): f64 :: final;
+	extern C fn pf_get_outline_max_y(ctx: cptr): f64 :: final;
+}
+
+// An outline's bounding box.
+export struct Bounds {
+	min: Vec2;
+	max: Vec2;
 }
 
 export ref struct StrokeOptions {
@@ -43,6 +53,11 @@ export ref struct StrokeOptions {
 	}
 }
 
+// One of these computes any number of strokes: clearPoints(), the next
+// stroke's points, compute(). It keeps its buffers from stroke to stroke, so
+// after the first few it allocates nothing but the outlines it hands out --
+// whereas one made and destroyed per stroke allocates all of them again every
+// time. Keep one around wherever strokes are computed in numbers.
 export ref struct PerfectFreehand {
 	handle: cptr;
 
@@ -66,6 +81,10 @@ export ref struct PerfectFreehand {
 		ffi.pf_set_last(this.handle, options.last ? (1 as i32) : (0 as i32));
 	}
 
+	fn setSize(size: real) {
+		ffi.pf_set_size(this.handle, size as f64);
+	}
+
 	fn setLast(val: bool) {
 		ffi.pf_set_last(this.handle, val ? (1 as i32) : (0 as i32));
 	}
@@ -82,7 +101,18 @@ export ref struct PerfectFreehand {
 		ffi.pf_add_point(this.handle, pos.x as f64, pos.y as f64, pressure as f64);
 	}
 
+	// The outline of the points added so far, or none without any.
 	fn compute(): []Vec2 | none {
+		return this.computeScaledDown(1.0);
+	}
+
+	// compute(), with every coordinate divided by `divisor`: for points that
+	// were added scaled up, to get the outline in their own units again.
+	//
+	// The outline is copied out of the context in one go, into an array of
+	// exactly its length. Pushed point by point into an empty one, the array
+	// was reallocated at every doubling on its way there.
+	fn computeScaledDown(divisor: real): []Vec2 | none {
 		let status = ffi.pf_compute(this.handle);
 		if status != 0 {
 			return none;
@@ -90,16 +120,33 @@ export ref struct PerfectFreehand {
 
 		let count = ffi.pf_get_outline_count(this.handle) as int;
 		let result: []Vec2 = [];
-
-		let i: i32 = 0;
-		while i < count {
-			let x = ffi.pf_get_outline_x(this.handle, i) as real;
-			let y = ffi.pf_get_outline_y(this.handle, i) as real;
-			result.push(Vec2(x, y));
-			i++;
+		if count > 0 {
+			let handle = this.handle;
+			let ok = false;
+			__c__("ok = hzstd_dynamic_array_resize_zeroed(result, (size_t)count) == hzstd_dynamic_array_result_ok;");
+			if !ok {
+				sys.panic("PerfectFreehand.compute(): out of memory");
+			}
+			__c__("pf_copy_outline(handle, hzstd_dynamic_array_raw_buffer(result), divisor);");
 		}
-
 		return result;
+	}
+
+	// The bounds of the outline compute() would return, without building it:
+	// this allocates nothing. none without points, and for an outline without
+	// any (a stroke of size 0).
+	fn computeBounds(): Bounds | none {
+		let status = ffi.pf_compute(this.handle);
+		if status != 0 {
+			return none;
+		}
+		if ffi.pf_get_outline_count(this.handle) == 0 {
+			return none;
+		}
+		return Bounds {
+			min: Vec2(ffi.pf_get_outline_min_x(this.handle) as real, ffi.pf_get_outline_min_y(this.handle) as real),
+			max: Vec2(ffi.pf_get_outline_max_x(this.handle) as real, ffi.pf_get_outline_max_y(this.handle) as real),
+		};
 	}
 
 	fn destroy() {
