@@ -31,6 +31,10 @@ const comptime maxFallbackTiles = 96;
 // freed.
 const comptime maxFreeTiles = 16;
 
+// How long after the last tile was drawn before what drawing left behind is
+// freed -- see DocumentRenderer.releaseIdle.
+const comptime drawCacheIdleSeconds = 2.0;
+
 // The ruled lines on every page, as the web app draws them: horizontal only,
 // from the top edge down, in the document's gridColor.
 const comptime gridLineDistanceMm = 10.0;
@@ -364,6 +368,9 @@ ref struct DocumentRenderer {
     _workDistance: []real = [];
     // How many of them the last render() did not get to.
     pendingTiles: int = 0;
+    // When the last tile was drawn, or -1 once releaseIdle has cleaned up
+    // after it.
+    lastTileDraw: real = -1.0;
 
     // Shapes changed on a page (added, moved, recoloured) whose tiles do not
     // show them yet: drawn over the tiles until they do, so an edit shows at
@@ -667,6 +674,54 @@ ref struct DocumentRenderer {
         r.commit(true);
         tile.dirty = false;
         tile.hasContent = true;
+        this.lastTileDraw = time.now();
+    }
+
+    // Frees what drawing tiles left behind, once none has been drawn for
+    // drawCacheIdleSeconds. Called every frame (EditorControls.frame).
+    //
+    // A tile's picture is in its texture; everything that went into drawing
+    // it is only needed to draw it again. That is a lot: the renderer's vertex
+    // array and each tile's vertex buffer hold three vertices per triangle of
+    // every stroke on the tile (16 MB for a zoomed-out page), and every stroke
+    // keeps its tesselation at up to two zoom levels. Kept forever, zooming
+    // and scrolling through a document doubled the memory it took to open it.
+    // So after a pause only what the current view draws from stays: strokes on
+    // pages in view keep the tesselation of the level they are shown at,
+    // strokes on other pages keep nothing but their bbox. The first redraw
+    // afterwards computes what it needs again, within the tile budget.
+    fn releaseIdle(doc: DocumentFile, now: real) {
+        if this.lastTileDraw < 0.0 || now - this.lastTileDraw < drawCacheIdleSeconds {
+            return;
+        }
+        this.lastTileDraw = -1.0;
+
+        this.tileRenderer = none;
+        for page in this.pages {
+            for tile in page.tiles {
+                tile.canvas.releaseMeshVertexBuffer();
+            }
+        }
+        for tile in this.pool.free {
+            tile.canvas.releaseMeshVertexBuffer();
+        }
+
+        for (let i = 0; i < doc.data.pages.length; i++) {
+            let inView = i < this.pages.length && this.pages[i].hasLevel && this.pages[i].tiles.length > 0;
+            for shape in doc.data.pages[i].shapes {
+                if shape is LineShape {
+                    if inView {
+                        shape.keepOnlyTesselation(this.pages[i].level);
+                    } else {
+                        shape.dropDrawCaches();
+                    }
+                }
+            }
+        }
+
+        // Dropped is not freed: nothing allocates while the editor is idle,
+        // so the collector would not run until the next burst of work.
+        sys.releaseUnusedMemory();
     }
 
     // Whether every image a tile was drawn without has arrived since -- it

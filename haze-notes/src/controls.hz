@@ -1115,6 +1115,7 @@ ref struct EditorControls {
             return;
         }
         let now = time.now();
+        this.view.releaseIdle(doc, now);
 
         if this.gesture != Gesture.None && this.gesturePointer == 1 {
             this.drag(doc, mouseLocal, ui.currentModifiers());

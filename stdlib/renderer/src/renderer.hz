@@ -1279,6 +1279,19 @@ export opaque ref struct Canvas {
         }
     }
 
+    // Frees the vertex buffer mesh draws into this canvas left behind; the
+    // next one makes a new buffer. For a canvas that is drawn once and then
+    // only shown (a cached tile): its picture is in its texture, while the
+    // buffer goes on holding every triangle that went into it. Not before the
+    // frame that drew it has been presented.
+    fn releaseMeshVertexBuffer() {
+        if let b = this.meshVertexBuffer {
+            b.release();
+            this.meshVertexBuffer = none;
+        }
+        this.meshVertexBufferSize = 0;
+    }
+
     // Frees every GPU resource this canvas holds; it must not be used again.
     // Anything that recorded a draw of its asTexture() has to have committed
     // first.

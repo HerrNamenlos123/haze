@@ -75,6 +75,10 @@ export ref struct Tesselator {
 		let idxCount = ffi.tesselator_get_index_count(this.handle) as int;
 
 		let result = TesselationResult { vertices: [], indices: [] };
+		// Exactly what is needed: grown by push, the two arrays ended up with
+		// up to twice that, and a document's strokes each keep theirs.
+		result.vertices.reserve(vertCount);
+		result.indices.reserve(idxCount);
 
 		let i: i32 = 0;
 		while i < vertCount {

@@ -82,7 +82,10 @@ onFrame(() => {
 
 @template
 
-div [w-grow h-grow bg-["#111"] text-color-["#FFF"]] {
+div [w-grow h-grow col bg-["#111"] text-color-["#FFF"]] {
+    // Only when the platform is not drawing one -- see main.hz.
+    TitleBar if=[!ui.window.hasNativeTitlebar()] [] title="Haze Notes" {}
+
     div if=[!vaultCache] [w-grow h-grow items-center justify-center] {
         div [col items-center gap-4] {
             text [] ["No Vault is selected"]

@@ -14,7 +14,10 @@ type = "lib"
 
 [generator.wgpu-build]
 exec = "scripts/build-wgpu.hz"
-inputs = []
+# The patches build-wgpu.hz applies to wgpu-native, so changing one rebuilds it.
+inputs = [
+    { module="this", dir="root", path="patches/memory-usage-hint.patch" },
+]
 outputs = [
     { module="this", dir="bin", path="include/webgpu.h" },
     { module="this", dir="bin", path="include/wgpu.h" },

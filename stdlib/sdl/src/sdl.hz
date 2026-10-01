@@ -5,7 +5,7 @@ __c__("#include \"sdl_impl.c\"");
 namespace ffi {
 	export extern C ref struct SDL_Window {};
 
-	extern C fn haze_sdl_init(): bool :: final;
+	extern C fn haze_sdl_init(platformDecorations: bool): bool :: final;
 	extern C fn haze_sdl_terminate(): void :: final;
 	extern C fn haze_sdl_createWindow(width: i32, height: i32, title: ccstr, noApi: bool, borderless: bool, hidden: bool): SDL_Window | none :: final;
 	extern C fn haze_sdl_showWindow(window: SDL_Window): void :: final;
@@ -94,8 +94,8 @@ namespace ffi {
 	// threaded through every trampoline signature.
 	extern C noemit fn haze_sdl_get_modifiers(): i32 :: final;
 
-	export fn init(): Result<none, str> {
-		let result = haze_sdl_init();
+	export fn init(platformDecorations: bool): Result<none, str> {
+		let result = haze_sdl_init(platformDecorations);
 		if !result {
 			return getError();
 		}
@@ -1075,8 +1075,11 @@ export ref struct WindowConfig {
 	hidden: bool = false;
 }
 
-export fn init() {
-	return ffi.init();
+// platformDecorations: false when every window is going to be borderless and
+// draw its own titlebar -- the platform's decoration support is then never
+// loaded, see haze_sdl_init.
+export fn init(platformDecorations: bool = true) {
+	return ffi.init(platformDecorations);
 }
 
 export fn terminate() {

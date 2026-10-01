@@ -1017,8 +1017,19 @@ void haze_sdl_requestWindowClose(SDL_Window *window) {
   SDL_PushEvent(&event);
 }
 
-bool haze_sdl_init(void) {
+/* platform_decorations: will any window ask the platform for its titlebar and
+   frame? On Wayland a compositor that draws none for its clients (GNOME)
+   leaves that to the client, and SDL gets them from libdecor -- whose GTK
+   plugin SDL loads when it initializes, before there is a window to need it.
+   For an application that draws its own titlebar that is all of GTK 3, its
+   theme, its fonts and cairo brought up for nothing: about 40 MB. The hint has
+   to be set before SDL_Init, and an SDL_VIDEO_WAYLAND_ALLOW_LIBDECOR in the
+   environment still wins over it. */
+bool haze_sdl_init(bool platform_decorations) {
   haze_sdl_should_close_all = false;
+  if (!platform_decorations) {
+    SDL_SetHint(SDL_HINT_VIDEO_WAYLAND_ALLOW_LIBDECOR, "0");
+  }
   return SDL_Init(SDL_INIT_VIDEO);
 }
 

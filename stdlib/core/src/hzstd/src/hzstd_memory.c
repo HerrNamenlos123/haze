@@ -6,6 +6,7 @@
 #include <gc/gc.h>
 
 #include "../include/hzstd_memory.h"
+#include "../include/hzstd_platform.h"
 #include "../include/hzstd_runtime.h"
 #include <memory.h>
 #include <stdatomic.h>
@@ -252,6 +253,44 @@ void hzstd_init_gc()
 void hzstd_force_gc()
 {
   GC_gcollect();
+}
+
+// See hzstd_release_idle_memory in hzstd_memory.h for what these decide.
+#define HZSTD_IDLE_QUIET_SECONDS 2.0
+#define HZSTD_IDLE_ACTIVITY_BYTES ((size_t)256 * 1024)
+#define HZSTD_IDLE_REARM_BYTES ((size_t)4 * 1024 * 1024)
+
+// Allocated in total at the last release -- what hzstd_release_idle_memory
+// measures new garbage against.
+static size_t hz_released_total = 0;
+
+void hzstd_release_unused_memory()
+{
+  hz_released_total = GC_get_total_bytes();
+
+  // Twice: a collection only unmaps blocks that were already free before it
+  // started, so the first one frees the garbage and the second gives it back.
+  GC_gcollect_and_unmap();
+  GC_gcollect_and_unmap();
+}
+
+void hzstd_release_idle_memory()
+{
+  // Allocated in total when the program was last seen busy, and when that was.
+  static size_t busy_total = 0;
+  static double busy_time = -1.0;
+
+  size_t total = GC_get_total_bytes();
+  double now = hzstd_time_now();
+  if (busy_time < 0.0 || total - busy_total >= HZSTD_IDLE_ACTIVITY_BYTES) {
+    busy_total = total;
+    busy_time = now;
+    return;
+  }
+  if (now - busy_time < HZSTD_IDLE_QUIET_SECONDS || total - hz_released_total < HZSTD_IDLE_REARM_BYTES) {
+    return;
+  }
+  hzstd_release_unused_memory();
 }
 
 hzstd_arena_t *hzstd_arena_create_n(const char *dataType, int skip_n_frames)

@@ -4,6 +4,8 @@ namespace ffi {
     extern C noemit fn hzstd_panic_n(msg: ccstr, skip: int) :: final, noreturn;
     extern C noemit fn hzstd_unreachable(skip: int) :: final, noreturn;
     extern C noemit fn hzstd_force_gc() :: final;
+    extern C noemit fn hzstd_release_unused_memory() :: final;
+    extern C noemit fn hzstd_release_idle_memory() :: final;
 
     extern C noemit fn hzstd_build_stacktrace(skip_n_frames: int): hzstd_stacktrace_t :: final;
     extern C noemit fn hzstd_print_stacktrace(st: hzstd_stacktrace_t) :: final;
@@ -43,6 +45,24 @@ namespace sys {
     // memory-sensitive stage boundaries, not in a hot loop.
     export fn forceGc(): void {
         ffi.hzstd_force_gc();
+    }
+
+    // Collects and gives the free part of the heap back to the operating
+    // system, now. For the moment after dropping something large that will
+    // not be needed for a while (caches, a closed document) when nothing else
+    // is about to allocate: left alone, the collector keeps that memory until
+    // some later burst of allocation happens to make it collect. Two full
+    // collections, so not for a loop -- see releaseIdleMemory.
+    export fn releaseUnusedMemory(): void {
+        ffi.hzstd_release_unused_memory();
+    }
+
+    // The same, by itself, once the program has gone quiet -- for a main loop
+    // to call every time around (app.App does, so an application built on it
+    // needs nothing). Nearly free until there is something to give back; see
+    // hzstd_release_idle_memory for when that is.
+    export fn releaseIdleMemory(): void {
+        ffi.hzstd_release_idle_memory();
     }
 }
 

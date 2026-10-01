@@ -1,6 +1,8 @@
 
 fn main(): int {
     attempt {
+        let sourceDir = env.get("HAZE_MODULE_SOURCE_DIR");
+        if !sourceDir { raise f"HAZE_MODULE_SOURCE_DIR not defined"; }
         let binaryDir = env.get("HAZE_MODULE_BINARY_DIR");
         if !binaryDir { raise f"HAZE_MODULE_BINARY_DIR not defined"; }
 
@@ -12,7 +14,9 @@ fn main(): int {
             })?!;
         }
 
-        process.run("git", { "-c", "advice.detachedHead=false", "checkout", "768f15f6ace8e4ec8e8720d5732b29e0b34250a8" }, {
+        // --force drops the patches below from the previous run, so they
+        // apply to a clean tree every time.
+        process.run("git", { "-c", "advice.detachedHead=false", "checkout", "--force", "768f15f6ace8e4ec8e8720d5732b29e0b34250a8" }, {
             inherit_stdio: true,
             cwd: repoPath,
         })?!;
@@ -21,6 +25,22 @@ fn main(): int {
             inherit_stdio: true,
             cwd: repoPath,
         })?!;
+
+        // Changes to wgpu-native itself. Each is listed as an input in
+        // haze.toml, so changing one rebuilds it.
+        //   memory-usage-hint: wgpu.h cannot pass a device's memory hints, so
+        //   every device got wgpu's default, Performance. Its Vulkan backend
+        //   then reserves device memory in 128 MiB blocks: an empty window
+        //   held 236 MiB, all of it system RAM on an integrated GPU.
+        let patches: []str = [
+            "memory-usage-hint.patch",
+        ];
+        for patch in patches {
+            process.run("git", { "apply", f"{sourceDir}/patches/{patch}" }, {
+                inherit_stdio: true,
+                cwd: repoPath,
+            })?!;
+        }
 
         attempt {
             process.run("cargo", { "--version" })?!;

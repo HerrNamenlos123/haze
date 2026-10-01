@@ -55,6 +55,30 @@ void hzstd_init_gc();
 // binding and where it's actually used.
 void hzstd_force_gc();
 
+// Collects, and gives every free part of the heap back to the operating
+// system, now. The collector does neither by itself at a useful moment: it
+// only collects when something allocates, and only unmaps on a later
+// collection still -- so a program that has just dropped a large structure
+// and then goes idle keeps the memory for as long as it runs. Costs two full
+// collections (a few milliseconds each at tens of MB), so it is for the
+// moment after a known drop, not for a loop; a loop wants
+// hzstd_release_idle_memory.
+void hzstd_release_unused_memory();
+
+// The same, by itself, once the program has gone quiet. Meant to be called
+// over and over from a program's main loop (app.App.nextFrame does); nearly
+// every call only reads a counter.
+//
+// The collector grows its heap to whatever a burst of work needs and then
+// keeps it. A program that loads a document and then sits idle therefore
+// holds the load's garbage -- measured, a note-taking app with 13 MB of live
+// data in a 43 MB heap. So: when at least HZSTD_IDLE_REARM_BYTES have been
+// allocated since the last release, and less than HZSTD_IDLE_ACTIVITY_BYTES
+// in the HZSTD_IDLE_QUIET_SECONDS just past, this releases. It waits for the
+// quiet moment because of what a release costs, and then does not release
+// again until there is new garbage.
+void hzstd_release_idle_memory();
+
 // An arena's first chunk, and the size its chunks grow to: each one is twice
 // the last. A flat 64 KiB made every arena cost 64 KiB however little went
 // into it, and arenas are made per call in many places (every json.stringify,

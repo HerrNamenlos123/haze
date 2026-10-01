@@ -1,0 +1,83 @@
+from ui_widgets import ButtonComponent
+
+// The window's titlebar, drawn by the application: the window is borderless
+// (see main.hz). Modelled on the code editor's.
+//
+// The root element carries `os-titlebar`, which publishes its box to the
+// window manager (see ui_styling.OSTitlebar). Dragging the window, a double
+// click to maximize, snapping it to a screen edge, the window menu -- all of
+// that is therefore done BY the window manager on that box, and none of it is
+// implemented here. What is implemented is the three buttons, the only part
+// the platform cannot infer. They need no annotation to stay clickable: an
+// element that takes pointer input of its own is carved out of the drag
+// region automatically.
+
+@props
+title: str = "";
+height: real = 32.0;
+color: str = "#222";
+textColor: str = "#CCCCCC";
+controlHoverColor: str = "#FFFFFF14";
+controlActiveColor: str = "#FFFFFF29";
+// Close hovers red rather than the neutral grey of the other two, as on
+// every desktop.
+closeHoverColor: str = "#C42B1C";
+closeActiveColor: str = "#B0271A";
+
+@setup
+
+let rootRef = elementRef<DivElement>();
+
+// The title sits at the bar's midpoint whatever is beside it: out of flow,
+// placed at half the bar's width, then shifted back by half its own.
+let centerX = computed(() => {
+    let size = rootRef?.size();
+    if size { return size.x / 2.0; }
+    return 0.0;
+});
+
+let maximizeIcon = computed(() => {
+    if ui.window.isMaximized() { return "chrome-restore"; }
+    return "chrome-maximize";
+});
+
+let minimizeWindow = () => {
+    ui.window.minimize();
+};
+
+let toggleMaximizeWindow = () => {
+    ui.window.toggleMaximize();
+};
+
+// Goes out as the platform's own close request, so it runs the same shutdown
+// the window manager's close does -- including the save on exit.
+let closeWindow = () => {
+    ui.window.close();
+};
+
+
+@template [
+        os-titlebar relative row w-grow h-[props.height]px items-center
+        bg-[props.color] font-size-16
+    ]
+    ref=rootRef
+
+div [w-grow] {}
+
+div [absolute left-[rx.get(centerX)] translate-x-[-0.5] h-[props.height]px w-fit row items-center] {
+    text [no-wrap text-color-[props.textColor]] [props.title]
+}
+
+div [row items-center h-grow] {
+    Button [] icon="chrome-minimize" paddingX=[14] paddingY=[9] rounded=[0]
+        bgHover=[props.controlHoverColor] bgActive=[props.controlActiveColor]
+        textColor=[props.textColor] focusRing=[0] @click=minimizeWindow {}
+
+    Button [] icon=[rx.get(maximizeIcon)] paddingX=[14] paddingY=[9] rounded=[0]
+        bgHover=[props.controlHoverColor] bgActive=[props.controlActiveColor]
+        textColor=[props.textColor] focusRing=[0] @click=toggleMaximizeWindow {}
+
+    Button [] icon="chrome-close" paddingX=[14] paddingY=[9] rounded=[0]
+        bgHover=[props.closeHoverColor] bgActive=[props.closeActiveColor]
+        textColor=[props.textColor] focusRing=[0] @click=closeWindow {}
+}

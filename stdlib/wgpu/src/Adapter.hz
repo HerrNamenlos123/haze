@@ -2,6 +2,11 @@
 export struct Adapter {
     handle: mut ffi.WGPUAdapterImpl;
 
+    // A CPU rasterizer (lavapipe, WARP) rather than a GPU.
+    fn isSoftware(): bool {
+        return haze_wgpu_adapter_is_software(this.handle);
+    }
+
     fn requestDeviceAsync(descriptor: DeviceDescriptor | none, callbackInfo: RequestDeviceCallbackInfo) {
       do unsafe {
         // Both the descriptor and the WGPULimits it points at have to stay alive

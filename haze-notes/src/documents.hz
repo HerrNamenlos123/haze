@@ -204,6 +204,25 @@ ref struct LineShape {
     return result;
   }
 
+  // Drops the tesselations of every level but `level`.
+  fn keepOnlyTesselation(level: int) {
+    let i = 0;
+    while i < this.tesselations.length {
+      if this.tesselations[i].level == level {
+        i += 1;
+      } else {
+        this.tesselations.remove(i);
+      }
+    }
+  }
+
+  // Drops the outline and every tesselation, keeping the bbox: what a stroke
+  // nobody is looking at needs. Both are computed again on demand.
+  fn dropDrawCaches() {
+    this.cachedOutline = none;
+    this.tesselations.clear();
+  }
+
   fn clearShapeCache() {
     this.bbox = none;
     this.cachedOutline = none;
@@ -472,6 +491,7 @@ fn constructStrokeOutline(args: StrokeConstructArgs): []Vec2 {
 
     let result: []Vec2 = [];
     if outline {
+      result.reserve(outline.length);
       for p in outline {
         result.push(Vec2(p.x / args.accuracyScaling, p.y / args.accuracyScaling));
       }

@@ -161,21 +161,33 @@ fn requestDeviceCallbackProxy(status: ffi.WGPURequestDeviceStatus, device: mut f
 }
 
 
-export fn createInstance() { 
-    do unsafe {
-        let stackref descriptor = ffi.WGPUInstanceDescriptor {
-            nextInChain: none,
-            features: {
-                nextInChain: none,
-                timedWaitAnyEnable: false,
-                timedWaitAnyMaxCount: 0,
-            }
-        };
-        let descriptorPtr: ref ffi.WGPUInstanceDescriptor = uninitialized;
-        let descriptorRaw = ffi.extractRawUnsafeStackrefPointer(descriptor);
-        __c__("descriptorPtr = descriptorRaw;");
+extern C fn haze_wgpu_create_instance(backends: u32): mut ffi.WGPUInstanceImpl | none :: final;
+extern C fn haze_wgpu_adapter_is_software(adapter: mut ffi.WGPUAdapterImpl): bool :: final;
 
-        let instance = ffi.wgpuCreateInstance(descriptorPtr);
+// The graphics APIs an Instance may bring up (wgpu-native's
+// WGPUInstanceBackend). Every one it is allowed is initialized when the
+// instance is created, whether an adapter of it is ever used or not: on Linux
+// `All` loads the OpenGL driver and makes an EGL context next to Vulkan.
+export enum bitflag InstanceBackend {
+    All = 0,
+    Vulkan = 1,
+    GL = 2,
+    Metal = 4,
+    DX12 = 8,
+    DX11 = 16,
+    BrowserWebGPU = 32,
+}
+
+// wgpu's first-class backends: Vulkan, Metal, DX12 and browser WebGPU.
+export fn primaryBackends(): InstanceBackend {
+    return InstanceBackend.Vulkan | InstanceBackend.Metal | InstanceBackend.DX12 | InstanceBackend.BrowserWebGPU;
+}
+
+export fn createInstance(backends: InstanceBackend = InstanceBackend.All) {
+    do unsafe {
+        let bits: u32 = 0;
+        __c__("bits = (uint32_t)backends;");
+        let instance = haze_wgpu_create_instance(bits);
         if instance {
             return fromFFI(instance);
         }

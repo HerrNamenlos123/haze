@@ -27,6 +27,39 @@ fn pickSurfaceFormat(caps: wgpu.SurfaceCapabilities): wgpu.TextureFormat {
     return caps.formats[0];
 }
 
+// The window's surface and the adapter that will draw to it.
+struct GpuConnection {
+    surface: wgpu.Surface;
+    adapter: wgpu.Adapter;
+}
+
+fn connectGpuWith(window: sdl.Window, backends: wgpu.InstanceBackend, allowSoftware: bool): Result<GpuConnection, str> {
+    let instance = wgpu.createInstance(backends);
+    if !instance { return "WGPU instance creation failed"; }
+
+    let surface = sdl_wgpu.createWindowWGPUSurface(instance, window);
+    if !surface { return "WGPU surface creation failed"; }
+
+    let adapter = instance.requestAdapterSync({});
+    if !adapter { return f"No graphics adapter: {adapter}"; }
+    if !allowSoftware && adapter.isSoftware() { return "Only a software graphics adapter"; }
+
+    return GpuConnection { surface: surface, adapter: adapter };
+}
+
+// wgpu's first-class backends first (Vulkan, Metal, DX12), and every backend
+// only when those have no GPU to offer. An instance brings up each backend it
+// is allowed, used or not: with all of them, a Linux application loaded the
+// OpenGL driver and made an EGL context beside the Vulkan device it actually
+// drew with -- 13 MB of memory and its share of the startup time.
+fn connectGpu(window: sdl.Window): Result<GpuConnection, str> {
+    let primary = connectGpuWith(window, wgpu.primaryBackends(), false);
+    if primary {
+        return primary;
+    }
+    return connectGpuWith(window, wgpu.InstanceBackend.All, true);
+}
+
 // Falls back to Fifo (the only present mode WebGPU guarantees every backend
 // supports) when the requested mode isn't in this surface's capabilities --
 // requesting an unsupported mode is a hard validation-error panic in wgpu,
@@ -279,7 +312,9 @@ export opaque ref struct App {
     wheelModifiersThisFrame: KeyModifiers = KeyModifiers.None;
 
     fn constructor(options: AppOptions): Result<mut App, str> {
-        let initResult = sdl.init();
+        // The one window is the only one there is, so whether it has a native
+        // titlebar is whether the platform's decorations are needed at all.
+        let initResult = sdl.init(options.nativeTitlebar);
         if !initResult { return f"SDL init failed: {initResult}"; }
 
         let window = sdl.createWindow({
@@ -303,13 +338,10 @@ export opaque ref struct App {
             }
         }
 
-        let instance = wgpu.createInstance();
-        if !instance { return "WGPU instance creation failed"; }
-
-        let surface = sdl_wgpu.createWindowWGPUSurface(instance, window);
-        if !surface { return "WGPU surface creation failed"; }
-
-        let adapter = instance.requestAdapterSync({})?!;
+        let gpu = connectGpu(window);
+        if !gpu { return f"{gpu}"; }
+        let surface = gpu.surface;
+        let adapter = gpu.adapter;
         let device = adapter.requestDeviceSync({})?!;
 
         let caps = surface.getCapabilities(adapter);
@@ -721,6 +753,10 @@ export opaque ref struct App {
 
         sdl.pollEvents();
         fs.pollEvents();
+
+        // Once the application has been quiet for a moment, what a burst of
+        // work left in the heap goes back to the system.
+        sys.releaseIdleMemory();
 
         // Focus edges for this frame. Read once, after pollEvents(), so
         // both the level and the two edges describe the same instant --

@@ -1,0 +1,18 @@
+diff --git a/src/conv.rs b/src/conv.rs
+index f2514c2..3a853c8 100644
+--- a/src/conv.rs
++++ b/src/conv.rs
+@@ -394,8 +394,11 @@ pub(crate) unsafe fn map_device_descriptor<'a>(
+                 },
+                 None => base_limits,
+             },
+-            // TODO(wgpu.h)
+-            memory_hints: Default::default(),
++            // Haze: wgpu.h has no field for this, and the default (Performance)
++            // makes the Vulkan backend reserve device memory in 128 MiB blocks
++            // -- over 200 MiB for an empty window. MemoryUsage starts at 8 MiB
++            // and grows with what the application actually allocates.
++            memory_hints: wgt::MemoryHints::MemoryUsage,
+             trace: Default::default(),
+             experimental_features: wgt::ExperimentalFeatures::disabled(),
+         },

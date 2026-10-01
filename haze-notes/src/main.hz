@@ -101,9 +101,15 @@ fn toUIKeyEdges(a: app.App, out: mut []ui_components.KeyEdge): []ui_components.K
 
 fn main(): int {
     attempt {
+        // The window is borderless and the UI draws the titlebar (see
+        // TitleBar.hzui): where it is gets published to the window manager
+        // every frame (setRegions below), so moving, resizing, maximizing and
+        // snapping are still the desktop's own. Besides the look, this keeps
+        // the platform's decoration toolkit out of the process -- on GNOME
+        // that is GTK, some 40 MB for a titlebar.
         let a = app.App({
             title: "Haze Notes",
-            nativeTitlebar: true,
+            nativeTitlebar: false,
         })?!;
 
         // Embedded rather than loaded by path: an installed copy runs from
