@@ -89,6 +89,7 @@ fn main(): int {
     cases_reactive_write_operands.register(suite);
     cases_embed_binary.register(suite);
     cases_dead_closure_capture.register(suite);
+    cases_if_chain_narrowing.register(suite);
 
     return testsuite.runAll(config, suite);
 }

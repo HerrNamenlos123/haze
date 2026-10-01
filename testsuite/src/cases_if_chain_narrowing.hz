@@ -1,0 +1,281 @@
+// ============================================================================
+// REGRESSION TEST — this is a real, load-bearing test, not a placeholder.
+//
+// What is known after an `if` / `else if` / `else` chain, and inside its later
+// branches. Two bugs, both in how the chain's conditions were inverted:
+//
+// 1. UNSOUND. The code after the chain was narrowed with the conditions of
+//    every branch that cannot fall through, wherever in the chain it sat:
+//
+//      if a > 0 {
+//          log();                  // falls through
+//      } else if b.v is none {
+//          return 0;
+//      }
+//      use(b.v);                   // was narrowed to int -- but for a > 0
+//                                  // the second condition was never even
+//                                  // evaluated, and b.v may well be none
+//
+//    A branch is only entered with every condition before it false. So the
+//    code after the chain, which is reached through the branches that fall
+//    through, knows the inverse of exactly the conditions BEFORE the first
+//    such branch -- and nothing about the ones after it.
+//
+// 2. LOST. Those conditions were merged into one set and inverted as a whole.
+//    The inverse of `A && B` is `!A || !B`, which says nothing once the two
+//    are different kinds of fact -- but that is not what an exiting chain
+//    means: both branches were passed over, so `!A && !B` holds, each inverted
+//    on its own.
+//
+//      if b.v is none { continue; } else if b.v > 1000 { break; }
+//      use(b.v);                   // was (int | none)
+//
+//    The same loss inside the chain: an `else` (or a third `else if`) did not
+//    get the inverse of an earlier `else if` whose condition is about a member
+//    (`b.v`), because a set holding only member facts counted as empty.
+//
+// Nearly every check is a static_assert on the type at one program point, so
+// a regression fails the build; the prints prove the values flow.
+// ============================================================================
+
+namespace cases_if_chain_narrowing {
+
+    export fn register(s: mut testsuite.Suite) {
+
+        s.run(
+            "if chain narrowing: only the conditions before the first branch that falls through",
+            """
+ref struct Box {
+    v: int | none;
+}
+
+ref struct Pair {
+    a: int | none;
+    b: int | none;
+}
+
+let log = 0;
+
+// ── Must NOT narrow ─────────────────────────────────────────────────────────
+
+// The first branch falls through, so the second condition may never have been
+// evaluated: nothing is known about b.v afterwards.
+fn sound_member(a: int, b: Box): str {
+    if a > 0 {
+        log += 1;
+    } else if b.v is none {
+        return "exit";
+    }
+    static_assert(typeof(b.v).prettyName == "(int | none)",
+        "unsound: b.v narrowed after a chain whose first branch falls through");
+    return f"after {b.v}";
+}
+
+// The same with a plain variable.
+fn sound_variable(a: int, x: int | none): str {
+    if a > 0 {
+        log += 1;
+    } else if x is none {
+        return "exit";
+    }
+    static_assert(typeof(x).prettyName == "(int | none)",
+        "unsound: x narrowed after a chain whose first branch falls through");
+    return f"after {x}";
+}
+
+// Both conditions are about the same value: falling through the first branch
+// means b.v IS none, whatever the second one says.
+fn sound_same_value(b: Box): str {
+    if b.v is none {
+        log += 1;
+    } else if b.v > 1000 {
+        return "exit";
+    }
+    static_assert(typeof(b.v).prettyName == "(int | none)",
+        "unsound: b.v narrowed although the `is none` branch falls through");
+    return f"after {b.v}";
+}
+
+// An explicit else that falls through changes nothing about that.
+fn sound_with_else(a: int, b: Box): str {
+    if a > 0 {
+        log += 1;
+    } else if b.v is none {
+        return "exit";
+    } else {
+        log += 1;
+    }
+    static_assert(typeof(b.v).prettyName == "(int | none)",
+        "unsound: b.v narrowed after a chain whose first branch falls through (with else)");
+    return f"after {b.v}";
+}
+
+// Exit, fall through, exit: the first condition is known false afterwards,
+// the third is not.
+fn sound_middle_falls_through(n: int, p: Pair): str {
+    if p.a is none {
+        return "exit a";
+    } else if n > 0 {
+        log += 1;
+    } else if p.b is none {
+        return "exit b";
+    }
+    static_assert(typeof(p.a).prettyName == "int",
+        "the condition before the first falling branch must still narrow p.a");
+    static_assert(typeof(p.b).prettyName == "(int | none)",
+        "unsound: p.b narrowed by a condition after a branch that falls through");
+    return f"after {p.a} {p.b}";
+}
+
+// ── Must narrow ─────────────────────────────────────────────────────────────
+
+// Every branch exits: both conditions are false afterwards, each on its own.
+fn kept_after_exiting_chain(b: Box): int {
+    if b.v is none {
+        return -1;
+    } else if b.v > 1000 {
+        return -2;
+    }
+    static_assert(typeof(b.v).prettyName == "int",
+        "b.v must be int after a chain whose branches all exit");
+    return b.v;
+}
+
+fn kept_after_exiting_chain_variable(x: int | none): int {
+    if x is none {
+        return -1;
+    } else if x > 1000 {
+        return -2;
+    }
+    static_assert(typeof(x).prettyName == "int",
+        "x must be int after a chain whose branches all exit");
+    return x;
+}
+
+// Two different values, one condition each.
+fn kept_two_values(p: Pair): int {
+    if p.a is none {
+        return -1;
+    } else if p.b is none {
+        return -2;
+    }
+    static_assert(typeof(p.a).prettyName == "int", "p.a must be int after the chain");
+    static_assert(typeof(p.b).prettyName == "int", "p.b must be int after the chain");
+    return p.a + p.b;
+}
+
+// The else of a chain knows every condition before it is false, including an
+// else-if about a member.
+fn kept_in_else_member(a: int, b: Box): int {
+    if a > 0 {
+        return -1;
+    } else if b.v is none {
+        return -2;
+    } else {
+        static_assert(typeof(b.v).prettyName == "int",
+            "the else must know the member else-if before it is false");
+        return b.v;
+    }
+}
+
+fn kept_in_else_variable(a: int, x: int | none): int {
+    if a > 0 {
+        return -1;
+    } else if x is none {
+        return -2;
+    } else {
+        static_assert(typeof(x).prettyName == "int",
+            "the else must know the variable else-if before it is false");
+        return x;
+    }
+}
+
+// So does a later else-if: its own condition compares b.v as an int.
+fn kept_in_third_branch(a: int, b: Box): int {
+    if a > 0 {
+        return -1;
+    } else if b.v is none {
+        return -2;
+    } else if b.v > 5 {
+        static_assert(typeof(b.v).prettyName == "int",
+            "a third branch must know the member else-if before it is false");
+        return b.v;
+    }
+    return 0;
+}
+
+// A chain inside a loop, exiting with continue and break.
+fn kept_in_loop(arr: []Box): int {
+    let sum = 0;
+    for b in arr {
+        if b.v is none {
+            continue;
+        } else if b.v > 1000 {
+            break;
+        }
+        static_assert(typeof(b.v).prettyName == "int",
+            "b.v must be int after a continue/break chain");
+        sum += b.v;
+    }
+    return sum;
+}
+
+fn main(): int {
+    fmt.println(sound_member(1, Box{v: none}));
+    fmt.println(sound_member(0, Box{v: none}));
+    fmt.println(sound_member(0, Box{v: 3}));
+    fmt.println(sound_variable(1, none));
+    fmt.println(sound_variable(0, 4));
+    fmt.println(sound_same_value(Box{v: none}));
+    fmt.println(sound_same_value(Box{v: 2000}));
+    fmt.println(sound_same_value(Box{v: 5}));
+    fmt.println(sound_with_else(1, Box{v: none}));
+    fmt.println(sound_with_else(0, Box{v: 6}));
+    fmt.println(sound_middle_falls_through(1, Pair{a: 1, b: none}));
+    fmt.println(sound_middle_falls_through(0, Pair{a: 1, b: none}));
+    fmt.println(sound_middle_falls_through(0, Pair{a: 1, b: 2}));
+
+    fmt.println(kept_after_exiting_chain(Box{v: none}));
+    fmt.println(kept_after_exiting_chain(Box{v: 2000}));
+    fmt.println(kept_after_exiting_chain(Box{v: 7}));
+    fmt.println(kept_after_exiting_chain_variable(8));
+    fmt.println(kept_two_values(Pair{a: 4, b: 5}));
+    fmt.println(kept_two_values(Pair{a: 4, b: none}));
+    fmt.println(kept_in_else_member(0, Box{v: 10}));
+    fmt.println(kept_in_else_variable(0, 11));
+    fmt.println(kept_in_third_branch(0, Box{v: 12}));
+    fmt.println(kept_in_third_branch(0, Box{v: 1}));
+    let arr: []Box = [Box{v: 1}, Box{v: none}, Box{v: 2}, Box{v: 5000}, Box{v: 99}];
+    fmt.println(kept_in_loop(arr));
+    return 0;
+}
+""",
+            """
+after none
+exit
+after 3
+after none
+after 4
+after none
+exit
+after 5
+after none
+after 6
+after 1 none
+exit b
+after 1 2
+-1
+-2
+7
+8
+9
+-2
+10
+11
+12
+0
+3
+""",
+        );
+    }
+}

@@ -55,7 +55,7 @@ fn sameAsText(bytes: Bytes, text: str): bool {
 
 fn firstNonNewline(bytes: Bytes): int {
     let i = 0;
-    while i < bytes.length && (bytes[i] == b"\n" || bytes[i] == b"\r") {
+    while i < bytes.length && (bytes[i] == b"\\n" || bytes[i] == b"\\r") {
         i += 1;
     }
     return i;

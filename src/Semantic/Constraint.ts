@@ -418,7 +418,9 @@ export class ConstraintSet {
   // ---- queries -------------------------------------------------------------
 
   isEmpty(): boolean {
-    return this.map.size === 0;
+    // A fact about a member (`b.v is none`) is recorded by path only, with no
+    // legacy entry, so both maps count.
+    return this.map.size === 0 && this.pathMap.size === 0;
   }
 
   has(c: Constraint): boolean {
@@ -570,9 +572,10 @@ export class ConditionChain {
   private invertedPrefix(): ConstraintSet {
     const out = ConstraintSet.empty();
     for (const c of this.conditions) {
+      // Each condition on its own: a later branch is entered with every
+      // earlier condition false, `!A && !B`. One that has no inverse (see
+      // ConstraintSet.inverse()) contributes nothing.
       const inverted = c.inverse();
-      // Only add the inverted constraints if they are not empty (which indicates inversion failed)
-      // If inversion failed, we skip the constraint rather than add an empty one
       if (!inverted.isEmpty()) {
         out.addAll(inverted);
       }

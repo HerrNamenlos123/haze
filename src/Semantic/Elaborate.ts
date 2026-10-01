@@ -16549,22 +16549,29 @@ export class SemanticElaborator {
           resultFlow.add(Semantic.FlowType.Fallthrough);
         }
 
-        const fallthroughBranches = branchFlows.filter((f) =>
-          f.flow.has(Semantic.FlowType.Fallthrough)
+        // What is known after the chain. The code after it is reached only
+        // through a branch that falls through, and a branch is only entered
+        // with every condition before it false. So the conditions of the
+        // branches BEFORE the first one that falls through are all false
+        // afterwards -- each inverted on its own, `!A && !B`, since each was
+        // evaluated and passed over.
+        //
+        // Nothing is known about the conditions after that branch: it was
+        // taken without them being evaluated at all. Narrowing by an exiting
+        // branch further down the chain would claim, for
+        // `if a { work(); } else if x is none { return; }`, that x is not
+        // none afterwards.
+        //
+        // branchFlows is in chain order, and ends with the else (or the
+        // implicit one, which falls through). With no branch falling through
+        // the code after the chain is unreachable.
+        const firstFallthrough = branchFlows.findIndex((b) =>
+          b.flow.has(Semantic.FlowType.Fallthrough)
         );
-        const nonFallthroughBranches = branchFlows.filter(
-          (f) => !f.flow.has(Semantic.FlowType.Fallthrough)
-        );
-
-        const canNarrowAfterIf =
-          (fallthroughBranches.length > 0 || !s.elseBlock) &&
-          nonFallthroughBranches.length > 0;
-        if (canNarrowAfterIf) {
-          const constraints = ConstraintSet.empty();
-          nonFallthroughBranches.forEach((b) =>
-            constraints.addAll(b.constraints)
+        for (let i = 0; i < firstFallthrough; i++) {
+          this.currentContext.constraints.addAll(
+            branchFlows[i].constraints.inverse()
           );
-          this.currentContext.constraints.addAll(constraints.inverse());
         }
 
         return {
