@@ -1118,12 +1118,21 @@ void haze_sdl_showWindow(SDL_Window *window) {
 
    Not the same thing as minimizing: a minimized window is still a window the
    platform knows about, with a taskbar/dock entry and a thumbnail; a hidden
-   one is gone from the desktop entirely until it is shown again. */
+   one is gone from the desktop entirely until it is shown again.
+
+   The window is off the screen by the time this returns. SDL_HideWindow alone
+   does not promise that: on Wayland it only QUEUES the unmap in the client's
+   outgoing buffer, and nothing sends it until the next event pump. A caller
+   that hides the window and then works without pumping -- saving on the way
+   out is the usual one -- left the window on screen, frozen, for as long as
+   that work took. SDL_SyncWindow sends the request and waits for the
+   compositor to have processed it. */
 void haze_sdl_hideWindow(SDL_Window *window) {
   if (!window) {
     return;
   }
   SDL_HideWindow(window);
+  SDL_SyncWindow(window);
 }
 
 /* False while the window is unmapped -- whether because it was created with

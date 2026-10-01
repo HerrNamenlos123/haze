@@ -620,6 +620,9 @@ export ref struct Window {
 	//
 	// Not minimize(): a minimized window still exists on the desktop, with
 	// its taskbar entry and thumbnail. A hidden one is gone until shown.
+	//
+	// The window is off the screen when this returns, so work that follows
+	// without another frame (saving before exit) runs with nothing on screen.
 	fn hide() {
 		ffi.hideWindow(this.handle);
 	}
