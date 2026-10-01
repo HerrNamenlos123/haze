@@ -176,10 +176,11 @@ export namespace Semantic {
     // Legacy: variables used to be hoisted to the heap when captured. Captures
     // now copy (by value) or share the pointer (refs); this is never set.
     requiresHoisting: boolean;
-    // Set when a closure captured this variable by value (§7.1): a later
-    // assignment in the declaring scope would leave the closure with a stale
-    // copy, so it is rejected (see assertNotWriteAfterByValueCapture).
-    capturedByValueAt?: SourceLoc;
+    // The closures that captured this variable by value (§7.1): a later
+    // assignment in the declaring scope leaves any of them that is still
+    // alive with a stale copy, which is warned about (H7190, see
+    // Elaborate.ts staleByValueCapture).
+    byValueCaptures?: { lambda: ExprId; sourceloc: SourceLoc }[];
     parentSymbolId: SymbolId | null;
     sourceloc: SourceLoc;
     comptime: boolean;

@@ -87,6 +87,7 @@ fn main(): int {
     cases_cache_file.register(suite);
     cases_reactive_write_operands.register(suite);
     cases_embed_binary.register(suite);
+    cases_dead_closure_capture.register(suite);
 
     return testsuite.runAll(config, suite);
 }

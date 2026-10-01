@@ -10465,14 +10465,15 @@ export class SemanticElaborator {
       // Not a write inside a capturing closure. But a write in the declaring
       // scope *after* some closure took a by-value copy leaves that closure
       // with a stale value -- the same shared-state mistake from the other side.
-      if (
-        rootSymbol.variant === Semantic.ENode.VariableSymbol &&
-        rootSymbol.capturedByValueAt
-      ) {
-        // A warning, not an error: the closure may well be finished by now
-        // (`acc = fold(() => ... acc ...)` is a normal pattern), and whether
-        // it is still alive is not knowable locally.
-        const msg = `'${rootSymbol.name}' was captured by value by a closure at ${formatSourceLoc(rootSymbol.capturedByValueAt)}; if that closure is still alive, it keeps the old value. To share it, declare it as a stack reference ('let stackref ${rootSymbol.name} = Box(...)') or a 'ref'.`;
+      const staleAt =
+        rootSymbol.variant === Semantic.ENode.VariableSymbol
+          ? this.staleByValueCapture(rootSymbol)
+          : null;
+      if (rootSymbol.variant === Semantic.ENode.VariableSymbol && staleAt) {
+        // A warning, not an error: the closure may well be finished by now,
+        // and for one that was stored or handed to a retaining function that
+        // is not knowable locally.
+        const msg = `'${rootSymbol.name}' was captured by value by a closure at ${formatSourceLoc(staleAt)}; if that closure is still alive, it keeps the old value. To share it, declare it as a stack reference ('let stackref ${rootSymbol.name} = Box(...)') or a 'ref'.`;
         printWarningMessage(
           msg,
           sourceloc,
@@ -10487,6 +10488,23 @@ export class SemanticElaborator {
       sourceloc,
       HazeErrorCode.WriteToByValueCapture
     );
+  }
+
+  // Where a closure that may still be alive took a by-value copy of
+  // `variable`, or null if no such closure exists. A lambda literal handed
+  // straight to a non-retaining parameter (CallableExpr.stackEnv) is gone
+  // when that call returns, so `acc = fold(() => ... acc ...)` -- and any
+  // write after it -- leaves no copy behind to go stale. A closure nested
+  // inside it took its own copy and is judged on its own.
+  staleByValueCapture(variable: Semantic.VariableSymbol): SourceLoc | null {
+    for (const capture of variable.byValueCaptures ?? []) {
+      const lambda = this.sr.exprNodes.get(capture.lambda);
+      assert(lambda.variant === Semantic.ENode.CallableExpr);
+      if (!lambda.stackEnv) {
+        return capture.sourceloc;
+      }
+    }
+    return null;
   }
 
   assignmentExpr(
@@ -18747,9 +18765,9 @@ export class SemanticElaborator {
     // that went stale the moment anyone wrote the global, and an assignment
     // from inside the closure was rejected with H7189 -- whose advice, "declare
     // it as a stack reference", does not exist at global scope. It also must
-    // not record capturedByValueAt, or an ordinary write to the global further
-    // down the enclosing function would warn H7190 about a copy that is not
-    // there. See testsuite/src/cases_global_not_captured.hz.
+    // not be recorded in byValueCaptures, or an ordinary write to the global
+    // further down the enclosing function would warn H7190 about a copy that
+    // is not there. See testsuite/src/cases_global_not_captured.hz.
     if (capturedVariable.variableContext === EVariableContext.Global) {
       return;
     }
@@ -18757,9 +18775,6 @@ export class SemanticElaborator {
     const resultingExpr = this.sr.exprNodes.get(resultingExprId);
 
     const byValue = this.isCapturedByValue(capturedVariable.type);
-    if (byValue && !capturedVariable.capturedByValueAt) {
-      capturedVariable.capturedByValueAt = resultingExpr.sourceloc;
-    }
     if (byValue) {
       const capUse = this.sr.typeUseNodes.get(
         this.resolveAlias(capturedVariable.type)
@@ -18810,6 +18825,13 @@ export class SemanticElaborator {
         variable: capturedVariableId,
         value: rawValueId,
       });
+      if (byValue) {
+        capturedVariable.byValueCaptures ??= [];
+        capturedVariable.byValueCaptures.push({
+          lambda: lambda,
+          sourceloc: resultingExpr.sourceloc,
+        });
+      }
       // Capturing a callable parameter is an escape unless the lambda turns
       // out to be non-retained itself (consumeLambdaCaptures).
       if (this.isTrackedCallableParam(capturedVariableId)) {

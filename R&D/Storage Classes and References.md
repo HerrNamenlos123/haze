@@ -983,7 +983,10 @@ implementation refined or extended the design; each is normative from here on.
 - **Assigning to a by-value capture inside the closure is an error** (H7189): the write would
   only touch the copy. Share it through a stackref/ref instead. Assigning to a variable in the
   declaring scope *after* a closure captured it by value is a **warning** (H7190): the closure may
-  be finished (`acc = fold(() => … acc …)` is normal), so it cannot be an error.
+  be finished, so it cannot be an error. A lambda literal passed straight to a non-retaining
+  parameter (`immediate`, or inferred non-escaping) *is* finished when the call returns, so it
+  never causes the warning: `acc = fold(() => … acc …)` is silent. Only closures that may
+  outlive their call (stored, returned, `let stackref`, handed to a retaining parameter) count.
 - Migration pattern for shared closure state: `let stackref x = Box<T>(init)` when the closure
   is only invoked while the frame is alive (polling a callback); `let x: ref Box<T> = { value }`
   when the closure outlives the function (component render state, async callbacks).
