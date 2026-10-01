@@ -238,19 +238,15 @@ void hzstd_init_gc()
 {
   GC_INIT();
 
-  // Default is 3 (grow the heap only until live+slop is 1/3 of the heap, then collect) --
-  // tuned for workloads with a modest number of allocations where collecting often and keeping
-  // the heap small is the right tradeoff. Haze workloads that make a very large NUMBER of small
-  // allocations in a tight loop (confirmed directly: profiler postprocessing building JSON
-  // output for a session with hundreds of thousands of memory-allocation captures, each one
-  // triggering its own small array allocation) hit the opposite problem -- GC_realloc/GC_malloc
-  // decide to collect on a huge fraction of those individual allocations, and each of those
-  // collections has real fixed overhead (stopping every thread, a full mark phase over
-  // everything currently live) that dominates total time when it happens thousands of times in
-  // a row for a workload that's mostly short-lived garbage anyway. A higher divisor tolerates
-  // more garbage before collecting, trading some peak memory for drastically fewer, larger
-  // collections -- the right tradeoff for this runtime's actual allocation-heavy workloads.
-  GC_set_free_space_divisor(20);
+  // GC_free_space_divisor is left at the collector's default, 3: a collection
+  // runs once about (2 * traced bytes) / divisor bytes have been allocated
+  // since the last one. A HIGHER divisor collects MORE often, in a smaller
+  // heap. This used to set 20, meaning to make collections rarer, and made
+  // them nearly seven times as frequent instead: with 12 MB of live data,
+  // one every 1.5 MB allocated. Saving a 10 MB document ran 130 of them
+  // where the default runs 19, for about 15% more peak memory. Each one stops
+  // every thread and marks everything live, so how often they run is what an
+  // allocation-heavy stretch of work costs.
 }
 
 void hzstd_force_gc()
@@ -306,10 +302,10 @@ void *hzstd_arena_allocate_n(hzstd_arena_t *arena, size_t size, int skip_n_frame
   // function doesn't need a dataType parameter of its own -- there is nothing to report here.
 
   size_t alignment = alignof(max_align_t);
-  size_t chunk_size = HZSTD_MAX(HZSTD_DEFAULT_ARENA_CHUNK_SIZE, size + alignment);
 
   if (!arena->first_chunk) {
-    arena->first_chunk = hzstd_arena_create_chunk(chunk_size, "Arena chunk", 1 + skip_n_frames);
+    size_t first_size = HZSTD_MAX(HZSTD_FIRST_ARENA_CHUNK_SIZE, size + alignment);
+    arena->first_chunk = hzstd_arena_create_chunk(first_size, "Arena chunk", 1 + skip_n_frames);
     arena->last_chunk = arena->first_chunk;
   }
 
@@ -322,6 +318,10 @@ void *hzstd_arena_allocate_n(hzstd_arena_t *arena, size_t size, int skip_n_frame
   size_t new_used = (aligned - base) + size;
 
   if (new_used > chunk->capacity) {
+    // Twice the last chunk, so an arena holds at most about twice what was
+    // put into it, up to the size where a chunk more is no longer a waste.
+    size_t grown = HZSTD_MIN(chunk->capacity * 2, HZSTD_DEFAULT_ARENA_CHUNK_SIZE);
+    size_t chunk_size = HZSTD_MAX(grown, size + alignment);
     chunk = hzstd_arena_enlarge(chunk, chunk_size, "Arena chunk", 1 + skip_n_frames);
     arena->last_chunk = chunk;
     base = (uintptr_t)(chunk + 1);

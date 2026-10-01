@@ -3638,11 +3638,10 @@ hzstd_profiling_result_t hzstd_profiling_end(hzstd_profiling_context_t *context)
   // holds a hzstd_dynamic_array_t of frames -- which, built the normal way,
   // is two GC allocations per capture (the control struct, plus a backing
   // buffer rounded up to HZSTD_DEFAULT_DYNAMIC_ARRAY_CAPACITY even for a
-  // one-frame trace). At hundreds of thousands of captures that's the exact
-  // "very large number of small, long-lived objects" workload called out in
-  // hzstd_init_gc's GC_set_free_space_divisor comment: not just slow to
-  // allocate, but slow *forever after*, because every subsequent collection
-  // has to mark all of them individually.
+  // one-frame trace). At hundreds of thousands of captures that's a very
+  // large number of small, long-lived objects: not just slow to allocate, but
+  // slow *forever after*, because every subsequent collection has to mark all
+  // of them individually.
   //
   // So all of it is carved out of two blocks instead -- one for every
   // stacktrace's control struct, one for every stackframe of every trace,

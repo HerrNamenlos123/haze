@@ -52,6 +52,7 @@ typedef struct hzstd_none_t {
 } hzstd_none_t;
 
 #define HZSTD_MAX(a, b) ((a) > (b) ? (a) : (b))
+#define HZSTD_MIN(a, b) ((a) < (b) ? (a) : (b))
 
 // ── String ───────────────────────────────────────────────────────────────────
 

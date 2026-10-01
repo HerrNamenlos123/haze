@@ -1,0 +1,77 @@
+// ============================================================================
+// REGRESSION TEST — this is a real, load-bearing test, not a placeholder.
+//
+// How json.stringify writes a real. It went through printf: "%.15g", parsed
+// back to see whether that had survived, and "%.17g" when it had not -- three
+// trips through libc's arbitrary-precision arithmetic per number, which was
+// more than half the time of saving a document (almost entirely coordinates).
+// It now writes the shortest decimal that reads back as the same real,
+// without printf (hzstd_dtoa.c).
+//
+// The first case pins the text: as short as it can be whatever the input
+// spelling was, a plain decimal between 1e-6 and 1e21, an exponent outside.
+// The second pins the round trip, over far more values than one arena chunk
+// holds -- arenas start small and grow, and a document's JSON tree goes
+// through every chunk size on the way.
+// ============================================================================
+
+namespace cases_json_real_numbers {
+
+    export fn register(s: mut testsuite.Suite) {
+
+        s.run(
+            "json real numbers: the shortest text that reads back the same",
+            """
+struct Sample {
+    values: []real;
+}
+
+fn main(): int {
+    let given = json.parse<Sample>(\"\"\"{"values":[0.1,0.5,-2.5,3.0,123456.789,12.488921033208157,0.10000000000000001,0.3333333333333333,0.000001,0.0000001,1.5e-7,1E+20,1e21,1.25e+22,6.02214076e23,5e-324,2.2250738585072014e-308,1.7976931348623157e308]}\"\"\");
+    if !given {
+        fmt.println(f"parse failed: {given}");
+        return 1;
+    }
+    fmt.println(json.stringify(given));
+    return 0;
+}
+""",
+            """
+{"values":[0.1,0.5,-2.5,3,123456.789,12.488921033208157,0.1,0.3333333333333333,0.000001,1e-7,1.5e-7,100000000000000000000,1e21,1.25e22,6.02214076e23,5e-324,2.2250738585072014e-308,1.7976931348623157e308]}
+""");
+
+        s.run(
+            "json real numbers: every value reads back exactly",
+            """
+struct Sample {
+    values: []real;
+}
+
+fn main(): int {
+    let many: []real = [];
+    let x = 0.123456789;
+    for (let i = 0; i < 50000; i++) {
+        x = x * 1.0000001 + 0.0101;
+        many.push(i % 3 == 0 ? x : (i % 3 == 1 ? -x / 977.0 : x * 1000000000.0));
+    }
+    let text = json.stringify(Sample { values: many });
+    let back = json.parse<Sample>(text);
+    if !back {
+        fmt.println(f"parse failed: {back}");
+        return 1;
+    }
+    let different = 0;
+    for (let i = 0; i < many.length; i++) {
+        if back.values[i] != many[i] {
+            different += 1;
+        }
+    }
+    fmt.println(f"{back.values.length} values, {different} read back differently");
+    return 0;
+}
+""",
+            """
+50000 values, 0 read back differently
+""");
+    }
+}

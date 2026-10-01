@@ -55,6 +55,12 @@ void hzstd_init_gc();
 // binding and where it's actually used.
 void hzstd_force_gc();
 
+// An arena's first chunk, and the size its chunks grow to: each one is twice
+// the last. A flat 64 KiB made every arena cost 64 KiB however little went
+// into it, and arenas are made per call in many places (every json.stringify,
+// every json.array()) -- serializing a few thousand small values one at a
+// time allocated hundreds of megabytes and collected garbage the whole way.
+#define HZSTD_FIRST_ARENA_CHUNK_SIZE (1024)
 #define HZSTD_DEFAULT_ARENA_CHUNK_SIZE (64 * 1024)
 
 #define HZSTD_ALLOC_STRUCT(allocator, struct_t, value, dataType)                                                       \

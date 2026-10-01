@@ -2,6 +2,7 @@
 #include "../../include/json/hzstd_json.h"
 #include "../../hzstd_types.h"
 #include "../../include/hzstd_memory.h"
+#include "../../include/hzstd_dtoa.h"
 #include "../../include/hzstd_string.h"
 #include "cJSON.h"
 #include <threads.h>

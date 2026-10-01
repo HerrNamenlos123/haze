@@ -3,6 +3,7 @@
 
 #include "src/hzstd_array.c"
 #include "src/hzstd_demangle.c"
+#include "src/hzstd_dtoa.c"
 #include "src/hzstd_env.c"
 #include "src/hzstd_filesystem.c"
 #include "src/hzstd_memory.c"

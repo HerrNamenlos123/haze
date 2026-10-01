@@ -1081,7 +1081,8 @@ namespace ChromeTrace {
 
     // How many events share one encoding arena before it is dropped for a fresh
     // one (see json.stringify's allocator overload for why per-event arenas are
-    // expensive: each one commits a 64 KiB chunk no matter how small the event).
+    // expensive: each one commits a chunk of its own no matter how small the
+    // event).
     //
     // The win saturates as soon as a batch's encoded bytes comfortably exceed one
     // chunk -- past that, chunks are being filled rather than wasted, and a larger
