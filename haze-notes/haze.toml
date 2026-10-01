@@ -7,13 +7,26 @@ license = "MIT"
 authors = []
 type = "exe"
 
-# How the app presents itself on the desktop (its .desktop entry). The compiler
-# does not read this table.
+# How the app presents itself on the desktop: the build writes a .desktop entry
+# and the icon from this next to the binary.
 [app]
 appId = "io.github.herrnamenlos123.HazeNotes"
 displayName = "Haze Notes"
 icon = "../resources/haze-logo.png"
 categories = ["Office"]
+
+# Run as `haze <name>`, in this directory.
+[scripts.linux]
+# Release build, installed for the current user: the binary onto PATH, the
+# desktop entry and icon where the desktop finds them. `install` replaces files
+# rather than writing into them, so this works while the app is running.
+install = '''
+haze build --release &&
+install -Dm755 __haze__/haze-notes/bin/haze-notes ~/.local/bin/haze-notes &&
+install -Dm644 __haze__/haze-notes/bin/io.github.herrnamenlos123.HazeNotes.desktop ~/.local/share/applications/io.github.herrnamenlos123.HazeNotes.desktop &&
+install -Dm644 __haze__/haze-notes/bin/io.github.herrnamenlos123.HazeNotes.png ~/.local/share/icons/hicolor/512x512/apps/io.github.herrnamenlos123.HazeNotes.png &&
+gtk-update-icon-cache -f -t ~/.local/share/icons/hicolor
+'''
 
 [dependencies]
 # Core runtime and UI framework stuff

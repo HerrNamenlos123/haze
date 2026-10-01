@@ -4,6 +4,7 @@ import pkg from "../package.json" with { type: "json" };
 import { startLsp } from "./lsp";
 import { getFile } from "./ModuleCompiler/ModuleCompiler";
 import { ProjectCompiler } from "./ProjectCompiler/ProjectCompiler";
+import { runScript } from "./ProjectCompiler/Scripts";
 import { buildSettingsFromFlags } from "./shared/BuildSettings";
 import { GeneralError, SilentError } from "./shared/Errors";
 import {
@@ -47,14 +48,14 @@ function addProfilingArguments(subparser: ArgumentParser) {
   });
 }
 
-// The flags behind BuildSettings, shared by every command that builds. They are
-// independent so they combine: --release is a preset, and --debug/--no-debug
-// override the part of it that turns debug features off.
+// The flags behind BuildSettings and stripping, shared by every command that
+// builds. They are independent so they combine: --release is a preset, and each
+// part of it can be overridden on its own, e.g. `--release --debug-info`.
 function addBuildSettingsArguments(subparser: ArgumentParser) {
   subparser.add_argument("--release", {
     action: "store_true",
     dest: "release",
-    help: "Optimized build with debug features off (combine with --debug to keep them)",
+    help: "Fully optimized (-O3), stripped build without debug info or debug features; each part can be overridden",
   });
   subparser.add_argument("--debug", {
     action: "store_const",
@@ -66,7 +67,31 @@ function addBuildSettingsArguments(subparser: ArgumentParser) {
     action: "store_const",
     const: false,
     dest: "debug",
-    help: "Turn debug features off without optimizing",
+    help: "Turn debug features off",
+  });
+  subparser.add_argument("--debug-info", {
+    action: "store_const",
+    const: true,
+    dest: "debugInfo",
+    help: "Compile with debug info (file:line in panics), even with --release",
+  });
+  subparser.add_argument("--no-debug-info", {
+    action: "store_const",
+    const: false,
+    dest: "debugInfo",
+    help: "Compile without debug info",
+  });
+  subparser.add_argument("--strip", {
+    action: "store_const",
+    const: true,
+    dest: "strip",
+    help: "Strip the final executable after building (the default with --release)",
+  });
+  subparser.add_argument("--no-strip", {
+    action: "store_const",
+    const: false,
+    dest: "strip",
+    help: "Do not strip the final executable, even with --release",
   });
 }
 
@@ -134,11 +159,6 @@ async function main(): Promise<number> {
     dest: "ignoreLock",
     help: "Skip build lock acquisition (internal use)",
   });
-  build_parser.add_argument("--strip", {
-    action: "store_true",
-    dest: "strip",
-    help: "Strip the final executable after building",
-  });
   addBuildSettingsArguments(build_parser);
   build_parser.add_argument("--show-timing", {
     action: "store_true",
@@ -199,11 +219,6 @@ async function main(): Promise<number> {
     dest: "ignoreLock",
     help: "Skip build lock acquisition (internal use)",
   });
-  run_parser.add_argument("--strip", {
-    action: "store_true",
-    dest: "strip",
-    help: "Strip the final executable after building",
-  });
   addBuildSettingsArguments(run_parser);
   run_parser.add_argument("--parser", {
     dest: "parser",
@@ -253,11 +268,6 @@ async function main(): Promise<number> {
     dest: "ignoreLock",
     help: "Skip build lock acquisition (internal use)",
   });
-  exec_parser.add_argument("--strip", {
-    action: "store_true",
-    dest: "strip",
-    help: "Strip the final executable after building",
-  });
   addBuildSettingsArguments(exec_parser);
   exec_parser.add_argument("--show-timing", {
     action: "store_true",
@@ -282,6 +292,30 @@ async function main(): Promise<number> {
   subparsers.add_parser("lsp", {
     help: "Run the Haze language server over stdio",
   });
+
+  // Anything that is not a built-in command is a [scripts] entry of the
+  // project (see ProjectCompiler/Scripts.ts). Built-ins always win.
+  const builtinCommands = Object.keys((subparsers as any).choices);
+  const scriptName = process.argv[2];
+  if (
+    scriptName !== undefined &&
+    !scriptName.startsWith("-") &&
+    !builtinCommands.includes(scriptName)
+  ) {
+    try {
+      return await runScript(
+        scriptName,
+        process.argv.slice(3),
+        builtinCommands
+      );
+    } catch (err) {
+      if (err instanceof GeneralError) {
+        console.info(err.message);
+        return 1;
+      }
+      throw err;
+    }
+  }
 
   const args = main_parser.parse_args();
 
@@ -310,10 +344,14 @@ async function main(): Promise<number> {
       const project = new ProjectCompiler(
         Boolean(args.verbose),
         Boolean(args.ignoreLock),
-        Boolean(args.strip),
+        args.strip ?? Boolean(args.release),
         Boolean(args.showTiming),
         Boolean(args.quiet),
-        buildSettingsFromFlags(Boolean(args.release), args.debug)
+        buildSettingsFromFlags(
+          Boolean(args.release),
+          args.debug,
+          args.debugInfo
+        )
       );
 
       if (

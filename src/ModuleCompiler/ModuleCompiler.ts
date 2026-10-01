@@ -2128,11 +2128,11 @@ export class ModuleCompiler {
     }
 
     compilerFlags.addAll("-std=c11");
-    // Kept in release builds too: panics and the profiler resolve file:line
-    // from it at runtime.
-    compilerFlags.addAll("-g");
+    if (this.settings.debugInfo) {
+      compilerFlags.addAll("-g");
+    }
     if (this.settings.optimize) {
-      compilerFlags.addAll("-O2");
+      compilerFlags.addAll("-O3");
     }
 
     const [

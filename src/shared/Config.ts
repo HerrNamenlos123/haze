@@ -787,7 +787,9 @@ export class ConfigParser {
 
   async parseConfig(sourceloc?: boolean): Promise<ModuleConfig> {
     const content = await readFile(this.configPath, "utf-8");
-    const toml = parse(content, { bigint: false });
+    // j-toml rejects every multi-line string unless told how to join its
+    // lines, and [scripts] commands are naturally written as one.
+    const toml = parse(content, { bigint: false, joiner: "\n" });
 
     // Absent 'type' means executable: a project is an app unless it opts into
     // being a library with type = "lib".
