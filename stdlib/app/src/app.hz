@@ -259,6 +259,11 @@ export opaque ref struct App {
     windowShown: bool = false;
     framePresented: bool = false;
 
+    // When the current tick began (sdl.getTime(), seconds) -- stamped by
+    // nextFrame(), read by idle() to keep skipped ticks from running
+    // back-to-back.
+    _tickStart: real = 0.0;
+
     // ── OS window focus ──────────────────────────────────────────────
     //
     // `focused` is the live state; the two edges beside it are true for
@@ -729,6 +734,7 @@ export opaque ref struct App {
         if this.window.shouldClose() {
             return none;
         }
+        this._tickStart = sdl.getTime();
 
         // Second time around the caller's loop: frame 0 is rendered and
         // presented, so the window has something to show. See windowShown.
@@ -808,10 +814,25 @@ export opaque ref struct App {
     // The timeout is a CEILING, not a frame target: it only bounds how long
     // work that arrives through something other than an SDL event (a
     // filesystem watcher, a timer a component is waiting on) can sit before
-    // the next tick looks at it. One nominal frame keeps that identical to
-    // what a 60fps render loop already guaranteed.
+    // the next tick looks at it. Together with the spacing below it adds up
+    // to one nominal frame, which keeps that identical to what a 60fps render
+    // loop already guaranteed.
+    //
+    // The spacing is the other half of what the vblank used to do: cap the
+    // tick rate. Events wake the wait immediately, so a pointer reporting at
+    // 1000 Hz over a part of the UI that does not react to it would otherwise
+    // run a thousand ticks a second, each one examining the tree and finding
+    // nothing. The first event after a quiet spell is still handled at once
+    // (its tick starts the moment the wait returns); only a tick that follows
+    // straight on another skipped one is held back, and then by at most this
+    // much -- well under the frame of latency a vsynced loop always had.
     fn idle() {
-        sdl.waitEventTimeout(16);
+        const minTickSeconds = 0.004;
+        let elapsed = sdl.getTime() - this._tickStart;
+        if elapsed < minTickSeconds {
+            time.sleep(minTickSeconds - elapsed);
+        }
+        sdl.waitEventTimeout(12);
     }
 
     fn destroy() {

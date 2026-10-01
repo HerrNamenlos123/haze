@@ -124,11 +124,10 @@ export opaque ref struct Runtime {
         // something unrelated happened. Ask for the one frame explicitly.
         // See ui_components.UIContext.needsUpdate.
         //
-        // requestLayout rather than requestUpdate: the viewport is a layout
-        // input, so this frame must re-SOLVE, not just repaint. No element
-        // style changed, so nothing else would have reported the layout dirty
-        // and the render gate would skip the very frame that resizes.
-        this.ui.requestLayout();
+        // An explicit request also forces the full pass through the render
+        // gate (UIContext.frameNeedsLayout): no element's style changed, so
+        // nothing else could report that this frame has to be re-solved.
+        this.ui.requestUpdate();
     }
 
     // Runs this frame's component tree + flexbox layout, drawing the result

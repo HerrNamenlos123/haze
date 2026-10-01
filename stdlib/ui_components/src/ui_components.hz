@@ -3969,7 +3969,7 @@ export opaque ref struct UIContext {
         // satisfied. Cleared HERE rather than at the end so that a request
         // made later in this same frame -- a click handler calling focus(),
         // say -- survives to open the gate for the next one.
-        ui_takeUpdateRequest();
+        let explicitlyRequested = ui_takeUpdateRequest();
 
         // Past the gate: this frame rebuilds the tree, so this frame's layout
         // will produce fresh boxes and the OS titlebar regions are worth
@@ -3988,6 +3988,16 @@ export opaque ref struct UIContext {
         if this.rootComponent {
             this._layoutDirty = false;
             this._paintDirty = false;
+        }
+        // An explicit request is the escape hatch for state the reactive
+        // graph cannot see -- a resized viewport, a rebound font, a host that
+        // changed something behind the UI's back. Nothing here can know WHAT
+        // changed, so no comparison below could ever notice it; the only
+        // honest answer is the full pass. (Without this the request opens the
+        // frame gate and the render gate then skips the very frame it asked
+        // for.)
+        if explicitlyRequested {
+            this._layoutDirty = true;
         }
 
         // HIT TESTING & EVENT SCHEDULING
@@ -4546,18 +4556,17 @@ export opaque ref struct UIContext {
     }
 
     // Does this frame need painting at all? Only meaningful once process()
-    // has returned. A re-solve repaints by definition, hence the OR.
+    // has returned. A re-solve repaints by definition, hence the first OR.
+    //
+    // A canvas owed a draw counts, and it is the case that must never be
+    // lost: a canvas is drawn INSIDE the render pass (ui_runtime's
+    // renderCanvas), so "no style changed" says nothing about it. An
+    // application that paints on a canvas changes no style at all while the
+    // user draws, pans or waits for tiles -- it only ever invalidates. Asked
+    // live rather than latched, so it stays true for as long as the draw is
+    // still owed.
     fn frameNeedsPaint(): bool {
-        return this._layoutDirty || this._paintDirty;
-    }
-
-    // Force a full layout pass, for a layout input that is not an element
-    // style at all: today the viewport size and a newly registered font (see
-    // ui_runtime.Runtime.resize / provideFont), both of which change what the
-    // engine computes without any element having changed.
-    fn requestLayout(): none {
-        this._layoutDirty = true;
-        ui_requestUpdate();
+        return this._layoutDirty || this._paintDirty || this.anyCanvasNeedsDraw();
     }
 
     // Whether any canvas in the tree is owed a draw -- see _canvases. Asked
@@ -4570,16 +4579,24 @@ export opaque ref struct UIContext {
             if data.redrawRequested {
                 return true;
             }
+            // Nested rather than `effect && rx.isDirty(effect)`: the narrowed
+            // operand of an `&&` is read before the left side is known to
+            // hold, which panics on a canvas that has no draw effect (no
+            // drawFn) or no handle (not rendered yet).
             let effect = data.drawEffect;
-            if effect && rx.isDirty(effect) {
-                return true;
+            if effect {
+                if rx.isDirty(effect) {
+                    return true;
+                }
             }
             // Drawn into directly from its ref, outside any frame: that work
             // is sitting in the canvas's own Renderer waiting to be committed
             // (the same question ui_runtime asks before committing it).
             let handle = data.handle;
-            if handle && handle.get<CanvasHandle>().context.hasPendingWork() {
-                return true;
+            if handle {
+                if handle.get<CanvasHandle>().context.hasPendingWork() {
+                    return true;
+                }
             }
         }
         return false;
@@ -4890,6 +4907,9 @@ export opaque ref struct UIContext {
                     let errEl = getOrCreateText(instance.rootElement, -1, "").element;
                     errEl.text := f"Component error: {instance.crashInfo.message}";
                     errEl.style := ui_styling.computeTextStyle({ textColor: Color(1, 0.2, 0.2, 1) }, none);
+                    // A crashed component replaces its whole subtree with this
+                    // one line; no point classifying it, it is a new layout.
+                    this._layoutDirty = true;
                     this.setSingleChild(instance.rootElement, errEl);
                     return none;
                 }
@@ -4920,6 +4940,9 @@ export opaque ref struct UIContext {
                     let errEl = getOrCreateText(instance.rootElement, -1, "").element;
                     errEl.text := f"Component error: {e.message}";
                     errEl.style := ui_styling.computeTextStyle({ textColor: Color(1, 0.2, 0.2, 1) }, none);
+                    // A crashed component replaces its whole subtree with this
+                    // one line; no point classifying it, it is a new layout.
+                    this._layoutDirty = true;
                     this.setSingleChild(instance.rootElement, errEl);
                     return none;
                 };
@@ -4944,7 +4967,12 @@ export opaque ref struct UIContext {
                 if rootProps.style is not none {
                     ui_styling.overlayExplicitDiv(resolved, rootProps.style);
                 }
-                instance.rootElement.style := ui_styling.finishDivStyle(resolved);
+                // Classified like any other element's style write -- a
+                // component root is drawn and laid out like any other div, it
+                // just is not declared through div().
+                let rootStyle = ui_styling.finishDivStyle(resolved);
+                this.classifyDivStyleChange(instance.rootElement.style, rootStyle);
+                instance.rootElement.style := rootStyle;
 
                 // Swap the two lists: what was registered this pass becomes
                 // the current list, and last pass's list is kept around as
@@ -5586,13 +5614,13 @@ export ref struct CanvasWrapper {
     // no call; reading them in the drawFn is enough (see drawCanvasIfNeeded).
     fn invalidate(): void {
         runtimeDataOf(this._element).redrawRequested = true;
-        // A redraw request is exactly the state the reactive graph cannot see,
-        // so it has to open the frame gate itself. Without this an otherwise
-        // idle UI would never run the frame that would honour the request, and
-        // the canvas would sit stale until something unrelated happened to
-        // wake the UI up -- which used to be masked by the host rendering
-        // every frame unconditionally.
-        ui_requestUpdate();
+        // Nothing else to do here: needsUpdate() and frameNeedsPaint() both
+        // ask every live canvas whether it is owed a draw (see
+        // UIContext.anyCanvasNeedsDraw), which is what makes the frame that
+        // honours this happen, and happen with a render pass. Deliberately
+        // NOT ui_requestUpdate(): that means "something unknown changed" and
+        // forces a full re-solve of the layout, which a redraw of one canvas
+        // is not.
     }
 
     fn hover(): bool {

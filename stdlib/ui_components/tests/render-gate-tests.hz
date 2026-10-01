@@ -1,0 +1,244 @@
+import ui_components
+import ui_elements
+import ui_styling
+
+// Drives the component system headlessly to verify the RENDER GATE -- the
+// answer UIContext gives a host, after process(), to "does this frame have to
+// be laid out again" (frameNeedsLayout) and "does it have to be drawn at all"
+// (frameNeedsPaint). See UIContext._layoutDirty.
+//
+// reactive-gate-tests.hz covers the FRAME gate ("is there anything to look
+// at"). This file covers what comes after it, and both directions matter:
+//
+//   - A frame that changed nothing must report nothing, or an idle UI goes
+//     back to re-solving and redrawing an unchanged screen 60 times a second.
+//
+//   - A frame that changed ANYTHING a user can see must say so, or the host
+//     skips the draw and the screen is silently stale. The cases that are easy
+//     to lose are exactly the ones that never touch a style: a canvas that was
+//     invalidated, an explicit requestUpdate(), a component's own root
+//     element. Each of those has a case below because each was once missed.
+//
+// No layout engine and no renderer are wired up, so nothing ever consumes a
+// canvas's pending draw -- which is why the canvas here has no drawFn (a
+// drawFn makes canvasImpl request a draw every time its template runs, and
+// with no renderer to honour it that request would stay pending forever).
+
+ref struct TestArgs {}
+
+ref struct State {
+    mouseX: real = 0.0;
+    // Handed out by the component's setup. Lives here rather than in a local
+    // because a closure captures locals by value.
+    canvasRef?: ui_components.CanvasRef;
+    failures: int = 0;
+    checks: int = 0;
+
+    mut fn checkBool(name: str, actual: bool, expected: bool) {
+        this.checks = this.checks + 1;
+        if actual != expected {
+            this.failures = this.failures + 1;
+            fmt.println(f"FAIL: {name} (expected {expected}, got {actual})");
+        }
+    }
+}
+
+fn main(): int {
+    let state = State {};
+
+    // Paint-only inputs.
+    let red = rx.reactive<real>(0.2);
+    let alpha = rx.reactive<real>(1.0);
+    let textRed = rx.reactive<real>(0.0);
+    let rootRed = rx.reactive<real>(0.1);
+    // Layout inputs.
+    let width = rx.reactive<real>(100.0);
+    let label = rx.reactive<str>("hello");
+    let showExtra = rx.reactive<bool>(false);
+    let swapped = rx.reactive<bool>(false);
+    let rootWidth = rx.reactive<real>(300.0);
+    // Read by the template, but changes nothing the template produces.
+    let irrelevant = rx.reactive<int>(0);
+
+    let ui = ui_components.UIContext({
+        ui: (ctx: ui_components.UIContext) => {
+            ctx.defineComponent(0, {} as TestArgs, (instance: ui_components.InstanceData<TestArgs>) => {
+                let cref = ctx.canvasRef();
+                state.canvasRef = cref;
+
+                return (): ui_components.DivProps => {
+                    rx.get(irrelevant);
+
+                    ctx.div({
+                        id: 1,
+                        style: {
+                            width: rx.get(width),
+                            height: 40.0,
+                            backgroundColor: Color(rx.get(red), 0.0, 0.0, rx.get(alpha)),
+                        },
+                    }, () => {});
+
+                    ctx.text({
+                        id: 2,
+                        text: rx.get(label),
+                        style: { textColor: Color(rx.get(textRed), 0.0, 0.0, 1.0) },
+                    });
+
+                    // Two siblings whose ORDER is the only thing that changes.
+                    if rx.get(swapped) {
+                        ctx.div({ id: 4, style: { width: 10.0, height: 10.0 } }, () => {});
+                        ctx.div({ id: 3, style: { width: 10.0, height: 10.0 } }, () => {});
+                    }
+                    else {
+                        ctx.div({ id: 3, style: { width: 10.0, height: 10.0 } }, () => {});
+                        ctx.div({ id: 4, style: { width: 10.0, height: 10.0 } }, () => {});
+                    }
+
+                    ctx.canvas({ id: 5, elementRef: cref, style: { width: 50.0, height: 50.0 } });
+
+                    // Last, so that appearing and disappearing never shifts
+                    // another child's slot: this is purely "one node more".
+                    if rx.get(showExtra) {
+                        ctx.div({ id: 6, style: { width: 10.0, height: 10.0 } }, () => {});
+                    }
+
+                    // The component's OWN root element, styled through the
+                    // props it returns rather than through div().
+                    return {
+                        id: 0,
+                        style: {
+                            width: rx.get(rootWidth),
+                            backgroundColor: Color(rx.get(rootRed), 0.0, 0.0, 1.0),
+                        },
+                    };
+                };
+            });
+        },
+        mousePos: (): Vec2 => { return Vec2(state.mouseX, 0.0); },
+    });
+
+    // ── frame 1: there is nothing to reuse ──────────────────────────────
+    ui.process();
+    state.checkBool("first frame needs layout", ui.frameNeedsLayout(), true);
+    state.checkBool("first frame needs paint", ui.frameNeedsPaint(), true);
+
+    // ── idle: nothing to look at, so nothing changed ────────────────────
+    ui.process();
+    state.checkBool("idle frame needs no layout", ui.frameNeedsLayout(), false);
+    state.checkBool("idle frame needs no paint", ui.frameNeedsPaint(), false);
+
+    // ── examined, but came out identical ────────────────────────────────
+    // The template re-runs (it read `irrelevant`) and writes back the very
+    // same tree. Having been LOOKED AT is not a change.
+    irrelevant := 1;
+    ui.process();
+    state.checkBool("re-run with identical output needs no layout", ui.frameNeedsLayout(), false);
+    state.checkBool("re-run with identical output needs no paint", ui.frameNeedsPaint(), false);
+
+    // Input that hits nothing: the gate opens for the pointer move, and
+    // nothing comes of it.
+    state.mouseX = 25.0;
+    ui.process();
+    state.checkBool("pointer move over nothing needs no layout", ui.frameNeedsLayout(), false);
+    state.checkBool("pointer move over nothing needs no paint", ui.frameNeedsPaint(), false);
+
+    // ── paint only: every box stays where it is ─────────────────────────
+    red := 0.9;
+    ui.process();
+    state.checkBool("background colour: no layout", ui.frameNeedsLayout(), false);
+    state.checkBool("background colour: paint", ui.frameNeedsPaint(), true);
+    ui.process();
+    state.checkBool("...and settles", ui.frameNeedsPaint(), false);
+
+    textRed := 0.7;
+    ui.process();
+    state.checkBool("text colour: no layout", ui.frameNeedsLayout(), false);
+    state.checkBool("text colour: paint", ui.frameNeedsPaint(), true);
+
+    rootRed := 0.6;
+    ui.process();
+    state.checkBool("component root colour: no layout", ui.frameNeedsLayout(), false);
+    state.checkBool("component root colour: paint", ui.frameNeedsPaint(), true);
+    ui.process();
+    state.checkBool("...and settles", ui.frameNeedsPaint(), false);
+
+    // ── layout: something the solver reads ──────────────────────────────
+    width := 150.0;
+    ui.process();
+    state.checkBool("width: layout", ui.frameNeedsLayout(), true);
+    state.checkBool("width: paint", ui.frameNeedsPaint(), true);
+    ui.process();
+    state.checkBool("...and settles", ui.frameNeedsLayout(), false);
+
+    label := "hello world";
+    ui.process();
+    state.checkBool("text content: layout", ui.frameNeedsLayout(), true);
+
+    rootWidth := 320.0;
+    ui.process();
+    state.checkBool("component root width: layout", ui.frameNeedsLayout(), true);
+
+    // A background crossing full transparency adds or removes a draw command
+    // -- not a recolouring of one that is already there.
+    alpha := 0.0;
+    ui.process();
+    state.checkBool("background disappearing: layout", ui.frameNeedsLayout(), true);
+    alpha := 1.0;
+    ui.process();
+    state.checkBool("background appearing: layout", ui.frameNeedsLayout(), true);
+    ui.process();
+    state.checkBool("...and settles", ui.frameNeedsPaint(), false);
+
+    // ── tree shape ──────────────────────────────────────────────────────
+    showExtra := true;
+    ui.process();
+    state.checkBool("node created: layout", ui.frameNeedsLayout(), true);
+    ui.process();
+    state.checkBool("...and settles", ui.frameNeedsPaint(), false);
+
+    showExtra := false;
+    ui.process();
+    state.checkBool("node destroyed: layout", ui.frameNeedsLayout(), true);
+
+    swapped := true;
+    ui.process();
+    state.checkBool("siblings reordered: layout", ui.frameNeedsLayout(), true);
+    ui.process();
+    state.checkBool("...and settles", ui.frameNeedsPaint(), false);
+
+    // ── changes that never touch a style ────────────────────────────────
+
+    // requestUpdate() is the escape hatch for state the reactive graph cannot
+    // see: a host that changed something behind the UI's back, a resized
+    // viewport, a rebound font. Nothing can know WHAT changed, so the only
+    // honest answer is the full pass.
+    ui.requestUpdate();
+    ui.process();
+    state.checkBool("requestUpdate: layout", ui.frameNeedsLayout(), true);
+    state.checkBool("requestUpdate: paint", ui.frameNeedsPaint(), true);
+    ui.process();
+    state.checkBool("...and settles", ui.frameNeedsPaint(), false);
+
+    // A canvas owed a draw. Its picture is drawn INSIDE the render pass, so a
+    // host that skips the frame never draws it -- which is every stroke, pan
+    // and tile of an application that paints on a canvas.
+    let canvasRef = state.canvasRef;
+    assert(canvasRef);
+    let wrapper = rx.get(canvasRef);
+    assert(wrapper);
+    wrapper.invalidate();
+    state.checkBool("invalidated canvas: needsUpdate", ui.needsUpdate(), true);
+    ui.process();
+    state.checkBool("invalidated canvas: paint", ui.frameNeedsPaint(), true);
+    // Nothing here ever draws it, so it stays owed -- and must keep saying so
+    // rather than being forgotten after one frame.
+    ui.process();
+    state.checkBool("canvas still owed a draw: paint", ui.frameNeedsPaint(), true);
+
+    if state.failures > 0 {
+        fmt.println(f"{state.failures} of {state.checks} checks FAILED");
+        return 1;
+    }
+    fmt.println(f"all {state.checks} checks passed");
+    return 0;
+}
