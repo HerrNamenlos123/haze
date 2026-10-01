@@ -5,6 +5,7 @@
 #include "../../include/hzstd_dtoa.h"
 #include "../../include/hzstd_string.h"
 #include "cJSON.h"
+#include <ctype.h>
 #include <threads.h>
 
 #define GC_THREADS
@@ -144,9 +145,24 @@ double hzstd_json_get_number_value(hzstd_allocator_t allocator,
 hzstd_json_node_t *hzstd_json_get_object_item(hzstd_allocator_t allocator,
                                               hzstd_json_node_t *json,
                                               hzstd_str_t name) {
-  hzstd_json_use_arena(allocator);
-  return (hzstd_json_node_t *)cJSON_GetObjectItem(
-      (cJSON *)json, hzstd_cstr_from_str(allocator, name));
+  // Same case-insensitive match as cJSON_GetObjectItem, but against the
+  // length-delimited name directly. Copying it into a NUL-terminated buffer
+  // first cost one tiny GC allocation per lookup, i.e. per field of every
+  // parsed object.
+  if (!json || !name.data)
+    return NULL;
+  for (cJSON *c = ((cJSON *)json)->child; c; c = c->next) {
+    const unsigned char *key = (const unsigned char *)c->string;
+    if (!key)
+      continue;
+    size_t i = 0;
+    while (i < name.length && key[i] &&
+           tolower(key[i]) == tolower((unsigned char)name.data[i]))
+      i++;
+    if (i == name.length && key[i] == '\0')
+      return (hzstd_json_node_t *)c;
+  }
+  return NULL;
 }
 
 size_t hzstd_json_get_array_size(hzstd_allocator_t allocator,
@@ -173,7 +189,9 @@ hzstd_bool_t hzstd_json_add_item_to_object(hzstd_allocator_t allocator,
                                            hzstd_json_node_t *object,
                                            hzstd_str_t name,
                                            hzstd_json_node_t *item) {
-  return cJSON_AddItemToObject(
+  // The key is already a private NUL-terminated copy that lives as long as
+  // the item does; the non-CS variant would copy it a second time.
+  return cJSON_AddItemToObjectCS(
       (cJSON *)object, hzstd_cstr_from_str(allocator, name), (cJSON *)item);
 }
 
