@@ -18,9 +18,12 @@
 
 #include "hzcb_linux.h"
 
+#include <errno.h>
+#include <poll.h>
 #include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 /* ---------- offers ---------- */
 
@@ -437,6 +440,49 @@ int hzcb_clear(int sel, hzcb_error_t *err)
 
 /* ---------- reading ---------- */
 
+/* How long a transfer may stand still before its owner counts as hung: what
+   the X11 backend gives an owner to answer (HZX_ANSWER_TIMEOUT_MS). */
+#define HZCB_TRANSFER_TIMEOUT_MS 1500
+
+int hzcb_drain(int fd, hzcb_buf_t *out, hzcb_error_t *err)
+{
+  /* A pipe holds 64 KiB, so this takes whatever the owner has written. */
+  unsigned char chunk[65536];
+  int status = HZCB_OK;
+  for (;;) {
+    struct pollfd wait = { .fd = fd, .events = POLLIN };
+    int ready = poll(&wait, 1, HZCB_TRANSFER_TIMEOUT_MS);
+    if (ready < 0 && errno == EINTR) {
+      continue;
+    }
+    if (ready == 0) {
+      status = hzcb_fail(err, HZCB_ERR_TIMEOUT, "the clipboard's owner stopped sending its data");
+      break;
+    }
+    if (ready < 0) {
+      status = hzcb_fail(err, HZCB_ERR_FAILED, "waiting for the clipboard's data: %s", strerror(errno));
+      break;
+    }
+    ssize_t n = read(fd, chunk, sizeof(chunk));
+    if (n < 0 && (errno == EINTR || errno == EAGAIN)) {
+      continue;
+    }
+    if (n < 0) {
+      status = hzcb_fail(err, HZCB_ERR_FAILED, "reading the clipboard's data: %s", strerror(errno));
+      break;
+    }
+    if (n == 0) {
+      break;
+    }
+    if (!hzcb_buf_append(out, chunk, (size_t)n)) {
+      status = hzcb_fail(err, HZCB_ERR_FAILED, "out of memory");
+      break;
+    }
+  }
+  close(fd);
+  return status;
+}
+
 static int hzcb_decode_text(const char *target, const char *actual, const hzcb_buf_t *in, hzcb_buf_t *out)
 {
   const char *kind = actual ? actual : target;
@@ -729,6 +775,42 @@ int hzcb_read_image(int sel, int *kind, hzcb_buf_t *encoded, hzcb_image_t *pixel
   hzcb_leave();
   free(actual);
   hzcb_strlist_free(&native);
+  return status;
+}
+
+int hzcb_read_image_begin(int sel)
+{
+  if (hzcb_check_selection(sel, NULL) != HZCB_OK) {
+    return -1;
+  }
+  int transfer = -1;
+  hzcb_strlist_t native = { 0 };
+  hzcb_enter();
+  const hzcb_backend_t *b = hzcb_pick();
+  if (b && b->open && hzcb_native_targets(b, sel, &native, NULL) == HZCB_OK) {
+    /* What hzcb_read_image reads: a PNG, else the first other image file. */
+    long index = hzcb_strlist_find(&native, HZCB_MIME_PNG);
+    for (size_t i = 0; index < 0 && i < HZCB_COUNT(HZCB_DECODABLE_IMAGES); i++) {
+      index = hzcb_strlist_find(&native, HZCB_DECODABLE_IMAGES[i]);
+    }
+    if (index >= 0) {
+      transfer = b->open(sel, native.items[index]);
+    }
+  }
+  hzcb_leave();
+  hzcb_strlist_free(&native);
+  return transfer;
+}
+
+int hzcb_read_image_finish(int transfer, int *kind, hzcb_buf_t *encoded, hzcb_error_t *err)
+{
+  int status = hzcb_drain(transfer, encoded, err);
+  if (status == HZCB_OK && encoded->size == 0) {
+    status = hzcb_fail(err, HZCB_ERR_NOT_FOUND, "the clipboard holds no image");
+  }
+  if (status == HZCB_OK) {
+    *kind = hzcb_is_png(encoded->data, encoded->size) ? HZCB_IMAGE_PNG : HZCB_IMAGE_ENCODED;
+  }
   return status;
 }
 

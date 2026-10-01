@@ -1257,4 +1257,5 @@ const hzcb_backend_t hzcb_x11_backend = {
   hzx_change_count,
   hzx_change_count_reliable,
   hzx_owns,
+  NULL,
 };

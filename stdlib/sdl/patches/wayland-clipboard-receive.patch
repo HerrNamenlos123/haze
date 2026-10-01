@@ -1,0 +1,63 @@
+diff --git a/src/video/wayland/SDL_waylandclipboard.c b/src/video/wayland/SDL_waylandclipboard.c
+index 621873329..5052277e9 100644
+--- a/src/video/wayland/SDL_waylandclipboard.c
++++ b/src/video/wayland/SDL_waylandclipboard.c
+@@ -22,6 +22,9 @@
+ 
+ #ifdef SDL_VIDEO_DRIVER_WAYLAND
+ 
++#include <fcntl.h>
++#include <unistd.h>
++
+ #include "SDL_waylanddatamanager.h"
+ #include "SDL_waylandevents_c.h"
+ #include "SDL_waylandclipboard.h"
+@@ -89,6 +92,48 @@ bool Wayland_HasClipboardData(SDL_VideoDevice *_this, const char *mime_type)
+     return result;
+ }
+ 
++/* Haze: starts the transfer of the clipboard's `mime_type` data and returns
++ * the read end of the pipe its owner writes it to, for the caller to read to
++ * EOF -- on a thread of its own, if it likes -- and close.
++ *
++ * SDL_GetClipboardData() reads that pipe itself, on the calling thread, and
++ * takes any pause of PIPE_TIMEOUT_NS (14 ms) in the stream for its end: a
++ * source that is slow to start or to continue yields no data or a truncated
++ * copy, and a large one stalls the caller for as long as it takes.
++ *
++ * Returns -1 when there is nothing to transfer this way: the video driver is
++ * not Wayland, nothing of that type is on offer, or the selection is this
++ * program's own (which SDL_GetClipboardData() answers at once). To be called
++ * on the main thread, like the rest of the clipboard API.
++ */
++int SDL_HazeWaylandReceiveClipboardData(const char *mime_type)
++{
++    SDL_VideoDevice *_this = SDL_GetVideoDevice();
++    SDL_VideoData *video_data = NULL;
++    SDL_WaylandDataDevice *data_device = NULL;
++    int pipefd[2];
++
++    if (!_this || !_this->name || SDL_strcmp(_this->name, "wayland") != 0) {
++        return -1;
++    }
++    video_data = _this->internal;
++    if (!video_data->input || !video_data->input->data_device) {
++        return -1;
++    }
++    data_device = video_data->input->data_device;
++    if (data_device->selection_source ||
++        !Wayland_data_offer_has_mime(data_device->selection_offer, mime_type)) {
++        return -1;
++    }
++    if (pipe2(pipefd, O_CLOEXEC) == -1) {
++        return -1;
++    }
++    wl_data_offer_receive(data_device->selection_offer->offer, mime_type, pipefd[1]);
++    WAYLAND_wl_display_flush(video_data->display);
++    close(pipefd[1]);
++    return pipefd[0];
++}
++
+ static const char *text_mime_types[] = {
+     TEXT_MIME,
+     "text/plain",

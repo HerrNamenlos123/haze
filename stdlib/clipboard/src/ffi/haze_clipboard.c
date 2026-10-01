@@ -10,7 +10,10 @@
 #include <hzstd/hzstd_types.h>
 #include <hzstd/include/hzstd_array.h>
 #include <hzstd/include/hzstd_memory.h>
+#include <hzstd/include/hzstd_platform.h>
 #include <hzstd/include/hzstd_string.h>
+
+#include <stdatomic.h>
 
 #include "hzcb_common.c"
 #if defined(HAZE_PLATFORM_WIN32)
@@ -260,6 +263,66 @@ haze_clipboard_image_t haze_clipboard_read_image(hzstd_i32_t selection)
   hzcb_buf_free(&encoded);
   hzcb_image_free(&pixels);
   return result;
+}
+
+// An image being read without the caller waiting for it. GC memory: it holds
+// the result for the Haze side.
+typedef struct {
+  int transfer;
+  haze_clipboard_image_t result;
+  atomic_int done;
+} haze_clipboard_image_job_t;
+
+static void haze_clipboard_image_job_run(void *job_)
+{
+  haze_clipboard_image_job_t *job = job_;
+  hzcb_error_t err = { 0 };
+  hzcb_buf_t encoded = { 0 };
+  int kind = 0;
+  job->result.status = hzcb_read_image_finish(job->transfer, &kind, &encoded, &err);
+  if (job->result.status == HZCB_OK) {
+    hzstd_str_t copy = haze_clipboard_str(encoded.data, encoded.size);
+    job->result.kind = kind;
+    job->result.data = (hzstd_cptr_t)copy.data;
+    job->result.length = copy.length;
+  }
+  else {
+    job->result.message = haze_clipboard_message(&err);
+  }
+  hzcb_buf_free(&encoded);
+  atomic_store_explicit(&job->done, 1, memory_order_release);
+}
+
+// haze_clipboard_read_image for a caller that must not wait: where the
+// platform can hand the transfer over (see hzcb_read_image_begin), a worker
+// thread waits for the clipboard's owner; where it cannot, the image is read
+// here, before this returns. Either way the job has what was on the clipboard
+// at this call. (Jobs are passed as hzstd_cptr_t, which is how the Haze side
+// declares them.)
+hzstd_cptr_t haze_clipboard_read_image_start(hzstd_i32_t selection)
+{
+  haze_clipboard_image_job_t *job = hzstd_heap_allocate(sizeof(haze_clipboard_image_job_t), "clipboard image read");
+  atomic_init(&job->done, 0);
+  job->transfer = hzcb_read_image_begin(selection);
+  if (job->transfer < 0) {
+    job->result = haze_clipboard_read_image(selection);
+    atomic_store_explicit(&job->done, 1, memory_order_release);
+  }
+  else if (!hzstd_run_on_worker_thread(haze_clipboard_image_job_run, job)) {
+    haze_clipboard_image_job_run(job);
+  }
+  return job;
+}
+
+hzstd_bool_t haze_clipboard_read_image_done(hzstd_cptr_t job)
+{
+  return atomic_load_explicit(&((haze_clipboard_image_job_t *)job)->done, memory_order_acquire) != 0;
+}
+
+// Only once haze_clipboard_read_image_done.
+haze_clipboard_image_t haze_clipboard_read_image_result(hzstd_cptr_t job)
+{
+  return ((haze_clipboard_image_job_t *)job)->result;
 }
 
 // ---------- state ----------

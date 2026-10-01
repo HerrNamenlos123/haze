@@ -43,6 +43,7 @@ app = { path = "../stdlib/app" }
 tesselate = { path = "../stdlib/tesselate" }
 perfect_freehand = { path = "../stdlib/perfect_freehand" }
 filedialog = { path = "../stdlib/filedialog" }
+clipboard = { path = "../stdlib/clipboard" }
 image = { path = "../stdlib/image" }
 base64 = { path = "../stdlib/base64" }
 hzui = { path = "../stdlib/hzui" }

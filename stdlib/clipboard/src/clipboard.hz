@@ -39,7 +39,8 @@ import image
 //   text/rtf        readRtf / write({ rtf })
 //   image/png       readPng / readImage / writePng / writeImage. Offered
 //                   whenever ANY image is on the clipboard -- a Windows
-//                   bitmap, a JPEG from a browser -- and converted on read.
+//                   bitmap, a JPEG from a browser -- and converted on read
+//                   (readPngAsync converts off the calling thread).
 //   image/svg+xml   readSvg / write({ svg })
 //   text/uri-list   readFiles / writeFiles, plus the raw list via readData.
 //   anything else   readData / write({ data: [...] }), stored natively under
@@ -81,7 +82,8 @@ import image
 // second so the desktop can take a copy.
 //
 // Reading from another program is synchronous: it asks the owner and waits
-// for the answer (at most 1.5 seconds on X11, if the owner hangs).
+// for the answer (for at most 1.5 seconds at a time, if the owner hangs).
+// readPngAsync is the exception, for a frame loop that must not wait.
 //
 // === Allocation ===========================================================
 //
@@ -145,6 +147,9 @@ namespace clipboard_ffi {
     export extern C fn haze_clipboard_read_html(selection: i32): haze_clipboard_html_t :: final;
     export extern C fn haze_clipboard_read_files(selection: i32, outPaths: []str): haze_clipboard_files_t :: final;
     export extern C fn haze_clipboard_read_image(selection: i32): haze_clipboard_image_t :: final;
+    export extern C fn haze_clipboard_read_image_start(selection: i32): cptr :: final;
+    export extern C fn haze_clipboard_read_image_done(job: cptr): bool :: final;
+    export extern C fn haze_clipboard_read_image_result(job: cptr): haze_clipboard_image_t :: final;
     export extern C fn haze_clipboard_change_count(selection: i32): int :: final;
     export extern C fn haze_clipboard_owns(selection: i32): bool :: final;
     export extern C fn haze_clipboard_available(selection: i32): bool :: final;
@@ -523,6 +528,91 @@ export fn readPng(): Result<Bytes, Error> {
         return invalid(f"cannot encode the clipboard image: {png.message}");
     }
     return png;
+}
+
+// The clipboard's image on its way to being a PNG file -- see readPngAsync.
+export ref struct PngRead {
+    // The read, until done() has collected what it found.
+    job: cptr;
+    reading: bool = true;
+    // The PNG, when the source provided one.
+    png?: Bytes;
+    // Anything else, being converted on a worker thread.
+    converting?: image.PngEncode;
+    // The clipboard held no image, or could not be read.
+    failure?: Error;
+
+    // Whether result() is there. This is also what moves the read along, so
+    // it has to be polled.
+    fn done(): bool {
+        if this.reading {
+            if !clipboard_ffi.haze_clipboard_read_image_done(this.job) {
+                return false;
+            }
+            this.reading = false;
+            this.take(clipboard_ffi.haze_clipboard_read_image_result(this.job));
+        }
+        if let job = this.converting {
+            return job.done();
+        }
+        return true;
+    }
+
+    fn take(found: clipboard_ffi.haze_clipboard_image_t) {
+        if found.status != 0 {
+            this.failure = errorOf(found.status, found.message);
+            return;
+        }
+        let data = bytesOf(found.data, found.length);
+        if found.kind == IMAGE_PNG {
+            this.png = data;
+        }
+        else if found.kind == IMAGE_ENCODED {
+            this.converting = image.convertToPngAsync(data);
+        }
+        else {
+            this.converting = image.encodePngAsync(image.Image.fromPixels(found.width, found.height, found.channels, data));
+        }
+    }
+
+    // What readPng() would have returned. Panics before done().
+    fn result(): Result<Bytes, Error> {
+        if !this.done() {
+            sys.panic("PngRead.result() before the image is read -- check done() first");
+        }
+        if let failure = this.failure {
+            return failure;
+        }
+        if let png = this.png {
+            return png;
+        }
+        if let job = this.converting {
+            let png = job.result();
+            if !png {
+                return invalid(f"cannot convert the clipboard image: {png.message}");
+            }
+            return png;
+        }
+        return Error { kind: ErrorKind.NotFound, message: "the clipboard holds no image" };
+    }
+}
+
+// readPng() for a caller that must not wait -- a frame loop. It takes what
+// is on the clipboard at this call, whatever is copied afterwards, but none
+// of the slow parts happen on the calling thread:
+//
+//   - On Wayland the image is transferred from the program that owns it on
+//     a worker thread: megabytes of screenshot take tens of milliseconds to
+//     arrive, more from a busy owner. Elsewhere the clipboard is read before
+//     this returns (on Windows that is a copy out of system memory; on X11
+//     it waits for the owner, see Platform notes).
+//   - An image that is not a PNG already -- a Windows bitmap, a JPEG -- is
+//     converted on a worker thread, which takes a hundred milliseconds and
+//     more per megapixel.
+//
+// Poll done() (once a frame, say), then take the result().
+export fn readPngAsync(): PngRead {
+    return PngRead { job: clipboard_ffi.haze_clipboard_read_image_start(CLIPBOARD) };
 }
 
 // The clipboard's image, decoded (RGBA).

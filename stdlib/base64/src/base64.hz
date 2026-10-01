@@ -8,6 +8,9 @@ namespace ffi {
     export extern C fn haze_base64_decode_start(text: str): cptr :: final;
     export extern C fn haze_base64_decode_done(job: cptr): bool :: final;
     export extern C fn haze_base64_decode_result(job: cptr): haze_base64_decode_result_t :: final;
+    export extern C fn haze_base64_encode_start(data: cptr, length: int): cptr :: final;
+    export extern C fn haze_base64_encode_done(job: cptr): bool :: final;
+    export extern C fn haze_base64_encode_result(job: cptr): str :: final;
 
     export extern C noemit struct haze_base64_decode_result_t {
         success: bool;
@@ -37,6 +40,49 @@ export fn encode(data: Bytes): str {
     }
 
     return ffi.haze_base64_encode(ptr, length);
+}
+
+// Bytes being encoded on a worker thread -- see encodeAsync.
+export opaque ref struct Base64Encode {
+    job: cptr;
+    // The bytes, which the worker reads until it is done.
+    data: Bytes;
+
+    static fn start(data: Bytes): Base64Encode {
+        // A one-byte Bytes holds its byte inline (see encode). The worker
+        // could not read a local once this returns, but so few bytes are
+        // encoded before haze_base64_encode_start does.
+        let single: u8 = 0;
+        let ptr = none as cptr;
+        let length = data.length;
+        if length == 1 {
+            single = data[0];
+            __c__("ptr = &single;");
+        }
+        else {
+            __c__("ptr = data.basePtr + data.offset;");
+        }
+        return Base64Encode { job: ffi.haze_base64_encode_start(ptr, length), data: data };
+    }
+
+    fn done(): bool {
+        return ffi.haze_base64_encode_done(this.job);
+    }
+
+    // What encode() would have returned. Panics before done().
+    fn result(): str {
+        if !this.done() {
+            sys.panic("Base64Encode.result() before the bytes are encoded -- check done() first");
+        }
+        return ffi.haze_base64_encode_result(this.job);
+    }
+}
+
+// encode() on a worker thread, for a caller that must not wait for it: a
+// megabyte takes several milliseconds in an unoptimized build. Poll done()
+// (once a frame, say), then take the result().
+export fn encodeAsync(data: Bytes): Base64Encode {
+    return Base64Encode.start(data);
 }
 
 // Decodes a Base64 (RFC 4648) string back into raw bytes. Fails if the input

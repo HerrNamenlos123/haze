@@ -9,6 +9,11 @@ namespace ffi {
     export extern C fn haze_image_decode_done(job: cptr): bool :: final;
     export extern C fn haze_image_decode_result(job: cptr): haze_image_result_t :: final;
     export extern C fn haze_image_decode_failure(job: cptr): str :: final;
+    export extern C fn haze_image_info(data: cptr, length: int): haze_image_info_t :: final;
+    export extern C fn haze_image_png_start(data: cptr, length: int, pixels: cptr, width: int, height: int, channels: int): cptr :: final;
+    export extern C fn haze_image_png_done(job: cptr): bool :: final;
+    export extern C fn haze_image_png_result(job: cptr): haze_image_png_result_t :: final;
+    export extern C fn haze_image_png_failure(job: cptr): str :: final;
 
     export extern C noemit struct haze_image_result_t {
         pixels: cptr;
@@ -21,6 +26,13 @@ namespace ffi {
     export extern C noemit struct haze_image_png_result_t {
         data: cptr;
         length: int;
+    }
+
+    export extern C noemit struct haze_image_info_t {
+        ok: bool;
+        width: int;
+        height: int;
+        channels: int;
     }
 }
 
@@ -200,14 +212,65 @@ export fn decodeAsync(data: Bytes, desiredChannels: int = 4): ImageDecode {
     return ImageDecode.start(data, desiredChannels);
 }
 
+// What an image file's header says about the image in it.
+export struct Info {
+    width: int;
+    height: int;
+    // The channel count in the file: 1=grey, 2=grey+alpha, 3=RGB, 4=RGBA.
+    channels: int;
+}
+
+// The size of an image file held in memory, read from its header alone: no
+// pixel is decoded, so it costs next to nothing whatever the image's size.
+// Fails for data decode() could not read either.
+export fn info(data: Bytes): Result<Info, Error> {
+    // A one-byte Bytes holds its byte inline (see Image.decode).
+    let single: u8 = 0;
+    let ptr = none as cptr;
+    let length = data.length;
+    if length == 1 {
+        single = data[0];
+        __c__("ptr = &single;");
+    }
+    else {
+        __c__("ptr = data.basePtr + data.offset;");
+    }
+    let found = ffi.haze_image_info(ptr, length);
+    if !found.ok {
+        return Error { message: ffi.haze_image_failure_reason() };
+    }
+    let result = Info { width: found.width, height: found.height, channels: found.channels };
+    return result;
+}
+
+// Why `img` cannot be a PNG, or "" when it can.
+fn pngObstacle(img: Image): str {
+    if img.width <= 0 || img.height <= 0 || img.channels < 1 || img.channels > 4 {
+        return f"cannot encode a {img.width}x{img.height} image with {img.channels} channels";
+    }
+    if img.pixels.length != img.width * img.height * img.channels {
+        return f"pixel buffer holds {img.pixels.length} bytes, the image needs {img.width * img.height * img.channels}";
+    }
+    return "";
+}
+
+// Wraps the PNG haze_image_encode_png wrote, which has data.
+fn pngOf(result: ffi.haze_image_png_result_t): Result<Bytes, Error> {
+    do unsafe {
+        let png = Bytes();
+        __c__("png.basePtr = result.data;");
+        __c__("png.offset = 0;");
+        __c__("png.length = result.length;");
+        return Result<Bytes, Error>.Ok(png);
+    };
+}
+
 // Encodes an image as a PNG file, keeping its channel count (grey, grey with
 // alpha, RGB or RGBA).
 export fn encodePng(img: Image): Result<Bytes, Error> {
-    if img.width <= 0 || img.height <= 0 || img.channels < 1 || img.channels > 4 {
-        return Error { message: f"cannot encode a {img.width}x{img.height} image with {img.channels} channels" };
-    }
-    if img.pixels.length != img.width * img.height * img.channels {
-        return Error { message: f"pixel buffer holds {img.pixels.length} bytes, the image needs {img.width * img.height * img.channels}" };
+    let obstacle = pngObstacle(img);
+    if obstacle.length > 0 {
+        return Error { message: obstacle };
     }
 
     let pixels = img.pixels;
@@ -229,12 +292,93 @@ export fn encodePng(img: Image): Result<Bytes, Error> {
     if !valid {
         return Error { message: "PNG encoding failed" };
     }
+    return pngOf(result);
+}
 
-    do unsafe {
-        let png = Bytes();
-        __c__("png.basePtr = result.data;");
-        __c__("png.offset = 0;");
-        __c__("png.length = result.length;");
-        return Result<Bytes, Error>.Ok(png);
-    };
+// A PNG being made on a worker thread -- see encodePngAsync and
+// convertToPngAsync.
+export opaque ref struct PngEncode {
+    job: cptr;
+    // The pixels or the image file, which the worker reads until it is done.
+    source: Bytes;
+    // Why there is nothing to encode -- then there is no job either.
+    obstacle: str = "";
+
+    static fn ofPixels(img: Image): PngEncode {
+        let obstacle = pngObstacle(img);
+        if obstacle.length > 0 {
+            return PngEncode { job: none as cptr, source: img.pixels, obstacle: obstacle };
+        }
+        // A 1x1 grey image: the byte may be held inline (see decode). The
+        // worker could not read a local once this returns, but so small an
+        // image is encoded before haze_image_png_start does.
+        let pixels = img.pixels;
+        let single: u8 = 0;
+        let ptr = none as cptr;
+        if pixels.length == 1 {
+            single = pixels[0];
+            __c__("ptr = &single;");
+        }
+        else {
+            __c__("ptr = pixels.basePtr + pixels.offset;");
+        }
+        return PngEncode {
+            job: ffi.haze_image_png_start(none as cptr, 0, ptr, img.width, img.height, img.channels),
+            source: pixels,
+        };
+    }
+
+    static fn ofFile(data: Bytes): PngEncode {
+        // No image fits in one byte -- and that byte may be held inline,
+        // where there is nothing to point at.
+        if data.length <= 1 {
+            return PngEncode { job: none as cptr, source: data, obstacle: "not an image" };
+        }
+        let ptr = none as cptr;
+        __c__("ptr = data.basePtr + data.offset;");
+        return PngEncode {
+            job: ffi.haze_image_png_start(ptr, data.length, none as cptr, 0, 0, 0),
+            source: data,
+        };
+    }
+
+    fn done(): bool {
+        if this.obstacle.length > 0 {
+            return true;
+        }
+        return ffi.haze_image_png_done(this.job);
+    }
+
+    // The PNG file. Panics before done().
+    fn result(): Result<Bytes, Error> {
+        if this.obstacle.length > 0 {
+            return Error { message: this.obstacle };
+        }
+        if !this.done() {
+            sys.panic("PngEncode.result() before the PNG is encoded -- check done() first");
+        }
+        let result = ffi.haze_image_png_result(this.job);
+        let valid = false;
+        __c__("valid = result.data != NULL;");
+        if !valid {
+            let failure = ffi.haze_image_png_failure(this.job);
+            return Error { message: failure.length > 0 ? failure : "PNG encoding failed" };
+        }
+        return pngOf(result);
+    }
+}
+
+// encodePng() on a worker thread, for a caller that must not wait for it: a
+// megapixel takes a hundred milliseconds and more. Poll done() (once a
+// frame, say), then take the result(). The work goes on even if the
+// PngEncode is dropped; it is simply never read.
+export fn encodePngAsync(img: Image): PngEncode {
+    return PngEncode.ofPixels(img);
+}
+
+// Turns any image file decode() reads -- a JPEG, a BMP, ... -- into a PNG
+// file, on a worker thread like encodePngAsync. The PNG keeps the file's
+// channel count.
+export fn convertToPngAsync(data: Bytes): PngEncode {
+    return PngEncode.ofFile(data);
 }

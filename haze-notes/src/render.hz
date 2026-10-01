@@ -352,6 +352,9 @@ ref struct DocumentRenderer {
     // The canvas size (px) at the last render -- where "the middle of the
     // view" is, for anything placed there.
     lastPanelSize: Vec2 = {};
+    // Physical pixels per canvas px at the last render -- what "pixel for
+    // pixel" means for an image placed in the view.
+    lastDpiScale: real = 1.0;
 
     // Set when a document without a saved viewport is opened: the first
     // render, which is the first moment the canvas size is known, fits the
@@ -864,6 +867,7 @@ ref struct DocumentRenderer {
         let panelW = r.canvas.size.logicalSize.x as real;
         let panelH = r.canvas.size.logicalSize.y as real;
         this.lastPanelSize = Vec2(panelW, panelH);
+        this.lastDpiScale = r.canvas.size.dpiScale as real;
         if this.needsFit && panelW > 0.0 {
             this.fitToWidth(doc, panelW);
             this.needsFit = false;

@@ -1,6 +1,9 @@
 import ui_components
 import renderer
 import filedialog
+import clipboard
+import image
+import base64
 
 // Everything the editor does with the pen, the mouse, fingers and the
 // keyboard: drawing, erasing, lasso and tap selection, moving and resizing a
@@ -20,7 +23,8 @@ import filedialog
 //                   pans; wheel pans, Ctrl+wheel zooms, Shift+wheel pans
 //                   sideways
 //   keys            Delete/Backspace remove the selection, Escape drops it,
-//                   Ctrl+C/X/V copy, cut and paste shapes, Ctrl+S saves
+//                   Ctrl+C/X/V copy, cut and paste shapes -- Ctrl+V also
+//                   pastes an image off the clipboard -- Ctrl+S saves
 //
 // Two things differ from the web app. Pages here are stacked top to bottom
 // rather than shown one at a time, so every gesture first finds the page
@@ -50,6 +54,8 @@ const comptime loadBudgetSeconds = 0.008;
 const comptime exportBudgetSeconds = 0.006;
 // How long the export button says the export is done.
 const comptime exportDoneSeconds = 3.0;
+// How far (mm) a pasted image stays from the page's edges.
+const comptime pastedImageMarginMm = 5.0;
 
 fn penThicknesses(): []real {
     return [0.1, 0.3, 0.5, 0.7, 0.9];
@@ -170,6 +176,61 @@ fn eraserTouches(polygon: []Vec2, start: Vec2, end: Vec2, radius: real): bool {
     return false;
 }
 
+// An image on its way from the clipboard into the document. The clipboard is
+// read when this is made -- at the Ctrl+V -- and what it held then is turned
+// into the data URL an ImageShape stores: a PNG, converted from whatever the
+// source offered, as base64 text. A screenshot is megabytes, so both happen
+// on worker threads; a step only ever starts one, or collects it.
+ref struct ImagePaste {
+    reading?: clipboard.PngRead;
+    encoding?: base64.Base64Encode;
+    // The image's size, in its own pixels.
+    width: int = 0;
+    height: int = 0;
+    dataUrl: str = "";
+    failed: bool = false;
+
+    fn constructor(): ImagePaste {
+        return ImagePaste { reading: clipboard.readPngAsync() };
+    }
+
+    // Moves the paste along. True once it has its dataUrl, or has failed.
+    fn step(): bool {
+        if let read = this.reading {
+            if !read.done() {
+                return false;
+            }
+            this.reading = none;
+            let png = read.result();
+            if !png {
+                return this.fail(png.message);
+            }
+            let info = image.info(png);
+            if !info {
+                return this.fail(info.message);
+            }
+            this.width = info.width;
+            this.height = info.height;
+            this.encoding = base64.encodeAsync(png);
+            return false;
+        }
+        if let encode = this.encoding {
+            if !encode.done() {
+                return false;
+            }
+            this.encoding = none;
+            this.dataUrl = "data:image/png;base64," + encode.result();
+        }
+        return true;
+    }
+
+    fn fail(reason: str): bool {
+        fmt.println(f"Paste: the clipboard's image could not be read: {reason}");
+        this.failed = true;
+        return true;
+    }
+}
+
 fn removeShape(shapes: []Shape, target: Shape) {
     for (let i = shapes.length - 1; i >= 0; i--) {
         let shape = shapes[i];
@@ -222,6 +283,9 @@ ref struct EditorControls {
     selectionScreenBox: rx.ShallowReactive<BBox | none>;
     // Over the selection's resize handle.
     resizeCursor: rx.Reactive<bool>;
+
+    // Images pasted but not on the page yet, oldest first -- see ImagePaste.
+    imagePastes: []ImagePaste = [];
 
     // ── The selection -- always on one page ─────────────────────────
     selected: []Shape = [];
@@ -323,6 +387,7 @@ ref struct EditorControls {
         this.doc = doc;
         this.path = path;
         this.documentLoads = this.documentLoads + 1;
+        this.imagePastes.clear();
         this.selected.clear();
         this.gesture = Gesture.None;
         this.preview = none;
@@ -1134,6 +1199,8 @@ ref struct EditorControls {
             }
         }
 
+        this.stepImagePastes(doc);
+
         if this.firstUnsavedChange >= 0.0 && this.gesture == Gesture.None && this.touches.length == 0 {
             if now - this.lastChange >= saveIdleSeconds || now - this.firstUnsavedChange >= saveMaxDelaySeconds {
                 this.saveNow();
@@ -1260,12 +1327,22 @@ ref struct EditorControls {
         ui.setClipboardText(json.stringify(ShapesInClipboard { type: "technicalsketcher", shapes: shapes }));
     }
 
-    // Pastes shapes copied here or from the web app, 10 mm down and to the
-    // right of where they were, onto the page the selection is on -- or the
-    // one in the middle of the view -- and selects them.
+    // Pastes an image off the clipboard -- a screenshot, a picture copied in
+    // a browser -- onto the page in the middle of the view (see
+    // placePastedImage). Otherwise pastes shapes copied here or from the web
+    // app, 10 mm down and to the right of where they were, onto the page the
+    // selection is on -- or the one in the middle of the view -- and selects
+    // them.
     fn paste(ui: ui_components.UIContext) {
         let doc = this.doc;
         if !doc {
+            return;
+        }
+        // An image wins over text, as in the web app: copied shapes are
+        // text alone, while what offers a picture often describes it in
+        // text as well.
+        if clipboard.has("image/png") {
+            this.imagePastes.push(ImagePaste());
             return;
         }
         let text = ui.getClipboardText();
@@ -1294,6 +1371,71 @@ ref struct EditorControls {
             this.view.markShapeDirty(page, shape);
             this.selected.push(shape);
         }
+        this.selectionPage = page;
+        this.markChanged();
+        this.publishUi();
+        this.invalidate();
+    }
+
+    // Puts the oldest pasted image on the page once it is ready -- between
+    // gestures, as it replaces the selection a move or resize is working on.
+    fn stepImagePastes(doc: DocumentFile) {
+        if this.imagePastes.length == 0 {
+            return;
+        }
+        let paste = this.imagePastes[0];
+        if !paste.step() || this.gesture != Gesture.None {
+            return;
+        }
+        this.imagePastes.remove(0);
+        if !paste.failed {
+            this.placePastedImage(doc, paste);
+        }
+    }
+
+    // Where the web app puts a pasted image: in the middle of the view, at
+    // the size that shows it pixel for pixel at the current zoom -- then
+    // shrunk to fit the page and moved onto it, pastedImageMarginMm from its
+    // edges -- and selected.
+    fn placePastedImage(doc: DocumentFile, paste: ImagePaste) {
+        let center = Vec2(this.view.lastPanelSize.x / 2.0, this.view.lastPanelSize.y / 2.0);
+        let page = this.pageUnder(doc, center);
+        let imagePxPerMm = this.zoom() * this.view.lastDpiScale;
+        let width = paste.width as real / imagePxPerMm;
+        let height = paste.height as real / imagePxPerMm;
+
+        let maxWidth = doc.data.pageWidthMm - 2.0 * pastedImageMarginMm;
+        let maxHeight = doc.data.pageHeightMm - 2.0 * pastedImageMarginMm;
+        if maxWidth > 0.0 && width > maxWidth {
+            height = height * maxWidth / width;
+            width = maxWidth;
+        }
+        if maxHeight > 0.0 && height > maxHeight {
+            width = width * maxHeight / height;
+            height = maxHeight;
+        }
+
+        let middle = this.toPage(doc, page, center);
+        let x = middle.x - width / 2.0;
+        let y = middle.y - height / 2.0;
+        if x + width > doc.data.pageWidthMm - pastedImageMarginMm {
+            x = doc.data.pageWidthMm - pastedImageMarginMm - width;
+        }
+        if y + height > doc.data.pageHeightMm - pastedImageMarginMm {
+            y = doc.data.pageHeightMm - pastedImageMarginMm - height;
+        }
+        if x < pastedImageMarginMm {
+            x = pastedImageMarginMm;
+        }
+        if y < pastedImageMarginMm {
+            y = pastedImageMarginMm;
+        }
+
+        let shape: Shape = ImageShape { variant: "Image", position: Vec2(x, y), size: Vec2(width, height), base64ImageData: paste.dataUrl };
+        doc.data.pages[page].shapes.push(shape);
+        this.view.markShapeDirty(page, shape);
+        this.selected.clear();
+        this.selected.push(shape);
         this.selectionPage = page;
         this.markChanged();
         this.publishUi();

@@ -126,3 +126,103 @@ haze_image_png_result_t haze_image_encode_png(hzstd_cptr_t pixels, hzstd_int_t w
   result.length = length;
   return result;
 }
+
+// What the file's header says, without decoding the pixels.
+haze_image_info_t haze_image_info(hzstd_cptr_t data, hzstd_int_t length)
+{
+  haze_image_info_t info = { 0 };
+  int w, h, channels;
+  if (stbi_info_from_memory((const unsigned char*)data, (int)length, &w, &h, &channels)) {
+    info.ok = true;
+    info.width = w;
+    info.height = h;
+    info.channels = channels;
+  }
+  return info;
+}
+
+// Inputs up to this size are encoded before haze_image_png_start returns: a
+// thread costs more than they do. (It also lets the caller point at a local,
+// as it must for a one-byte Bytes.)
+#define HAZE_IMAGE_PNG_INLINE_BYTES 4096
+
+// A PNG being made on a worker thread, from an image file (which is decoded
+// first) or from pixels. GC memory: it holds the source for the worker, and
+// the PNG once it is done.
+struct haze_image_png_job_t {
+  // The image file, or NULL when there are pixels.
+  const void* data;
+  hzstd_int_t length;
+  const void* pixels;
+  hzstd_int_t width;
+  hzstd_int_t height;
+  hzstd_int_t channels;
+  haze_image_png_result_t result;
+  // Why the file did not decode. Read on the worker: stb_image keeps it per
+  // thread.
+  hzstd_str_t failure;
+  atomic_int done;
+};
+
+static void haze_image_png_job_run(void* job_)
+{
+  haze_image_png_job_t* job = job_;
+  if (job->data) {
+    // Straight from stb's buffer: the pixels are only needed until the PNG
+    // is written, so they never become GC memory.
+    int w, h, channels;
+    unsigned char* decoded = stbi_load_from_memory((const unsigned char*)job->data, (int)job->length, &w, &h, &channels, 0);
+    if (decoded) {
+      job->result = haze_image_encode_png(decoded, w, h, channels);
+      stbi_image_free(decoded);
+    }
+    else {
+      job->failure = haze_image_failure_reason();
+    }
+  }
+  else {
+    job->result = haze_image_encode_png((hzstd_cptr_t)job->pixels, job->width, job->height, job->channels);
+  }
+  job->data = NULL;
+  job->pixels = NULL;
+  atomic_store_explicit(&job->done, 1, memory_order_release);
+}
+
+// Starts making a PNG on a worker thread -- or right here, if the source is
+// tiny or no thread can be started -- and returns the job. The source is
+// `length` bytes of an image file at `data`, or, when `data` is NULL,
+// width * height * channels bytes at `pixels`. The caller validates the
+// pixels' size, and keeps the source alive until the job is done.
+hzstd_cptr_t haze_image_png_start(hzstd_cptr_t data,
+                                  hzstd_int_t length,
+                                  hzstd_cptr_t pixels,
+                                  hzstd_int_t width,
+                                  hzstd_int_t height,
+                                  hzstd_int_t channels)
+{
+  haze_image_png_job_t* job = hzstd_heap_allocate(sizeof(haze_image_png_job_t), "image png job");
+  job->data = data;
+  job->length = length;
+  job->pixels = pixels;
+  job->width = width;
+  job->height = height;
+  job->channels = channels;
+  atomic_init(&job->done, 0);
+  hzstd_int_t size = data ? length : width * height * channels;
+  if (size <= HAZE_IMAGE_PNG_INLINE_BYTES || !hzstd_run_on_worker_thread(haze_image_png_job_run, job)) {
+    haze_image_png_job_run(job);
+  }
+  return job;
+}
+
+hzstd_bool_t haze_image_png_done(hzstd_cptr_t job)
+{
+  return atomic_load_explicit(&((haze_image_png_job_t*)job)->done, memory_order_acquire) != 0;
+}
+
+// Only once haze_image_png_done: data is NULL if it failed, and
+// haze_image_png_failure says why when the source did not decode ("" when
+// the encoding itself failed).
+haze_image_png_result_t haze_image_png_result(hzstd_cptr_t job) { return ((haze_image_png_job_t*)job)->result; }
+
+hzstd_str_t haze_image_png_failure(hzstd_cptr_t job) { return ((haze_image_png_job_t*)job)->failure; }

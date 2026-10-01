@@ -723,6 +723,22 @@ int hzcb_read_image(int sel, int *kind, hzcb_buf_t *encoded, hzcb_image_t *pixel
   return status;
 }
 
+/* The clipboard's data is in memory the system owns: reading it never waits
+   for another program, so there is nothing to split. */
+int hzcb_read_image_begin(int sel)
+{
+  (void)sel;
+  return -1;
+}
+
+int hzcb_read_image_finish(int transfer, int *kind, hzcb_buf_t *encoded, hzcb_error_t *err)
+{
+  (void)transfer;
+  (void)kind;
+  (void)encoded;
+  return hzcb_fail(err, HZCB_ERR_UNSUPPORTED, "Windows reads the clipboard in one step");
+}
+
 long long hzcb_change_count(int sel)
 {
   return sel == HZCB_CLIPBOARD ? (long long)GetClipboardSequenceNumber() : 0;

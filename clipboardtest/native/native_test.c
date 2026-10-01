@@ -3,6 +3,9 @@
    Part 1 checks the pure format conversions (text encodings, CF_HTML,
    CF_HDROP, file URIs, DIBs) and runs anywhere.
 
+   It also checks hzcb_drain, the reader of a Wayland transfer, against a
+   writer that pauses, one that stops for good, and one with nothing to say.
+
    Part 2 drives the X11 backend against real X11 clients -- xclip, and
    wl-paste when there is a Wayland session behind Xwayland -- in both
    directions, including transfers large enough to need INCR. It is skipped
@@ -17,6 +20,7 @@
 #include "hzcb_sdl.c"
 #include "hzcb_x11.c"
 
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/wait.h>
@@ -338,6 +342,75 @@ static hzcb_content_t *text_content(const char *text)
   return c;
 }
 
+/* A child that writes `total` bytes of a known pattern to a pipe in `piece`s,
+   sleeping `pause_ms` before each, then exits (or, with `hang`, stays). */
+static int transfer_from_child(size_t total, size_t piece, int pause_ms, int hang, pid_t *child)
+{
+  int fds[2];
+  if (pipe(fds) != 0) {
+    return -1;
+  }
+  *child = fork();
+  if (*child == 0) {
+    close(fds[0]);
+    unsigned char *data = malloc(piece);
+    for (size_t sent = 0; sent < total;) {
+      size_t n = total - sent < piece ? total - sent : piece;
+      for (size_t i = 0; i < n; i++) {
+        data[i] = (unsigned char)((sent + i) * 31 + 7);
+      }
+      usleep((useconds_t)pause_ms * 1000);
+      if (write(fds[1], data, n) != (ssize_t)n) {
+        _exit(1);
+      }
+      sent += n;
+    }
+    if (hang) {
+      sleep(30);
+    }
+    _exit(0);
+  }
+  close(fds[1]);
+  return fds[0];
+}
+
+static void test_drain(void)
+{
+  hzcb_error_t err = { 0 };
+  hzcb_buf_t out = { 0 };
+  pid_t child = 0;
+
+  /* 300 KiB in 100 pieces 20 ms apart: longer pauses than SDL's own reader
+     sits through (14 ms), and more than a pipe holds at once. */
+  size_t total = 300 * 1024;
+  int fd = transfer_from_child(total, 3 * 1024, 20, 0, &child);
+  CHECK(fd >= 0 && hzcb_drain(fd, &out, &err) == HZCB_OK, "drain a slow transfer: %s", err.message);
+  int intact = out.size == total;
+  for (size_t i = 0; intact && i < total; i++) {
+    intact = out.data[i] == (unsigned char)(i * 31 + 7);
+  }
+  CHECK(intact, "every byte of it arrives, in order (%zu of %zu)", out.size, total);
+  waitpid(child, NULL, 0);
+
+  /* Appends: what was in the buffer stays. */
+  fd = transfer_from_child(5, 5, 0, 0, &child);
+  CHECK(fd >= 0 && hzcb_drain(fd, &out, &err) == HZCB_OK && out.size == total + 5, "drain appends");
+  waitpid(child, NULL, 0);
+
+  out.size = 0;
+  fd = transfer_from_child(0, 1, 0, 0, &child);
+  CHECK(fd >= 0 && hzcb_drain(fd, &out, &err) == HZCB_OK && out.size == 0, "an empty transfer is no error");
+  waitpid(child, NULL, 0);
+
+  /* An owner that stops without closing its end is given up on. */
+  fd = transfer_from_child(10, 10, 0, 1, &child);
+  CHECK(fd >= 0 && hzcb_drain(fd, &out, &err) == HZCB_ERR_TIMEOUT, "a hung owner times out");
+  CHECK(out.size == 10, "keeping what it did send");
+  kill(child, SIGKILL);
+  waitpid(child, NULL, 0);
+  hzcb_buf_free(&out);
+}
+
 static void test_x11(void)
 {
   hzcb_error_t err = { 0 };
@@ -506,6 +579,9 @@ int main(void)
   test_cfhtml();
   test_uris();
   test_dib();
+
+  printf("transfers\n");
+  test_drain();
 
   if (getenv("DISPLAY") && run("command -v xclip >/dev/null", NULL) == 0) {
     printf("x11 interop\n");

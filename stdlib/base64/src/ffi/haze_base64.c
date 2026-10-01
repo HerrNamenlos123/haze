@@ -164,3 +164,48 @@ hzstd_bool_t haze_base64_decode_done(hzstd_cptr_t job)
 
 // Only once haze_base64_decode_done.
 haze_base64_decode_result_t haze_base64_decode_result(hzstd_cptr_t job) { return ((haze_base64_decode_job_t*)job)->result; }
+
+// Inputs up to this size are encoded before haze_base64_encode_start returns:
+// a thread costs more than they do. (It also lets the caller point at a
+// local, as it must for a one-byte Bytes.)
+#define HAZE_BASE64_INLINE_BYTES 4096
+
+// An encode on a worker thread. GC memory: it holds the bytes for the worker,
+// and the text once it is done.
+typedef struct {
+  const void* data;
+  hzstd_int_t length;
+  hzstd_str_t result;
+  atomic_int done;
+} haze_base64_encode_job_t;
+
+static void haze_base64_encode_job_run(void* job_)
+{
+  haze_base64_encode_job_t* job = job_;
+  job->result = haze_base64_encode((hzstd_cptr_t)job->data, job->length);
+  job->data = NULL;
+  atomic_store_explicit(&job->done, 1, memory_order_release);
+}
+
+// Starts encoding `length` bytes at `data` on a worker thread -- or right
+// here, if they are few or no thread can be started -- and returns the job.
+// The caller keeps `data` alive until the job is done.
+hzstd_cptr_t haze_base64_encode_start(hzstd_cptr_t data, hzstd_int_t length)
+{
+  haze_base64_encode_job_t* job = hzstd_heap_allocate(sizeof(haze_base64_encode_job_t), "base64 encode job");
+  job->data = data;
+  job->length = length;
+  atomic_init(&job->done, 0);
+  if (length <= HAZE_BASE64_INLINE_BYTES || !hzstd_run_on_worker_thread(haze_base64_encode_job_run, job)) {
+    haze_base64_encode_job_run(job);
+  }
+  return job;
+}
+
+hzstd_bool_t haze_base64_encode_done(hzstd_cptr_t job)
+{
+  return atomic_load_explicit(&((haze_base64_encode_job_t*)job)->done, memory_order_acquire) != 0;
+}
+
+// Only once haze_base64_encode_done.
+hzstd_str_t haze_base64_encode_result(hzstd_cptr_t job) { return ((haze_base64_encode_job_t*)job)->result; }

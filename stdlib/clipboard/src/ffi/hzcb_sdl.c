@@ -75,6 +75,10 @@ extern HZCB_WEAK char **SDL_GetClipboardMimeTypes(size_t *num_mime_types);
 extern HZCB_WEAK bool SDL_SetPrimarySelectionText(const char *text);
 extern HZCB_WEAK char *SDL_GetPrimarySelectionText(void);
 extern HZCB_WEAK bool SDL_HasPrimarySelectionText(void);
+/* Only in Haze's build of SDL (stdlib/sdl/patches/wayland-clipboard-receive):
+   hands over the pipe a Wayland transfer arrives on. Without it every read
+   goes through SDL_GetClipboardData. */
+extern HZCB_WEAK int SDL_HazeWaylandReceiveClipboardData(const char *mime_type);
 
 /* Bumped from SDL's event watch, which SDL may run on whatever thread pushes
    the event, so it is only ever touched atomically -- and the watch must never
@@ -274,6 +278,21 @@ static int hzcb_sdl_targets(int sel, hzcb_strlist_t *out, hzcb_error_t *err)
   return ok ? HZCB_OK : hzcb_fail(err, HZCB_ERR_FAILED, "out of memory");
 }
 
+/* Another program's clipboard data on Wayland, as the pipe it is written to.
+   SDL would read that pipe itself in SDL_GetClipboardData -- on this thread,
+   and taking a 14 ms pause in the stream for its end, which loses the data of
+   an owner that is slow to start or to continue. */
+static int hzcb_sdl_open(int sel, const char *target)
+{
+  if (sel != HZCB_CLIPBOARD || !SDL_HazeWaylandReceiveClipboardData || !hzcb_sdl_ready()) {
+    return -1;
+  }
+  if (SDL_IsMainThread && !SDL_IsMainThread()) {
+    return -1;
+  }
+  return SDL_HazeWaylandReceiveClipboardData(target);
+}
+
 static int hzcb_sdl_get(int sel, const char *target, hzcb_buf_t *out, char **actual_type, hzcb_error_t *err)
 {
   *actual_type = NULL;
@@ -290,6 +309,15 @@ static int hzcb_sdl_get(int sel, const char *target, hzcb_buf_t *out, char **act
       SDL_free(text);
     }
     return ok ? HZCB_OK : hzcb_fail(err, HZCB_ERR_NOT_FOUND, "the primary selection is empty");
+  }
+  int transfer = hzcb_sdl_open(sel, target);
+  if (transfer >= 0) {
+    size_t before = out->size;
+    int status = hzcb_drain(transfer, out, err);
+    if (status == HZCB_OK && out->size == before) {
+      status = hzcb_fail(err, HZCB_ERR_NOT_FOUND, "the clipboard has no data of that type");
+    }
+    return status;
   }
   size_t size = 0;
   void *data = SDL_GetClipboardData(target, &size);
@@ -329,4 +357,5 @@ const hzcb_backend_t hzcb_sdl_backend = {
   hzcb_sdl_change_count,
   hzcb_sdl_change_count_reliable,
   hzcb_sdl_owns,
+  hzcb_sdl_open,
 };

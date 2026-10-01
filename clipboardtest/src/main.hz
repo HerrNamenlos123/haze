@@ -225,6 +225,161 @@ fn testImages() {
     }
 }
 
+// A read that does not wait is polled, the way a frame loop would.
+fn finish(reading: clipboard.PngRead) {
+    let deadline = time.now() + 5.0;
+    while !reading.done() && time.now() < deadline {
+        time.sleep(0.001);
+    }
+}
+
+fn finishEncode(encoding: image.PngEncode) {
+    let deadline = time.now() + 5.0;
+    while !encoding.done() && time.now() < deadline {
+        time.sleep(0.001);
+    }
+}
+
+// 64x64 RGBA: past the size the image module encodes on the calling thread.
+fn bigPicture(): image.Image {
+    let rgba: []int = [];
+    for (let y = 0; y < 64; y++) {
+        for (let x = 0; x < 64; x++) {
+            rgba.push(x * 4);
+            rgba.push(y * 4);
+            rgba.push((x * y) % 256);
+            rgba.push(255 - x);
+        }
+    }
+    return image.Image.fromPixels(64, 64, 4, bytesOf(rgba));
+}
+
+// A 2x1 24-bit BMP, as older programs put on the clipboard: blue, then red.
+fn testBmp(): Bytes {
+    return bytesOf([
+        66, 77, 62, 0, 0, 0, 0, 0, 0, 0, 54, 0, 0, 0,
+        40, 0, 0, 0, 2, 0, 0, 0, 1, 0, 0, 0, 1, 0, 24, 0, 0, 0, 0, 0, 8, 0, 0, 0,
+        19, 11, 0, 0, 19, 11, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        255, 0, 0, 0, 0, 255, 0, 0,
+    ]);
+}
+
+fn testAsyncImages() {
+    section("images, without waiting");
+    let picture = bigPicture();
+    clipboard.writeImage(picture);
+    let direct = clipboard.readPng();
+    let reading = clipboard.readPngAsync();
+    finish(reading);
+    check(reading.done(), "readPngAsync finishes");
+    if reading.done() {
+        let png = reading.result();
+        check(png as bool, "readPngAsync");
+        if png && direct {
+            check(png == direct, "readPngAsync gives the file readPng does");
+        }
+        if png {
+            let info = image.info(png);
+            check(info as bool, "image.info reads a PNG's header");
+            if info {
+                check(info.width == 64 && info.height == 64 && info.channels == 4, "info: 64x64 RGBA");
+            }
+        }
+    }
+
+    // What was on the clipboard at the call is what is read, whatever is
+    // copied before the result is collected.
+    clipboard.writeImage(testPicture());
+    let early = clipboard.readPngAsync();
+    clipboard.writeText("copied afterwards");
+    finish(early);
+    if early.done() {
+        let png = early.result();
+        check(png as bool, "a later copy does not take the image away");
+        if png {
+            let info = image.info(png);
+            if info {
+                check(info.width == 2 && info.height == 2, "and it is the image of the call");
+            }
+        }
+    }
+
+    let absent = clipboard.readPngAsync();
+    finish(absent);
+    if absent.done() {
+        let png = absent.result();
+        check(!png, "no image in plain text");
+        if !png {
+            check(png.kind == clipboard.ErrorKind.NotFound, "as NotFound");
+        }
+    }
+
+    section("image module: sizes and PNGs off the calling thread");
+    let encoding = image.encodePngAsync(picture);
+    finishEncode(encoding);
+    check(encoding.done(), "encodePngAsync finishes");
+    let expected = image.encodePng(picture);
+    if encoding.done() {
+        let png = encoding.result();
+        check(png as bool, "encodePngAsync");
+        if png && expected {
+            check(png == expected, "encodePngAsync gives the file encodePng does");
+        }
+        if png {
+            let back = image.decode(png);
+            check(back as bool, "and it decodes");
+            if back {
+                check(back.pixels == picture.pixels, "to the same pixels");
+            }
+        }
+    }
+
+    // A single byte of pixels is the Bytes edge case (it may be held inline).
+    let tiny = image.encodePngAsync(image.Image.fromPixels(1, 1, 1, Bytes(77 as u8)));
+    finishEncode(tiny);
+    if tiny.done() {
+        let png = tiny.result();
+        check(png as bool, "encodePngAsync of a 1x1 grey picture");
+        if png {
+            let back = image.decode(png, 1);
+            if back {
+                check(back.width == 1 && back.pixels[0] == 77 as u8, "1x1 grey round trip");
+            }
+        }
+    }
+
+    let converting = image.convertToPngAsync(testBmp());
+    finishEncode(converting);
+    if converting.done() {
+        let png = converting.result();
+        check(png as bool, "convertToPngAsync of a BMP");
+        if png {
+            check(png.length > 8 && png[1] == b"P" && png[2] == b"N" && png[3] == b"G", "gives a PNG file");
+            let back = image.decode(png);
+            if back {
+                checkEqInt(back.width, 2, "converted width");
+                check(back.pixels[2] == 255 as u8 && back.pixels[4] == 255 as u8 && back.pixels[5] == 0 as u8, "converted colours (blue, then red)");
+            }
+        }
+    }
+
+    let garbage = image.convertToPngAsync(Bytes("this is not an image, however long it goes on"));
+    finishEncode(garbage);
+    if garbage.done() {
+        check(!garbage.result(), "convertToPngAsync fails for a non-image");
+    }
+    let oneByte = image.convertToPngAsync(Bytes(7 as u8));
+    check(oneByte.done() && !oneByte.result(), "and for a single byte");
+
+    let bmpInfo = image.info(testBmp());
+    check(bmpInfo as bool, "image.info reads a BMP's header");
+    if bmpInfo {
+        check(bmpInfo.width == 2 && bmpInfo.height == 1 && bmpInfo.channels == 3, "info: 2x1 RGB");
+    }
+    check(!image.info(Bytes("this is not an image")), "image.info fails for a non-image");
+    check(!image.info(Bytes(7 as u8)), "and for a single byte");
+}
+
 fn testCustom() {
     section("custom types");
     let payload = bytesOf([0, 1, 2, 255, 0, 42]);
@@ -360,12 +515,7 @@ fn testInterop() {
 
     // A 2x1 24-bit BMP, as older programs put on the clipboard: it must be
     // offered as image/png and converted on the way in.
-    let bmp = bytesOf([
-        66, 77, 62, 0, 0, 0, 0, 0, 0, 0, 54, 0, 0, 0,
-        40, 0, 0, 0, 2, 0, 0, 0, 1, 0, 0, 0, 1, 0, 24, 0, 0, 0, 0, 0, 8, 0, 0, 0,
-        19, 11, 0, 0, 19, 11, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        255, 0, 0, 0, 0, 255, 0, 0,
-    ]);
+    let bmp = testBmp();
     fs.writeBinary("/tmp/haze-clipboardtest.bmp", bmp);
     before = clipboard.changeCount();
     check(shell("xclip -selection clipboard -t image/bmp -i < /tmp/haze-clipboardtest.bmp"), "xclip -i bmp");
@@ -382,6 +532,19 @@ fn testInterop() {
     check(png as bool, "readPng converts the BMP");
     if png {
         check(png[1] == b"P", "into a PNG file");
+    }
+    let reading = clipboard.readPngAsync();
+    finish(reading);
+    if reading.done() {
+        let converted = reading.result();
+        check(converted as bool, "readPngAsync converts the BMP");
+        if converted {
+            check(converted[1] == b"P", "into a PNG file");
+            let info = image.info(converted);
+            if info {
+                check(info.width == 2 && info.height == 1, "of the BMP's size");
+            }
+        }
     }
 }
 
@@ -416,6 +579,7 @@ fn main(): int {
     testText();
     testRich();
     testImages();
+    testAsyncImages();
     testCustom();
     testFiles();
     testState();

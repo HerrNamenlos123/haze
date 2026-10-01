@@ -53,10 +53,21 @@ typedef struct {
      against it stays valid until it moves. */
   int (*change_count_reliable)(int sel);
   int (*owns)(int sel);
+  /* Optional (NULL where a read is always a get()). Starts the transfer of
+     `target` without waiting for it, and returns a file descriptor its data
+     arrives on -- for hzcb_drain, on any thread -- or -1 when this one can
+     only be read with get(). */
+  int (*open)(int sel, const char *target);
 } hzcb_backend_t;
 
 extern const hzcb_backend_t hzcb_x11_backend;
 extern const hzcb_backend_t hzcb_sdl_backend;
+
+/* Reads a transfer (see hzcb_backend_t.open) to its end, appending to `out`,
+   and closes it. Waits for the owner as long as its data keeps coming, and
+   HZCB_TRANSFER_TIMEOUT_MS for each piece of it. Touches no shared state, so
+   any thread may call it. */
+int hzcb_drain(int fd, hzcb_buf_t *out, hzcb_error_t *err);
 
 /* SDL is used opportunistically: these are false when the program does not
    link SDL at all or has not initialized its video subsystem. */

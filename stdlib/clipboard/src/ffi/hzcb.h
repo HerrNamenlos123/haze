@@ -257,6 +257,16 @@ int hzcb_read_files(int sel, hzcb_strlist_t *paths, int *cut, hzcb_error_t *err)
    over: *kind is an HZCB_IMAGE_* value saying whether `encoded` or `pixels`
    was filled. hzcb_read(.., "image/png") only ever returns a native PNG. */
 int hzcb_read_image(int sel, int *kind, hzcb_buf_t *encoded, hzcb_image_t *pixels, hzcb_error_t *err);
+/* hzcb_read_image in two halves, for a caller that must not wait for the
+   clipboard's owner. hzcb_read_image_begin, on the thread the clipboard is
+   used from, picks the image and starts its transfer; hzcb_read_image_finish
+   waits for the bytes, and may do so on any thread. Where a read cannot be
+   split like that -- everywhere but Wayland, and there for the program's own
+   data -- begin returns -1, having read nothing: use hzcb_read_image. */
+int hzcb_read_image_begin(int sel);
+/* Takes the transfer hzcb_read_image_begin returned. `encoded` gets an image
+   file and *kind says of which sort (never HZCB_IMAGE_PIXELS). */
+int hzcb_read_image_finish(int transfer, int *kind, hzcb_buf_t *encoded, hzcb_error_t *err);
 /* Whether a write carrying image/png must also carry its decoded pixels
    (hzcb_content_t.pixels): true where the native image format is a bitmap. */
 int hzcb_needs_pixels(void);

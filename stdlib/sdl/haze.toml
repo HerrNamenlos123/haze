@@ -11,6 +11,7 @@ exec = "scripts/build-sdl.hz"
 # The patches build-sdl.hz applies to SDL, so changing one rebuilds it.
 inputs = [
     { module="this", dir="root", path="patches/wayland-pen-eraser.patch" },
+    { module="this", dir="root", path="patches/wayland-clipboard-receive.patch" },
 ]
 outputs = [
     { module="this", dir="bin", path="include/SDL3/SDL.h" },
