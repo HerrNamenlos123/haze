@@ -203,10 +203,18 @@ static inline Clay_FloatingElementConfig ToClayFloatingConfig(hzui_floating_conf
   return floating;
 }
 
-Clay_ElementId make_id(hzstd_str_t id)
+// A family of ids from one string: Clay hashes the string and then mixes
+// `offset` in, so (id, 0), (id, 1), ... are distinct elements that all borrow
+// the same characters. Offset 0 is exactly what make_id returns.
+static inline Clay_ElementId make_id_with_offset(hzstd_str_t id, hzstd_int_t offset)
 {
   Clay_String str = (Clay_String) { .chars = id.data, .length = id.length };
-  return CLAY_SID(str);
+  return CLAY_SIDI(str, (uint32_t)offset);
+}
+
+Clay_ElementId make_id(hzstd_str_t id)
+{
+  return make_id_with_offset(id, 0);
 }
 
 // Clay only emits a BORDER render command once at least one width > 0 (see
@@ -254,7 +262,7 @@ hzui_optional_bounding_box_t hzui_clay_get_element_bounding_box(hzstd_str_t elem
 
 void hzui_clay_define_div_element(void* (*fn)(void*), void* env, hzui_define_div_element_t config)
 {
-  CLAY({ .id = make_id(config.id),
+  CLAY({ .id = make_id_with_offset(config.id, config.idOffset),
          .userData = config.elementPtr,
          .layout = { .sizing = { .width = ToClaySizingAxis(config.width), .height = ToClaySizingAxis(config.height) },
                      .layoutDirection = config.downInsteadOfRight ? CLAY_TOP_TO_BOTTOM : CLAY_LEFT_TO_RIGHT,

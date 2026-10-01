@@ -166,6 +166,8 @@ namespace ffi {
 
     export extern C noemit struct hzui_define_div_element_t {
         id: str;
+        // One of the ID_OFFSET_* values below.
+        idOffset: int;
         backgroundColor: Color;
         padding: hzui_padding_values_t;
         cornerRadius: CornerRadiusValues;
@@ -467,6 +469,24 @@ fn marginBoxSizing(size: ui_styling.Size): ffi.hzui_sizing_axis_t :: final {
     return { type: ffi.hzui_sizing_type_t.hzui_sizing_fit, value: 0.0 };
 }
 
+// One Haze element can be declared to Clay as several elements: itself, plus
+// the invisible helpers that realise what Clay has no notion of (a margin
+// box, space-between spacers). Each needs a Clay id of its own, and all of
+// them are the element's globalId with one of these offsets, which the C side
+// mixes into the hash of that one string (see make_id_with_offset in ui.c).
+//
+// Deliberately NOT a suffixed string (`globalId + "/__margin"`): the layout
+// pass redeclares every element every frame, so that was a fresh string per
+// margined element and three per spacer, per frame, for an id whose only use
+// is to be hashed and thrown away.
+//
+// Only the element itself is ever looked up by id (bounding boxes, floating
+// parents), and those lookups hash the bare globalId, i.e. offset 0.
+const ID_OFFSET_ELEMENT = 0;
+const ID_OFFSET_MARGIN_BOX = 1;
+// The spacer after child i is ID_OFFSET_FIRST_SPACER + i.
+const ID_OFFSET_FIRST_SPACER = 2;
+
 // Whether this element gets a margin box at all -- see defineMarginBox.
 fn needsMarginBox(style: ui_styling.ComputedDivStyle): bool :: final {
     let m = style.margin;
@@ -489,7 +509,10 @@ fn needsMarginBox(style: ui_styling.ComputedDivStyle): bool :: final {
 // elementPtr) -- it never gets a Clay render command (no background,
 // border, or content), so it never receives bounding-box feedback and
 // never needs hit-testing, same as any other content-less element.
-fn defineSpacer(id: str, mainAxisIsWidth: bool): void :: final {
+//
+// `ownerId` is the id of the div whose children are being spaced and
+// `idOffset` says which of its spacers this is -- see ID_OFFSET_FIRST_SPACER.
+fn defineSpacer(ownerId: str, idOffset: int, mainAxisIsWidth: bool): void :: final {
     let noop = (): void => {};
     let func = none as cptr;
     let env = none as cptr;
@@ -500,7 +523,8 @@ fn defineSpacer(id: str, mainAxisIsWidth: bool): void :: final {
     let fitAxis: ffi.hzui_sizing_axis_t = { type: ffi.hzui_sizing_type_t.hzui_sizing_fit, value: 0.0 };
 
     ffi.hzui_clay_define_div_element(func, env, {
-        id: id,
+        id: ownerId,
+        idOffset: idOffset,
         backgroundColor: Color(0.0, 0.0, 0.0, 0.0),
         padding: { left: 0.0, right: 0.0, top: 0.0, bottom: 0.0 },
         cornerRadius: { topLeft: 0.0, topRight: 0.0, bottomLeft: 0.0, bottomRight: 0.0 },
@@ -837,8 +861,8 @@ export opaque ref struct Context {
     // bounding-box feedback and it is never hit-tested. Clipping
     // (collectClipsRecursive) and hit-testing (ui_components' hit path) both
     // walk the HAZE element tree, which this box is not part of at all, so
-    // neither can even see it. Its id is the element's own with a suffix, so it
-    // cannot collide with a real element's.
+    // neither can even see it. Its id is the element's own at
+    // ID_OFFSET_MARGIN_BOX, so it cannot collide with a real element's.
     fn defineMarginBox(
         ctx: TreeTraverseContext,
         element: ui_elements.Element,
@@ -862,7 +886,8 @@ export opaque ref struct Context {
         __c__("env = (void*)renderChild.env.ptr;");
 
         ffi.hzui_clay_define_div_element(func, env, {
-            id: elementId + "/__margin",
+            id: elementId,
+            idOffset: ID_OFFSET_MARGIN_BOX,
             backgroundColor: Color(0.0, 0.0, 0.0, 0.0),
             padding: { left: margin.left, right: margin.right, top: margin.top, bottom: margin.bottom },
             cornerRadius: { topLeft: 0.0, topRight: 0.0, bottomLeft: 0.0, bottomRight: 0.0 },
@@ -935,7 +960,7 @@ export opaque ref struct Context {
                 for child in divElement.children {
                     this.processTreeElement(ctx, child, childForceGrowWidth, childForceGrowHeight);
                     if spaceBetween && i < lastIndex {
-                        defineSpacer(elementId + "/__spacer_" + f"{i}", mainAxisIsWidth);
+                        defineSpacer(elementId, ID_OFFSET_FIRST_SPACER + i, mainAxisIsWidth);
                     }
                     i = i + 1;
                 }
@@ -965,6 +990,7 @@ export opaque ref struct Context {
                 func, env,
                 {
                     id: elementId,
+                    idOffset: ID_OFFSET_ELEMENT,
                     backgroundColor: style.backgroundColor,
                     padding: { left: style.padding.left, right: style.padding.right, top: style.padding.top, bottom: style.padding.bottom },
                     cornerRadius: { topLeft: style.cornerRadius.topLeft, topRight: style.cornerRadius.topRight, bottomLeft: style.cornerRadius.bottomLeft, bottomRight: style.cornerRadius.bottomRight },

@@ -119,6 +119,12 @@ typedef struct {
 // way a 9-argument positional call can.
 typedef struct {
   hzstd_str_t id;
+  // Tells apart the several Clay elements one Haze element can be declared
+  // as: 0 is the element itself, anything else a helper wrapped around or
+  // placed after it (its margin box, its space-between spacers). Mixed into
+  // the hash of `id` rather than appended to the string, so a helper costs no
+  // string of its own -- see make_id_with_offset in ui.c.
+  hzstd_int_t idOffset;
   hzstd_color_t backgroundColor;
   hzui_padding_values_t padding;
   hzui_corner_radius_values_t cornerRadius;
