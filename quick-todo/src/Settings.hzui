@@ -1,0 +1,49 @@
+from ui_widgets import ButtonComponent
+
+@emit
+close: ();
+
+@setup
+let toggleAutostart = () => {
+    notes().setAutostart(!rx.get(notes().autostart));
+};
+
+let removeDone = () => {
+    notes().removeDone();
+};
+
+let quit = () => {
+    quitApp();
+};
+
+let autostartLabel = computed((): str => rx.get(notes().autostart) ? "On" : "Off");
+
+let keyPressed = (event: KeyboardEvent) => {
+    if event.key == Key.A { toggleAutostart(); }
+    else if event.key == Key.C { removeDone(); }
+    else if event.key == Key.Q { quit(); }
+    else if event.key == Key.Escape || event.key == Key.S { emits.close(); }
+    else { return; }
+    event.stopPropagation();
+};
+
+@template [col w-grow h-grow p-4 gap-3] focusable=[true] autofocus=[true] @keydown=keyPressed
+
+SettingRow [] title="Start with system" hint="a" {
+    #content {
+        Button [] label=[rx.get(autostartLabel)] selected=[rx.get(notes().autostart)] textColor="#E4E4E7" focusRing=[0] @click=toggleAutostart {}
+    }
+}
+SettingRow [] title="Show or hide" hint="Ctrl+Alt+Space" {}
+SettingRow [] title="Delete completed notes" hint="c" {
+    #content {
+        Button [] label="Delete" textColor="#E4E4E7" focusRing=[0] @click=removeDone {}
+    }
+}
+SettingRow [] title="Quit and stop running in the background" hint="q" {
+    #content {
+        Button [] label="Quit" bgHover="#C42B1C" textColor="#E4E4E7" focusRing=[0] @click=quit {}
+    }
+}
+div [w-grow h-grow] {}
+text [text-color-["#52525B"] font-size-12] ["esc back"]

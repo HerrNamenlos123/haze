@@ -1811,3 +1811,140 @@ void haze_sdl_setCursor(int index) {
   SDL_SetCursor(g_haze_cursors[index]);
   g_haze_current_cursor = index;
 }
+
+static int g_haze_tray_clicked = -1;
+static bool g_haze_hotkey_pressed = false;
+
+static void haze_sdl_wake(void) {
+  SDL_Event event;
+  SDL_zero(event);
+  event.type = SDL_EVENT_USER;
+  SDL_PushEvent(&event);
+}
+
+static void SDLCALL haze_sdl_tray_entry_clicked(void *userdata,
+                                                SDL_TrayEntry *entry) {
+  (void)entry;
+  g_haze_tray_clicked = (int)(intptr_t)userdata;
+  haze_sdl_wake();
+}
+
+SDL_Tray *haze_sdl_createTray(void *pixels, hzstd_int_t width,
+                              hzstd_int_t height, hzstd_str_t tooltip) {
+  SDL_Surface *icon =
+      SDL_CreateSurfaceFrom((int)width, (int)height, SDL_PIXELFORMAT_RGBA32,
+                            pixels, (int)width * 4);
+  SDL_Tray *tray = SDL_CreateTray(icon, HZSTD_CSTR(tooltip));
+  SDL_DestroySurface(icon);
+  if (tray) {
+    SDL_CreateTrayMenu(tray);
+  }
+  return tray;
+}
+
+hzstd_int_t haze_sdl_addTrayEntry(SDL_Tray *tray, hzstd_str_t label) {
+  SDL_TrayMenu *menu = SDL_GetTrayMenu(tray);
+  int index = 0;
+  SDL_GetTrayEntries(menu, &index);
+  SDL_TrayEntry *entry = SDL_InsertTrayEntryAt(menu, -1, HZSTD_CSTR(label),
+                                               SDL_TRAYENTRY_BUTTON);
+  SDL_SetTrayEntryCallback(entry, haze_sdl_tray_entry_clicked,
+                           (void *)(intptr_t)index);
+  return index;
+}
+
+hzstd_int_t haze_sdl_takeTrayClick(void) {
+  int clicked = g_haze_tray_clicked;
+  g_haze_tray_clicked = -1;
+  return clicked;
+}
+
+void haze_sdl_destroyTray(SDL_Tray *tray) { SDL_DestroyTray(tray); }
+
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+
+static bool SDLCALL haze_sdl_hotkey_hook(void *userdata, MSG *msg) {
+  (void)userdata;
+  if (msg->message == WM_HOTKEY) {
+    g_haze_hotkey_pressed = true;
+    haze_sdl_wake();
+    return false;
+  }
+  return true;
+}
+
+bool haze_sdl_registerGlobalHotkey(int modifiers, int scancode) {
+  SDL_Keycode key = SDL_GetKeyFromScancode((SDL_Scancode)scancode,
+                                           SDL_KMOD_NONE, false);
+  UINT vk = 0;
+  if (key >= 'a' && key <= 'z') {
+    vk = (UINT)(key - 'a' + 'A');
+  } else if ((key >= '0' && key <= '9') || key == SDLK_SPACE) {
+    vk = (UINT)key;
+  } else {
+    return false;
+  }
+  UINT mods = MOD_NOREPEAT;
+  if (modifiers & 1)
+    mods |= MOD_SHIFT;
+  if (modifiers & 2)
+    mods |= MOD_CONTROL;
+  if (modifiers & 4)
+    mods |= MOD_ALT;
+  if (modifiers & 8)
+    mods |= MOD_WIN;
+  SDL_SetWindowsMessageHook(haze_sdl_hotkey_hook, NULL);
+  return RegisterHotKey(NULL, 1, mods, vk) != 0;
+}
+#else
+bool haze_sdl_registerGlobalHotkey(int modifiers, int scancode) {
+  (void)modifiers;
+  (void)scancode;
+  return false;
+}
+#endif
+
+bool haze_sdl_takeGlobalHotkey(void) {
+  bool pressed = g_haze_hotkey_pressed;
+  g_haze_hotkey_pressed = false;
+  return pressed;
+}
+
+hzstd_str_t haze_sdl_getPrefPath(hzstd_str_t org, hzstd_str_t app) {
+  char *path = SDL_GetPrefPath(HZSTD_CSTR(org), HZSTD_CSTR(app));
+  hzstd_str_t result = hzstd_cstr_dup(path ? path : (char *)"");
+  SDL_free(path);
+  return result;
+}
+
+#ifdef _WIN32
+extern bool SDL_HazeGetTrayIconRect(SDL_Tray *tray, SDL_Rect *rect);
+#endif
+
+void haze_sdl_moveWindowToTray(SDL_Window *window, SDL_Tray *tray) {
+  float mouseX = 0.0f;
+  float mouseY = 0.0f;
+  SDL_GetGlobalMouseState(&mouseX, &mouseY);
+  SDL_Point anchor = {(int)mouseX, (int)mouseY};
+#ifdef _WIN32
+  SDL_Rect icon;
+  if (SDL_HazeGetTrayIconRect(tray, &icon)) {
+    anchor.x = icon.x + icon.w / 2;
+    anchor.y = icon.y + icon.h / 2;
+  }
+#endif
+  SDL_Rect area;
+  if (!SDL_GetDisplayUsableBounds(SDL_GetDisplayForPoint(&anchor), &area)) {
+    return;
+  }
+  int width = 0;
+  int height = 0;
+  SDL_GetWindowSize(window, &width, &height);
+  int x = SDL_clamp(anchor.x - width / 2, area.x, area.x + area.w - width);
+  int y = SDL_clamp(anchor.y - height / 2, area.y, area.y + area.h - height);
+  SDL_SetWindowPosition(window, x, y);
+}

@@ -4,6 +4,15 @@ __c__("#include \"sdl_impl.c\"");
 
 namespace ffi {
 	export extern C ref struct SDL_Window {};
+	export extern C ref struct SDL_Tray {};
+
+	extern C fn haze_sdl_createTray(pixels: cptr, width: int, height: int, tooltip: str): SDL_Tray | none :: final;
+	extern C fn haze_sdl_addTrayEntry(tray: SDL_Tray, label: str): int :: final;
+	extern C fn haze_sdl_takeTrayClick(): int :: final;
+	extern C fn haze_sdl_destroyTray(tray: SDL_Tray): void :: final;
+	extern C fn haze_sdl_takeGlobalHotkey(): bool :: final;
+	extern C fn haze_sdl_moveWindowToTray(window: SDL_Window, tray: SDL_Tray): void :: final;
+	extern C fn haze_sdl_getPrefPath(org: str, app: str): str :: final;
 
 	extern C fn haze_sdl_init(platformDecorations: bool): bool :: final;
 	extern C fn haze_sdl_terminate(): void :: final;
@@ -597,6 +606,14 @@ export ref struct Window {
 		return ffi.windowShouldClose(this.handle);
 	}
 
+	fn moveToTray(tray: Tray) {
+		ffi.haze_sdl_moveWindowToTray(this.handle, tray.handle);
+	}
+
+	fn cancelClose() {
+		ffi.setWindowShouldClose(this.handle, false);
+	}
+
 	// Ask this window to close, exactly as if its titlebar's X had been
 	// clicked: it pushes the platform's own SDL_EVENT_WINDOW_CLOSE_REQUESTED
 	// rather than setting the should-close flag behind the event loop's back,
@@ -1121,4 +1138,48 @@ export fn waitEventTimeout(timeoutMs: i32) {
 
 export fn getTime(): real {
 	return ffi.getTime() as real;
+}
+
+export ref struct Tray {
+	handle: ffi.SDL_Tray;
+
+	fn addEntry(label: str): int {
+		return ffi.haze_sdl_addTrayEntry(this.handle, label);
+	}
+
+	fn takeClicked(): int | none {
+		let index = ffi.haze_sdl_takeTrayClick();
+		if index < 0 { return none; }
+		return index;
+	}
+
+	fn destroy() {
+		ffi.haze_sdl_destroyTray(this.handle);
+	}
+}
+
+export fn createTray(rgbaPixels: Bytes, width: int, height: int, tooltip: str): Result<Tray, str> {
+	let pixels = none as cptr;
+	__c__("pixels = rgbaPixels.basePtr + rgbaPixels.offset;");
+	let handle = ffi.haze_sdl_createTray(pixels, width, height, tooltip);
+	if !handle {
+		return Result<Tray, str>.Err(ffi.getError());
+	}
+	return Result<Tray, str>.Ok(Tray { handle: handle });
+}
+
+export fn registerGlobalHotkey(modifiers: KeyModifiers, key: Key): bool {
+	do unsafe {
+		let registered: bool = uninitialized;
+		__c__("registered = haze_sdl_registerGlobalHotkey((int)modifiers, (int)key);");
+		return registered;
+	};
+}
+
+export fn takeGlobalHotkey(): bool {
+	return ffi.haze_sdl_takeGlobalHotkey();
+}
+
+export fn prefPath(org: str, app: str): str {
+	return ffi.haze_sdl_getPrefPath(org, app);
 }

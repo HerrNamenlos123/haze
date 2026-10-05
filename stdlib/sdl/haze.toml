@@ -12,6 +12,7 @@ exec = "scripts/build-sdl.hz"
 inputs = [
     { module="this", dir="root", path="patches/wayland-pen-eraser.patch" },
     { module="this", dir="root", path="patches/wayland-clipboard-receive.patch" },
+    { module="this", dir="root", path="patches/windows-tray.patch" },
 ]
 outputs = [
     { module="this", dir="bin", path="include/SDL3/SDL.h" },

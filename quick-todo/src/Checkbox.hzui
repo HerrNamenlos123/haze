@@ -1,0 +1,22 @@
+from codicons import CodiconComponent
+
+@props
+checked: bool;
+
+@emit
+toggle: ();
+
+@setup
+let press = (event: PointerEvent) => {
+    emits.toggle();
+};
+
+@template [
+        w-[16]px h-[16]px rounded-[4]px border-[2] cursor-pointer items-center justify-center
+        border-color-[props.checked ? "#6D5BD0" : "#52525B"]
+        bg-[props.checked ? "#6D5BD0" : "#00000000"]
+        text-color-["#FFFFFF"] font-size-12
+    ]
+    @pointerdown=press
+
+Codicon if=[props.checked] [] icon="check" {}

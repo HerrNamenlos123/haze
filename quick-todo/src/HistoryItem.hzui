@@ -1,0 +1,54 @@
+from ui_widgets import ButtonComponent
+
+@props
+text: str;
+done: bool;
+index: int;
+selected: bool;
+
+@emit
+select: (int,);
+restore: (int,);
+forget: (int,);
+
+@setup
+let rootRef = elementRef<DivElement>();
+let hovered = computed(() => rootRef?.hover() ?? false);
+
+let background = computed((): str => {
+    if props.selected { return "#26262F"; }
+    if hovered { return "#1E1E25"; }
+    return "#00000000";
+});
+
+let press = (event: PointerEvent) => {
+    emits.select(props.index);
+};
+
+let restore = () => {
+    emits.restore(props.index);
+};
+
+let forget = () => {
+    emits.forget(props.index);
+};
+
+let doubleClick = (event: PointerEvent) => {
+    restore();
+};
+
+@template [row w-grow h-fit items-center gap-3 px-3 py-2 rounded-[6]px bg-[background]]
+    ref=rootRef
+    @pointerdown=press
+    @dblclick=doubleClick
+
+Checkbox [] checked=[props.done] {}
+
+div [w-grow h-fit] {
+    text [text-color-["#A1A1AA"]] [props.text]
+}
+
+div if=[rx.get(hovered) || props.selected] [row h-fit gap-1] {
+    Button [] icon="discard" paddingX=[4] paddingY=[2] textColor="#71717A" focusRing=[0] @click=restore {}
+    Button [] icon="trash" paddingX=[4] paddingY=[2] bgHover="#C42B1C" textColor="#71717A" focusRing=[0] @click=forget {}
+}

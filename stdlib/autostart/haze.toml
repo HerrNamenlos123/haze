@@ -1,0 +1,10 @@
+name = "autostart"
+id = "AuT0st4r"
+version = "1.0.0"
+description = "Launch an application when the user logs in"
+license = "MIT"
+authors = ["HerrNamenlos123"]
+type = "lib"
+
+[linker.win32]
+flags = ["-ladvapi32"]

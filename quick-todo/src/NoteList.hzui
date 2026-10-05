@@ -1,0 +1,131 @@
+from ui_widgets import ButtonComponent, ScrollView, ScrollViewComponent, ScrollViewSlotContent
+
+@props
+activation: Reactive<int>;
+createRequested: Reactive<bool>;
+
+@emit
+openHistory: ();
+openSettings: ();
+
+@setup
+let rootRef = elementRef<DivElement>();
+let contentRef = elementRef<DivElement>();
+let scrollView = ui.componentRef<ScrollView>();
+let selected = reactive<int>(0);
+let editing = reactive<bool>(false);
+let draft = reactive<str>("");
+let pendingDelete = reactive<bool>(false);
+
+let items = computed((): []Note => notes().list());
+
+let focusList = () => {
+    let root = rx.get(rootRef);
+    if root { root.focus(); }
+};
+
+let select = (index: int) => {
+    selected := clamp<int>(index, 0, max(items.length - 1, 0));
+};
+
+let stopEditing = () => {
+    if !rx.get(editing) { return; }
+    editing := false;
+    let index: int = rx.get(selected);
+    let list: []Note = items;
+    if index < list.length && list[index].text.trim().length == 0 {
+        notes().discard(index);
+        select(index);
+    }
+    focusList();
+};
+
+let edit = (index: int) => {
+    select(index);
+    let list: []Note = items;
+    let current: int = rx.get(selected);
+    draft := list[current].text;
+    editing := true;
+};
+
+let create = (index: int) => {
+    stopEditing();
+    let at = clamp<int>(index, 0, items.length);
+    notes().insert(at, Note {});
+    edit(at);
+};
+
+let reveal = (top: real, height: real) => {
+    let view = rx.get(scrollView);
+    if !view { return; }
+    if let origin = contentRef?.position() {
+        view.scroll.scrollIntoView(top - origin.y, height);
+    }
+};
+
+ui.watch(() => rx.get(props.createRequested), (value, old) => {
+    if rx.get(props.createRequested) {
+        props.createRequested := false;
+        create(0);
+    }
+}, { immediate: true });
+
+ui.watch(() => rx.get(props.activation), (value, old) => {
+    stopEditing();
+    focusList();
+});
+
+let keyPressed = (event: KeyboardEvent) => {
+    if rx.get(editing) {
+        if event.key == Key.Escape {
+            event.stopPropagation();
+            stopEditing();
+        }
+        return;
+    }
+    let shift = hasModifier(event.modifiers, KeyModifiers.Shift);
+    let index: int = rx.get(selected);
+    let deleting = rx.get(pendingDelete);
+    let hasItems = items.length > 0;
+    pendingDelete := false;
+
+    if event.key == Key.J || event.key == Key.Down { select(index + 1); }
+    else if event.key == Key.K || event.key == Key.Up { select(index - 1); }
+    else if event.key == Key.G { select(shift ? items.length - 1 : 0); }
+    else if event.key == Key.N { create(0); }
+    else if event.key == Key.O { create(shift ? index : index + 1); }
+    else if hasItems && (event.key == Key.Return || event.key == Key.I || event.key == Key.A) { edit(index); }
+    else if hasItems && (event.key == Key.X || event.key == Key.Space) { notes().toggleDone(index); }
+    else if hasItems && event.key == Key.D && deleting {
+        notes().remove(index);
+        select(index);
+    }
+    else if hasItems && event.key == Key.D { pendingDelete := true; }
+    else if event.key == Key.U {
+        if notes().restore(0, index) { select(index); }
+    }
+    else if event.key == Key.H { emits.openHistory(); }
+    else if event.key == Key.S { emits.openSettings(); }
+    else { return; }
+    event.preventDefault();
+    event.stopPropagation();
+};
+
+@template [col w-grow h-grow] ref=rootRef focusable=[true] autofocus=[true] @keydown=keyPressed
+
+ScrollView [] padding=[6] ref=scrollView {
+    #content {
+        div [col w-grow h-fit gap-1] ref=contentRef {
+            NoteItem for=[note, i in items] key=[i] []
+                text=[note.text] done=[note.done] index=[i]
+                selected=[i == rx.get(selected)] editing=[i == rx.get(selected) && rx.get(editing)] draft=[draft]
+                @select=select @edit=edit @finish=stopEditing @reveal=reveal
+            {}
+            div if=[items.length == 0] [col w-grow items-center gap-2 py-10] {
+                text [text-color-["#71717A"]] ["Nothing to remember"]
+                text [text-color-["#52525B"] font-size-12] ["n new · j/k move · enter edit"]
+                text [text-color-["#52525B"] font-size-12] ["x done · dd delete · h history · s settings"]
+            }
+        }
+    }
+}

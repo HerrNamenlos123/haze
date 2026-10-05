@@ -1,0 +1,65 @@
+from ui_widgets import ButtonComponent, ScrollView, ScrollViewComponent, ScrollViewSlotContent
+
+@emit
+close: ();
+
+@setup
+let selected = reactive<int>(0);
+let pendingDelete = reactive<bool>(false);
+let items = computed((): []Note => notes().historyList());
+
+let select = (index: int) => {
+    selected := clamp<int>(index, 0, max(items.length - 1, 0));
+};
+
+let restore = (index: int) => {
+    notes().restore(index, 0);
+    select(index);
+};
+
+let forget = (index: int) => {
+    notes().forget(index);
+    select(index);
+};
+
+let clear = () => {
+    notes().clearHistory();
+};
+
+let keyPressed = (event: KeyboardEvent) => {
+    let index: int = rx.get(selected);
+    let shift = hasModifier(event.modifiers, KeyModifiers.Shift);
+    let deleting = rx.get(pendingDelete);
+    let hasItems = items.length > 0;
+    pendingDelete := false;
+    if event.key == Key.J || event.key == Key.Down { select(index + 1); }
+    else if event.key == Key.K || event.key == Key.Up { select(index - 1); }
+    else if event.key == Key.G { select(shift ? items.length - 1 : 0); }
+    else if hasItems && (event.key == Key.Return || event.key == Key.R) { restore(index); }
+    else if hasItems && (event.key == Key.Delete || (event.key == Key.D && deleting)) { forget(index); }
+    else if hasItems && event.key == Key.D { pendingDelete := true; }
+    else if event.key == Key.Escape || event.key == Key.H { emits.close(); }
+    else { return; }
+    event.preventDefault();
+    event.stopPropagation();
+};
+
+@template [col w-grow h-grow] focusable=[true] autofocus=[true] @keydown=keyPressed
+
+ScrollView [] padding=[6] {
+    #content {
+        div [col w-grow h-fit gap-1] {
+            HistoryItem for=[note, i in items] key=[i] [] text=[note.text] done=[note.done] index=[i]
+                selected=[i == rx.get(selected)] @select=select @restore=restore @forget=forget {}
+            div if=[items.length == 0] [col w-grow items-center py-8] {
+                text [text-color-["#71717A"]] ["Deleted notes show up here"]
+            }
+        }
+    }
+}
+
+div [row w-grow h-fit px-3 py-1 items-center] {
+    text [text-color-["#52525B"] font-size-12] ["enter restore · dd delete · esc back"]
+    div [w-grow] {}
+    Button if=[items.length > 0] [] label="Clear" textColor="#71717A" focusRing=[0] @click=clear {}
+}

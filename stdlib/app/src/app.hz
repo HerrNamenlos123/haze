@@ -16,6 +16,9 @@ export struct AppOptions {
     // snap to an edge or a corner, tile, the window menu, the keyboard
     // move/resize gestures).
     nativeTitlebar: bool = true;
+    size: sdl.WindowSizeConfig = {};
+    startHidden: bool = false;
+    hideOnClose: bool = false;
 }
 
 fn pickSurfaceFormat(caps: wgpu.SurfaceCapabilities): wgpu.TextureFormat {
@@ -262,6 +265,7 @@ export opaque ref struct App {
     // loop that presents through some other path still gets it right.
     windowShown: bool = false;
     framePresented: bool = false;
+    hideOnClose: bool = false;
 
     // When the current tick began (sdl.getTime(), seconds) -- stamped by
     // nextFrame(), read by idle() to keep skipped ticks from running
@@ -328,6 +332,7 @@ export opaque ref struct App {
 
         let window = sdl.createWindow({
             title: options.title,
+            size: options.size,
             noApi: true,
             borderless: !options.nativeTitlebar,
             // Not on screen yet -- see windowShown below.
@@ -397,6 +402,8 @@ export opaque ref struct App {
             windowState: windowState,
             mousePosition: {},
             _pointerButtons: pointerButtons,
+            windowShown: options.startHidden,
+            hideOnClose: options.hideOnClose,
         };
 
         window.onMouseMove((e: sdl.MouseMoveEvent) => {
@@ -694,6 +701,20 @@ export opaque ref struct App {
         this.window.restore();
     }
 
+    fn show() {
+        this.windowShown = false;
+        this.framePresented = false;
+    }
+
+    fn hide() {
+        this.window.hide();
+        this.windowShown = true;
+    }
+
+    fn isVisible(): bool {
+        return this.window.isVisible();
+    }
+
     fn isMaximized(): bool {
         return this.window.isMaximized();
     }
@@ -739,7 +760,14 @@ export opaque ref struct App {
     // Returns none when the window has been closed — use as a while condition.
     mut fn nextFrame(): mut renderer.gfx.Frame | none {
         if this.window.shouldClose() {
-            return none;
+            if !this.hideOnClose {
+                return none;
+            }
+            this.window.cancelClose();
+            if this.window.shouldClose() {
+                return none;
+            }
+            this.hide();
         }
         this._tickStart = sdl.getTime();
 
@@ -748,6 +776,7 @@ export opaque ref struct App {
         if !this.windowShown {
             if this.framePresented {
                 this.window.show();
+                this.window.focus();
                 this.windowShown = true;
             }
             else {
@@ -839,7 +868,7 @@ export opaque ref struct App {
         if elapsed < minTickSeconds {
             time.sleep(minTickSeconds - elapsed);
         }
-        sdl.waitEventTimeout(12);
+        sdl.waitEventTimeout(this.windowShown && !this.window.isVisible() ? 100 as i32 : 12 as i32);
     }
 
     fn destroy() {

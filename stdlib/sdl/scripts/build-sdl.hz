@@ -36,9 +36,13 @@ fn main(): int {
         //   which hands a clipboard transfer's pipe to the caller instead of
         //   reading it on the main thread as SDL_GetClipboardData does -- for
         //   the clipboard module, which reads it on a worker thread.
+        //   windows-tray: a left click on the tray icon clicks the menu's first
+        //   entry instead of opening the menu, as on Windows, and adds
+        //   SDL_HazeGetTrayIconRect, where the icon is on screen.
         let patches: []str = [
             "wayland-pen-eraser.patch",
             "wayland-clipboard-receive.patch",
+            "windows-tray.patch",
         ];
         for patch in patches {
             process.run("git", { "apply", f"{sourceDir}/patches/{patch}" }, {

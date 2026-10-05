@@ -1,0 +1,81 @@
+from ui_widgets import ButtonComponent, TextInputComponent
+
+@props
+text: str;
+done: bool;
+index: int;
+selected: bool;
+editing: bool;
+draft: Reactive<str>;
+
+@emit
+select: (int,);
+edit: (int,);
+finish: ();
+reveal: (real, real,);
+
+@setup
+let rootRef = elementRef<DivElement>();
+let hovered = computed(() => rootRef?.hover() ?? false);
+
+let background = computed((): str => {
+    if props.selected { return "#26262F"; }
+    if hovered { return "#1E1E25"; }
+    return "#00000000";
+});
+
+let press = (event: PointerEvent) => {
+    emits.select(props.index);
+};
+
+let doubleClick = (event: PointerEvent) => {
+    emits.edit(props.index);
+};
+
+let toggle = () => {
+    notes().toggleDone(props.index);
+};
+
+let remove = () => {
+    notes().remove(props.index);
+};
+
+let change = (value: str) => {
+    notes().setText(props.index, value);
+};
+
+let submit = (value: str) => {
+    emits.finish();
+};
+
+ui.onFrame(() => {
+    if !props.selected { return; }
+    let root = rx.get(rootRef);
+    if !root { return; }
+    if let pos = root.position() {
+        if let size = root.size() {
+            emits.reveal(pos.y, size.y);
+        }
+    }
+});
+
+@template [
+        row w-grow h-fit items-center gap-3 px-3 py-2 rounded-[6]px bg-[background]
+        border-[1] border-color-[props.editing ? "#6D5BD0" : "#00000000"]
+    ]
+    ref=rootRef
+    @pointerdown=press
+    @dblclick=doubleClick
+
+Checkbox [] checked=[props.done] @toggle=toggle {}
+
+TextInput if=[props.editing] [] text=[props.draft] multiline=[true] autofocus=[true]
+    backgroundColor="#00000000" borderWidth=[0] paddingX=[0] paddingY=[0] focusRing=[0]
+    fontSize=[15] textColor="#E4E4E7" @change=change @submit=submit {}
+
+div else [w-grow h-fit] {
+    text [text-color-[props.done ? "#71717A" : "#E4E4E7"]] [props.text]
+}
+
+Button if=[rx.get(hovered) && !props.editing] [] icon="close" paddingX=[4] paddingY=[2]
+    textColor="#71717A" focusRing=[0] @click=remove {}

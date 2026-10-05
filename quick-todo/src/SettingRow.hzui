@@ -1,0 +1,14 @@
+@props
+title: str;
+hint: str;
+
+@slot
+content: {};
+
+@template [row w-grow h-fit items-center gap-3 px-3 py-2 rounded-[6]px bg-["#1F1F26"]]
+
+div [col w-grow h-fit gap-1] {
+    text [text-color-["#E4E4E7"]] [props.title]
+    text [text-color-["#71717A"] font-size-12] [props.hint]
+}
+slot content {}

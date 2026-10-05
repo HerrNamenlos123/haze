@@ -5,9 +5,9 @@ import unicode
 
 // === TextInput ================================================
 //
-// A single-line text box, driven entirely by textedit_behavior: this file
+// A text box, driven entirely by textedit_behavior: this file
 // owns no cursor, no selection and no undo history of its own. It supplies
-// the engine with a document (one line, the `text` prop), turns key and
+// the engine with a document (the `text` prop), turns key and
 // pointer events into engine calls, and draws what the engine says.
 //
 // ── Controlled through a reactive handle ──────────────────────
@@ -19,19 +19,29 @@ import unicode
 // show it. `change` is still emitted for owners that want to react rather
 // than poll.
 //
-// ── One line, on purpose ──────────────────────────────────────
+// ── One line, unless `multiline` ──────────────────────────────
 //
-// getLineCount() is 1 and always will be. Return does not insert a newline,
+// Without `multiline`, getLineCount() is 1. Return does not insert a newline,
 // it emits `submit`. Line breaks reaching the box from ANYWHERE -- a paste, or
 // the owner writing multi-line text straight into the handle -- are STRIPPED
 // and everything else kept, so multi-line text arrives joined into one line
 // rather than losing all but its first. See `line` below for why that is a
 // correctness requirement and not a formatting preference.
 
+struct TextInputRow {
+    index: int;
+    head: str;
+    selected: str;
+    tail: str;
+    selectionWidth: real;
+}
+
 @props
 text: Reactive<str>;
 placeholder: str = "";
 enabled: bool = true;
+multiline: bool = false;
+autofocus: bool = false;
 
 fontSize: real = 14.0;
 fontFamily: str = "default";
@@ -98,7 +108,7 @@ let withoutLineBreaks = (text: String): str => {
     let i = 0;
     while i < text.length() {
         let byte = text.getAt(i);
-        if byte == b"\n" || byte == b"\r" {
+        if byte == b"\r" || (byte == b"\n" && !props.multiline) {
             result = result + text.cloneSlice(segmentStart, i);
             segmentStart = i + 1;
         }
@@ -132,6 +142,19 @@ let withoutLineBreaks = (text: String): str => {
 // owner never asked for. The first real edit persists it, since the head and
 // tail spliced below come from this same normalized string.
 let line = computed((): str => withoutLineBreaks(String(rx.get(props.text))));
+let lines = computed((): []str => rx.get(line).split("\n"));
+let lineAt = (index: int): str => {
+    let all: []str = lines;
+    return all[index];
+};
+
+let offsetOf = (pos: Vec2i): int => {
+    let offset = pos.x;
+    for (let i = 0; i < pos.y; i++) {
+        offset = offset + lineAt(i).length + 1;
+    }
+    return offset;
+};
 
 // The engine's one mutation primitive. Everything it does -- typing,
 // backspace, word-delete, paste, undo -- arrives here as "replace the bytes
@@ -142,8 +165,8 @@ let line = computed((): str => withoutLineBreaks(String(rx.get(props.text))));
 let applyReplaceRange = (start: Vec2i, end: Vec2i, replacement: String): void => {
     let handle = props.text;
     let current = String(rx.get(line));
-    let head = current.cloneSlice(0, start.x);
-    let tail = current.cloneSlice(end.x);
+    let head = current.cloneSlice(0, offsetOf(start));
+    let tail = current.cloneSlice(offsetOf(end));
     let next = head + withoutLineBreaks(replacement) + tail;
     // Written through the handle the owner gave us, so both sides see it at
     // once. The engine reads the document back immediately after this returns
@@ -153,10 +176,9 @@ let applyReplaceRange = (start: Vec2i, end: Vec2i, replacement: String): void =>
 };
 
 let textedit = textedit_behavior.Context({
-    // One line, forever -- see the note at the top of this file.
-    getLineCount: () => 1,
-    getLine: (lineIndex: int) => String(rx.get(line)),
-    getLineLength: (lineIndex: int) => line.length,
+    getLineCount: () => lines.length,
+    getLine: (lineIndex: int) => String(lineAt(lineIndex)),
+    getLineLength: (lineIndex: int) => lineAt(lineIndex).length,
     getTimeInSeconds: () => ui.now(),
     replaceRange: applyReplaceRange,
 
@@ -190,22 +212,22 @@ let textedit = textedit_behavior.Context({
 // work within the box -- rather than reading an always-empty system
 // clipboard over the top of a register that had the text all along.
 textedit.useSystemClipboard = ui.hasClipboard();
+textedit.moveCursorDocumentEnd();
 
 // --- geometry -------------------------------------------------
 //
 // Every x below is measured with the same font this box draws with, passed
 // explicitly rather than left to cascade: these run inside computeds, not at
 // a point in the element tree, so there is no ambient font to inherit.
-let widthUpTo = (column: int): real => {
-    let value = String(rx.get(line));
-    let head = value.cloneSlice(0, column);
+let widthUpTo = (lineIndex: int, column: int): real => {
+    let head = String(lineAt(lineIndex)).cloneSlice(0, column);
     return ui.measureText(head, props.fontFamily, props.fontSize).x;
 };
 
-let caretX = computed(() => widthUpTo(textedit.cursorPosition.x));
+let caretX = computed(() => widthUpTo(textedit.cursorPosition.y, textedit.cursorPosition.x));
 let showPlaceholder = computed(() => line.length == 0 && props.placeholder.length > 0);
 
-// The line cut into the three runs the template draws: before the selection,
+// Each line cut into the three runs the template draws: before the selection,
 // inside it, after it. The highlight is the middle run's BACKGROUND rather
 // than a rectangle laid over the text, because an absolutely positioned
 // element here always paints ABOVE its in-flow siblings -- it becomes its own
@@ -219,18 +241,6 @@ let showPlaceholder = computed(() => line.length == 0 && props.placeholder.lengt
 // widthUpTo already measures, which is what the caret and columnAtX assume.
 // With no selection head and middle are empty and the tail is the whole line,
 // so the common case is still a single uninterrupted run.
-let headText = computed((): str => {
-    if !textedit.hasSelection { return ""; }
-    return String(rx.get(line)).cloneSlice(0, textedit.selectionStart.x);
-});
-let selectedText = computed((): str => {
-    if !textedit.hasSelection { return ""; }
-    return String(rx.get(line)).cloneSlice(textedit.selectionStart.x, textedit.selectionEnd.x);
-});
-let tailText = computed((): str => {
-    if !textedit.hasSelection { return rx.get(line); }
-    return String(rx.get(line)).cloneSlice(textedit.selectionEnd.x);
-});
 // How wide the highlight box has to be told it is, rather than left to hug
 // its own text.
 //
@@ -247,7 +257,24 @@ let tailText = computed((): str => {
 // while this measures it whole, and fontstash kerns across the join, so a
 // selection containing a space can disagree by a kern pair -- under a pixel,
 // at the highlight's right edge only.
-let selectionWidth = computed(() => ui.measureText(selectedText, props.fontFamily, props.fontSize).x);
+let rows = computed((): []TextInputRow => {
+    let result: []TextInputRow = [];
+    for (let i = 0; i < lines.length; i++) {
+        let text = String(lineAt(i));
+        let range = textedit.selectionRangeForLine(i);
+        let start = range?.startCol ?? 0;
+        let end = range?.endCol ?? 0;
+        let selected = text.cloneSlice(start, end);
+        result.push({
+            index: i,
+            head: text.cloneSlice(0, start),
+            selected: selected,
+            tail: text.cloneSlice(end),
+            selectionWidth: ui.measureText(selected, props.fontFamily, props.fontSize).x,
+        });
+    }
+    return result;
+});
 
 // The caret must be exactly as tall as a line of this text, so measure one
 // rather than guessing a multiple of the font size. "M" is only a probe --
@@ -255,6 +282,7 @@ let selectionWidth = computed(() => ui.measureText(selectedText, props.fontFamil
 // selection needs no such measurement: it is a run's background, and a run is
 // already exactly one line tall.)
 let lineHeight = computed(() => ui.measureText("M", props.fontFamily, props.fontSize).y);
+let caretY = computed(() => textedit.cursorPosition.y as real * lineHeight);
 
 // Which column a click at `localX` (pixels from the text's left edge) lands
 // on. Stepped by GRAPHEME CLUSTER, never by byte: a column that fell inside a
@@ -269,8 +297,8 @@ let distance = (a: real, b: real): real => {
     return a > b ? a - b : b - a;
 };
 
-let columnAtX = (localX: real): int => {
-    let value = rx.get(line);
+let columnAtX = (lineIndex: int, localX: real): int => {
+    let value = lineAt(lineIndex);
     let best = 0;
     let bestDistance = distance(0.0, localX);
     let column = 0;
@@ -279,7 +307,7 @@ let columnAtX = (localX: real): int => {
         if next <= column {
             break;
         }
-        let d = distance(widthUpTo(next), localX);
+        let d = distance(widthUpTo(lineIndex, next), localX);
         if d < bestDistance {
             bestDistance = d;
             best = next;
@@ -305,7 +333,10 @@ let viewportWidth = (): real => {
 let maxScrollX = (): real => {
     let viewport = viewportWidth();
     if viewport <= 0.0 { return 0.0; }
-    let contentWidth = ui.measureText(line, props.fontFamily, props.fontSize).x;
+    let contentWidth = 0.0;
+    for l in lines {
+        contentWidth = max(contentWidth, ui.measureText(l, props.fontFamily, props.fontSize).x);
+    }
     let slack = contentWidth + 1.0 - viewport;
     return slack > 0.0 ? slack : 0.0;
 };
@@ -343,6 +374,13 @@ let textOriginX = (): real => {
     let pos = view.position();
     if pos is none { return 0.0; }
     return pos.x - rx.get(scrollOffset);
+};
+
+let lineAtY = (windowY: real): int => {
+    let view = rx.get(viewRef);
+    let top = view?.position()?.y ?? 0.0;
+    let index = ((windowY - top) / lineHeight) as int;
+    return clamp<int>(index, 0, lines.length - 1);
 };
 
 // Keep the caret inside the viewport, moving as little as possible -- the
@@ -402,6 +440,12 @@ let keyPressed = (event: KeyboardEvent) => {
         if ctrl { textedit.moveCursorWordRight(shift); }
         else { textedit.moveCursorRight(shift); }
     }
+    else if props.multiline && event.key == Key.Up {
+        textedit.moveCursorUp(shift);
+    }
+    else if props.multiline && event.key == Key.Down {
+        textedit.moveCursorDown(shift);
+    }
     else if event.key == Key.Home {
         textedit.moveCursorHome(shift);
     }
@@ -414,8 +458,12 @@ let keyPressed = (event: KeyboardEvent) => {
     else if event.key == Key.Delete {
         textedit.deleteForward(ctrl);
     }
+    else if props.multiline && !ctrl && event.key == Key.Return {
+        textedit.insertNewline();
+    }
     else if event.key == Key.Return {
-        // One line: Return is the box's commit gesture, not a newline.
+        // Return, or Ctrl+Return in a multiline box, is the box's commit
+        // gesture, not a newline.
         emits.submit(rx.get(line));
     }
     else if ctrl && event.key == Key.A {
@@ -465,8 +513,8 @@ let keyPressed = (event: KeyboardEvent) => {
 // or start a selection until it turns out to be a tap (`tapped`) or a long
 // press (`longPressed`).
 let placeCaret = (event: PointerEvent, clicks: int): none => {
-    let column = columnAtX(event.pos.x - textOriginX());
-    let target: Vec2i = { x: column, y: 0 };
+    let row = lineAtY(event.pos.y);
+    let target: Vec2i = { x: columnAtX(row, event.pos.x - textOriginX()), y: row };
 
     if hasModifier(event.modifiers, KeyModifiers.Shift) {
         textedit.extendSelectionTo(target);
@@ -504,14 +552,14 @@ let longPressed = (event: PointerEvent) => {
     dragging := true;
 };
 
-// Move the selection's moving end to whatever column is under `windowX`.
+// Move the selection's moving end to whatever column is under `windowPos`.
 // Takes a window coordinate rather than an event, because the pointer is read
 // from two places -- an event while it is over the box, ui.mousePos while it
 // is not -- and both must land in the same place.
-let dragSelectionTo = (windowX: real): none => {
+let dragSelectionTo = (windowPos: Vec2): none => {
     if !props.enabled { return; }
-    let column = columnAtX(windowX - textOriginX());
-    let target: Vec2i = { x: column, y: 0 };
+    let row = lineAtY(windowPos.y);
+    let target: Vec2i = { x: columnAtX(row, windowPos.x - textOriginX()), y: row };
     // The engine keeps the anchor AND the granularity the press established,
     // so this one call is a character drag after a single click and a
     // word-by-word drag after a double click -- see
@@ -545,7 +593,7 @@ ui.onFrame(() => {
         dragging := false;
         return;
     }
-    dragSelectionTo(ui.mousePos.x);
+    dragSelectionTo(ui.mousePos);
 });
 
 // --- exposed API ----------------------------------------------
@@ -578,6 +626,7 @@ let contentColor = computed(() => {
     ]
     ref=rootRef
     focusable=[props.enabled]
+    autofocus=[props.autofocus]
     @pointerdown=pressed
     @click=tapped
     @contextmenu=longPressed
@@ -592,11 +641,11 @@ let contentColor = computed(() => {
 //
 // Being `relative` also makes it the anchor for everything below: their
 // offsets are viewport-local, so no padding or border term appears in any of
-// them. And an explicit height is what keeps the box one line tall while its
+// them. And an explicit height is what keeps the box its lines tall while its
 // content floats out of flow -- this is the root's only in-flow child, so
-// h-fit above still resolves to one line plus its padding.
+// h-fit above still resolves to its lines plus its padding.
 div [
-        relative w-grow h-[lineHeight]px
+        relative w-grow h-[lineHeight * (lines.length as real)]px
         overflow-hidden
     ]
     ref=viewRef
@@ -608,7 +657,7 @@ div [
             font-size-[props.fontSize] font-family-[props.fontFamily]
         ] [props.placeholder]
 
-    // The line, in three runs -- see headText for why the highlight is a
+    // Each line, in three runs -- see rows for why the highlight is a
     // run's background and not an overlay. Font and colour sit on this row
     // and cascade into all three runs (ui_layout.pushCascadingStack), so they
     // cannot drift apart. The tail is drawn unconditionally, empty or not, so
@@ -621,20 +670,22 @@ div [
     // pays for the height this no longer contributes.
     div else [
             absolute left-[0.0 - scrollOffset]
-            row items-center gap-0 w-fit h-fit
+            col gap-0 w-fit h-fit
             text-color-[contentColor]
             font-size-[props.fontSize] font-family-[props.fontFamily]
         ] {
-        text if=[headText.length > 0] [text-nowrap] [headText]
+        div for=[row in rows] key=[row.index] [row items-center gap-0 w-fit h-[lineHeight]px] {
+            text if=[row.head.length > 0] [text-nowrap] [row.head]
 
-        div if=[selectedText.length > 0] [
-                row items-center gap-0 h-fit w-[selectionWidth]px
-                bg-[props.selectionColor]
-            ] {
-            text [text-nowrap] [selectedText]
+            div if=[row.selected.length > 0] [
+                    row items-center gap-0 h-fit w-[row.selectionWidth]px
+                    bg-[props.selectionColor]
+                ] {
+                text [text-nowrap] [row.selected]
+            }
+
+            text [text-nowrap] [row.tail]
         }
-
-        text [text-nowrap] [tailText]
     }
 
     // Caret last, and floating -- which is exactly what makes it paint above
@@ -644,7 +695,7 @@ div [
     // runs, so it stays on the character it marks.
     div if=[caretVisible] [
             absolute bg-[props.caretColor]
-            left-[caretX - scrollOffset]
+            left-[caretX - scrollOffset] top-[caretY]
             w-[1]px h-[lineHeight]px
         ]
 }

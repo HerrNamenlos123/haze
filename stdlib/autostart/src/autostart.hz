@@ -1,0 +1,18 @@
+__c__("#include \"ffi/haze_autostart.c\"");
+
+namespace ffi {
+    export extern C fn haze_autostart_set(appId: str, args: str, enabled: bool): bool :: final;
+    export extern C fn haze_autostart_is_enabled(appId: str): bool :: final;
+}
+
+export fn enable(appId: str, args: str = ""): bool {
+    return ffi.haze_autostart_set(appId, args, true);
+}
+
+export fn disable(appId: str): bool {
+    return ffi.haze_autostart_set(appId, "", false);
+}
+
+export fn isEnabled(appId: str): bool {
+    return ffi.haze_autostart_is_enabled(appId);
+}

@@ -1,0 +1,206 @@
+import app
+import sdl
+import image
+import ui_runtime
+import ui_components
+import single_instance
+
+struct Activation {
+    args: []str;
+}
+
+let quitRequested = false;
+
+fn quitApp() {
+    quitRequested = true;
+}
+
+fn toUIPointerEdges(a: app.App, out: mut []ui_components.PointerEdge): []ui_components.PointerEdge {
+    let result = out;
+    result.clear();
+    for e in a.pointerEdges() {
+        let button = ui_components.PointerButton.None;
+        if e.button == 0 { button = ui_components.PointerButton.Left; }
+        else if e.button == 1 { button = ui_components.PointerButton.Middle; }
+        else if e.button == 2 { button = ui_components.PointerButton.Right; }
+        let kind = ui_components.PointerEdgeKind.Pressed;
+        if e.kind == app.PointerEdgeKind.Released { kind = ui_components.PointerEdgeKind.Released; }
+        else if e.kind == app.PointerEdgeKind.Moved { kind = ui_components.PointerEdgeKind.Moved; }
+        else if e.kind == app.PointerEdgeKind.Cancelled { kind = ui_components.PointerEdgeKind.Cancelled; }
+        result.push({
+            button: button,
+            kind: kind,
+            pos: e.pos,
+            buttons: ui_components.pointerButtonsFromBits(e.buttons),
+        });
+    }
+    return result;
+}
+
+fn sdlKeyToUIKey<T>(k: T): ui_components.Key :: final {
+    do unsafe {
+        let result: ui_components.Key = uninitialized;
+        __c__("result = (int)k;");
+        return result;
+    };
+}
+
+fn toUIKeyEdges(a: app.App, out: mut []ui_components.KeyEdge): []ui_components.KeyEdge {
+    let result = out;
+    result.clear();
+    for e in a.keyEdges() {
+        let kind = e.kind == app.KeyEdgeKind.Pressed ? ui_components.KeyEdgeKind.Pressed : ui_components.KeyEdgeKind.Released;
+        result.push({ key: sdlKeyToUIKey(e.key), kind: kind, repeat: e.repeat, modifiers: e.modifiers });
+    }
+    return result;
+}
+
+fn launchedInBackground(args: []str): bool {
+    for arg in args {
+        if arg == "--background" {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn main(): int {
+    attempt {
+        let stackref activateRequested = Box<bool>(false);
+        let si = single_instance.init<Activation>({ appId: "quick-todo" }, (activation) => {
+            activateRequested.value = !launchedInBackground(activation.args);
+            return 0;
+        });
+        if si.status == single_instance.Status.Error { return 1; }
+        if si.status == single_instance.Status.Secondary {
+            return si.send({ args: sys.args() }).exitCode;
+        }
+
+        let a = app.App({
+            title: "Quick Todo",
+            nativeTitlebar: false,
+            size: { width: 360, height: 440 },
+            startHidden: true,
+            hideOnClose: true,
+        })?!;
+
+        let font = a.gfx.fontRenderer.fs.addFont("roboto-regular", embed.binary("resources/Roboto-Regular.ttf"));
+        let icon = image.decode(embed.binary("resources/tray-icon.png"));
+        if !icon { raise "The tray icon could not be decoded"; }
+        let tray = sdl.createTray(icon.pixels, icon.width, icon.height, "Quick Todo")?!;
+        tray.addEntry("Open Quick Todo");
+        tray.addEntry("Quit");
+        sdl.registerGlobalHotkey(KeyModifiers.Ctrl | KeyModifiers.Alt, sdl.Key.Space);
+
+        notes().setAutostart(rx.get(notes().autostart));
+
+        let activation = rx.reactive<int>(0);
+        let pointerEdgeScratch: mut []ui_components.PointerEdge = [];
+        let keyEdgeScratch: mut []ui_components.KeyEdge = [];
+        let textInputSwitch: ui_components.TextInputActiveCallback = (active: bool): void => {
+            a.setTextInputActive(active);
+        };
+
+        let runtime = ui_runtime.Runtime({
+            gfx: a.gfx,
+            windowState: a.windowState,
+            fonts: [
+                { name: "roboto", id: font },
+                { name: "default", id: font },
+            ],
+            mousePos: () => a.mousePos(),
+            mousePosKnown: () => a.mousePosKnown(),
+            pointerButtons: ui_components.PointerHeldCallbacks {
+                leftHeld: () => a.pointerLeftHeld(),
+                middleHeld: () => a.pointerMiddleHeld(),
+                rightHeld: () => a.pointerRightHeld(),
+                edgesThisFrame: () => toUIPointerEdges(a, pointerEdgeScratch),
+                reportsMotion: true,
+            },
+            inputExtras: ui_components.InputExtrasCallbacks {
+                wheelDelta: () => a.wheelDelta(),
+                modifiers: () => a.wheelModifiers(),
+            },
+            keyboard: ui_components.KeyboardCallbacks {
+                keyEdgesThisFrame: () => toUIKeyEdges(a, keyEdgeScratch),
+                textInputThisFrame: () => a.textInput(),
+                setTextInputActive: textInputSwitch,
+            },
+            setCursor: (index: int): void => { app.setCursor(index); },
+            clipboard: ui_components.ClipboardCallbacks {
+                getText: (): str => { return app.getClipboardText(); },
+                setText: (text: str): bool => { return app.setClipboardText(text); },
+            },
+            window: ui_components.WindowCallbacks {
+                requestClose: (): void => { a.hide(); },
+                minimize: (): void => { a.hide(); },
+                maximize: (): void => { a.maximize(); },
+                restore: (): void => { a.restore(); },
+                isMaximized: () => a.isMaximized(),
+                hasNativeTitlebar: () => a.hasNativeTitlebar(),
+                setRegions: (regions: []ui_components.WindowRegion): void => {
+                    a.beginWindowRegions();
+                    for r in regions {
+                        a.pushWindowRegion(r.pos, r.size, r.draggable);
+                    }
+                    a.commitWindowRegions();
+                },
+            },
+            ui: (ui: ui_components.UIContext) => { QuickTodoComponent(ui, { id: 0, activation: activation }); },
+        });
+
+        let show = () => {
+            activation := rx.get(activation) + 1;
+            runtime.ui.requestUpdate();
+            a.window.moveToTray(tray);
+            a.show();
+        };
+
+        if !launchedInBackground(sys.args()) {
+            show();
+        }
+
+        let hiddenAt = 0.0;
+        while let frame = a.nextFrame() {
+            si.poll();
+            if activateRequested.value {
+                activateRequested.value = false;
+                show();
+            }
+            if sdl.takeGlobalHotkey() {
+                if a.isVisible() { a.hide(); } else { show(); }
+            }
+            if a.justLostFocus() {
+                a.hide();
+                hiddenAt = sdl.getTime();
+            }
+            if let clicked = tray.takeClicked() {
+                if clicked == 1 { quitApp(); }
+                else if sdl.getTime() - hiddenAt > 0.3 { show(); }
+            }
+
+            if a.resized {
+                runtime.resize(a.windowState);
+            }
+            if runtime.render(frame, a.canvas) {
+                frame.present();
+            }
+            else {
+                a.idle();
+            }
+
+            if quitRequested {
+                break;
+            }
+        }
+
+        tray.destroy();
+        si.release();
+        a.destroy();
+        return 0;
+    }
+    else e {
+        fmt.println("Quick Todo failed: ", e);
+        return 1;
+    };
+}

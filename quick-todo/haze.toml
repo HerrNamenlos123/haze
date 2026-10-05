@@ -1,0 +1,31 @@
+name = "quick-todo"
+id = "5jMqJX9e"
+version = "1.0.0"
+description = "A tiny and ultra fast todo app"
+license = "MIT"
+authors = ["HerrNamenlos123"]
+type = "exe"
+
+[app]
+appId = "io.github.herrnamenlos123.QuickTodo"
+displayName = "Quick Todo"
+icon = "../resources/haze-logo.png"
+categories = ["Utility"]
+
+[linker.win32]
+flags = ["-Wl,/SUBSYSTEM:WINDOWS", "-Wl,/ENTRY:mainCRTStartup"]
+
+[dependencies]
+ui_components = { path = "../stdlib/ui_components" }
+ui_runtime = { path = "../stdlib/ui_runtime" }
+ui_widgets = { path = "../stdlib/ui_widgets" }
+codicons = { path = "../stdlib/codicons" }
+app = { path = "../stdlib/app" }
+sdl = { path = "../stdlib/sdl" }
+image = { path = "../stdlib/image" }
+single_instance = { path = "../stdlib/single_instance" }
+autostart = { path = "../stdlib/autostart" }
+hzui = { path = "../stdlib/hzui" }
+
+[plugins]
+hzui = { path = "../stdlib/hzui" }

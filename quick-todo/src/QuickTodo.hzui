@@ -1,0 +1,49 @@
+enum View { Notes, History, Settings }
+
+@props
+activation: Reactive<int>;
+
+@setup
+let view = reactive<View>(View.Notes);
+let createRequested = reactive<bool>(false);
+
+let toggle = (target: View) => {
+    view := rx.get(view) == target ? View.Notes : target;
+};
+
+let toggleHistory = () => {
+    toggle(View.History);
+};
+
+let toggleSettings = () => {
+    toggle(View.Settings);
+};
+
+let showNotes = () => {
+    view := View.Notes;
+};
+
+let create = () => {
+    view := View.Notes;
+    createRequested := true;
+};
+
+ui.watch(() => rx.get(props.activation), (value, old) => {
+    view := View.Notes;
+});
+
+let keyPressed = (event: KeyboardEvent) => {
+    if event.key == Key.Escape {
+        event.stopPropagation();
+        ui.window.close();
+    }
+};
+
+@template [col w-grow h-grow bg-["#17171C"] text-color-["#E4E4E7"] font-size-14] @keydown=keyPressed
+
+TitleBar [] historyOpen=[rx.get(view) == View.History] settingsOpen=[rx.get(view) == View.Settings]
+    @create=create @toggleHistory=toggleHistory @toggleSettings=toggleSettings {}
+NoteList if=[rx.get(view) == View.Notes] [] activation=[props.activation] createRequested=[createRequested]
+    @openHistory=toggleHistory @openSettings=toggleSettings {}
+History else-if=[rx.get(view) == View.History] [] @close=showNotes {}
+Settings else [] @close=showNotes {}

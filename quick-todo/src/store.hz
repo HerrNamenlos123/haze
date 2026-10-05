@@ -1,0 +1,171 @@
+import sdl
+import autostart
+
+struct Note {
+    text: str = "";
+    done: bool = false;
+}
+
+struct NotesFile {
+    notes: []Note = [];
+    history: []Note = [];
+    autostart: bool = true;
+}
+
+const historyLimit = 500;
+
+ref struct NotesStore {
+    notes: rx.ShallowReactive<[]Note>;
+    history: rx.ShallowReactive<[]Note>;
+    autostart: rx.Reactive<bool>;
+    path: str;
+
+    fn list(): []Note {
+        let list: []Note = rx.get(this.notes);
+        return list;
+    }
+
+    fn historyList(): []Note {
+        let list: []Note = rx.get(this.history);
+        return list;
+    }
+
+    fn save() {
+        fs.writeText(this.path, json.stringify(NotesFile {
+            notes: this.list(),
+            history: this.historyList(),
+            autostart: rx.get(this.autostart),
+        }));
+    }
+
+    fn update(notes: []Note, history: []Note) {
+        this.notes := notes;
+        this.history := history;
+        this.save();
+    }
+
+    fn insert(index: int, note: Note) {
+        let next = copyNotes(this.list());
+        next.insert(index, note);
+        this.update(next, this.historyList());
+    }
+
+    fn setText(index: int, text: str) {
+        let next = copyNotes(this.list());
+        next[index] = Note { text: text, done: next[index].done };
+        this.update(next, this.historyList());
+    }
+
+    fn toggleDone(index: int) {
+        let next = copyNotes(this.list());
+        next[index] = Note { text: next[index].text, done: !next[index].done };
+        this.update(next, this.historyList());
+    }
+
+    fn remove(index: int) {
+        let next = copyNotes(this.list());
+        let history = withRemembered(this.historyList(), [next[index]]);
+        next.remove(index);
+        this.update(next, history);
+    }
+
+    fn discard(index: int) {
+        let next = copyNotes(this.list());
+        next.remove(index);
+        this.update(next, this.historyList());
+    }
+
+    fn removeDone() {
+        let kept: []Note = [];
+        let done: []Note = [];
+        for note in this.list() {
+            if note.done { done.push(note); } else { kept.push(note); }
+        }
+        this.update(kept, withRemembered(this.historyList(), done));
+    }
+
+    fn restore(historyIndex: int, at: int): bool {
+        if historyIndex >= this.historyList().length {
+            return false;
+        }
+        let history = copyNotes(this.historyList());
+        let next = copyNotes(this.list());
+        next.insert(clamp<int>(at, 0, next.length), history[historyIndex]);
+        history.remove(historyIndex);
+        this.update(next, history);
+        return true;
+    }
+
+    fn forget(historyIndex: int) {
+        let history = copyNotes(this.historyList());
+        history.remove(historyIndex);
+        this.update(this.list(), history);
+    }
+
+    fn clearHistory() {
+        this.update(this.list(), []);
+    }
+
+    fn setAutostart(enabled: bool) {
+        this.autostart := enabled;
+        if enabled {
+            autostart.enable("quick-todo", "--background");
+        } else {
+            autostart.disable("quick-todo");
+        }
+        this.save();
+    }
+}
+
+fn copyNotes(notes: []Note): []Note {
+    let copy: []Note = [];
+    for note in notes {
+        copy.push(note);
+    }
+    return copy;
+}
+
+fn withRemembered(history: []Note, removed: []Note): []Note {
+    let next: []Note = [];
+    for note in removed {
+        if note.text.trim().length > 0 {
+            next.push(note);
+        }
+    }
+    for note in history {
+        if next.length < historyLimit {
+            next.push(note);
+        }
+    }
+    return next;
+}
+
+fn loadNotesFile(path: str): NotesFile {
+    let text = fs.readText(path);
+    if !text {
+        return NotesFile {};
+    }
+    let parsed = json.parse<NotesFile>(text);
+    if !parsed {
+        return NotesFile {};
+    }
+    return parsed;
+}
+
+let notesStore: NotesStore | none = none;
+
+fn notes(): NotesStore {
+    if let existing = notesStore {
+        return existing;
+    }
+    let path = sdl.prefPath("haze", "quick-todo") + "notes.json";
+    let file = loadNotesFile(path);
+    let created = NotesStore {
+        notes: rx.shallowReactive<[]Note>(file.notes),
+        history: rx.shallowReactive<[]Note>(file.history),
+        autostart: rx.reactive<bool>(file.autostart),
+        path: path,
+    };
+    notesStore = created;
+    return created;
+}

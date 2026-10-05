@@ -1,0 +1,40 @@
+diff --git a/src/tray/windows/SDL_tray.c b/src/tray/windows/SDL_tray.c
+index 18008ee29..b09966cb7 100644
+--- a/src/tray/windows/SDL_tray.c
++++ b/src/tray/windows/SDL_tray.c
+@@ -67,6 +67,24 @@ struct SDL_Tray {
+     SDL_TrayMenu *menu;
+ };
+ 
++bool SDL_HazeGetTrayIconRect(SDL_Tray *tray, SDL_Rect *rect)
++{
++    NOTIFYICONIDENTIFIER identifier;
++    RECT bounds;
++    SDL_zero(identifier);
++    identifier.cbSize = sizeof(identifier);
++    identifier.hWnd = tray->hwnd;
++    identifier.uID = tray->nid.uID;
++    if (FAILED(Shell_NotifyIconGetRect(&identifier, &bounds))) {
++        return false;
++    }
++    rect->x = bounds.left;
++    rect->y = bounds.top;
++    rect->w = bounds.right - bounds.left;
++    rect->h = bounds.bottom - bounds.top;
++    return true;
++}
++
+ static UINT_PTR get_next_id(void)
+ {
+     static UINT_PTR next_id = 0;
+@@ -113,7 +131,9 @@ LRESULT CALLBACK TrayWindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lPar
+ 
+     switch (uMsg) {
+         case WM_TRAYICON:
+-            if (LOWORD(lParam) == WM_CONTEXTMENU || LOWORD(lParam) == WM_LBUTTONUP) {
++            if (LOWORD(lParam) == WM_LBUTTONUP && tray->menu && tray->menu->nEntries > 0) {
++                SDL_ClickTrayEntry(tray->menu->entries[0]);
++            } else if (LOWORD(lParam) == WM_CONTEXTMENU) {
+                 SetForegroundWindow(hwnd);
+                 
+                 if (tray->menu) {

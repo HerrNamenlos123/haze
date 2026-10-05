@@ -1,0 +1,39 @@
+from ui_widgets import ButtonComponent
+
+@props
+historyOpen: bool;
+settingsOpen: bool;
+
+@emit
+create: ();
+toggleHistory: ();
+toggleSettings: ();
+
+@setup
+let close = () => {
+    ui.window.close();
+};
+
+let create = () => {
+    emits.create();
+};
+
+let toggleHistory = () => {
+    emits.toggleHistory();
+};
+
+let toggleSettings = () => {
+    emits.toggleSettings();
+};
+
+@template [os-titlebar row w-grow h-[30]px items-center pl-3 bg-["#1F1F26"]]
+
+text [text-nowrap text-color-["#71717A"] font-size-12] ["Quick Todo"]
+div [w-grow] {}
+Button [] icon="add" paddingX=[9] paddingY=[7] rounded=[0] textColor="#A1A1AA" focusRing=[0] @click=create {}
+Button [] icon="history" selected=[props.historyOpen] paddingX=[9] paddingY=[7] rounded=[0]
+    textColor="#A1A1AA" focusRing=[0] @click=toggleHistory {}
+Button [] icon="settings-gear" selected=[props.settingsOpen] paddingX=[9] paddingY=[7] rounded=[0]
+    textColor="#A1A1AA" focusRing=[0] @click=toggleSettings {}
+Button [] icon="chrome-close" paddingX=[10] paddingY=[7] rounded=[0]
+    bgHover="#C42B1C" bgActive="#B0271A" textColor="#A1A1AA" focusRing=[0] @click=close {}
