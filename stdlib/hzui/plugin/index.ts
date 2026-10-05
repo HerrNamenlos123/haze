@@ -34,7 +34,8 @@ export default {
   version: PLUGIN_VERSION,
   extensions: [SFC_EXTENSION],
 
-  transform: (filepath: string, source: string): { code: string } | null => {
+  transform: (filepath: string, rawSource: string): { code: string } | null => {
+    const source = rawSource.replaceAll("\r\n", "\n");
     // Routing: by extension. Plain .hz files are never touched.
     if (!filepath.endsWith(SFC_EXTENSION)) {
       return null;
