@@ -50,6 +50,15 @@ bool hzstd_wait_for_semaphore_timed(hzstd_semaphore_t *semaphore, uint64_t timeo
 // if no thread could be started.
 bool hzstd_run_on_worker_thread(void (*fn)(void *arg), void *arg);
 
+// ── Command-line arguments ──────────────────────────────────────────────────
+//
+// What the process was started with, program name first -- read from the OS
+// rather than threaded through main, so a Haze main never takes parameters.
+// Always valid UTF-8: Windows reads the wide command line and converts it,
+// Linux replaces any byte sequence that is not UTF-8 with U+FFFD.
+hzstd_int_t hzstd_arg_count(void);
+hzstd_str_t hzstd_arg_at(hzstd_int_t index);
+
 void hzstd_initialize_platform(void);
 _Noreturn void hzstd_block_thread_forever(void);
 void hzstd_setup_panic_handler(void);

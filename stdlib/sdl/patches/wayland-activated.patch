@@ -1,0 +1,55 @@
+diff --git a/include/SDL3/SDL_video.h b/include/SDL3/SDL_video.h
+index 2f062959f..1d2e4c57a 100644
+--- a/include/SDL3/SDL_video.h
++++ b/include/SDL3/SDL_video.h
+@@ -1598,6 +1598,12 @@ extern SDL_DECLSPEC SDL_Window * SDLCALL SDL_GetWindowParent(SDL_Window *window)
+  *   handle associated with the window
+  * - `SDL_PROP_WINDOW_WAYLAND_XDG_POPUP_POINTER`: the xdg_popup role
+  *   associated with the window
++ * - `SDL_PROP_WINDOW_WAYLAND_ACTIVATED_BOOLEAN`: whether the compositor
++ *   reports the window as activated -- the window the user is working in.
++ *   Unlike SDL_WINDOW_INPUT_FOCUS, which follows the keyboard, it stays true
++ *   while the compositor holds the keyboard itself, such as during an
++ *   interactive move or while one of its menus is open. False while the
++ *   window is hidden.
+  * - `SDL_PROP_WINDOW_WAYLAND_XDG_POSITIONER_POINTER`: the xdg_positioner
+  *   associated with the window, in popup mode
+  *
+@@ -1659,6 +1665,7 @@ extern SDL_DECLSPEC SDL_PropertiesID SDLCALL SDL_GetWindowProperties(SDL_Window
+ #define SDL_PROP_WINDOW_WAYLAND_XDG_TOPLEVEL_EXPORT_HANDLE_STRING   "SDL.window.wayland.xdg_toplevel_export_handle"
+ #define SDL_PROP_WINDOW_WAYLAND_XDG_POPUP_POINTER                   "SDL.window.wayland.xdg_popup"
+ #define SDL_PROP_WINDOW_WAYLAND_XDG_POSITIONER_POINTER              "SDL.window.wayland.xdg_positioner"
++#define SDL_PROP_WINDOW_WAYLAND_ACTIVATED_BOOLEAN                   "SDL.window.wayland.activated"
+ #define SDL_PROP_WINDOW_X11_DISPLAY_POINTER                         "SDL.window.x11.display"
+ #define SDL_PROP_WINDOW_X11_SCREEN_NUMBER                           "SDL.window.x11.screen"
+ #define SDL_PROP_WINDOW_X11_WINDOW_NUMBER                           "SDL.window.x11.window"
+diff --git a/src/video/wayland/SDL_waylandwindow.c b/src/video/wayland/SDL_waylandwindow.c
+index 56b9fc4e5..d5306d61d 100644
+--- a/src/video/wayland/SDL_waylandwindow.c
++++ b/src/video/wayland/SDL_waylandwindow.c
+@@ -995,6 +995,7 @@ static void handle_xdg_toplevel_configure(void *data,
+     wind->floating = floating;
+     wind->suspended = suspended;
+     wind->active = active;
++    SDL_SetBooleanProperty(SDL_GetWindowProperties(window), SDL_PROP_WINDOW_WAYLAND_ACTIVATED_BOOLEAN, active);
+     window->tiled = tiled;
+     wind->resizing = resizing;
+ }
+@@ -1429,6 +1430,7 @@ static void decoration_frame_configure(struct libdecor_frame *frame,
+     wind->floating = floating;
+     wind->suspended = suspended;
+     wind->active = active;
++    SDL_SetBooleanProperty(SDL_GetWindowProperties(window), SDL_PROP_WINDOW_WAYLAND_ACTIVATED_BOOLEAN, active);
+     window->tiled = tiled;
+     wind->resizing = resizing;
+ 
+@@ -2280,6 +2282,9 @@ void Wayland_HideWindow(SDL_VideoDevice *_this, SDL_Window *window)
+         }
+     }
+ 
++    // The toplevel is gone, and with it the compositor's activated state.
++    SDL_SetBooleanProperty(props, SDL_PROP_WINDOW_WAYLAND_ACTIVATED_BOOLEAN, false);
++
+     // Attach a null buffer to unmap the surface.
+     wl_surface_attach(wind->surface, NULL, 0, 0);
+     wl_surface_commit(wind->surface);

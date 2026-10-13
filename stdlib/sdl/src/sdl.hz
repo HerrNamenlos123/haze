@@ -20,6 +20,7 @@ namespace ffi {
 	extern C fn haze_sdl_showWindow(window: SDL_Window): void :: final;
 	extern C fn haze_sdl_hideWindow(window: SDL_Window): void :: final;
 	extern C fn haze_sdl_windowIsVisible(window: SDL_Window): bool :: final;
+	extern C fn haze_sdl_windowsAppearWithFirstFrame(): bool :: final;
 	extern C fn haze_sdl_raiseWindow(window: SDL_Window): bool :: final;
 	extern C fn haze_sdl_destroyWindow(window: SDL_Window): void :: final;
 	extern C fn haze_sdl_windowShouldClose(window: SDL_Window): bool :: final;
@@ -33,6 +34,7 @@ namespace ffi {
 	extern C fn haze_sdl_getTime(): f64 :: final;
 	extern C fn haze_sdl_consumeWindowSizeChanged(window: SDL_Window): bool :: final;
 	extern C fn haze_sdl_windowHasFocus(window: SDL_Window): bool :: final;
+	extern C fn haze_sdl_consumeFocusRefused(window: SDL_Window): bool :: final;
 	extern C fn haze_sdl_windowHasMouseFocus(window: SDL_Window): bool :: final;
 	extern C fn haze_sdl_setTextInputActive(window: SDL_Window, active: bool): void :: final;
 
@@ -143,6 +145,10 @@ namespace ffi {
 		return haze_sdl_windowIsVisible(window);
 	}
 
+	export fn windowsAppearWithFirstFrame(): bool {
+		return haze_sdl_windowsAppearWithFirstFrame();
+	}
+
 	export fn raiseWindow(window: SDL_Window): bool {
 		return haze_sdl_raiseWindow(window);
 	}
@@ -197,6 +203,10 @@ namespace ffi {
 
 	export fn windowHasFocus(window: SDL_Window): bool {
 		return haze_sdl_windowHasFocus(window);
+	}
+
+	export fn consumeFocusRefused(window: SDL_Window): bool {
+		return haze_sdl_consumeFocusRefused(window);
 	}
 
 	export fn windowHasMouseFocus(window: SDL_Window): bool {
@@ -657,6 +667,17 @@ export ref struct Window {
 		return ffi.windowIsVisible(this.handle);
 	}
 
+	// Does show() leave the window off the screen until a frame is presented
+	// into it? True on Wayland, where that first frame is what maps it -- so
+	// there a window is shown before it is drawn, and nothing may be
+	// presented into it while it is hidden. False everywhere else, where a
+	// shown window is on screen at once with whatever its surface holds, so
+	// the first frame is drawn before show(). See
+	// haze_sdl_windowsAppearWithFirstFrame for why the Wayland order matters.
+	fn appearsWithFirstFrame(): bool {
+		return ffi.windowsAppearWithFirstFrame();
+	}
+
 	// Bring the window to the front and ask for the keyboard focus
 	// (SDL_RaiseWindow). The natural partner of show(): a window that has
 	// just been unhidden is mapped, but not necessarily on top of whatever
@@ -771,10 +792,20 @@ export ref struct Window {
 		return ffi.consumeWindowSizeChanged(this.handle);
 	}
 
-	// Whether this window holds the OS keyboard focus right now. Polled,
-	// not event-driven -- see the shim in sdl_impl.c.
+	// Whether this window is the one the user is working in right now -- the
+	// OS focus. On Wayland that is the compositor's "activated" state, not
+	// the keyboard, which the compositor holds itself during a move or while
+	// its menus close. Polled, not event-driven -- see the shim in sdl_impl.c.
 	fn hasFocus(): bool {
 		return ffi.windowHasFocus(this.handle);
+	}
+
+	// True once, after show(), when the platform put the window on screen
+	// without giving it the focus -- the compositor declined it. Only
+	// reported where the platform's answer is known for certain (Wayland,
+	// see haze_wl_first_frame_done); elsewhere it is never true.
+	fn consumeFocusRefused(): bool {
+		return ffi.consumeFocusRefused(this.handle);
 	}
 
 	// Is the pointer over this window right now? Polled, not event-driven --
@@ -1168,10 +1199,15 @@ export fn createTray(rgbaPixels: Bytes, width: int, height: int, tooltip: str): 
 	return Result<Tray, str>.Ok(Tray { handle: handle });
 }
 
-export fn registerGlobalHotkey(modifiers: KeyModifiers, key: Key): bool {
+// A key combination that reaches this process wherever the focus is. On
+// Windows it is registered directly. On Linux it is asked for through the
+// desktop's GlobalShortcuts portal, so the user approves it once (GNOME shows
+// `description` in that dialog and lets the key be changed in Settings), and
+// true only means the request is under way.
+export fn registerGlobalHotkey(modifiers: KeyModifiers, key: Key, description: str): bool {
 	do unsafe {
 		let registered: bool = uninitialized;
-		__c__("registered = haze_sdl_registerGlobalHotkey((int)modifiers, (int)key);");
+		__c__("registered = haze_sdl_registerGlobalHotkey((int)modifiers, (int)key, description);");
 		return registered;
 	};
 }

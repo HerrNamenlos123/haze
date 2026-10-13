@@ -12,6 +12,8 @@
 #define HAZE_SDL_SIZE_CHANGED_PROPERTY "haze.size_changed"
 #define HAZE_SDL_EVENT_USERDATA_PROPERTY "haze.event_userdata"
 #define HAZE_SDL_WINDOW_REGIONS_PROPERTY "haze.window_regions"
+#define HAZE_SDL_FIRST_FRAME_PROPERTY "haze.first_frame"
+#define HAZE_SDL_FOCUS_REFUSED_PROPERTY "haze.focus_refused"
 
 /* ---------- OS titlebar press ownership ----------
 
@@ -336,14 +338,19 @@ static struct xdg_toplevel *haze_wl_toplevel_of(SDL_Window *window) {
 /* Binds our own seat. Called once, when the hit test is installed. Failing
    here is not fatal: g_haze_wl_ready stays false and the hit test falls back
    to SDL_HITTEST_DRAGGABLE, which still gives dragging and resizing -- only
-   the double click is lost. */
+   the double click is lost.
+
+   Only the display is needed. The window's xdg_toplevel is looked up at each
+   press instead, because it does not exist yet here: SDL creates it when the
+   window is shown, and the hit test is installed on a window still hidden
+   (app.App's always is). Requiring it here turned this whole path off. */
 static void haze_sdl_wayland_init(SDL_Window *window) {
   const char *driver = SDL_GetCurrentVideoDriver();
   if (!driver || SDL_strcmp(driver, "wayland") != 0) {
     return;
   }
   struct wl_display *display = haze_wl_display_of(window);
-  if (!display || !haze_wl_toplevel_of(window)) {
+  if (!display) {
     return;
   }
   if (!g_haze_wl_seat) {
@@ -364,6 +371,12 @@ static void haze_sdl_wayland_init(SDL_Window *window) {
 /* Does this process, rather than the platform, own presses in a draggable
    region? True only on the Wayland path above. Everywhere else the answer is
    no and the hit test keeps saying DRAGGABLE. */
+/* The Wayland backend is the active video driver. */
+static bool haze_sdl_video_is_wayland(void) {
+  const char *driver = SDL_GetCurrentVideoDriver();
+  return driver && SDL_strcmp(driver, "wayland") == 0;
+}
+
 static bool haze_sdl_owns_titlebar_press(void) {
 #ifdef HAZE_SDL_WAYLAND
   return g_haze_wl_ready;
@@ -1110,14 +1123,135 @@ SDL_Window *haze_sdl_createWindow(int width, int height, const char *title,
   return window;
 }
 
-/* Maps the window created hidden above. Called after the first frame has
-   been presented, so the swapchain already holds a fully rendered image and
-   the window's first appearance on screen is that image. */
+/* Maps the window created hidden above. Where a window is on screen the
+   moment it is shown, this is called after the first frame has been
+   presented into it, so the window's first appearance is that frame; where
+   it is not, before -- see haze_sdl_windowsAppearWithFirstFrame. */
+#ifdef HAZE_SDL_WAYLAND
+/* Whether the platform gave a window that was just shown the focus.
+
+   Showing a window asks for the focus; the compositor decides, and may
+   decline (focus-stealing prevention). A window that is on screen without the
+   focus it was opened for is a state an application has to hear about -- one
+   that only exists while it is in use, like a tray popup, must not stay
+   open in it -- yet nothing reports a refusal as such.
+
+   What the protocol does give is the moment the answer is in: the compositor
+   decides when it maps the window, which is when the first frame arrives, and
+   sends its answer -- the xdg_toplevel configure with or without "activated"
+   -- while handling that commit, before it presents the frame and so before
+   it fires that frame's callback. So a frame callback requested now, which
+   the first frame's commit carries, completes after the answer has arrived;
+   if the window is not active then, it was refused. (Measured on Mutter 48:
+   the activated configure, then the callback, every time.)
+
+   Only on Wayland, where that order holds. Elsewhere no refusal is reported,
+   which leaves those platforms exactly as they were. */
+bool haze_sdl_windowHasFocus(SDL_Window *window);
+
+static void haze_wl_first_frame_done(void *data, struct wl_callback *callback,
+                                     uint32_t time) {
+  (void)time;
+  wl_callback_destroy(callback);
+  SDL_Window *window = SDL_GetWindowFromID((SDL_WindowID)(uintptr_t)data);
+  if (!window) {
+    return;
+  }
+  SDL_PropertiesID props = SDL_GetWindowProperties(window);
+  SDL_ClearProperty(props, HAZE_SDL_FIRST_FRAME_PROPERTY);
+  if (!haze_sdl_windowHasFocus(window)) {
+    SDL_SetBooleanProperty(props, HAZE_SDL_FOCUS_REFUSED_PROPERTY, true);
+  }
+}
+
+static const struct wl_callback_listener haze_wl_first_frame_listener = {
+    haze_wl_first_frame_done,
+};
+
+/* Drops a first-frame watch whose answer is no longer wanted: the window is
+   being hidden, so that frame may never come. */
+static void haze_sdl_unwatch_first_frame(SDL_Window *window) {
+  SDL_PropertiesID props = SDL_GetWindowProperties(window);
+  struct wl_callback *pending = (struct wl_callback *)SDL_GetPointerProperty(
+      props, HAZE_SDL_FIRST_FRAME_PROPERTY, NULL);
+  if (pending) {
+    wl_callback_destroy(pending);
+    SDL_ClearProperty(props, HAZE_SDL_FIRST_FRAME_PROPERTY);
+  }
+  SDL_ClearProperty(props, HAZE_SDL_FOCUS_REFUSED_PROPERTY);
+}
+
+static void haze_sdl_watch_first_frame(SDL_Window *window) {
+  if (!haze_sdl_video_is_wayland()) {
+    return;
+  }
+  SDL_PropertiesID props = SDL_GetWindowProperties(window);
+  struct wl_surface *surface = (struct wl_surface *)SDL_GetPointerProperty(
+      props, SDL_PROP_WINDOW_WAYLAND_SURFACE_POINTER, NULL);
+  if (!surface) {
+    return;
+  }
+  haze_sdl_unwatch_first_frame(window);
+  /* On the surface's own queue, the default one SDL dispatches, so the
+     callback runs in pollEvents after everything the compositor sent before
+     it -- the activated configure included. */
+  struct wl_callback *callback = wl_surface_frame(surface);
+  wl_callback_add_listener(callback, &haze_wl_first_frame_listener,
+                           (void *)(uintptr_t)SDL_GetWindowID(window));
+  SDL_SetPointerProperty(props, HAZE_SDL_FIRST_FRAME_PROPERTY, callback);
+}
+#endif
+
 void haze_sdl_showWindow(SDL_Window *window) {
   if (!window) {
     return;
   }
+  const bool wasHidden = (SDL_GetWindowFlags(window) & SDL_WINDOW_HIDDEN) != 0;
   SDL_ShowWindow(window);
+#ifdef HAZE_SDL_WAYLAND
+  if (wasHidden) {
+    haze_sdl_watch_first_frame(window);
+  }
+#else
+  (void)wasHidden;
+#endif
+}
+
+/* True once, for a window just shown that the platform did not give the
+   focus -- see haze_wl_first_frame_done. */
+bool haze_sdl_consumeFocusRefused(SDL_Window *window) {
+  if (!window) {
+    return false;
+  }
+  SDL_PropertiesID props = SDL_GetWindowProperties(window);
+  bool refused =
+      SDL_GetBooleanProperty(props, HAZE_SDL_FOCUS_REFUSED_PROPERTY, false);
+  if (refused) {
+    SDL_ClearProperty(props, HAZE_SDL_FOCUS_REFUSED_PROPERTY);
+  }
+  return refused;
+}
+
+/* Does a shown window stay off the screen until its first frame arrives?
+
+   On Wayland it does: an xdg_toplevel is mapped by the first buffer committed
+   to it after the compositor's configure (which SDL_ShowWindow waits for),
+   and until then nothing of it is on screen at all. So there a window is
+   shown first and drawn into after, and nothing is presented into a hidden
+   one.
+
+   That order is not a nicety. A hidden Wayland window's surface has no role,
+   so the compositor has nothing on screen to attach a frame to: Mutter 48
+   dereferences that missing actor for any commit that carries a target
+   presentation time, which Mesa's Vulkan WSI puts on every FIFO present once
+   the swapchain has seen a presentation result -- even a discarded one --
+   and the whole session goes down with it (mutter#4108, fixed in 49).
+
+   Everywhere else a window is on screen the moment it is shown, showing
+   whatever its surface holds, so the first frame is drawn into the still
+   hidden window and the window shown after. */
+bool haze_sdl_windowsAppearWithFirstFrame(void) {
+  return haze_sdl_video_is_wayland();
 }
 
 /* Unmaps the window without destroying it: the surface, the GL context and
@@ -1142,6 +1276,9 @@ void haze_sdl_hideWindow(SDL_Window *window) {
   if (!window) {
     return;
   }
+#ifdef HAZE_SDL_WAYLAND
+  haze_sdl_unwatch_first_frame(window);
+#endif
   SDL_HideWindow(window);
   SDL_SyncWindow(window);
 }
@@ -1618,18 +1755,31 @@ bool haze_sdl_consumeWindowSizeChanged(SDL_Window *window) {
   return changed;
 }
 
-// Does this window currently hold the OS keyboard focus?
+// Is this window the one the user is working in -- the OS focus?
 //
 // Polled rather than pushed: SDL delivers FOCUS_GAINED/FOCUS_LOST as
 // events, but every consumer of this only ever wants the current state
 // once a frame, and a flag read straight off the window costs nothing
 // while an extra event trampoline would have to be registered, dispatched
 // and queued for a value that is already sitting there.
+//
+// On Wayland that is the compositor's xdg_toplevel "activated" state, not
+// the keyboard focus SDL_WINDOW_INPUT_FOCUS follows -- the same answer GTK,
+// Qt and Chromium go by. GNOME holds the keyboard itself while one of its
+// menus closes and during an interactive move, so a window it has just
+// activated from the tray menu, or one the user is dragging, can be without
+// the keyboard while it is plainly the window in use. (SDL reports the state
+// only through the wayland-activated patch.)
 bool haze_sdl_windowHasFocus(SDL_Window *window) {
   if (!window) {
     return false;
   }
 
+  if (haze_sdl_video_is_wayland()) {
+    return SDL_GetBooleanProperty(SDL_GetWindowProperties(window),
+                                  SDL_PROP_WINDOW_WAYLAND_ACTIVATED_BOOLEAN,
+                                  false);
+  }
   return (SDL_GetWindowFlags(window) & SDL_WINDOW_INPUT_FOCUS) != 0;
 }
 
@@ -1813,7 +1963,8 @@ void haze_sdl_setCursor(int index) {
 }
 
 static int g_haze_tray_clicked = -1;
-static bool g_haze_hotkey_pressed = false;
+/* Atomic: on Linux the hotkey arrives on the portal thread below. */
+static SDL_AtomicInt g_haze_hotkey_pressed;
 
 static void haze_sdl_wake(void) {
   SDL_Event event;
@@ -1870,14 +2021,16 @@ void haze_sdl_destroyTray(SDL_Tray *tray) { SDL_DestroyTray(tray); }
 static bool SDLCALL haze_sdl_hotkey_hook(void *userdata, MSG *msg) {
   (void)userdata;
   if (msg->message == WM_HOTKEY) {
-    g_haze_hotkey_pressed = true;
+    SDL_SetAtomicInt(&g_haze_hotkey_pressed, 1);
     haze_sdl_wake();
     return false;
   }
   return true;
 }
 
-bool haze_sdl_registerGlobalHotkey(int modifiers, int scancode) {
+bool haze_sdl_registerGlobalHotkey(int modifiers, int scancode,
+                                  hzstd_str_t description) {
+  (void)description;
   SDL_Keycode key = SDL_GetKeyFromScancode((SDL_Scancode)scancode,
                                            SDL_KMOD_NONE, false);
   UINT vk = 0;
@@ -1900,18 +2053,374 @@ bool haze_sdl_registerGlobalHotkey(int modifiers, int scancode) {
   SDL_SetWindowsMessageHook(haze_sdl_hotkey_hook, NULL);
   return RegisterHotKey(NULL, 1, mods, vk) != 0;
 }
+#elif defined(HAZE_SDL_WAYLAND)
+/* ---------- Global hotkey on Linux: the GlobalShortcuts portal ----------
+
+   Neither Wayland nor a sandbox lets a client grab a key for the whole
+   desktop. The way to get one is org.freedesktop.portal.GlobalShortcuts: the
+   application describes the shortcut and suggests a key, the desktop asks
+   the user to approve it (GNOME shows a dialog the first time, and the
+   actual key can be changed in Settings), and from then on presses arrive as
+   the portal's Activated signal.
+
+   Talking D-Bus needs a client library, and libgio is the one every desktop
+   already has -- SDL's own tray dlopens GTK, which sits on it. It is dlopened
+   here too rather than linked, so a machine without it builds and runs
+   exactly as before, just without the hotkey.
+
+   The conversation runs on a thread of its own with its own GMainContext: the
+   portal may have to be started on the first call, and the main thread must
+   never wait on that. The thread only sets the pressed flag and wakes the
+   event loop; the application picks it up with haze_sdl_takeGlobalHotkey.
+
+   The portal credits a request to whichever application it thinks the
+   process belongs to, which for anything started from a terminal is the
+   terminal. So the connection is a private one, and its first call registers
+   the [app] appId the compiler emits as hzstd_app_id (the registry refuses
+   it once any other portal call has been made on the connection, and GTK
+   makes those on the shared one). Registration needs the appId's desktop
+   entry to be installed; without one the request goes out unregistered. */
+#include <dlfcn.h>
+
+/* Weak: defined by every executable's generated main, but a link without
+   one must not fail just because this module is in it. */
+extern const char *const hzstd_app_id __attribute__((weak));
+
+typedef struct _GDBusConnection GDBusConnection;
+typedef struct _GVariant GVariant;
+typedef struct _GMainContext GMainContext;
+typedef struct _GMainLoop GMainLoop;
+typedef struct {
+  uint32_t domain;
+  int code;
+  char *message;
+} GError;
+typedef void (*haze_gdbus_signal_cb)(GDBusConnection *, const char *,
+                                     const char *, const char *, const char *,
+                                     GVariant *, void *);
+
+static struct {
+  char *(*address_get_for_bus_sync)(int, void *, GError **);
+  GDBusConnection *(*connection_new_for_address_sync)(const char *, int,
+                                                      void *, void *,
+                                                      GError **);
+  void (*free)(void *);
+  const char *(*get_unique_name)(GDBusConnection *);
+  GVariant *(*call_sync)(GDBusConnection *, const char *, const char *,
+                         const char *, const char *, GVariant *, const void *,
+                         int, int, void *, GError **);
+  unsigned (*signal_subscribe)(GDBusConnection *, const char *, const char *,
+                               const char *, const char *, const char *, int,
+                               haze_gdbus_signal_cb, void *, void (*)(void *));
+  GVariant *(*variant_new_parsed)(const char *, ...);
+  void (*variant_get)(GVariant *, const char *, ...);
+  void (*variant_get_child)(GVariant *, size_t, const char *, ...);
+  int (*variant_lookup)(GVariant *, const char *, const char *, ...);
+  size_t (*variant_n_children)(GVariant *);
+  void (*variant_unref)(GVariant *);
+  void (*error_free)(GError *);
+  GMainContext *(*main_context_new)(void);
+  void (*main_context_push_thread_default)(GMainContext *);
+  GMainLoop *(*main_loop_new)(GMainContext *, int);
+  void (*main_loop_run)(GMainLoop *);
+  void (*main_loop_quit)(GMainLoop *);
+} g_haze_gio;
+
+#define HAZE_PORTAL_BUS "org.freedesktop.portal.Desktop"
+#define HAZE_PORTAL_PATH "/org/freedesktop/portal/desktop"
+#define HAZE_PORTAL_SHORTCUTS "org.freedesktop.portal.GlobalShortcuts"
+#define HAZE_SHORTCUT_ID "toggle"
+
+static struct {
+  GDBusConnection *bus;
+  GMainLoop *loop;
+  /* The pending org.freedesktop.portal.Request: 0 waiting for the session,
+     1 waiting for the bind, 2 waiting for the list of what is bound, 3 none
+     -- only listening for Activated from then on. */
+  int stage;
+  char request[256];
+  char session[256];
+  char description[256];
+  char trigger[64];
+} g_haze_shortcuts;
+
+static bool haze_gio_load(void) {
+  static int loaded = -1;
+  if (loaded >= 0) {
+    return loaded == 1;
+  }
+  loaded = 0;
+  void *lib = dlopen("libgio-2.0.so.0", RTLD_NOW | RTLD_LOCAL);
+  if (!lib) {
+    return false;
+  }
+#define HAZE_GIO_SYM(field, name)                                              \
+  if (!(*(void **)&g_haze_gio.field = dlsym(lib, name)))                       \
+    return false;
+  HAZE_GIO_SYM(address_get_for_bus_sync, "g_dbus_address_get_for_bus_sync")
+  HAZE_GIO_SYM(connection_new_for_address_sync,
+               "g_dbus_connection_new_for_address_sync")
+  HAZE_GIO_SYM(free, "g_free")
+  HAZE_GIO_SYM(get_unique_name, "g_dbus_connection_get_unique_name")
+  HAZE_GIO_SYM(call_sync, "g_dbus_connection_call_sync")
+  HAZE_GIO_SYM(signal_subscribe, "g_dbus_connection_signal_subscribe")
+  HAZE_GIO_SYM(variant_new_parsed, "g_variant_new_parsed")
+  HAZE_GIO_SYM(variant_get, "g_variant_get")
+  HAZE_GIO_SYM(variant_get_child, "g_variant_get_child")
+  HAZE_GIO_SYM(variant_lookup, "g_variant_lookup")
+  HAZE_GIO_SYM(variant_n_children, "g_variant_n_children")
+  HAZE_GIO_SYM(variant_unref, "g_variant_unref")
+  HAZE_GIO_SYM(error_free, "g_error_free")
+  HAZE_GIO_SYM(main_context_new, "g_main_context_new")
+  HAZE_GIO_SYM(main_context_push_thread_default,
+               "g_main_context_push_thread_default")
+  HAZE_GIO_SYM(main_loop_new, "g_main_loop_new")
+  HAZE_GIO_SYM(main_loop_run, "g_main_loop_run")
+  HAZE_GIO_SYM(main_loop_quit, "g_main_loop_quit")
+#undef HAZE_GIO_SYM
+  loaded = 1;
+  return true;
+}
+
+/* Calls a portal method that answers with a Request object path, and records
+   that path: the outcome arrives later as that Request's Response signal. */
+static bool haze_portal_request(const char *method, GVariant *params) {
+  GError *error = NULL;
+  GVariant *reply = g_haze_gio.call_sync(
+      g_haze_shortcuts.bus, HAZE_PORTAL_BUS, HAZE_PORTAL_PATH,
+      HAZE_PORTAL_SHORTCUTS, method, params, NULL, 0, -1, NULL, &error);
+  if (!reply) {
+    SDL_Log("Global shortcut: %s failed: %s", method,
+            error ? error->message : "unknown error");
+    if (error) {
+      g_haze_gio.error_free(error);
+    }
+    return false;
+  }
+  const char *path = NULL;
+  g_haze_gio.variant_get(reply, "(&o)", &path);
+  SDL_strlcpy(g_haze_shortcuts.request, path, sizeof g_haze_shortcuts.request);
+  g_haze_gio.variant_unref(reply);
+  return true;
+}
+
+static void haze_portal_on_response(GDBusConnection *bus, const char *sender,
+                                    const char *path, const char *iface,
+                                    const char *signal, GVariant *params,
+                                    void *userdata) {
+  (void)bus;
+  (void)sender;
+  (void)iface;
+  (void)signal;
+  (void)userdata;
+  if (SDL_strcmp(path, g_haze_shortcuts.request) != 0) {
+    return;
+  }
+  uint32_t response = 2;
+  GVariant *results = NULL;
+  g_haze_gio.variant_get(params, "(u@a{sv})", &response, &results);
+
+  if (g_haze_shortcuts.stage == 0) {
+    const char *session = NULL;
+    bool ok = response == 0 &&
+              g_haze_gio.variant_lookup(results, "session_handle", "&s",
+                                        &session);
+    if (ok) {
+      SDL_strlcpy(g_haze_shortcuts.session, session,
+                  sizeof g_haze_shortcuts.session);
+      g_haze_shortcuts.stage = 1;
+      ok = haze_portal_request(
+          "BindShortcuts",
+          g_haze_gio.variant_new_parsed(
+              "(%o, [(%s, {'description': <%s>, 'preferred_trigger': <%s>})], "
+              "%s, {'handle_token': <%s>})",
+              g_haze_shortcuts.session, HAZE_SHORTCUT_ID,
+              g_haze_shortcuts.description, g_haze_shortcuts.trigger, "",
+              "haze_bind"));
+    } else {
+      SDL_Log("Global shortcut: the portal gave no session (response %u)",
+              (unsigned)response);
+    }
+    if (!ok) {
+      /* No session, so nothing can ever be activated. */
+      g_haze_gio.main_loop_quit(g_haze_shortcuts.loop);
+    }
+  } else if (g_haze_shortcuts.stage == 1) {
+    /* Whatever the bind answered, the session stands, and Activated is
+       listened for as long as it does: a shortcut that was declined is simply
+       never pressed. The answer is not the truth to act on anyway --
+       xdg-desktop-portal-gnome before 49 answers a bind that succeeded with
+       2, "failed" (its 27511907) -- so what is actually bound is asked for
+       instead, and only that decides whether there is anything to report. */
+    g_haze_shortcuts.stage = 2;
+    if (!haze_portal_request(
+            "ListShortcuts",
+            g_haze_gio.variant_new_parsed("(%o, {'handle_token': <%s>})",
+                                          g_haze_shortcuts.session,
+                                          "haze_list"))) {
+      g_haze_shortcuts.stage = 3;
+    }
+  } else if (g_haze_shortcuts.stage == 2) {
+    g_haze_shortcuts.stage = 3;
+    GVariant *bound = NULL;
+    if (response != 0 ||
+        !g_haze_gio.variant_lookup(results, "shortcuts", "@a(sa{sv})",
+                                   &bound) ||
+        g_haze_gio.variant_n_children(bound) == 0) {
+      SDL_Log("Global shortcut: not bound -- declined in the desktop's "
+              "dialog, or unassigned in its keyboard settings");
+    }
+    if (bound) {
+      g_haze_gio.variant_unref(bound);
+    }
+  }
+  if (results) {
+    g_haze_gio.variant_unref(results);
+  }
+}
+
+static void haze_portal_on_activated(GDBusConnection *bus, const char *sender,
+                                     const char *path, const char *iface,
+                                     const char *signal, GVariant *params,
+                                     void *userdata) {
+  (void)bus;
+  (void)sender;
+  (void)path;
+  (void)iface;
+  (void)signal;
+  (void)userdata;
+  const char *session = NULL;
+  const char *id = NULL;
+  g_haze_gio.variant_get_child(params, 0, "&o", &session);
+  g_haze_gio.variant_get_child(params, 1, "&s", &id);
+  if (session && id &&
+      SDL_strcmp(session, g_haze_shortcuts.session) == 0 &&
+      SDL_strcmp(id, HAZE_SHORTCUT_ID) == 0) {
+    SDL_SetAtomicInt(&g_haze_hotkey_pressed, 1);
+    haze_sdl_wake();
+  }
+}
+
+static int SDLCALL haze_portal_thread(void *userdata) {
+  (void)userdata;
+  GMainContext *context = g_haze_gio.main_context_new();
+  /* Signal callbacks are dispatched on the context that was the thread
+     default when they were subscribed -- this thread's, not the main one's. */
+  g_haze_gio.main_context_push_thread_default(context);
+  g_haze_shortcuts.loop = g_haze_gio.main_loop_new(context, 0);
+
+  GError *error = NULL;
+  char *address = g_haze_gio.address_get_for_bus_sync(
+      2 /* G_BUS_TYPE_SESSION */, NULL, &error);
+  if (address) {
+    g_haze_shortcuts.bus = g_haze_gio.connection_new_for_address_sync(
+        address,
+        1 /* AUTHENTICATION_CLIENT */ | 8 /* MESSAGE_BUS_CONNECTION */, NULL,
+        NULL, &error);
+    g_haze_gio.free(address);
+  }
+  if (!g_haze_shortcuts.bus) {
+    SDL_Log("Global shortcut: no session bus: %s",
+            error ? error->message : "unknown error");
+    if (error) {
+      g_haze_gio.error_free(error);
+    }
+    return 0;
+  }
+
+  if (&hzstd_app_id && hzstd_app_id) {
+    GVariant *reply = g_haze_gio.call_sync(
+        g_haze_shortcuts.bus, HAZE_PORTAL_BUS, HAZE_PORTAL_PATH,
+        "org.freedesktop.host.portal.Registry", "Register",
+        g_haze_gio.variant_new_parsed("(%s, @a{sv} {})", hzstd_app_id), NULL,
+        0, -1, NULL, &error);
+    if (reply) {
+      g_haze_gio.variant_unref(reply);
+    } else if (error) {
+      g_haze_gio.error_free(error);
+      error = NULL;
+    }
+  }
+  g_haze_gio.signal_subscribe(
+      g_haze_shortcuts.bus, HAZE_PORTAL_BUS, "org.freedesktop.portal.Request",
+      "Response", NULL, NULL, 0, haze_portal_on_response, NULL, NULL);
+  g_haze_gio.signal_subscribe(g_haze_shortcuts.bus, HAZE_PORTAL_BUS,
+                              HAZE_PORTAL_SHORTCUTS, "Activated",
+                              HAZE_PORTAL_PATH, NULL, 0,
+                              haze_portal_on_activated, NULL, NULL);
+  if (!haze_portal_request(
+          "CreateSession",
+          g_haze_gio.variant_new_parsed(
+              "({'handle_token': <%s>, 'session_handle_token': <%s>},)",
+              "haze_session", "haze_session"))) {
+    return 0;
+  }
+  g_haze_gio.main_loop_run(g_haze_shortcuts.loop);
+  return 0;
+}
+
+/* The XDG shortcut syntax the portal's preferred_trigger takes: modifiers
+   CTRL/ALT/SHIFT/LOGO joined by '+', then an xkb key name. The same keys
+   the Windows path accepts. */
+static bool haze_portal_trigger(int modifiers, int scancode, char *out,
+                                size_t size) {
+  SDL_Keycode key = SDL_GetKeyFromScancode((SDL_Scancode)scancode,
+                                           SDL_KMOD_NONE, false);
+  char name[16];
+  if ((key >= 'a' && key <= 'z') || (key >= '0' && key <= '9')) {
+    name[0] = (char)key;
+    name[1] = 0;
+  } else if (key == SDLK_SPACE) {
+    SDL_strlcpy(name, "space", sizeof name);
+  } else {
+    return false;
+  }
+  SDL_snprintf(out, size, "%s%s%s%s%s", (modifiers & 2) ? "CTRL+" : "",
+               (modifiers & 4) ? "ALT+" : "", (modifiers & 1) ? "SHIFT+" : "",
+               (modifiers & 8) ? "LOGO+" : "", name);
+  return true;
+}
+
+/* Starts asking for the shortcut and returns at once; true means the request
+   is under way, not that the user has approved it yet. */
+bool haze_sdl_registerGlobalHotkey(int modifiers, int scancode,
+                                   hzstd_str_t description) {
+  static bool started = false;
+  if (started || !haze_gio_load()) {
+    return false;
+  }
+  if (!haze_portal_trigger(modifiers, scancode, g_haze_shortcuts.trigger,
+                           sizeof g_haze_shortcuts.trigger)) {
+    return false;
+  }
+  size_t length = (size_t)description.length;
+  if (length >= sizeof g_haze_shortcuts.description) {
+    length = sizeof g_haze_shortcuts.description - 1;
+  }
+  SDL_memcpy(g_haze_shortcuts.description, description.data, length);
+  g_haze_shortcuts.description[length] = 0;
+
+  SDL_Thread *thread =
+      SDL_CreateThread(haze_portal_thread, "haze-global-shortcuts", NULL);
+  if (!thread) {
+    return false;
+  }
+  SDL_DetachThread(thread);
+  started = true;
+  return true;
+}
 #else
-bool haze_sdl_registerGlobalHotkey(int modifiers, int scancode) {
+bool haze_sdl_registerGlobalHotkey(int modifiers, int scancode,
+                                   hzstd_str_t description) {
   (void)modifiers;
   (void)scancode;
+  (void)description;
   return false;
 }
 #endif
 
 bool haze_sdl_takeGlobalHotkey(void) {
-  bool pressed = g_haze_hotkey_pressed;
-  g_haze_hotkey_pressed = false;
-  return pressed;
+  return SDL_SetAtomicInt(&g_haze_hotkey_pressed, 0) != 0;
 }
 
 hzstd_str_t haze_sdl_getPrefPath(hzstd_str_t org, hzstd_str_t app) {

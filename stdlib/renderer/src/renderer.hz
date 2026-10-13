@@ -1107,6 +1107,20 @@ export opaque ref struct Canvas {
     surfaceTexture?: wgpu.Texture = none;
     surfaceView?: wgpu.TextureView = none;
 
+    // Whether the window this canvas presents into is on screen. While it is
+    // not, commit() acquires, draws and registers nothing: a frame presented
+    // into a hidden window is thrown away at best, and on Wayland a hidden
+    // window has no place on screen for a frame to go at all (see
+    // sdl.Window.appearsWithFirstFrame). Kept by whoever owns the window --
+    // app.App does it every tick. Meaningless for an offscreen canvas.
+    onScreen: bool = true;
+    // Whether the window no longer shows this canvas's last frame: it has
+    // just come (back) on screen, nothing was drawn while it was away, and on
+    // Wayland it shows nothing at all until a frame arrives. The next frame
+    // must therefore be drawn even if nothing in it changed -- see
+    // needsRedraw(). Cleared by the next commit().
+    contentsLost: bool = false;
+
     // Set by destroy(); nothing may use the canvas afterwards.
     destroyed: bool = false;
 
@@ -1388,6 +1402,28 @@ export opaque ref struct Canvas {
 
         this.depth = this.gfx.acquireAttachment(size.framebufferSize, depthFormat, this.msaaSamples, wgpu.TextureUsage.RenderAttachment);
         this.createMsaaColor();
+    }
+
+    // See onScreen. Coming back on screen loses the contents: see
+    // needsRedraw().
+    fn setOnScreen(onScreen: bool) {
+        if onScreen && !this.onScreen {
+            this.contentsLost = true;
+        }
+        this.onScreen = onScreen;
+    }
+
+    fn isOnScreen(): bool {
+        return this.onScreen;
+    }
+
+    // Must the next frame be drawn whether or not anything in it changed?
+    // True from the moment the canvas comes back on screen until a commit()
+    // draws into it. A host that only draws what changed (ui_runtime's
+    // render gate) reads this, so a window that reappears is never left
+    // showing an old frame -- or, on Wayland, never shown at all.
+    fn needsRedraw(): bool {
+        return this.contentsLost;
     }
 
     fn currentView(): Result<wgpu.TextureView, str> {
@@ -2134,6 +2170,13 @@ export opaque ref struct Renderer {
         assert(!canvas.destroyed, "Renderer.commit() into a destroyed Canvas");
         assert(clear || !canvas.alwaysClears, "commit(false) into a Canvas created with alwaysClears");
 
+        // Nothing to draw into while the window is off screen -- see
+        // Canvas.onScreen. Returning before currentView() is what keeps the
+        // swapchain image unacquired, so there is no present owed either.
+        if canvas.surface && !canvas.onScreen {
+            return;
+        }
+
         gfx.updateFontAtlasIfDirty();
 
         let globals = this._globalsScratch;
@@ -2437,6 +2480,7 @@ export opaque ref struct Renderer {
         // presenting once that happens.
         if canvas.surface {
             this.frame.pendingPresents.push(canvas);
+            canvas.contentsLost = false;
         }
 
         // TODO: This is supposed to move into an async event queue at some point once we have task switching

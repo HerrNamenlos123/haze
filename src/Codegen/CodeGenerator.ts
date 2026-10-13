@@ -154,6 +154,15 @@ class CodeGenerator {
     //   .writeLine(`struct ${context}_;`)
     //   .writeLine(`typedef struct ${context}_ ${context};`);
     if (this.config.moduleType === ModuleType.Executable) {
+      // The [app] appId, for runtime code that has to name the application to
+      // the desktop -- the sdl module registers it with the portals, which
+      // otherwise credit whatever launched the process (a terminal) with its
+      // requests. 0 without an [app] table. The appId is [A-Za-z0-9_.-] only,
+      // so JSON quoting is a valid C string literal.
+      const appId = this.config.app?.appId;
+      this.out.function_definitions.writeLine(
+        `const char *const hzstd_app_id = ${appId !== undefined ? JSON.stringify(appId) : "0"};\n`
+      );
       this.out.function_definitions
         .writeLine("int32_t main(int argc, const char* argv[]) {")
         .pushIndent();

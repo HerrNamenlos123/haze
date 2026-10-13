@@ -400,6 +400,8 @@ export class CLIPrinter {
       module: state,
       spinnerIndex: this.spinnerIndex,
     });
+    // See beginGenerator: create() alone may not have stored the payload.
+    this.refreshBar(state);
   }
 
   private refreshBar(state: ModuleState) {
@@ -421,6 +423,14 @@ export class CLIPrinter {
         gen: state,
         spinnerIndex: this.spinnerIndex,
       });
+      // When the output is not a terminal, cli-progress's create() returns
+      // the bar without starting it, so the payload above is never stored and
+      // the row stays empty until its first update(). Every row is redrawn
+      // whenever any module changes phase, and formatting an empty one threw
+      // -- failing whichever module had just finished, with the message
+      // swallowed into the running generator's log. Setting it here closes
+      // that window.
+      this.refreshGeneratorBar(state);
     }
     return state;
   }

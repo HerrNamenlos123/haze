@@ -263,6 +263,16 @@ export opaque ref struct App {
     // has been all the way around its loop, which is precisely "a frame was
     // rendered and presented". No caller has to remember to say so, and a
     // loop that presents through some other path still gets it right.
+    //
+    // That is the order where a window is on screen the moment it is shown.
+    // On Wayland it is the other way round, and the protocol already does
+    // what the waiting is for: a shown window stays off screen until its
+    // first frame arrives, and that frame is what maps it. There the window
+    // is shown first and drawn into after -- and must be, since a hidden
+    // Wayland window has nowhere on screen for a frame to go (see
+    // sdl.Window.appearsWithFirstFrame). Either way nothing is ever presented
+    // into a window that is neither on screen nor about to be: see
+    // `canvas.setOnScreen` in nextFrame() and hide().
     windowShown: bool = false;
     framePresented: bool = false;
     hideOnClose: bool = false;
@@ -288,6 +298,13 @@ export opaque ref struct App {
     // `focused` starts false, so the first frame of a window that opens
     // focused reports focusGained. That is deliberate: "the window just
     // became current" is exactly what a startup frame is.
+    //
+    // A window shown that the platform puts on screen WITHOUT the focus
+    // reports focusLost too, although it never had it: for the user it is the
+    // same thing -- they are working somewhere else while it sits there -- and
+    // an application that only shows a window while it is in use (a tray
+    // popup that hides on focusLost) must never be left open in that state.
+    // See sdl.Window.consumeFocusRefused.
     focused: bool = false;
     focusGained: bool = false;
     focusLost: bool = false;
@@ -385,6 +402,9 @@ export opaque ref struct App {
             size: windowState,
             surface: surface,
         });
+        // The window was created hidden; nextFrame() puts the canvas on
+        // screen with it.
+        canvas.setOnScreen(false);
 
 
         let pointerButtons = AppPointerButtons {};
@@ -654,15 +674,18 @@ export opaque ref struct App {
         return this.wheelModifiersThisFrame;
     }
 
-    // Does the window hold the OS keyboard focus? See the fields above for
-    // why the two edges are published alongside it.
+    // Is the window the one the user is working in -- the OS focus (on
+    // Wayland the compositor's "activated" state rather than the keyboard,
+    // see sdl.Window.hasFocus)? See the fields above for why the two edges
+    // are published alongside it.
     fn hasFocus(): bool {
         return this.focused;
     }
 
-    // True for exactly the frame the window lost the OS keyboard focus --
-    // the moment to flush anything that should not be left unsaved while
-    // the user is somewhere else.
+    // True for exactly the frame the window lost the OS focus, or,
+    // just shown, came on screen without it (see `focused` above) -- the
+    // moment to flush anything that should not be left unsaved while the
+    // user is somewhere else.
     fn justLostFocus(): bool {
         return this.focusLost;
     }
@@ -708,6 +731,9 @@ export opaque ref struct App {
 
     fn hide() {
         this.window.hide();
+        // At once, not at the next nextFrame(): a caller that hides in the
+        // middle of its tick (on focus loss, say) still renders after.
+        this.canvas.setOnScreen(false);
         this.windowShown = true;
     }
 
@@ -771,10 +797,12 @@ export opaque ref struct App {
         }
         this._tickStart = sdl.getTime();
 
-        // Second time around the caller's loop: frame 0 is rendered and
-        // presented, so the window has something to show. See windowShown.
+        // A pending show. Where the first frame is what maps the window, show
+        // it now and let this tick's frame bring it on screen; elsewhere the
+        // second time around the caller's loop, when frame 0 is rendered and
+        // presented and the window has something to show. See windowShown.
         if !this.windowShown {
-            if this.framePresented {
+            if this.window.appearsWithFirstFrame() || this.framePresented {
                 this.window.show();
                 this.window.focus();
                 this.windowShown = true;
@@ -796,6 +824,12 @@ export opaque ref struct App {
         sdl.pollEvents();
         fs.pollEvents();
 
+        // What this tick may draw into: the window while it is on screen, and
+        // -- where a window is drawn before it is shown -- the hidden one about
+        // to be. Read off the window every tick rather than tracked, so it
+        // holds whoever shows or hides it.
+        this.canvas.setOnScreen(this.window.isVisible() || !this.windowShown);
+
         // Once the application has been quiet for a moment, what a burst of
         // work left in the heap goes back to the system.
         sys.releaseIdleMemory();
@@ -805,8 +839,9 @@ export opaque ref struct App {
         // and so a handler that runs later this frame cannot see the flag
         // flip underneath it.
         let nowFocused = this.window.hasFocus();
+        let refused = this.window.consumeFocusRefused();
         this.focusGained = nowFocused && !this.focused;
-        this.focusLost = !nowFocused && this.focused;
+        this.focusLost = !nowFocused && (this.focused || refused);
         this.focused = nowFocused;
 
         // Where the pointer is, read at the same instant as the keyboard

@@ -49,6 +49,67 @@ hzstd_str_t hzstd_cstr_dup(hzstd_cstr_t data)
   return hzstd_str_from_cstr_dup(hzstd_make_heap_allocator(), data);
 }
 
+// Length of the valid UTF-8 sequence starting at s[i], or 0 if there is none
+// (overlong forms, surrogates and code points past U+10FFFF included).
+static size_t hzstd_utf8_valid_sequence(const unsigned char *s, size_t i, size_t length)
+{
+  unsigned char c = s[i];
+  if (c < 0x80) {
+    return 1;
+  }
+  size_t n;
+  unsigned char lo = 0x80, hi = 0xBF;
+  if (c >= 0xC2 && c <= 0xDF) {
+    n = 2;
+  }
+  else if (c >= 0xE0 && c <= 0xEF) {
+    n = 3;
+    if (c == 0xE0) lo = 0xA0;
+    if (c == 0xED) hi = 0x9F;
+  }
+  else if (c >= 0xF0 && c <= 0xF4) {
+    n = 4;
+    if (c == 0xF0) lo = 0x90;
+    if (c == 0xF4) hi = 0x8F;
+  }
+  else {
+    return 0;
+  }
+  if (i + n > length || s[i + 1] < lo || s[i + 1] > hi) {
+    return 0;
+  }
+  for (size_t k = 2; k < n; k++) {
+    if (s[i + k] < 0x80 || s[i + k] > 0xBF) {
+      return 0;
+    }
+  }
+  return n;
+}
+
+hzstd_str_t hzstd_utf8_sanitize_dup(const char *bytes, size_t length)
+{
+  const unsigned char *s = (const unsigned char *)bytes;
+  // Worst case every byte becomes the 3-byte U+FFFD.
+  char *out = hzstd_heap_allocate_atomic(length * 3 + 1, "char");
+  size_t o = 0;
+  for (size_t i = 0; i < length;) {
+    size_t n = hzstd_utf8_valid_sequence(s, i, length);
+    if (n == 0) {
+      out[o++] = (char)0xEF;
+      out[o++] = (char)0xBF;
+      out[o++] = (char)0xBD;
+      i++;
+    }
+    else {
+      memcpy(out + o, s + i, n);
+      o += n;
+      i += n;
+    }
+  }
+  out[o] = 0;
+  return (hzstd_str_t) { .data = o ? out : 0, .length = (hzstd_int_t)o };
+}
+
 hzstd_str_t hzstd_str_from_cstr_dup(hzstd_allocator_t allocator, hzstd_cstr_t data)
 {
   size_t length = strlen(data);

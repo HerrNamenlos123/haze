@@ -106,6 +106,9 @@ hzstd_cstr_t hzstd_cstr_from_str(hzstd_allocator_t allocator, hzstd_str_t data);
 
 hzstd_str_t hzstd_str_dup(hzstd_str_t data);
 hzstd_str_t hzstd_cstr_dup(hzstd_cstr_t data);
+// A heap copy of `length` bytes with every sequence that is not valid UTF-8
+// replaced by U+FFFD, so the result is always valid UTF-8.
+hzstd_str_t hzstd_utf8_sanitize_dup(const char *bytes, size_t length);
 hzstd_str_t hzstd_str_from_cstr_ref(hzstd_cstr_t data);
 hzstd_str_t hzstd_str_from_ccstr_ref(hzstd_ccstr_t data);
 hzstd_str_t hzstd_str_from_cstr_dup(hzstd_allocator_t allocator, hzstd_cstr_t data);

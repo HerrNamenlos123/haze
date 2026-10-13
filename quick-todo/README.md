@@ -16,7 +16,11 @@ __haze__/quick-todo/bin/quick-todo --background
 - Left click the tray icon, or press `Ctrl+Alt+Space`
 - `Esc`, the close button, or clicking anywhere else hides it again
 
-On Linux the global shortcut is not available; bind a desktop shortcut to `quick-todo` instead.
+On Linux:
+
+- The tray icon needs the AppIndicator extension on GNOME (`gnome-extensions enable appindicatorsupport@rgcjonas.gmail.com`). Clicking it opens its menu; "Open Quick Todo" shows the window.
+- The shortcut goes through the desktop's global shortcuts portal: GNOME asks once to approve it, and the key can be changed in Settings → Keyboard. The desktop only knows which app is asking when quick-todo is installed, so install it with `haze install --dir quick-todo` (release build into `~/.local/bin`, plus its desktop entry and icon) and start it from there once; the autostart entry then follows.
+- Wayland does not let an app place its own window, so the window opens where the desktop puts it rather than at the cursor.
 
 ## Keys
 

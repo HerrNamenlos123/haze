@@ -119,6 +119,82 @@ bool hzstd_wait_for_semaphore_timed(hzstd_semaphore_t *semaphore, uint64_t timeo
 static hzstd_semaphore_t *infinite_block_event;
 static struct timespec startup_ts;
 
+// ── Command-line arguments ───────────────────────────────────────────────────
+//
+// glibc calls every .init_array entry of the executable with (argc, argv,
+// envp) before main, which is how argv gets here without main passing it.
+// /proc/self/cmdline is the fallback for a libc that does not.
+
+static int hzstd_argc = -1;
+static char **hzstd_argv = NULL;
+
+static void hzstd_capture_args(int argc, char **argv, char **envp)
+{
+  (void)envp;
+  hzstd_argc = argc;
+  hzstd_argv = argv;
+}
+
+__attribute__((section(".init_array"), used)) static void (*hzstd_capture_args_entry)(int, char **, char **) =
+    hzstd_capture_args;
+
+static void hzstd_load_args_from_proc(void)
+{
+  hzstd_argc = 0;
+  int fd = open("/proc/self/cmdline", O_RDONLY | O_CLOEXEC);
+  if (fd < 0) {
+    return;
+  }
+  size_t size = 0, capacity = 4096;
+  char *buf = malloc(capacity);
+  ssize_t n;
+  while (buf && (n = read(fd, buf + size, capacity - size)) > 0) {
+    size += (size_t)n;
+    if (size == capacity) {
+      capacity *= 2;
+      buf = realloc(buf, capacity);
+    }
+  }
+  close(fd);
+  if (!buf || size == 0) {
+    free(buf);
+    return;
+  }
+  int count = 0;
+  for (size_t i = 0; i < size; i++) {
+    if (buf[i] == 0) count++;
+  }
+  hzstd_argv = malloc(sizeof(char *) * (size_t)(count + 1));
+  if (!hzstd_argv) {
+    free(buf);
+    return;
+  }
+  char *p = buf;
+  for (int k = 0; k < count; k++) {
+    hzstd_argv[k] = p;
+    p += strlen(p) + 1;
+  }
+  hzstd_argv[count] = NULL;
+  hzstd_argc = count;
+}
+
+hzstd_int_t hzstd_arg_count(void)
+{
+  if (hzstd_argc < 0 || !hzstd_argv) {
+    hzstd_load_args_from_proc();
+  }
+  return hzstd_argc;
+}
+
+hzstd_str_t hzstd_arg_at(hzstd_int_t index)
+{
+  if (index < 0 || index >= hzstd_arg_count()) {
+    return (hzstd_str_t) { .data = 0, .length = 0 };
+  }
+  const char *arg = hzstd_argv[index];
+  return hzstd_utf8_sanitize_dup(arg, strlen(arg));
+}
+
 void hzstd_initialize_platform(void)
 {
   infinite_block_event = hzstd_create_semaphore();

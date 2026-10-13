@@ -1,8 +1,8 @@
 diff --git a/src/tray/windows/SDL_tray.c b/src/tray/windows/SDL_tray.c
-index 18008ee29..b09966cb7 100644
+index e293bd6d9..d9ff2e333 100644
 --- a/src/tray/windows/SDL_tray.c
 +++ b/src/tray/windows/SDL_tray.c
-@@ -67,6 +67,24 @@ struct SDL_Tray {
+@@ -64,6 +64,24 @@ struct SDL_Tray {
      SDL_TrayMenu *menu;
  };
  
@@ -27,7 +27,7 @@ index 18008ee29..b09966cb7 100644
  static UINT_PTR get_next_id(void)
  {
      static UINT_PTR next_id = 0;
-@@ -113,7 +131,9 @@ LRESULT CALLBACK TrayWindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lPar
+@@ -119,7 +137,9 @@ LRESULT CALLBACK TrayWindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lPar
  
      switch (uMsg) {
          case WM_TRAYICON:
@@ -36,5 +36,5 @@ index 18008ee29..b09966cb7 100644
 +                SDL_ClickTrayEntry(tray->menu->entries[0]);
 +            } else if (LOWORD(lParam) == WM_CONTEXTMENU) {
                  SetForegroundWindow(hwnd);
-                 
+ 
                  if (tray->menu) {

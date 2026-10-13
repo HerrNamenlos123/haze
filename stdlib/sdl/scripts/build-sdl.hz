@@ -22,16 +22,18 @@ fn main(): int {
 
         // --force drops the patches below from the previous run, so they
         // apply to a clean tree every time.
-        process.run("git", { "-c", "advice.detachedHead=false", "checkout", "--force", "release-3.2.8" }, {
+        // A clone made for an older release has no tag for this one yet.
+        process.run("git", { "fetch", "--tags", "origin" }, {
+            inherit_stdio: true,
+            cwd: repoPath,
+        })?!;
+        process.run("git", { "-c", "advice.detachedHead=false", "checkout", "--force", "release-3.4.18" }, {
             inherit_stdio: true,
             cwd: repoPath,
         })?!;
 
-        // Fixes to SDL itself. Each is listed as an input in haze.toml, so
-        // changing one rebuilds SDL.
-        //   wayland-pen-eraser: SDL never reported a Wayland pen's eraser end
-        //   as the eraser (its FIXME "how do we know what tip is in use?",
-        //   still there in 3.4) -- the eraser drew like the tip.
+        // Additions to SDL, for what its API does not offer. Each is listed
+        // as an input in haze.toml, so changing one rebuilds SDL.
         //   wayland-clipboard-receive: adds SDL_HazeWaylandReceiveClipboardData,
         //   which hands a clipboard transfer's pipe to the caller instead of
         //   reading it on the main thread as SDL_GetClipboardData does -- for
@@ -39,10 +41,15 @@ fn main(): int {
         //   windows-tray: a left click on the tray icon clicks the menu's first
         //   entry instead of opening the menu, as on Windows, and adds
         //   SDL_HazeGetTrayIconRect, where the icon is on screen.
+        //   wayland-activated: adds SDL_PROP_WINDOW_WAYLAND_ACTIVATED_BOOLEAN,
+        //   the compositor's xdg_toplevel "activated" state -- which window
+        //   the user is working in. SDL only reports the keyboard focus, and
+        //   GNOME holds the keyboard itself while its menus close and during
+        //   moves, so that is not the same thing. To be proposed upstream.
         let patches: []str = [
-            "wayland-pen-eraser.patch",
             "wayland-clipboard-receive.patch",
             "windows-tray.patch",
+            "wayland-activated.patch",
         ];
         for patch in patches {
             process.run("git", { "apply", f"{sourceDir}/patches/{patch}" }, {
@@ -84,22 +91,33 @@ fn main(): int {
         }
 
         fs.createDirectory(f"{repoPath}/build")?!;
-        process.run("cmake",
-            {
-                "-B",
-                f"{repoPath}/build",
-                "-DSDL_SHARED=OFF",
-                "-DSDL_STATIC=ON",
-                "-DSDL_TEST_LIBRARY=OFF",
-                "-DSDL_TESTS=OFF",
-                "-DSDL_EXAMPLES=OFF",
-                f"-DCMAKE_INSTALL_PREFIX={binaryDir}",
-                "-DCMAKE_POSITION_INDEPENDENT_CODE=OFF",
-                "-G",
-                "Ninja",
-                f"-DCMAKE_C_COMPILER={cCompiler}",
-                f"-DCMAKE_CXX_COMPILER={cxxCompiler}",
-            },
+        let configureArgs: mut []str = [
+            "-B",
+            f"{repoPath}/build",
+            "-DSDL_SHARED=OFF",
+            "-DSDL_STATIC=ON",
+            "-DSDL_TEST_LIBRARY=OFF",
+            "-DSDL_TESTS=OFF",
+            "-DSDL_EXAMPLES=OFF",
+            f"-DCMAKE_INSTALL_PREFIX={binaryDir}",
+            "-DCMAKE_POSITION_INDEPENDENT_CODE=OFF",
+            "-G",
+            "Ninja",
+            f"-DCMAKE_C_COMPILER={cCompiler}",
+            f"-DCMAKE_CXX_COMPILER={cxxCompiler}",
+        ];
+        if sys.isLinux() {
+            // SDL 3.4 stops at an optional X11 extension whose development
+            // package is missing, where 3.2 left it out. These two need
+            // packages a desktop does not usually have, SDL has a fallback
+            // for each (the screensaver is inhibited over D-Bus first, and a
+            // pointer warp without XTest uses XWarpPointer), and earlier
+            // builds never had them -- so they are off by name rather than a
+            // new requirement on every machine.
+            configureArgs.push("-DSDL_X11_XSCRNSAVER=OFF");
+            configureArgs.push("-DSDL_X11_XTEST=OFF");
+        }
+        process.run("cmake", configureArgs,
             process.Options {
                 inherit_stdio: true,
                 cwd: repoPath,

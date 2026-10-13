@@ -155,6 +155,18 @@ export opaque ref struct Runtime {
         r.reset(frame, canvas);
         this.currentFrame = frame;
         let tree = this.ui.process();
+
+        // A window that is off screen shows nothing, so there is nothing to
+        // draw. The tree is still processed above -- state, effects and timers
+        // keep running while the window is hidden -- but no layout is solved
+        // and nothing is committed, and false sends the host to idle() exactly
+        // like an unchanged frame. Whatever changed meanwhile is drawn when the
+        // window comes back: see renderer.gfx.Canvas.needsRedraw.
+        if !canvas.isOnScreen() {
+            this.currentFrame = none;
+            return false;
+        }
+
         if !tree {
             r.commit();
             this.currentFrame = none;
@@ -178,7 +190,11 @@ export opaque ref struct Runtime {
         // used to cost on the GPU. Acquiring nothing is also what makes it safe
         // to skip the present -- there is no acquire/present pair to leave
         // half-finished, and nothing is held across a later resize.
-        if !this.ui.frameNeedsPaint() {
+        //
+        // Unless the window no longer shows the last frame at all: it has just
+        // come (back) on screen, and an unchanged tree is then exactly what has
+        // to be drawn (renderer.gfx.Canvas.needsRedraw).
+        if !this.ui.frameNeedsPaint() && !canvas.needsRedraw() {
             this.currentFrame = none;
             return false;
         }

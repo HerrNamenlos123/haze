@@ -27,6 +27,7 @@
 #include <limits.h>
 #include <minwinbase.h>
 #include <psapi.h>
+#include <shellapi.h> // CommandLineToArgvW
 
 // ── Semaphore ────────────────────────────────────────────────────────────────
 //
@@ -77,6 +78,55 @@ bool hzstd_wait_for_semaphore_timed(hzstd_semaphore_t* semaphore, uint64_t timeo
 static hzstd_semaphore_t* infinite_block_event;
 static int64_t startup_counter_qpc;
 static int64_t perf_frequency_qpc;
+
+// ── Command-line arguments ───────────────────────────────────────────────────
+//
+// The ANSI argv main receives is in the active code page and mangles anything
+// outside it, so the wide command line is split and converted instead.
+// WideCharToMultiByte maps unpaired surrogates to U+FFFD, so the result is
+// always valid UTF-8.
+
+static hzstd_str_t *hzstd_args = NULL;
+static hzstd_int_t hzstd_args_count = -1;
+
+static void hzstd_load_args(void)
+{
+  hzstd_args_count = 0;
+  int count = 0;
+  LPWSTR *wide = CommandLineToArgvW(GetCommandLineW(), &count);
+  if (!wide) {
+    return;
+  }
+  hzstd_args = hzstd_heap_allocate(sizeof(hzstd_str_t) * (size_t)(count > 0 ? count : 1), "hzstd_str_t");
+  for (int i = 0; i < count; i++) {
+    int bytes = WideCharToMultiByte(CP_UTF8, 0, wide[i], -1, NULL, 0, NULL, NULL);
+    if (bytes <= 1) {
+      hzstd_args[i] = (hzstd_str_t) { .data = 0, .length = 0 };
+      continue;
+    }
+    char *utf8 = hzstd_heap_allocate_atomic((size_t)bytes, "char");
+    WideCharToMultiByte(CP_UTF8, 0, wide[i], -1, utf8, bytes, NULL, NULL);
+    hzstd_args[i] = (hzstd_str_t) { .data = utf8, .length = bytes - 1 };
+  }
+  LocalFree(wide);
+  hzstd_args_count = count;
+}
+
+hzstd_int_t hzstd_arg_count(void)
+{
+  if (hzstd_args_count < 0) {
+    hzstd_load_args();
+  }
+  return hzstd_args_count;
+}
+
+hzstd_str_t hzstd_arg_at(hzstd_int_t index)
+{
+  if (index < 0 || index >= hzstd_arg_count()) {
+    return (hzstd_str_t) { .data = 0, .length = 0 };
+  }
+  return hzstd_args[index];
+}
 
 void hzstd_initialize_platform(void)
 {

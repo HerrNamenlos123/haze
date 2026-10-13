@@ -90,7 +90,7 @@ fn main(): int {
         let tray = sdl.createTray(icon.pixels, icon.width, icon.height, "Quick Todo")?!;
         tray.addEntry("Open Quick Todo");
         tray.addEntry("Quit");
-        sdl.registerGlobalHotkey(KeyModifiers.Ctrl | KeyModifiers.Alt, sdl.Key.Space);
+        sdl.registerGlobalHotkey(KeyModifiers.Ctrl | KeyModifiers.Alt, sdl.Key.Space, "Show or hide Quick Todo");
 
         notes().setAutostart(rx.get(notes().autostart));
 
@@ -151,7 +151,6 @@ fn main(): int {
 
         let show = () => {
             activation := rx.get(activation) + 1;
-            runtime.ui.requestUpdate();
             a.window.moveToTray(tray);
             a.show();
         };

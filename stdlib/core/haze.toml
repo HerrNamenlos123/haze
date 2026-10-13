@@ -25,7 +25,7 @@ flags = ["-D_XOPEN_SOURCE=500"]
 flags = ["-ldl", "-lc", "-lm"]
 
 [linker.win32]
-flags = ["-ldbghelp"]
+flags = ["-ldbghelp", "-lshell32"]
 
 [linker]
 # flags = ["-lm", "-lGL", "-lpthread"]

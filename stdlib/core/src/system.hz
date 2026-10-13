@@ -199,9 +199,22 @@ namespace fmt {
     }
 }
 
+namespace ffi {
+    extern C noemit fn hzstd_arg_count(): int :: final;
+    extern C noemit fn hzstd_arg_at(index: int): str :: final;
+}
+
 namespace sys {
+    // The command line the process was started with, program name first.
+    // Read from the OS rather than passed to main, which takes no parameters,
+    // and always valid UTF-8 -- see hzstd_arg_count in hzstd_platform.h.
     export fn args(): []str {
-        return [];
+        let result: []str = [];
+        let count = ffi.hzstd_arg_count();
+        for (let i = 0; i < count; i++) {
+            result.push(ffi.hzstd_arg_at(i));
+        }
+        return result;
     }
 
     export struct InputPipe {
