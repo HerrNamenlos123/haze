@@ -192,3 +192,6 @@ vimtest/.work/
 *trace.json
 
 *.cache.*
+# Claude Code scratch space: git worktrees and benchmark workspaces
+.claude/worktrees/
+.claude/bench-*/
