@@ -1,7 +1,6 @@
 import * as child_process from "node:child_process";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { once } from "node:events";
 import fs, {
   createWriteStream,
   existsSync,
@@ -18,10 +17,7 @@ import os from "node:os";
 import path, { basename, dirname, extname, join } from "node:path";
 import { cwd, stdout } from "node:process";
 import { fileURLToPath } from "node:url";
-import archiver from "archiver";
 import fg from "fast-glob";
-import gunzip from "gunzip-maybe";
-import tarFs from "tar-fs";
 import which from "which";
 import { version } from "../../package.json";
 import { generateCode } from "../Codegen/CodeGenerator";
@@ -33,7 +29,18 @@ import {
 } from "../Timing/BuildTimeline";
 import { LowerModule } from "../Lower/Lower";
 import { Parser } from "../Parser/Parser";
-import { releaseNativeParserBinary } from "../Parser/ParserMode";
+import { reviveAST } from "../Parser/NativeParser";
+import {
+  getParserMode,
+  parseTextNativeRawAsync,
+  releaseNativeParserBinary,
+} from "../Parser/ParserMode";
+import {
+  MODULE_IMPORT_FILE,
+  MODULE_METADATA_FILE,
+  moduleInterfaceDir,
+  moduleMetadataFile,
+} from "../shared/Workspace";
 import { PluginHost } from "../Plugins/PluginInterface";
 import type { ASTRoot } from "../shared/AST";
 import {
@@ -151,30 +158,6 @@ export const HAZE_TMP_DIR = HAZE_DIR + "/tmp";
 export const HAZE_MUSL_SYSROOT = HAZE_DIR + "/sysroot";
 export const HAZE_CMAKE_TOOLCHAIN = HAZE_DIR + "/musl-toolchain.cmake";
 
-async function createTarGz(cwd: string, files: string[], outPath: string) {
-  const output = fs.createWriteStream(outPath);
-  const archive = archiver("tar", { gzip: true });
-
-  archive.pipe(output);
-
-  for (const file of files) {
-    archive.file(path.join(cwd, file), { name: file });
-  }
-
-  await archive.finalize();
-  await once(output, "close");
-}
-
-function extractTarGz(archivePath: string, destDir: string) {
-  return new Promise<void>((resolve, reject) => {
-    fs.createReadStream(archivePath)
-      .pipe(gunzip())
-      .pipe(tarFs.extract(destDir, {}))
-      .on("finish", resolve)
-      .on("error", reject);
-  });
-}
-
 export const HAZE_STDLIB_NAME = "haze-stdlib";
 
 export const HAZE_C_COMPILER =
@@ -186,7 +169,6 @@ export const HAZE_CXX_COMPILER =
 const ARCHIVE_TOOL =
   PLATFORM === Platform.Linux ? "ar" : HAZE_GLOBAL_DIR + "/bin/llvm-ar.exe";
 export const HAZE_CONFIG_FILE = "haze.toml";
-const HAZE_LIB_IMPORT_FILE = "import.hz";
 
 // Applies -fsanitize=address to every module's C compile+link (all platforms
 // AddressSanitizer supports). On by default: memory-safety bugs in generated
@@ -732,97 +714,52 @@ export function getCurrentPlatform() {
 }
 
 // ---------------------------------------------------------------------------
-// ImportASTCache — shared across all ModuleCompiler instances in one build.
+// Dependency interfaces (import.hz), parsed once per process.
 //
-// Two layers:
-//   1. In-memory: avoids re-parsing the same dep within a parallel build.
-//   2. On-disk:   avoids re-parsing across consecutive builds when nothing
-//                 has changed in a .hzlib dependency.
-//
-// Cache key: (depName, libMtimeMs, relPath) where relPath is the path of
-// the .hz file relative to the dep's extracted directory.  Using the
-// .hzlib mtime rather than the extracted file mtime means the key is
-// stable across modules that each maintain their own __deps copy.
+// Every module imports the interfaces of all its transitive dependencies, so a
+// haze-notes build parsed stdlib's 195 KB interface 26 times: 107 parses and
+// 89 MB of AST JSON from the native parser per full build. The parser's JSON
+// is now kept per file, and each importing module decodes its own copy:
+// collection mutates the AST it is given (it folds `-literal` into the
+// literal, for one), so an AST object must never be shared between modules.
+// A file is parsed again when its mtime or size changes, i.e. when its module
+// was rebuilt. Without the native parser (--parser antlr or assert) there is no
+// JSON to keep, and every module parses for itself.
 // ---------------------------------------------------------------------------
 
-type ASTCacheEntry = {
-  libMtimeMs: number;
-  files: Record<string, ASTRoot>;
-};
+const parsedInterfaces = new Map<
+  string,
+  { stamp: string; json: Promise<string> }
+>();
 
-export class ImportASTCache {
-  private memory = new Map<string, ASTRoot>();
-
-  constructor(private readonly diskCacheDir: string) {}
-
-  private memKey(depName: string, libMtimeMs: number, relPath: string) {
-    return `${depName}:${libMtimeMs}:${relPath}`;
+async function parseDependencyInterface(
+  config: ModuleConfig,
+  filepath: string
+): Promise<ASTRoot> {
+  if (getParserMode() !== "native") {
+    const text = await readFile(filepath, "utf-8");
+    return await Parser.parseTextToASTAsync(config, text, filepath);
   }
-
-  get(
-    depName: string,
-    libMtimeMs: number,
-    relPath: string
-  ): ASTRoot | undefined {
-    const key = this.memKey(depName, libMtimeMs, relPath);
-    if (this.memory.has(key)) {
-      return this.memory.get(key);
-    }
-
-    const diskPath = path.join(this.diskCacheDir, `${depName}.json`);
-    if (!fs.existsSync(diskPath)) {
-      return;
-    }
-    try {
-      const entry = JSON.parse(
-        fs.readFileSync(diskPath, "utf8")
-      ) as ASTCacheEntry;
-      if (entry.libMtimeMs !== libMtimeMs) {
-        return;
+  const stat = fs.statSync(filepath);
+  const stamp = `${stat.mtimeMs}:${stat.size}`;
+  let entry = parsedInterfaces.get(filepath);
+  if (!entry || entry.stamp !== stamp) {
+    const fresh = {
+      stamp: stamp,
+      json: readFile(filepath, "utf-8").then((text) =>
+        parseTextNativeRawAsync(text, filepath)
+      ),
+    };
+    parsedInterfaces.set(filepath, fresh);
+    // A failed parse is reported by the module that asked and not kept.
+    fresh.json.catch(() => {
+      if (parsedInterfaces.get(filepath) === fresh) {
+        parsedInterfaces.delete(filepath);
       }
-      // Warm the in-memory cache with everything from this disk entry.
-      for (const [rel, ast] of Object.entries(entry.files)) {
-        this.memory.set(this.memKey(depName, libMtimeMs, rel), ast);
-      }
-      return this.memory.get(key);
-    } catch {
-      return;
-    }
+    });
+    entry = fresh;
   }
-
-  set(
-    depName: string,
-    libMtimeMs: number,
-    relPath: string,
-    ast: ASTRoot
-  ): void {
-    const key = this.memKey(depName, libMtimeMs, relPath);
-    this.memory.set(key, ast);
-
-    // Persist to disk, merging with any other files already stored for this dep.
-    const diskPath = path.join(this.diskCacheDir, `${depName}.json`);
-    let entry: ASTCacheEntry = { libMtimeMs: libMtimeMs, files: {} };
-    if (fs.existsSync(diskPath)) {
-      try {
-        const prev = JSON.parse(
-          fs.readFileSync(diskPath, "utf8")
-        ) as ASTCacheEntry;
-        if (prev.libMtimeMs === libMtimeMs) {
-          entry = prev;
-        }
-      } catch {
-        // Corrupt or stale — start fresh.
-      }
-    }
-    entry.files[relPath] = ast;
-
-    try {
-      fs.mkdirSync(this.diskCacheDir, { recursive: true });
-      fs.writeFileSync(diskPath, JSON.stringify(entry), "utf8");
-    } catch {
-      // Non-fatal: in-memory cache still works.
-    }
-  }
+  return reviveAST(JSON.parse(await entry.json));
 }
 
 // ProjectCompiler has moved to src/ProjectCompiler/ProjectCompiler.ts
@@ -948,7 +885,6 @@ export class ModuleCompiler {
   private collectedDepModules: Set<string> = new Set();
   private printer: CLIPrinter | null = null;
   private printerHandle: ModuleHandle | null = null;
-  importASTCache: ImportASTCache | null = null;
   /** This module's row on the build timeline; set by ProjectCompiler. */
   timelineRow = projectRowKey(-1);
 
@@ -1039,50 +975,6 @@ export class ModuleCompiler {
       }
     }
     return transformed;
-  }
-
-  // -------------------------------------------------------------------------
-  // Extraction stamp helpers — track the mtime of each dep's .hzlib at the
-  // time it was last extracted so we can skip re-extraction when unchanged.
-  // Stamps are stored per-module in __deps/.stamps.json.
-  // -------------------------------------------------------------------------
-
-  private get extractionStampsPath() {
-    return path.join(this.moduleDir, "__deps", ".stamps.json");
-  }
-
-  private loadExtractionStamps(): Record<string, number> {
-    try {
-      return JSON.parse(fs.readFileSync(this.extractionStampsPath, "utf8"));
-    } catch {
-      return {};
-    }
-  }
-
-  private isExtractionCurrent(depName: string, libMtimeMs: number): boolean {
-    const depDir = path.join(this.moduleDir, "__deps", depName);
-    if (!fs.existsSync(depDir)) {
-      return false;
-    }
-    const stamps = this.loadExtractionStamps();
-    return stamps[depName] === libMtimeMs;
-  }
-
-  private saveExtractionStamp(depName: string, libMtimeMs: number): void {
-    const stamps = this.loadExtractionStamps();
-    stamps[depName] = libMtimeMs;
-    try {
-      fs.mkdirSync(path.dirname(this.extractionStampsPath), {
-        recursive: true,
-      });
-      fs.writeFileSync(
-        this.extractionStampsPath,
-        JSON.stringify(stamps),
-        "utf8"
-      );
-    } catch {
-      // Non-fatal.
-    }
   }
 
   setPrinter(printer: CLIPrinter, handle: ModuleHandle) {
@@ -1221,51 +1113,12 @@ export class ModuleCompiler {
     }
   }
 
-  // -------------------------------------------------------------------------
-  // Dep-import collection — mirrors collectDirectory/collectFile but uses the
-  // ImportASTCache so that ANTLR is only invoked when the dep's .hzlib has
-  // actually changed.
-  // -------------------------------------------------------------------------
-
-  private async collectDepDirectory(
-    dirpath: string,
-    depName: string,
-    libMtimeMs: number
-  ) {
-    for (const file of readdirSync(dirpath)) {
-      if (file === "__haze__") {
-        continue;
-      }
-      const fullPath = join(dirpath, file);
-      if (statSync(fullPath).isDirectory()) {
-        await this.collectDepDirectory(fullPath, depName, libMtimeMs);
-      } else if (this.isSourceFile(fullPath)) {
-        // NOTE: dep files are NOT transformed here (plugins are
-        // non-inheriting); a dep built from plugin sources must ship its
-        // transformed output. TODO(plugin-deps).
-        await this.collectDepFile(fullPath, depName, libMtimeMs);
-      }
-    }
-  }
-
-  private async collectDepFile(
-    filepath: string,
-    depName: string,
-    libMtimeMs: number
-  ) {
-    const depDir = join(this.moduleDir, "__deps", depName);
-    const relPath = path.relative(depDir, filepath);
-
-    const cached = this.importASTCache?.get(depName, libMtimeMs, relPath);
-    let ast: ASTRoot;
-    if (cached) {
-      ast = cached;
-    } else {
-      const fileText = await readFile(filepath, "utf-8");
-      ast = await Parser.parseTextToASTAsync(this.config, fileText, filepath);
-      this.importASTCache?.set(depName, libMtimeMs, relPath, ast);
-    }
-
+  /** Collects one dependency's interface (its import.hz) into this module. */
+  private async collectDependencyInterface(filepath: string) {
+    // Not run through this module's plugins: plugins are not inherited, so a
+    // dependency built from plugin sources must ship its transformed output.
+    // TODO(plugin-deps).
+    const ast = await parseDependencyInterface(this.config, filepath);
     CollectFile(
       this.cc,
       ast,
@@ -1512,14 +1365,12 @@ export class ModuleCompiler {
     return hash.digest("hex");
   }
 
-  private getDependencyLibPaths() {
-    return this.effectiveDependencies.map((dep) =>
-      join(
-        join(this.hazeWorkspaceDirectory, dep.name),
-        "bin",
-        dep.name + ".hzlib"
-      )
-    );
+  /** What this module reads from each direct dependency. */
+  private getDependencyInterfaceFiles() {
+    return this.effectiveDependencies.flatMap((dep) => {
+      const dir = moduleInterfaceDir(this.hazeWorkspaceDirectory, dep.name);
+      return [join(dir, MODULE_IMPORT_FILE), join(dir, MODULE_METADATA_FILE)];
+    });
   }
 
   private async gatherModuleRelevantFiles(): Promise<string[]> {
@@ -1532,8 +1383,9 @@ export class ModuleCompiler {
     const sourceFiles = await this.scanProjectSourceFiles();
     sourceFiles.forEach((f) => files.add(f));
 
-    const depLibs = this.getDependencyLibPaths();
-    depLibs.forEach((f) => files.add(f));
+    for (const file of this.getDependencyInterfaceFiles()) {
+      files.add(file);
+    }
 
     for (const gen of this.config.generators) {
       if (gen.type !== "exec") {
@@ -1974,11 +1826,15 @@ export class ModuleCompiler {
   /** Does the artifact this module's build is supposed to produce exist? */
   private primaryOutputExists(): boolean {
     const paths = this.computeBuildPaths();
-    const output =
-      this.config.moduleType === ModuleType.Executable
-        ? paths.moduleExecutable
-        : paths.moduleOutputLib;
-    return existsSync(output);
+    if (this.config.moduleType === ModuleType.Executable) {
+      return existsSync(paths.moduleExecutable);
+    }
+    // A library's output is what its dependents read.
+    return (
+      existsSync(paths.importFilePath) &&
+      existsSync(paths.moduleMetadataFile) &&
+      existsSync(paths.moduleAFile)
+    );
   }
 
   private maybeStripExecutable() {
@@ -2009,11 +1865,9 @@ export class ModuleCompiler {
         join(this.moduleDir, `bin/${name}`) +
         (PLATFORM === Platform.Win32 ? ".exe" : ""),
       moduleMetadataFile: join(this.moduleDir, "build/metadata.json"),
-      moduleOutputLib: join(
-        this.moduleDir,
-        "bin/" + this.config.name + ".hzlib"
-      ),
-      importFilePath: join(this.moduleDir, "build", HAZE_LIB_IMPORT_FILE),
+      // The package older compilers wrote for dependents to unpack.
+      staleHzlibFile: join(this.moduleDir, `bin/${name}.hzlib`),
+      importFilePath: join(this.moduleDir, "build", MODULE_IMPORT_FILE),
     };
   }
 
@@ -2138,7 +1992,7 @@ export class ModuleCompiler {
           interfaceMacros: interfaceMacros,
           compileCommands: compileCommands,
           fullModuleGraph: allModules,
-          importFile: HAZE_LIB_IMPORT_FILE,
+          importFile: MODULE_IMPORT_FILE,
         };
         const moduleMetadataSerialized = {
           ...moduleMetadata,
@@ -2172,21 +2026,10 @@ export class ModuleCompiler {
       await this.step("write interface", async () => {
         await writeFile(paths.importFilePath, importFile);
 
-        if (fs.existsSync(paths.moduleOutputLib)) {
-          fs.unlinkSync(paths.moduleOutputLib);
+        if (fs.existsSync(paths.staleHzlibFile)) {
+          fs.unlinkSync(paths.staleHzlibFile);
         }
       });
-      await this.step("tar.gz", () =>
-        createTarGz(
-          `${this.moduleDir}/build`,
-          [
-            makerel(paths.moduleAFile),
-            makerel(paths.importFilePath),
-            makerel(paths.moduleMetadataFile),
-          ],
-          paths.moduleOutputLib
-        )
-      );
     });
   }
 
@@ -2614,9 +2457,12 @@ export class ModuleCompiler {
         );
       }
 
-      const tempdir = join(this.moduleDir, "__deps", meta.name);
-      const archiveFile = join(tempdir, lib.filename);
-      archives.push(archiveFile);
+      archives.push(
+        join(
+          moduleInterfaceDir(this.hazeWorkspaceDirectory, meta.name),
+          lib.filename
+        )
+      );
       linkerFlags.merge(meta.linkerFlags);
       includeDirs.merge(meta.includeDirs);
       interfaceMacros.merge(meta.interfaceMacros);
@@ -2642,26 +2488,17 @@ export class ModuleCompiler {
       return this.cachedDependencyMetadata;
     }
 
-    const collected = new Map<
-      string,
-      Awaited<ReturnType<ModuleCompiler["loadSingleDependencyMetadata"]>>
-    >();
+    const collected = new Map<string, ModuleMetadata>();
 
     const collectOne = async (name: string) => {
       if (collected.has(name)) {
         return;
       }
 
-      const libpath = join(
-        join(this.hazeWorkspaceDirectory, name),
-        "bin",
-        name + ".hzlib"
-      );
-      if (!fs.existsSync(libpath)) {
+      const meta = await this.loadSingleDependencyMetadata(name);
+      if (!meta) {
         return;
       }
-
-      const meta = await this.loadSingleDependencyMetadata(libpath, name);
       collected.set(name, meta);
 
       for (const [transName] of meta.fullModuleGraph) {
@@ -2677,19 +2514,13 @@ export class ModuleCompiler {
     return this.cachedDependencyMetadata;
   }
 
-  private async loadSingleDependencyMetadata(libpath: string, libname: string) {
-    const tempdir = join(this.moduleDir, "__deps", libname);
-    fs.mkdirSync(tempdir, { recursive: true });
-
-    const libMtimeMs = fs.statSync(libpath).mtimeMs;
-    if (!this.isExtractionCurrent(libname, libMtimeMs)) {
-      await extractTarGz(libpath, tempdir);
-      this.saveExtractionStamp(libname, libMtimeMs);
+  /** A dependency's metadata, or undefined if it was not built here. */
+  private async loadSingleDependencyMetadata(name: string) {
+    const file = moduleMetadataFile(this.hazeWorkspaceDirectory, name);
+    if (!existsSync(file)) {
+      return;
     }
-
-    return parseModuleMetadata(
-      await readFile(join(tempdir, "metadata.json"), "utf-8")
-    );
+    return parseModuleMetadata(await readFile(file, "utf-8"));
   }
 
   async collectImports() {
@@ -2701,19 +2532,16 @@ export class ModuleCompiler {
       }
       collected.add(name);
 
-      const libpath = join(
-        join(this.hazeWorkspaceDirectory, name),
-        "bin",
-        name + ".hzlib"
-      );
-      if (!fs.existsSync(libpath)) {
+      const meta = await this.loadSingleDependencyMetadata(name);
+      if (!meta) {
         return;
       }
-
-      const libMtimeMs = fs.statSync(libpath).mtimeMs;
-      const meta = await this.loadSingleDependencyMetadata(libpath, name);
-      const depDir = join(this.moduleDir, "__deps", name);
-      await this.collectDepDirectory(depDir, name, libMtimeMs);
+      await this.collectDependencyInterface(
+        join(
+          moduleInterfaceDir(this.hazeWorkspaceDirectory, name),
+          MODULE_IMPORT_FILE
+        )
+      );
 
       // Transitively collect imports for every module whose types may appear
       // in this dep's public interface — consumers shouldn't need to list

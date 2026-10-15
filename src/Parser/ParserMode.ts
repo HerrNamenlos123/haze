@@ -251,6 +251,17 @@ export async function parseFileWithNative(filepath: string): Promise<ASTRoot> {
   return await getServer().parse(filepath);
 }
 
+/**
+ * The native parser's AST JSON for in-memory source, not yet revived (see
+ * reviveAST): what a caller keeps to make fresh ASTs from without parsing again.
+ */
+export async function parseTextNativeRawAsync(
+  text: string,
+  filename: string
+): Promise<string> {
+  return await getServer().parseTextRaw(text, filename);
+}
+
 /** Parse in-memory source through the long-lived server. */
 export async function parseTextNativeAsync(
   text: string,

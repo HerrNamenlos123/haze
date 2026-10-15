@@ -37,6 +37,7 @@ import {
   getModuleGlobalNamespaceName,
   type ModuleConfig,
 } from "../shared/Config";
+import { defaultWorkspaceDir, moduleMetadataFile } from "../shared/Workspace";
 import {
   type Brand,
   BrandedArray,
@@ -2295,13 +2296,9 @@ function collectGlobalDirective(
           HazeErrorCode.CannotFindImportNoSuchModule
         );
       }
-      const globalBuildDir = join(process.cwd(), "__haze__");
-      const metadataPath = join(
-        globalBuildDir,
-        cc.config.name,
-        "__deps",
-        dependency.name,
-        "metadata.json"
+      const metadataPath = moduleMetadataFile(
+        cc.moduleCompiler?.hazeWorkspaceDirectory ?? defaultWorkspaceDir(),
+        dependency.name
       );
       const filecontent = readFileSync(metadataPath, "utf8");
       const metadata: ModuleConfig = JSON.parse(filecontent);
@@ -2389,13 +2386,9 @@ function collectGlobalDirective(
           HazeErrorCode.CannotFindImportNoSuchModule
         );
       }
-      const globalBuildDir = join(process.cwd(), "__haze__");
-      const metadataPath = join(
-        globalBuildDir,
-        cc.config.name,
-        "__deps",
-        dependency.name,
-        "metadata.json"
+      const metadataPath = moduleMetadataFile(
+        cc.moduleCompiler?.hazeWorkspaceDirectory ?? defaultWorkspaceDir(),
+        dependency.name
       );
       const filecontent = readFileSync(metadataPath, "utf8");
       const metadata: ModuleConfig = JSON.parse(filecontent);
