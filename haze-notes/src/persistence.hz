@@ -320,7 +320,8 @@ ref struct DocumentLoad {
         }
     }
 
-    // Scans until `deadline`; true once the whole text is scanned.
+    // Scans until `deadline`; true once the whole text is scanned, or once
+    // the scan has failed (see `failed`).
     fn scan(deadline: real): bool {
         let t = this.text;
         let n = t.length;
@@ -376,6 +377,12 @@ ref struct DocumentLoad {
                 continue;
             }
             if c == b"}" || c == b"]" {
+                // A bracket that closes nothing: the file is not a document
+                // at all -- a PDF picked in the file tree, say.
+                if this.kinds.length == 0 {
+                    this.fail("the file is not a document");
+                    return true;
+                }
                 if this.inShapesArray() {
                     // ...and closes: its content is left out.
                     this.skeletonFrom = i;
@@ -453,6 +460,9 @@ ref struct DocumentLoad {
         if !this.scanned {
             if !this.scan(deadline) {
                 return false;
+            }
+            if this.failed {
+                return true;
             }
             this.scanned = true;
             if this.kinds.length != 0 {

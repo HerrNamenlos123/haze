@@ -1,8 +1,13 @@
-// Drives haze-notes' DocumentLoad (persistence.hz, copied verbatim) over
-// files that are not documents. Clicking a PDF in the file tree once made
+// Drives haze-notes' DocumentLoad (src/persistence.hz) over files that are
+// not documents. Clicking a PDF in the file tree once made
 // the scan pop an empty container stack and panic, and the PDF stayed the
 // vault's lastOpenedFile, so every start crashed. A file that is not a
 // document must end the load as failed, never take the app down.
+//
+// haze-notes is an executable, so nothing can depend on it: run this from a
+// throwaway exe project inside the repository that depends on renderer,
+// tesselate and perfect_freehand, with src/persistence.hz, src/documents.hz
+// and src/tiles.hz copied in verbatim and this file as its main.hz.
 
 ref struct State {
     checks: int = 0;
@@ -17,7 +22,16 @@ ref struct State {
     }
 }
 
-const dir = "/tmp/claude-1000/-home-fzachs-Projects-haze/48dc03c3-f300-4f97-84d6-27a2ff7897eb/scratchpad/hnload";
+// Where the fixtures are written.
+fn fixtureDir(): str {
+    if let tmp = env.get("TMPDIR") {
+        return f"{tmp}/haze-notes-document-load-tests";
+    }
+    if let tmp = env.get("TEMP") {
+        return f"{tmp}/haze-notes-document-load-tests";
+    }
+    return "/tmp/haze-notes-document-load-tests";
+}
 
 // Parsed rather than built: a literal-union field (gridType) cannot be set
 // from a string literal in a struct literal yet.
@@ -43,7 +57,7 @@ fn loadToEnd(load: DocumentLoad): bool {
 // no document.
 fn failsToLoad(state: mut State, name: str, text: str): bool {
     fmt.println(f"case: {name}");
-    let path = f"{dir}/{name}.tsk";
+    let path = f"{fixtureDir()}/{name}.tsk";
     state.check(f"{name}: fixture written", fs.writeText(path, text) ? true : false);
     let load = DocumentLoad(path);
     state.check(f"{name}: load ends", loadToEnd(load));
@@ -52,12 +66,12 @@ fn failsToLoad(state: mut State, name: str, text: str): bool {
 
 fn main(): int {
     let state = State {};
-    fs.createDirectory(dir);
+    fs.createDirectory(fixtureDir());
 
     // A real document, saved and loaded back: the scan must still accept
     // everything a save writes.
     fmt.println("case: round trip");
-    let path = f"{dir}/roundtrip.tsk";
+    let path = f"{fixtureDir()}/roundtrip.tsk";
     let save = DocumentSave(path, sampleDocument());
     save.finish();
     state.check("round trip: saved", !save.failed);

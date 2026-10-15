@@ -1,9 +1,0 @@
-name = "hnloadtest"
-id = "HnLdTst1"
-version = "0.1.0"
-type = "exe"
-
-[dependencies]
-renderer = { path = "../stdlib/renderer" }
-tesselate = { path = "../stdlib/tesselate" }
-perfect_freehand = { path = "../stdlib/perfect_freehand" }
