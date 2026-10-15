@@ -86,6 +86,54 @@ a font draws for them), which needs the font and is HarfBuzz's job. Correct
 segmentation makes navigation correct; complex emoji and combining marks will
 still *render* wrong until a shaper is added.
 
+## Collation (sorting)
+
+`unicode.collate(a, b)` compares two strings in the order people expect a
+list sorted: the Unicode Collation Algorithm over CLDR's root order (UCA
+16.0), at tertiary strength -- the order ICU and JavaScript's `localeCompare`
+use by default for German, English and most other languages. Case and accents
+only break ties ("apple" < "Äpfel" < "banana"), and spaces < punctuation <
+symbols < digits < letters.
+
+```haze
+// "file 2" < "file 10", and "02" equals "2".
+let order = unicode.collate(a, b, { numeric: true });
+
+// Sorting many strings: build each key once, then compare keys.
+let key = unicode.collationKey(name, { numeric: true });
+let order = unicode.compareCollationKeys(keyA, keyB);
+```
+
+`collate` returns 0 for strings that differ only where the order does not
+look (with `numeric`, "a01" and "a1"; precomposed and decomposed accents), so
+break such ties yourself when a sort must be deterministic.
+
+The table (`src/ffi/haze_collation_data.h`, about 270 KB compiled) is
+generated from CLDR's `allkeys_CLDR.txt` by `tools/gen-collation.ts`; the
+algorithm and what it leaves out are described in `src/ffi/haze_collation.c`.
+It was checked against ICU 78.2 (Electron 42's `Intl.Collator("de")`, with
+and without `numeric`) on 1,000,000 random pairs. They were drawn from Latin
+with accents and umlauts, Greek, Cyrillic, Thai, Lao, Tibetan, Hangul, CJK,
+Tangut, Nushu, emoji, ligatures, digits of several scripts, ignorables and
+combining marks, most of them near-copies that differ only in case, accents,
+decomposition or digits. The two agree on every pair, apart from about 45 in
+numeric mode, all explained by a quirk of ICU's own (below). On 100,000 more
+pairs built from the table's contractions, 2 differ. Both are discontiguous
+contractions (Arabic and Tibetan, with combining marks between the parts),
+which are not implemented.
+
+ICU skips the common prefix of two strings before collating them. It backs up
+over digits so as not to cut a number in two, but not over a surrogate pair. So
+when a number with a digit from outside the BMP (`𝟏`, U+1D7CF) runs across
+the end of that prefix, ICU compares the two halves as separate numbers:
+`"𝟏𝟏"` sorts before `"𝟏a𝟏"`, while `"11"` sorts after `"1a1"`. This module
+always compares a number as one number.
+
+Older ICU differs more: ICU 77 (Node 22) orders CJK ideographs from different
+blocks differently. This module and ICU 78 put the CJK Unified Ideographs
+block before its extensions, as UCA's implicit weights do.
+
 ## License
 
-utf8proc is MIT licensed; see `src/ffi/UTF8PROC_LICENSE.md`.
+utf8proc is MIT licensed; see `src/ffi/UTF8PROC_LICENSE.md`. The collation
+table is derived from Unicode CLDR data, under the Unicode License v3.

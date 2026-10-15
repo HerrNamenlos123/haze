@@ -1,0 +1,196 @@
+// The open note: its pages on the desk, the pen, mouse and finger input that
+// draws on them, and the panels floating over them -- the tool palette, the
+// selection's colours and the pen menu. While a note loads it shows how far
+// along it is; with none open, how to open one.
+//
+// The document itself lives in `controls` (EditorControls), which its owner
+// creates because the app bar and the save on exit need it too.
+
+@props
+[[hzui.untracked]]
+controls: EditorControls;
+// The canvas the pages are drawn into. Its owner holds it, since the
+// controls ask it to redraw (see Workspace).
+[[hzui.untracked]]
+canvasRef: CanvasRef;
+// What is being opened, for the loading screen.
+title: str = "";
+
+@setup
+let rootRef = elementRef<DivElement>();
+let canvasAreaRef = elementRef<DivElement>();
+
+let loadingText = computed((): str => {
+    if props.title.length > 0 { return f"Opening {props.title}"; }
+    return "Opening note";
+});
+
+// Pointer positions arrive window-global; the controls work in canvas px.
+let toLocal = (pos: Vec2): Vec2 => {
+    let area = rx.get(canvasAreaRef);
+    if area {
+        if let origin = area.position() {
+            return Vec2(pos.x - origin.x, pos.y - origin.y);
+        }
+    }
+    return pos;
+};
+
+let onPointerDown = (e: PointerEvent) => {
+    props.controls.pointerDown(e, toLocal(e.pos));
+};
+let onPointerMove = (e: PointerEvent) => {
+    props.controls.pointerMove(e, toLocal(e.pos));
+};
+let onPointerUp = (e: PointerEvent) => {
+    props.controls.pointerUp(e, toLocal(e.pos));
+};
+let onWheel = (e: WheelEvent) => {
+    props.controls.wheel(e, toLocal(e.pos));
+};
+
+// Polled every frame: a mouse drag that leaves the canvas, a pinch waiting
+// out its grace period, loading, saving and the autosave -- see
+// EditorControls.frame. Runs before the canvas's step of the same frame, so
+// what it changes is drawn at once.
+ui.onFrame(() => {
+    props.controls.frame(ui, toLocal(ui.mousePos));
+});
+
+// Runs only when the canvas has to be drawn again: when it is created or
+// resized, or when the controls say something on it changed.
+let renderCanvas = (r: mut renderer.gfx.Renderer): void => {
+    let controls = props.controls;
+    controls.render(r);
+    // A settling zoom, and tiles the frame's budget did not reach, need more
+    // renders to finish.
+    if controls.view.hasPendingWork() {
+        props.canvasRef?.invalidate();
+    }
+};
+
+let documentOpen = computed((): bool => rx.get(props.controls.documentOpen));
+let loading = computed((): bool => rx.get(props.controls.loadingDocument));
+
+let tool = computed((): Tool => {
+    if rx.get(props.controls.selectionTool) { return Tool.Selection; }
+    if rx.get(props.controls.eraserTool) { return Tool.Eraser; }
+    return Tool.Pen;
+});
+
+// The palette sits centred at the top of the page area -- or, in an area
+// narrower than it, at the left edge, so the pens stay in reach and only the
+// last colours are cut off.
+let toolbarRef = elementRef<DivElement>();
+let toolbarLeft = computed((): real => {
+    let area = rootRef?.size();
+    let bar = toolbarRef?.size();
+    if area && bar {
+        return max(8.0, (area.x - bar.x) / 2.0);
+    }
+    return 8.0;
+});
+
+// After a tool is picked, keys go to the page again: the button that was
+// pressed took the focus, and in a panel that closes (the pen menu, the
+// selection's) it would take it away with it.
+let refocusPage = () => {
+    if let area = rx.get(canvasAreaRef) {
+        area.focus();
+    }
+};
+
+// The pen menu, centred on where the barrel button was pressed.
+let penMenuOpen = computed((): bool => {
+    if rx.get(props.controls.popup) { return true; }
+    return false;
+});
+let penMenuX = computed((): real => {
+    if let p = rx.get(props.controls.popup) { return p.x; }
+    return 0.0;
+});
+let penMenuY = computed((): real => {
+    if let p = rx.get(props.controls.popup) { return p.y; }
+    return 0.0;
+});
+
+// Recolour and delete, right-aligned just above the selection.
+let selectionPanelOpen = computed((): bool => {
+    if rx.get(props.controls.selectionScreenBox) { return true; }
+    return false;
+});
+let selectionPanelRight = computed((): real => {
+    if let box = rx.get(props.controls.selectionScreenBox) { return box.right; }
+    return 0.0;
+});
+let selectionPanelTop = computed((): real => {
+    if let box = rx.get(props.controls.selectionScreenBox) { return max(8.0, box.top - 52.0); }
+    return 0.0;
+});
+
+let usePen = (size: real) => {
+    props.controls.usePen(size);
+    refocusPage();
+};
+let useSelection = () => {
+    props.controls.useSelectionTool();
+    refocusPage();
+};
+let useEraser = () => {
+    props.controls.useEraser();
+    refocusPage();
+};
+let setPenColor = (color: str) => {
+    props.controls.setPenColor(color);
+    refocusPage();
+};
+let setSelectionColor = (color: str) => {
+    props.controls.setSelectionColor(color);
+    refocusPage();
+};
+let deleteSelection = () => {
+    props.controls.deleteSelection();
+    refocusPage();
+};
+
+// Clips: a panel over the page never reaches over the sidebar beside it.
+@template [relative w-grow h-grow bg-[theme().desk] overflow-hidden] ref=rootRef
+
+div if=loading [col w-grow h-grow items-center justify-center gap-3] {
+    text [text-nowrap font-size-13 text-color-[theme().textMuted]] [loadingText]
+    ProgressBar [] value=[rx.get(props.controls.loadProgress)] {}
+}
+
+EmptyState else-if=[rx.get(props.controls.loadFailed)] [] icon="warning" title="This note could not be opened"
+    hint="The file is damaged, or it is not a Haze Notes document." {}
+
+EmptyState else-if=[!documentOpen] [] icon="notebook" title="No note open"
+    hint="Choose a note in the sidebar to start writing." {}
+
+// `touch-none`: the canvas reads fingers itself -- one pans the page, two
+// pinch-zoom it (see EditorControls) -- so the framework must not turn a
+// finger's drag into a scroll and cancel it.
+div else [w-grow h-grow touch-none [rx.get(props.controls.resizeCursor)]?cursor-resize-n-w-s-e]
+    ref=canvasAreaRef
+    focusable=[true]
+    @pointerdown=onPointerDown
+    @pointermove=onPointerMove
+    @pointerup=onPointerUp
+    @wheel=onWheel
+{
+    canvas [w-grow h-grow] ref=[props.canvasRef] @render=renderCanvas
+}
+
+div if=documentOpen [absolute top-[12] left-[toolbarLeft]] ref=toolbarRef {
+    Toolbar [] tool=[tool] penColor=[rx.get(props.controls.penColor)] penSizeMm=[rx.get(props.controls.penSizeMm)]
+        @pen=usePen @selection=useSelection @eraser=useEraser @color=setPenColor {}
+}
+
+div if=selectionPanelOpen [absolute left-[selectionPanelRight] top-[selectionPanelTop] translate-x-[-1.0]] {
+    SelectionToolbar [] @color=setSelectionColor @remove=deleteSelection {}
+}
+
+div if=penMenuOpen [absolute left-[penMenuX] top-[penMenuY] translate-x-[-0.5] translate-y-[-0.5]] {
+    PenMenu [] tool=[tool] penColor=[rx.get(props.controls.penColor)] penSizeMm=[rx.get(props.controls.penSizeMm)]
+        @pen=usePen @selection=useSelection @color=setPenColor {}
+}

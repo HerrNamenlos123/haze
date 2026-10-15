@@ -1,0 +1,17 @@
+// How far along something is, 0 to 1.
+
+@props
+value: real;
+width: real = 220.0;
+
+@setup
+let filled = computed((): real => {
+    let v = props.value;
+    if v < 0.0 { v = 0.0; }
+    if v > 1.0 { v = 1.0; }
+    return props.width * v;
+});
+
+@template [w-[props.width]px h-[4]px rounded-2 bg-[theme().track]]
+
+div [w-[filled]px h-[4]px rounded-2 bg-[theme().accent]]

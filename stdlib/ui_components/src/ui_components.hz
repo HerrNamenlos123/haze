@@ -785,6 +785,8 @@ export fn drawCanvasIfNeeded(element: ui_elements.CanvasElement, context: mut re
 export ref struct RenderFeedback {
     position: Vec2;
     size: Vec2;
+    // The layout pass that reported it -- see beginRenderFeedback.
+    pass: int = 0;
 }
 
 export ref struct InputFeedback {
@@ -1296,10 +1298,16 @@ fn setPointerDownHere(data: ComponentElementRuntimeData, value: bool): void :: f
 // the reactive render-feedback version only when the box actually changed,
 // same as the old per-field dirty-checking that used to live in hzui's
 // applyBoundingBoxTrampoline.
-export fn applyRenderFeedback(element: ui_elements.Element, pos: Vec2, size: Vec2): void {
+// `pass` is the layout pass the box comes from: what
+// UIContext.beginRenderFeedback returned before it. A host that never calls
+// that leaves it 0, and every box it reports stays current.
+export fn applyRenderFeedback(element: ui_elements.Element, pos: Vec2, size: Vec2, pass: int = 0): void {
     let data = runtimeDataOf(element);
+    if let feedback = data.renderFeedback {
+        feedback.pass = pass;
+    }
     if !data.renderFeedback {
-        data.renderFeedback = { position: pos, size: size };
+        data.renderFeedback = { position: pos, size: size, pass: pass };
         data.renderFeedbackVersion := !data.renderFeedbackVersion;
         return;
     }
@@ -1309,6 +1317,43 @@ export fn applyRenderFeedback(element: ui_elements.Element, pos: Vec2, size: Vec
         data.renderFeedback.size = size;
         data.renderFeedbackVersion := !data.renderFeedbackVersion;
     }
+}
+
+// The element's box from layout pass `pass` (the context's latest), for
+// deciding what the pointer is over: none while it is hidden, before it was
+// ever laid out, and when that pass did not report it -- that box is where
+// the element WAS (see UIContext.beginRenderFeedback).
+fn currentRenderFeedback(element: ui_elements.Element, pass: int): RenderFeedback | none :: final {
+    if ui_elements.isDisplayNone(element) {
+        return none;
+    }
+    let data = runtimeDataOf(element);
+    if let feedback = data.renderFeedback {
+        if feedback.pass == pass {
+            return feedback;
+        }
+    }
+    return none;
+}
+
+fn boxContains(box: RenderFeedback, point: Vec2): bool :: final {
+    return point.x >= box.position.x && point.x < box.position.x + box.size.x
+        && point.y >= box.position.y && point.y < box.position.y + box.size.y;
+}
+
+// Whether `point` lies outside what this element shows of its content: what
+// an element clips is drawn nowhere outside its box, so it is neither hit nor
+// hovered there. Only a clipping axis counts, as in ui_layout's
+// collectClipsRecursive, which decides what is drawn.
+fn clipsAwayPoint(element: ui_elements.Element, box: RenderFeedback, point: Vec2): bool :: final {
+    if element is ui_elements.DivElement {
+        let style = element.style;
+        let outsideX = point.x < box.position.x || point.x >= box.position.x + box.size.x;
+        let outsideY = point.y < box.position.y || point.y >= box.position.y + box.size.y;
+        return (style.overflowX == ui_styling.Overflow.Hidden && outsideX)
+            || (style.overflowY == ui_styling.Overflow.Hidden && outsideY);
+    }
+    return false;
 }
 
 // ── OS titlebar regions ──────────────────────────────────────────────────
@@ -1371,7 +1416,7 @@ fn isPointerInteractive(element: ui_elements.Element): bool :: final {
 // `inTitlebar` is what the enclosing boxes decided, and it is also why
 // interactivity is only consulted INSIDE a titlebar: an editor is full of
 // clickable things and not one of them is a hole in anything.
-fn collectWindowRegions(element: ui_elements.Element, out: []WindowRegion, inTitlebar: bool): void :: final {
+fn collectWindowRegions(element: ui_elements.Element, out: []WindowRegion, inTitlebar: bool, pass: int): void :: final {
     // A hidden subtree keeps whatever box it had when it was last visible
     // (nothing clears render feedback -- see collectHitPath), so this check
     // has to be explicit: without it a closed panel would go on donating a
@@ -1395,19 +1440,18 @@ fn collectWindowRegions(element: ui_elements.Element, out: []WindowRegion, inTit
     let childInTitlebar = inTitlebar;
     if decided {
         childInTitlebar = draggable;
-        let pos = ui_position(element);
-        let size = ui_size(element);
-        // No box yet (an element that has never been laid out) simply
-        // contributes nothing this frame; its children still can, so the walk
-        // continues either way.
-        if pos && size {
-            out.push({ pos: pos, size: size, draggable: draggable });
+        let box = currentRenderFeedback(element, pass);
+        // No box yet (an element that has never been laid out, or was culled
+        // by the latest layout) simply contributes nothing this frame; its
+        // children still can, so the walk continues either way.
+        if box {
+            out.push({ pos: box.position, size: box.size, draggable: draggable });
         }
     }
 
     if element is ui_elements.DivElement {
         for child in element.children {
-            collectWindowRegions(child, out, childInTitlebar);
+            collectWindowRegions(child, out, childInTitlebar, pass);
         }
     }
 }
@@ -2100,6 +2144,9 @@ export type ClockCallback = () => real;
 
 export opaque ref struct UIContext {
     _mousePosCb: (() => Vec2);
+    // The latest layout pass whose boxes hit testing and hover may use --
+    // see beginRenderFeedback.
+    _renderFeedbackPass: int = 0;
     // Optional: when supplied, says whether _mousePosCb's answer is
     // meaningful yet (see mousePosKnown below). Omitted means "always
     // meaningful", which is what a headless/test context wants and what
@@ -2550,7 +2597,7 @@ export opaque ref struct UIContext {
 
         let regions = this._windowRegions;
         regions.clear();
-        collectWindowRegions(root, regions, false);
+        collectWindowRegions(root, regions, false, this._renderFeedbackPass);
         cb.setRegions(regions);
     }
 
@@ -2597,13 +2644,12 @@ export opaque ref struct UIContext {
         if ui_elements.isDisplayNone(element) {
             return false;
         }
-        let elementPos = ui_position(element);
-        let elementSize = ui_size(element);
+        // Only a box the latest layout reported: an element culled since
+        // keeps the box it had, over whatever has taken its place.
+        let box = currentRenderFeedback(element, this._renderFeedbackPass);
         let hit = false;
-        if elementPos && elementSize {
-            hit =
-                (mousePos.x >= elementPos.x) && (mousePos.x < (elementPos.x + elementSize.x)) &&
-                (mousePos.y >= elementPos.y) && (mousePos.y < (elementPos.y + elementSize.y));
+        if box {
+            hit = boxContains(box, mousePos);
         }
         // Note: a missing bounding box (elementPos/elementSize is none) does NOT
         // stop the walk here -- content-less structural wrappers (e.g. a
@@ -2612,6 +2658,16 @@ export opaque ref struct UIContext {
         // their children still can and must be reachable for hit-testing.
         // Check children in reverse so the last (topmost) child wins.
         if element is ui_elements.DivElement {
+            // What an element clips is not there to be hit outside its box.
+            // Without this, rows scrolled out of the top of a list -- laid
+            // out, unclipped, right where the header above the list is --
+            // caught every press meant for the header's buttons, since the
+            // list comes later in the tree.
+            if box {
+                if clipsAwayPoint(element, box, mousePos) {
+                    return false;
+                }
+            }
             let i = element.children.length - 1;
             while i >= 0 {
                 if this.collectHitPath(element.children[i], mousePos, out) {
@@ -3169,16 +3225,22 @@ export opaque ref struct UIContext {
     // same fix.
     fn updateHoverState(element: ui_elements.Element, mousePos: Vec2, buttons: PointerButtons, eventQueue: []QueuedHandler, pointerPresent: bool = true, hidden: bool = false): bool :: final {
         let subtreeHidden = hidden || ui_elements.isDisplayNone(element);
-        let elementPos = ui_position(element);
-        let elementSize = ui_size(element);
+        // Only a box the latest layout reported -- see collectHitPath.
+        let box = currentRenderFeedback(element, this._renderFeedbackPass);
         let selfHit = false;
         // A hidden element keeps the bounding box it had when it was last
         // visible, so the geometry test would still pass -- it has to be
         // suppressed explicitly rather than relying on the box being gone.
-        if pointerPresent && !subtreeHidden && elementPos && elementSize {
-            selfHit =
-                (mousePos.x >= elementPos.x) && (mousePos.x < (elementPos.x + elementSize.x)) &&
-                (mousePos.y >= elementPos.y) && (mousePos.y < (elementPos.y + elementSize.y));
+        if pointerPresent && !subtreeHidden && box {
+            selfHit = boxContains(box, mousePos);
+        }
+        // Content this element clips away from the pointer is not under it:
+        // its subtree is walked as hidden, which un-hovers whatever was.
+        let childrenHidden = subtreeHidden;
+        if box {
+            if clipsAwayPoint(element, box, mousePos) {
+                childrenHidden = true;
+            }
         }
 
         // Recurse first: hit for *this* element depends on whether any
@@ -3187,7 +3249,7 @@ export opaque ref struct UIContext {
         let childHover = false;
         if element is ui_elements.DivElement {
             for child in element.children {
-                if this.updateHoverState(child, mousePos, buttons, eventQueue, pointerPresent, subtreeHidden) {
+                if this.updateHoverState(child, mousePos, buttons, eventQueue, pointerPresent, childrenHidden) {
                     childHover = true;
                 }
             }
@@ -5230,6 +5292,19 @@ export opaque ref struct UIContext {
             };
             return this.defineComponentImpl(id, propsChanged, setup);
         };
+    }
+
+    // A host calls this before each layout pass and hands what it returns to
+    // applyRenderFeedback with every box that pass reports. From then on,
+    // hit testing and hover use only those boxes: the layout engine reports
+    // nothing for what lies wholly outside the window (Clay culls its text
+    // and canvas commands), and the box such an element had stays where it
+    // WAS -- over whatever has taken its place since. Kept per context, so
+    // one window's layout never invalidates another's boxes. A host that
+    // never calls this keeps every box current, as before.
+    fn beginRenderFeedback(): int {
+        this._renderFeedbackPass = this._renderFeedbackPass + 1;
+        return this._renderFeedbackPass;
     }
 
     fn onMounted(callback: () => none) {

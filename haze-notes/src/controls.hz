@@ -254,6 +254,9 @@ ref struct EditorControls {
     documentOpen: rx.Reactive<bool>;
     loadingDocument: rx.Reactive<bool>;
     loadProgress: rx.Reactive<real>;
+    // The last open() ended without a document: the file is damaged or not
+    // a document at all.
+    loadFailed: rx.Reactive<bool>;
     // The document being opened.
     loading: DocumentLoad | none = none;
     // Saves still being written, oldest first; frame() steps the first. A
@@ -342,6 +345,7 @@ ref struct EditorControls {
             documentOpen: rx.reactive<bool>(false),
             loadingDocument: rx.reactive<bool>(false),
             loadProgress: rx.reactive<real>(0.0),
+            loadFailed: rx.reactive<bool>(false),
             selectionTool: rx.reactive<bool>(false),
             eraserTool: rx.reactive<bool>(false),
             penColor: rx.reactive<str>("#000000"),
@@ -366,6 +370,9 @@ ref struct EditorControls {
             this.loadingDocument := false;
         }
         this.setDocument(none, "");
+        if rx.get(this.loadFailed) {
+            this.loadFailed := false;
+        }
         if let p = path {
             // A document still being saved is newer in memory than on disk.
             for (let i = this.saves.length - 1; i >= 0; i--) {
@@ -465,10 +472,15 @@ ref struct EditorControls {
             if over {
                 this.loading = none;
                 this.loadingDocument := false;
+                let opened = false;
                 if let doc = load.doc {
                     if !load.failed {
                         this.setDocument(doc, load.path);
+                        opened = true;
                     }
+                }
+                if !opened {
+                    this.loadFailed := true;
                 }
             }
             // Saves wait: the frame's time went to the load.

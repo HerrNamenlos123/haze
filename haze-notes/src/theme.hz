@@ -1,0 +1,107 @@
+// The app's colours, as named roles rather than values -- what CSS variables
+// are to a Tailwind theme. A component never spells a colour; it asks for the
+// role (`bg-[theme().chrome]`), so the whole look is changed here, in one
+// place.
+//
+// One look, chosen for everyday use (2026-10-15): a charcoal frame -- dark
+// enough that the title bar and sidebar recede, not the near-black of a
+// "dark mode" -- around a mid-dark grey desk, on which the white page is the
+// brightest thing in the window. There is no theme switch.
+
+struct Theme {
+    // ── Surfaces, back to front ─────────────────────────────────────
+    // Behind the pages.
+    desk: str;
+    // The app bar and the sidebar.
+    chrome: str;
+    // Floating panels: the tool palette, menus.
+    surface: str;
+    // A line between two regions of the window.
+    border: str;
+    // The outline of a floating panel.
+    surfaceBorder: str;
+
+    // ── States, laid over a surface ─────────────────────────────────
+    hover: str;
+    pressed: str;
+    // The open note in the tree, the active tool.
+    selected: str;
+
+    // ── Content ─────────────────────────────────────────────────────
+    text: str;
+    textMuted: str;
+    textSubtle: str;
+    icon: str;
+    accent: str;
+    accentHover: str;
+    accentPressed: str;
+    // Text and icons on an `accent` background.
+    onAccent: str;
+    danger: str;
+    // The close button's hover, red on every desktop.
+    closeHover: str;
+    closePressed: str;
+
+    // ── Details ─────────────────────────────────────────────────────
+    scrollThumb: str;
+    scrollThumbHover: str;
+    scrollThumbActive: str;
+    // Around a colour swatch, so black stays visible on a dark panel.
+    swatchRing: str;
+    indentGuide: str;
+    track: str;
+
+    // ── Paper ───────────────────────────────────────────────────────
+    // A bit of the page inside the chrome (see PaperStrip), so ink is shown
+    // as it will look when drawn.
+    paper: str;
+    paperEdge: str;
+    paperHover: str;
+    paperSelected: str;
+}
+
+fn appTheme(): Theme {
+    return Theme {
+        desk: "#4D4E53",
+        chrome: "#2E2F33",
+        surface: "#393A3F",
+        border: "#3D3E43",
+        surfaceBorder: "#4C4D53",
+        hover: "#FFFFFF12",
+        pressed: "#FFFFFF21",
+        selected: "#FBBF2430",
+        text: "#E9E9EC",
+        textMuted: "#B6B6BD",
+        textSubtle: "#8A8A93",
+        icon: "#ACACB4",
+        accent: "#FBBF24",
+        accentHover: "#FCD34D",
+        accentPressed: "#F59E0B",
+        onAccent: "#1D1D20",
+        danger: "#F87171",
+        closeHover: "#C42B1C",
+        closePressed: "#B0271A",
+        scrollThumb: "#FFFFFF2B",
+        scrollThumbHover: "#FFFFFF47",
+        scrollThumbActive: "#FFFFFF61",
+        swatchRing: "#FFFFFF4D",
+        indentGuide: "#FFFFFF17",
+        track: "#FFFFFF21",
+        paper: "#F2F2F0",
+        paperEdge: "#00000017",
+        paperHover: "#0000000F",
+        paperSelected: "#F59E0B45",
+    };
+}
+
+// Built once; a template reads it many times per frame.
+let currentTheme: Theme | none = none;
+
+fn theme(): Theme {
+    if let t = currentTheme {
+        return t;
+    }
+    let t = appTheme();
+    currentTheme = t;
+    return t;
+}

@@ -503,3 +503,7 @@ hzstd_str_t haze_unicode_version(void)
 {
   return HZSTD_STRING_FROM_CSTR(utf8proc_unicode_version());
 }
+
+// Collation (unicode.collate / collationKey) lives in its own file for its
+// size, but in this translation unit: it needs utf8proc and the decoder above.
+#include "haze_collation.c"

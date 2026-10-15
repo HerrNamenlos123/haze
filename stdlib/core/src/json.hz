@@ -943,6 +943,8 @@ namespace json {
         // this is how the echo is told apart from another program's write
         // without reading the file: see _isOwnWrite.
         _writtenState: fs.FileState | none = none;
+        // The watch on the file, until close().
+        _watch?: fs.WatchHandle;
 
         fn constructor(path: str, args: CacheFileArgs = {}) {
             let rawData = CacheFile<T>._read(path);
@@ -966,7 +968,7 @@ namespace json {
                 cache._writeToDisk();
             });
 
-            fs.watch(path, (event: fs.FileChangeEvent): void => {
+            cache._watch = fs.watch(path, (event: fs.FileChangeEvent): void => {
                 // Our own write coming back: the file holds exactly what
                 // `data` does, so there is nothing to read.
                 if cache._isOwnWrite() {
@@ -1000,6 +1002,18 @@ namespace json {
         fn flush() {
             // Trigger reactive computation and disk writing if required.
             rx.get(this._flushComputed);
+        }
+
+        // Done with the file: what changed is written, and the file is no
+        // longer watched, so another program's writes stop being read back
+        // into `data`. A cache that is replaced (another vault opened) has to
+        // be closed, or it watches its file for the life of the process.
+        fn close() {
+            this.flush();
+            if let handle = this._watch {
+                fs.unwatch(handle);
+                this._watch = none;
+            }
         }
 
         fn _writeToDisk() {

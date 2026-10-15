@@ -1,0 +1,52 @@
+from codicons import CodiconComponent
+
+// What the app shows before a vault is open: what it is, a way to open a
+// folder of notes, and the vaults opened before.
+
+@props
+// Most recent first.
+[[hzui.untracked]]
+recent: []str;
+// Changes whenever `recent` does -- an array cannot be compared, so this is
+// what tells the screen to draw again.
+revision: str = "";
+
+@emit
+pickVault: ();
+openVault: (str,);
+
+@setup
+let hasRecent = computed((): bool => props.recent.length > 0);
+
+let pick = () => {
+    emits.pickVault();
+};
+
+let open = (path: str) => {
+    emits.openVault(path);
+};
+
+@template [col w-grow h-grow items-center justify-center p-6 bg-[theme().desk]]
+
+div [col w-[400]px h-fit gap-6 p-7 rounded-16 bg-[theme().surface] border-1 border-color-[theme().surfaceBorder]] {
+    div [row w-grow h-fit items-center gap-3.5] {
+        div [w-[48]px h-[48]px rounded-12 items-center justify-center bg-[theme().accent]
+             text-color-[theme().onAccent] font-size-26] {
+            Codicon [] icon="notebook" {}
+        }
+        div [col w-grow h-fit gap-1] {
+            text [text-nowrap font-size-20 text-color-[theme().text]] ["Haze Notes"]
+            text [font-size-13 text-color-[theme().textMuted]] ["Handwritten notes, kept as files in a folder you choose."]
+        }
+    }
+
+    IconButton [] icon="folder-opened" label="Open a vault" primary=[true] paddingX=[14.0] paddingY=[9.0]
+        rounded=[8.0] @click=pick {}
+
+    div if=hasRecent [col w-grow h-fit gap-1] {
+        div [w-grow h-fit px-2.5 pb-1] {
+            text [text-nowrap font-size-12 text-color-[theme().textSubtle]] ["Recent vaults"]
+        }
+        RecentVaultRow for=[path, i in props.recent] key=[i] [] path=[path] @open=open {}
+    }
+}

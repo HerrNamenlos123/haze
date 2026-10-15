@@ -1,0 +1,12 @@
+// A thin line between groups of controls: upright between buttons in a row,
+// level between rows.
+
+@props
+vertical: bool = true;
+length: real = 20.0;
+
+@template [
+        [props.vertical]?w-[1]px [props.vertical]?h-[props.length]px [props.vertical]?mx-1
+        [!props.vertical]?h-[1]px [!props.vertical]?w-grow [!props.vertical]?my-1
+        bg-[theme().border]
+    ]

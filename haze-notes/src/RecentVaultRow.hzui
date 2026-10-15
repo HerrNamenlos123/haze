@@ -1,0 +1,43 @@
+from codicons import CodiconComponent
+
+// A vault opened before, on the welcome screen: its name, and where it is.
+
+@props
+path: str;
+
+@emit
+open: (str,);
+
+@setup
+let rootRef = elementRef<DivElement>();
+let hovered = computed(() => rootRef?.hover() ?? false);
+let background = computed((): str => hovered ? theme().hover : "#00000000");
+let name = computed((): str => baseName(props.path));
+
+// Mouse and pen on the press, a finger on the tap -- see IconButton.
+let pressed = (event: PointerEvent) => {
+    if event.button != PointerButton.Left { return; }
+    if event.activatesOnPress() {
+        event.stopPropagation();
+        emits.open(props.path);
+    }
+};
+
+let tapped = (event: PointerEvent) => {
+    if event.activatesOnPress() { return; }
+    event.stopPropagation();
+    emits.open(props.path);
+};
+
+@template [row w-grow h-fit items-center gap-3 px-2.5 py-2 rounded-8 bg-[background] cursor-pointer]
+    ref=rootRef
+    @pointerdown=pressed
+    @click=tapped
+
+div [w-fit h-fit font-size-16 text-color-[theme().icon]] {
+    Codicon [] icon="folder" {}
+}
+div [col w-grow h-fit gap-0.5 overflow-hidden] {
+    text [text-nowrap font-size-13 text-color-[theme().text]] [name]
+    text [text-nowrap font-size-11 text-color-[theme().textSubtle]] [props.path]
+}

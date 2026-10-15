@@ -1717,6 +1717,42 @@ export struct TextureOpts {
     transform?: mat4.Mat4f = none;
 }
 
+// ── Clip boxes ──────────────────────────────────────────────────────────
+//
+// Every primitive carries a clip box in framebuffer pixels, (minX, minY,
+// maxX, maxY) as (x, y, z, w), and the fragment shader (fs_main in
+// shaders.wgsl) discards what falls outside it. A box with no area is how
+// "not clipped" is written -- a primitive's default.
+
+// The box for drawing restricted to [minX, maxX] x [minY, maxY].
+//
+// An empty one -- no width or no height, which is what clipping something
+// to a box it lies wholly outside of comes to -- must let NOTHING through,
+// and written as given it would mean "not clipped" and let everything
+// through. It is written as a real box lying wholly off the target instead:
+// clipping stays on, and no pixel is inside it.
+export fn clipBox(minX: f32, minY: f32, maxX: f32, maxY: f32): Vec4f {
+    if maxX <= minX || maxY <= minY {
+        let nothing: Vec4f = { x: -2.0, y: -2.0, z: -1.0, w: -1.0 };
+        return nothing;
+    }
+    let box: Vec4f = { x: minX, y: minY, z: maxX, w: maxY };
+    return box;
+}
+
+// `child` restricted further to `parent`, when the parent clips at all.
+export fn intersectClipBoxes(parent: Vec4f, child: Vec4f): Vec4f {
+    if parent.z > parent.x && parent.w > parent.y {
+        return clipBox(
+            child.x > parent.x ? child.x : parent.x,
+            child.y > parent.y ? child.y : parent.y,
+            child.z < parent.z ? child.z : parent.z,
+            child.w < parent.w ? child.w : parent.w,
+        );
+    }
+    return child;
+}
+
 // The cheap, frame-scoped value: `let r = Renderer(frame, canvas)`, draw
 // into it, then `r.commit()`. It owns no GPU resources of its own, only the
 // command lists accumulated this frame; commit() flushes them into the
@@ -1843,20 +1879,16 @@ export opaque ref struct Renderer {
         // unscaled box clips in the wrong place (visibly: cutting off one
         // edge of a container while missing the opposite one entirely).
         let scale = this.canvas.size.dpiScale;
-        let minX = pos.x as f32 * scale;
-        let minY = pos.y as f32 * scale;
-        let maxX = (pos.x + size.x) as f32 * scale;
-        let maxY = (pos.y + size.y) as f32 * scale;
+        let box = clipBox(
+            pos.x as f32 * scale,
+            pos.y as f32 * scale,
+            (pos.x + size.x) as f32 * scale,
+            (pos.y + size.y) as f32 * scale,
+        );
         if this._clipStack.length > 0 {
             let parent = this._clipStack[this._clipStack.length - 1];
-            if parent.z > parent.x && parent.w > parent.y {
-                minX = minX > parent.x ? minX : parent.x;
-                minY = minY > parent.y ? minY : parent.y;
-                maxX = maxX < parent.z ? maxX : parent.z;
-                maxY = maxY < parent.w ? maxY : parent.w;
-            }
+            box = intersectClipBoxes(parent, box);
         }
-        let box: Vec4f = { x: minX, y: minY, z: maxX, w: maxY };
         this._clipStack.push(box);
     }
 
@@ -1876,12 +1908,7 @@ export opaque ref struct Renderer {
     mut fn setClipRect(minX: real, minY: real, maxX: real, maxY: real) {
         // Logical -> framebuffer pixels, same reason as in pushClip above.
         let scale = this.canvas.size.dpiScale;
-        let box: Vec4f = {
-            x: minX as f32 * scale,
-            y: minY as f32 * scale,
-            z: maxX as f32 * scale,
-            w: maxY as f32 * scale,
-        };
+        let box = clipBox(minX as f32 * scale, minY as f32 * scale, maxX as f32 * scale, maxY as f32 * scale);
         if this._clipStack.length > 0 {
             this._clipStack[this._clipStack.length - 1] = box;
         }

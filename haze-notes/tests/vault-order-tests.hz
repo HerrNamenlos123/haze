@@ -1,0 +1,305 @@
+// Drives haze-notes' vault indexing (src/vault.hz) over a folder of awkward
+// names and checks the tree comes out in exactly technicalsketcher.web's
+// order. That order is folders first, then names starting with a date
+// (DD.MM.YYYY or DD-MM-YYYY) oldest first, then everything else by ICU's
+// German collation with numbers compared by value. Ties keep the order the
+// folder was listed in, which node lists in byte order.
+//
+// `expectedOrder` is not written by hand: it is what technicalsketcher.web's
+// own compareEntries (cut verbatim out of src/components/store.ts) produced
+// for this exact fixture, run by Electron 42 (ICU 78.2) the way its Electron
+// build reads a vault. Some of what it pins down:
+//   - JavaScript Date arithmetic: 31.02.2024 is 2 March, month 00 is
+//     December of the year before, day 00 the last day of the month before,
+//     years 0000-0099 are 1900-1999, 12.03.20245 is a date (12.03.2024),
+//     and so is a name that is nothing but one (a folder "24.12.2023");
+//   - equal dates fall back to byte order, not to the name order
+//     ("12.03.2024 Bio" < "12.03.2024 Physik" < "12.03.2024 analysis");
+//   - names that collate equal ("a001", "a01", "a1"; "Blatt 02", "Blatt 2")
+//     go by byte order too;
+//   - case and accents only break ties ("mathe" < "Mathe", "Ubung" <
+//     "übung" < "Übung"), umlauts sort with their base letter, ß after ss;
+//   - spaces < punctuation < symbols < digits < letters.
+//
+// haze-notes is an executable, so nothing can depend on it: run this from a
+// throwaway exe project inside the repository that depends on unicode, with
+// src/vault.hz copied in verbatim and this file as its main.hz.
+
+ref struct State {
+    checks: int = 0;
+    failures: int = 0;
+
+    mut fn check(name: str, ok: bool) {
+        this.checks = this.checks + 1;
+        if !ok {
+            this.failures = this.failures + 1;
+            fmt.println(f"FAIL: {name}");
+        }
+    }
+}
+
+// Every file of the fixture, by its path inside it. A folder is created
+// with the first file in it.
+fn fixtureFiles(): []str {
+    let files: []str = [
+        "aaa.tsk",
+        "Banana.tsk",
+        "cherry.tsk",
+        "apple.tsk",
+        "Übung.tsk",
+        "Tafel.tsk",
+        "Vektor.tsk",
+        "Ubung.tsk",
+        "übung.tsk",
+        "Straße.tsk",
+        "Strasse.tsk",
+        "Strase.tsk",
+        "Blatt 2.tsk",
+        "Blatt 10.tsk",
+        "Blatt 1.tsk",
+        "Blatt 02.tsk",
+        "a b.tsk",
+        "a_b.tsk",
+        "a-b.tsk",
+        "a,b.tsk",
+        "a.tsk",
+        "a(b).tsk",
+        "a[b].tsk",
+        "a+b.tsk",
+        "a&b.tsk",
+        "a01.tsk",
+        "a1.tsk",
+        "a001.tsk",
+        "Mathe.tsk",
+        "mathe.tsk",
+        "02.01.2024 x.tsk",
+        "01.02.2024 a.tsk",
+        "31.12.2023 z.tsk",
+        "05-03-2024 b.tsk",
+        "04.03.2024 a.tsk",
+        "06-03.2024 c.tsk",
+        "31.02.2024 q.tsk",
+        "01.03.2024 p.tsk",
+        "03.03.2024 r.tsk",
+        "02.03.2024 s.tsk",
+        "01.00.2024 m.tsk",
+        "30.11.2023 n.tsk",
+        "02.12.2023 o.tsk",
+        "01.01.0099 y.tsk",
+        "31.12.1998 w.tsk",
+        "01.01.2000 v.tsk",
+        "01.01.0100 u.tsk",
+        "00.01.2024 t.tsk",
+        "01.13.2023 k.tsk",
+        "01.01.2024 j.tsk",
+        "12.03.2024 Physik.tsk",
+        "12.03.2024 analysis.tsk",
+        "12.03.2024 Bio.tsk",
+        "12.03.20245 l.tsk",
+        "1.2.2024 x.tsk",
+        "12.03.24 x.tsk",
+        "x 12.03.2024.tsk",
+        "١٢.٠٣.٢٠٢٤.tsk",
+        "12_03_2024.tsk",
+        "notes.tsk.bak",
+        " leading.tsk",
+        "_under.tsk",
+        "-dash.tsk",
+        "(paren).tsk",
+        "#hash.tsk",
+        "1 one.tsk",
+        "€euro.tsk",
+        "zFolder/x.tsk",
+        "aFolder/Blatt 10.tsk",
+        "aFolder/Blatt 9.tsk",
+        "aFolder/sub/x.tsk",
+        "aFolder/Sub2/y.tsk",
+        "aFolder/01.05.2024.tsk",
+        "aFolder/Übersicht.tsk",
+        "Ärger/x.tsk",
+        "10 Projekte/x.tsk",
+        "2 Archiv/x.tsk",
+        "01.01.2024 Reise/x.tsk",
+        "15-06-2023 Urlaub/x.tsk",
+        "folder.tsk/inner.tsk",
+        "12.03.2024 Physik/x.tsk",
+        "12.03.2024 analysis/x.tsk",
+        "a01/x.tsk",
+        "a1/x.tsk",
+        "24.12.2023/x.tsk",
+    ];
+    return files;
+}
+
+// The tree technicalsketcher.web shows for the fixture: one line per entry,
+// in order, indented two spaces per level, a folder ending in "/".
+fn expectedOrder(): []str {
+    let lines: []str = [
+        "15-06-2023 Urlaub/",
+        "  x.tsk",
+        "24.12.2023/",
+        "  x.tsk",
+        "01.01.2024 Reise/",
+        "  x.tsk",
+        "12.03.2024 Physik/",
+        "  x.tsk",
+        "12.03.2024 analysis/",
+        "  x.tsk",
+        "2 Archiv/",
+        "  x.tsk",
+        "10 Projekte/",
+        "  x.tsk",
+        "a01/",
+        "  x.tsk",
+        "a1/",
+        "  x.tsk",
+        "aFolder/",
+        "  sub/",
+        "    x.tsk",
+        "  Sub2/",
+        "    y.tsk",
+        "  01.05.2024.tsk",
+        "  Blatt 9.tsk",
+        "  Blatt 10.tsk",
+        "  Übersicht.tsk",
+        "Ärger/",
+        "  x.tsk",
+        "folder.tsk/",
+        "  inner.tsk",
+        "zFolder/",
+        "  x.tsk",
+        "01.01.0100 u.tsk",
+        "31.12.1998 w.tsk",
+        "01.01.0099 y.tsk",
+        "01.01.2000 v.tsk",
+        "30.11.2023 n.tsk",
+        "01.00.2024 m.tsk",
+        "02.12.2023 o.tsk",
+        "00.01.2024 t.tsk",
+        "31.12.2023 z.tsk",
+        "01.01.2024 j.tsk",
+        "01.13.2023 k.tsk",
+        "02.01.2024 x.tsk",
+        "01.02.2024 a.tsk",
+        "01.03.2024 p.tsk",
+        "02.03.2024 s.tsk",
+        "31.02.2024 q.tsk",
+        "03.03.2024 r.tsk",
+        "04.03.2024 a.tsk",
+        "05-03-2024 b.tsk",
+        "06-03.2024 c.tsk",
+        "12.03.2024 Bio.tsk",
+        "12.03.2024 Physik.tsk",
+        "12.03.2024 analysis.tsk",
+        "12.03.20245 l.tsk",
+        " leading.tsk",
+        "_under.tsk",
+        "-dash.tsk",
+        "(paren).tsk",
+        "#hash.tsk",
+        "€euro.tsk",
+        "1 one.tsk",
+        "1.2.2024 x.tsk",
+        "12_03_2024.tsk",
+        "12.03.24 x.tsk",
+        "١٢.٠٣.٢٠٢٤.tsk",
+        "a b.tsk",
+        "a_b.tsk",
+        "a-b.tsk",
+        "a,b.tsk",
+        "a.tsk",
+        "a(b).tsk",
+        "a[b].tsk",
+        "a&b.tsk",
+        "a+b.tsk",
+        "a001.tsk",
+        "a01.tsk",
+        "a1.tsk",
+        "aaa.tsk",
+        "apple.tsk",
+        "Banana.tsk",
+        "Blatt 1.tsk",
+        "Blatt 02.tsk",
+        "Blatt 2.tsk",
+        "Blatt 10.tsk",
+        "cherry.tsk",
+        "mathe.tsk",
+        "Mathe.tsk",
+        "notes.tsk.bak",
+        "Strase.tsk",
+        "Strasse.tsk",
+        "Straße.tsk",
+        "Tafel.tsk",
+        "Ubung.tsk",
+        "übung.tsk",
+        "Übung.tsk",
+        "Vektor.tsk",
+        "x 12.03.2024.tsk",
+    ];
+    return lines;
+}
+
+// A fresh folder per run: the file system API cannot delete, and a file left
+// over from an earlier run would be listed with the fixture.
+fn fixtureDir(): str {
+    let base = "/tmp";
+    if let tmp = env.get("TEMP") {
+        base = tmp;
+    }
+    if let tmp = env.get("TMPDIR") {
+        base = tmp;
+    }
+    let stamp = time.now() * 1000000.0;
+    return f"{base}/haze-notes-vault-order-tests-{stamp}";
+}
+
+fn flatten(entries: []FSEntry, indent: str, lines: []str): void :: final {
+    for entry in entries {
+        if entry is FSDirEntry {
+            lines.push(f"{indent}{entry.dirname}/");
+            flatten(entry.children, indent + "  ", lines);
+        }
+        if entry is FSFileEntry {
+            lines.push(f"{indent}{entry.filename}");
+        }
+    }
+}
+
+fn main(): int {
+    let state: mut ref State = State {};
+    let root = fixtureDir();
+    for file in fixtureFiles() {
+        let path = f"{root}/{file}";
+        let slash = -1;
+        for (let i = 0; i < path.length; i++) {
+            if path[i] == 47 {
+                slash = i;
+            }
+        }
+        fs.createDirectory(path.slice(0, slash));
+        state.check(f"fixture written: {file}", fs.writeText(path, "") ? true : false);
+    }
+
+    let vault = indexVault(root);
+    // A deep reactive array is read element by element.
+    let top: []FSEntry = [];
+    for entry in vault.entries {
+        top.push(entry);
+    }
+    let actual: []str = [];
+    flatten(top, "", actual);
+    let expected = expectedOrder();
+
+    state.check(f"entry count: {actual.length} listed, {expected.length} expected", actual.length == expected.length);
+    let shown = 0;
+    for (let i = 0; i < expected.length && i < actual.length; i++) {
+        if actual[i] != expected[i] && shown < 10 {
+            shown = shown + 1;
+            fmt.println(f"  line {i}: expected \"{expected[i]}\", got \"{actual[i]}\"");
+        }
+        state.check(f"line {i} in order", actual[i] == expected[i]);
+    }
+
+    fmt.println(f"{state.checks - state.failures}/{state.checks} checks passed");
+    return state.failures == 0 ? 0 : 1;
+}

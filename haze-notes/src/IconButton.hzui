@@ -1,0 +1,111 @@
+from codicons import CodiconComponent
+
+// The app's button: an icon, a label, or both, in the theme's colours.
+//
+// It acts like ui_widgets.Button -- a mouse or pen acts on the press, a finger
+// on the tap (so a swipe across it scrolls instead), Enter or Space when it
+// has focus -- but owns its look: the icon lights up under the pointer, a
+// `selected` one carries the accent, a `primary` one is filled with it, and a
+// `danger` one turns red under the pointer, like every window's close button.
+
+@props
+icon: str = "";
+label: str = "";
+selected: bool = false;
+enabled: bool = true;
+primary: bool = false;
+danger: bool = false;
+paddingX: real = 6.0;
+paddingY: real = 6.0;
+rounded: real = 6.0;
+// A fixed height, the content centred in it; 0 sizes it to the content.
+height: real = 0.0;
+iconSize: real = 16.0;
+labelSize: real = 13.0;
+
+@emit
+click: ();
+
+@setup
+let rootRef = elementRef<DivElement>();
+let hovered = computed(() => rootRef?.hover() ?? false);
+let pressedNow = computed(() => rootRef?.active() ?? false);
+// :focus-visible -- a clicked button keeps no ring.
+let ringVisible = computed(() => rootRef?.focusVisible() ?? false);
+
+let background = computed((): str => {
+    let t = theme();
+    if props.primary {
+        if !props.enabled { return t.track; }
+        if pressedNow { return t.accentPressed; }
+        if hovered { return t.accentHover; }
+        return t.accent;
+    }
+    if !props.enabled { return "#00000000"; }
+    if props.danger && pressedNow { return t.closePressed; }
+    if props.danger && hovered { return t.closeHover; }
+    if pressedNow { return t.pressed; }
+    if props.selected { return t.selected; }
+    if hovered { return t.hover; }
+    return "#00000000";
+});
+
+let foreground = computed((): str => {
+    let t = theme();
+    if !props.enabled { return t.textSubtle; }
+    if props.primary { return t.onAccent; }
+    if props.danger && (hovered || pressedNow) { return "#FFFFFF"; }
+    if props.selected { return t.accent; }
+    if hovered { return t.text; }
+    return t.icon;
+});
+
+let labelColor = computed((): str => {
+    let t = theme();
+    if !props.enabled { return t.textSubtle; }
+    if props.primary { return t.onAccent; }
+    if props.danger && (hovered || pressedNow) { return "#FFFFFF"; }
+    return t.text;
+});
+
+let hasIcon = computed(() => props.icon.length > 0);
+let hasLabel = computed(() => props.label.length > 0);
+
+// The press is claimed either way, so the button is never an "outside"
+// press to a popup it sits in, and never reaches what is under it.
+let pressed = (event: PointerEvent) => {
+    if !props.enabled { return; }
+    event.stopPropagation();
+    if event.button != PointerButton.Left { return; }
+    if event.activatesOnPress() { emits.click(); }
+};
+
+let tapped = (event: PointerEvent) => {
+    if !props.enabled || event.activatesOnPress() { return; }
+    event.stopPropagation();
+    emits.click();
+};
+
+let keydown = (event: KeyboardEvent) => {
+    if !props.enabled { return; }
+    if event.key != Key.Return && event.key != Key.Space { return; }
+    event.preventDefault();
+    event.stopPropagation();
+    emits.click();
+};
+
+@template [
+        row items-center justify-center gap-1.5 w-fit h-fit
+        px-[props.paddingX]px py-[props.paddingY]px [props.height > 0.0]?h-[props.height]px
+        rounded-[props.rounded]px bg-[background] text-color-[foreground] font-size-[props.iconSize]
+        [props.enabled]?cursor-pointer
+        [ringVisible]?outline-2 [ringVisible]?outline-color-[theme().accent] [ringVisible]?outline-offset-1
+    ]
+    ref=rootRef
+    focusable=[props.enabled]
+    @pointerdown=pressed
+    @click=tapped
+    @keydown=keydown
+
+Codicon if=hasIcon [] icon=[props.icon] {}
+text if=hasLabel [text-nowrap font-size-[props.labelSize] text-color-[labelColor]] [props.label]

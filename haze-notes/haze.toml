@@ -35,6 +35,7 @@ ui_elements = { path = "../stdlib/ui_elements" }
 ui_styling = { path = "../stdlib/ui_styling" }
 ui_runtime = { path = "../stdlib/ui_runtime" }
 ui_widgets = { path = "../stdlib/ui_widgets" }
+codicons = { path = "../stdlib/codicons" }
 headwind = { path = "../stdlib/headwind" }
 renderer = { path = "../stdlib/renderer" }
 app = { path = "../stdlib/app" }
@@ -48,6 +49,7 @@ image = { path = "../stdlib/image" }
 base64 = { path = "../stdlib/base64" }
 hzui = { path = "../stdlib/hzui" }
 pdf = { path = "../stdlib/pdf" }
+unicode = { path = "../stdlib/unicode" }
 
 [plugins]
 hzui = { path = "../stdlib/hzui" }

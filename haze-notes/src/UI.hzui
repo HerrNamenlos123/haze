@@ -1,13 +1,6 @@
 import filedialog
-from ui_widgets import ButtonComponent
 
-fn chooseVault(): str | none {
-    let result = filedialog.pickFolder();
-    if result is filedialog.DialogSuccess {
-        return result.path;
-    }
-    return none;
-}
+// The app: which vault is open, and the welcome screen before any vault is.
 
 struct GlobalCache {
     currentVaultDir: str | none = none;
@@ -19,9 +12,40 @@ struct GlobalCache {
 struct VaultCache {
     lastOpenedFile: str | none = none;
     expandedFolders: []str = [];
-    sidepanelWidth: real = 200.0;
+    // In px.
+    sidepanelWidth: real = 260.0;
+    sidepanelOpen: bool = true;
     // none until the vault is indexed, when it is opened.
     vault: VaultFS | none = none;
+}
+
+// An open vault. `id` counts vaults opened in this run, so each one mounts
+// a fresh Workspace.
+ref struct VaultSession {
+    id: int;
+    path: str;
+    cache: json.CacheFile<VaultCache>;
+}
+
+// Where the app keeps what it remembers between runs: the platform's cache
+// directory.
+fn globalCachePath(): str {
+    if let dir = env.get("XDG_CACHE_HOME") {
+        if dir.length > 0 { return f"{dir}/haze-notes/cache.json"; }
+    }
+    if let home = env.get("HOME") {
+        if home.length > 0 { return f"{home}/.cache/haze-notes/cache.json"; }
+    }
+    if let local = env.get("LOCALAPPDATA") {
+        if local.length > 0 { return f"{local}/haze-notes/cache.json"; }
+    }
+    return "haze-notes-cache.json";
+}
+
+// A folder picker in flight. The dialog runs beside the app rather than
+// blocking it, and is asked every frame whether it is done.
+ref struct VaultPicker {
+    pending?: filedialog.PendingDialog;
 }
 
 @props
@@ -29,70 +53,161 @@ struct VaultCache {
 gfx: mut renderer.gfx.Context;
 
 @setup
-let cache = json.CacheFile<GlobalCache>("/home/fzachs/.cache/haze-notes/cache.json");
+let cache = json.CacheFile<GlobalCache>(globalCachePath());
 
-let addToVaultDirs = (dir: str) => {
-    if !cache.data.knownVaultDirs {
-        cache.data.knownVaultDirs := [] as []str;
-    }
-    let dirs = rx.get(cache.data.knownVaultDirs);
-    assert(dirs);
-    for d in dirs {
-        if d == dir {
-            return; // Already known
+// Remembered vaults, the one opened last at the end.
+let rememberVault = (dir: str) => {
+    let known: []str = [];
+    if let dirs = rx.get(cache.data.knownVaultDirs) {
+        for d in dirs {
+            if d != dir {
+                known.push(d);
+            }
         }
     }
-    // Not known, add
-    dirs.push(dir);
-    cache.data.knownVaultDirs := dirs;
+    known.push(dir);
+    cache.data.knownVaultDirs := known;
 };
 
-let selectVault = () => {
-    if let vault = chooseVault() {
-        cache.data.currentVaultDir := vault;
-        addToVaultDirs(vault);
+// Forgets a remembered vault -- one that is not there any more.
+let forgetVault = (dir: str) => {
+    let known: []str = [];
+    if let dirs = rx.get(cache.data.knownVaultDirs) {
+        for d in dirs {
+            if d != dir {
+                known.push(d);
+            }
+        }
     }
+    cache.data.knownVaultDirs := known;
 };
 
-let vaultCache = computed(() => {
-    if !cache.data.currentVaultDir { return none; }
-    let vaultCachePath = f"{cache.data.currentVaultDir}/.hznotes/vault.json";
-    let vaultCache = json.CacheFile<VaultCache>(vaultCachePath);
-    onFrame(() => {
-        // Every frame, call this and flush, until we finally have an async event loop
-        vaultCache.flush();
-    })
-    return vaultCache;
+let openVault = (dir: str) => {
+    // A vault on a drive that is gone, or a folder since deleted, is not
+    // opened: its cache would be created afresh in its place, or fail to be.
+    // `exists` answers with a Result -- its Ok-ness is not the answer.
+    let present = false;
+    if let exists = fs.exists(dir) {
+        present = exists;
+    }
+    if !present {
+        forgetVault(dir);
+        return;
+    }
+    cache.data.currentVaultDir := dir;
+    rememberVault(dir);
+};
+
+let picker = VaultPicker {};
+let pickVault = () => {
+    if picker.pending { return; }
+    picker.pending = filedialog.pickFolderAsync();
+};
+
+onFrame(() => {
+    if let pending = picker.pending {
+        if pending.done() {
+            let result = pending.result();
+            picker.pending = none;
+            if result is filedialog.DialogSuccess {
+                openVault(result.path);
+            }
+        }
+    }
 });
 
-ui.watch(() => cache.data.currentVaultDir, (old, new) => {
-    if cache.data.currentVaultDir {
-        fmt.println("Indexing Vault...");
-        let c = rx.get(vaultCache);
-        assert(c);
-        c.data.vault := indexVault(cache.data.currentVaultDir);
-        fmt.println("Indexing Vault... Done");
+// Most recent first, for the welcome screen.
+let recentVaults = computed((): []str => {
+    let recent: []str = [];
+    if let dirs = rx.get(cache.data.knownVaultDirs) {
+        for (let i = dirs.length - 1; i >= 0; i--) {
+            recent.push(dirs[i]);
+        }
+    }
+    return recent;
+});
+
+// The open vault. A new vault is a new session, and a new session a new
+// Workspace. The same vault stays the same session however often its path
+// is written: a reload of cache.json writes every field again, and opening
+// the vault that is already open writes the same path -- neither may tear
+// the open note down.
+let sessionCount: ref Box<int> = { value: 0 };
+let currentSession: ref Box<VaultSession | none> = { value: none };
+let session = computed((): VaultSession | none => {
+    let dir = rx.get(cache.data.currentVaultDir);
+    if !dir {
+        currentSession.value = none;
+        return none;
+    }
+    if let existing = currentSession.value {
+        if existing.path == dir { return existing; }
+    }
+    sessionCount.value = sessionCount.value + 1;
+    let created = VaultSession {
+        id: sessionCount.value,
+        path: dir,
+        cache: json.CacheFile<VaultCache>(f"{dir}/.hznotes/vault.json"),
+    };
+    currentSession.value = created;
+    return created;
+});
+
+// Each vault is indexed as it opens, and the one it replaces is written out
+// and let go. Not inside the computed above: a computed must not write state,
+// and this write would dirty it again.
+let indexedSession: ref Box<VaultSession | none> = { value: none };
+ui.watch(() => rx.get(session), (value, old) => {
+    let next = rx.get(session);
+    let previous = indexedSession.value;
+    if let p = previous {
+        if let n = next {
+            if p.id == n.id { return; }
+        }
+        p.cache.close();
+    }
+    indexedSession.value = next;
+    if let n = next {
+        n.cache.data.vault := indexVault(n.path);
     }
 }, { immediate: true });
 
-onFrame(() => {
-    // Every frame, call this and flush, until we finally have an async event loop
-    cache.flush();
+let sessions = computed((): []VaultSession => {
+    let list: []VaultSession = [];
+    if let s = rx.get(session) {
+        list.push(s);
+    }
+    return list;
 });
 
-@template
+let hasSession = computed((): bool => rx.get(sessions).length > 0);
 
-div [w-grow h-grow col bg-["#111"] text-color-["#FFF"]] {
-    // Only when the platform is not drawing one -- see main.hz.
-    TitleBar if=[!ui.window.hasNativeTitlebar()] [] title="Haze Notes" {}
+// Changes whenever the list of recent vaults does, order included -- what
+// tells the welcome screen to draw it again.
+let recentKey = computed((): str => {
+    let key = "";
+    let dirs: []str = rx.get(recentVaults);
+    for dir in dirs {
+        key = key + dir + "\n";
+    }
+    return key;
+});
 
-    div if=[!vaultCache] [w-grow h-grow items-center justify-center] {
-        div [col items-center gap-4] {
-            text [] ["No Vault is selected"]
-            Button [] label="Select Vault" @click=selectVault {}
-        }
+// Every frame, write what changed, until there is an async event loop.
+onFrame(() => {
+    cache.flush();
+    if let s = rx.get(session) {
+        s.cache.flush();
     }
-    div else [w-grow h-grow] {
-        Editor if=vaultCache [] cache=vaultCache gfx=[props.gfx] {}
-    }
+});
+
+@template [col w-grow h-grow bg-[theme().chrome] text-color-[theme().text] font-size-13]
+
+Workspace for=[s in sessions] key=[s.id] [] cache=[s.cache] gfx=[props.gfx] vaultPath=[s.path]
+    @switchVault=pickVault {}
+
+div if=[!hasSession] [col w-grow h-grow] {
+    AppBar [] title="Haze Notes" sidebarButton=[false] windowControls=[!ui.window.hasNativeTitlebar()] {}
+    WelcomeScreen [] recent=[recentVaults] revision=[rx.get(recentKey)]
+        @pickVault=pickVault @openVault=openVault {}
 }

@@ -1,0 +1,46 @@
+// One pen colour to pick. The dot carries a faint ring so black stays
+// visible on a dark panel, and the chosen one an accent ring around it.
+
+@props
+color: str;
+selected: bool = false;
+size: real = 18.0;
+
+@emit
+pick: (str,);
+
+@setup
+let rootRef = elementRef<DivElement>();
+let hovered = computed(() => rootRef?.hover() ?? false);
+
+let background = computed((): str => {
+    if hovered && !props.selected { return theme().hover; }
+    return "#00000000";
+});
+
+let ring = computed((): str => props.selected ? theme().accent : "#00000000");
+
+// Mouse and pen pick on the press, a finger on the tap -- see IconButton.
+let pressed = (event: PointerEvent) => {
+    event.stopPropagation();
+    if event.button != PointerButton.Left { return; }
+    if event.activatesOnPress() { emits.pick(props.color); }
+};
+
+let tapped = (event: PointerEvent) => {
+    if event.activatesOnPress() { return; }
+    event.stopPropagation();
+    emits.pick(props.color);
+};
+
+@template [
+        w-[props.size + 10.0]px h-[props.size + 10.0]px items-center justify-center
+        rounded-[(props.size + 10.0) / 2.0]px border-2 border-color-[ring] bg-[background]
+        cursor-pointer
+    ]
+    ref=rootRef
+    @pointerdown=pressed
+    @click=tapped
+
+div [w-[props.size]px h-[props.size]px rounded-[props.size / 2.0]px bg-[props.color]
+     border-1 border-color-[theme().swatchRing]]

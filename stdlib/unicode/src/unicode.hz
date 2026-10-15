@@ -263,3 +263,54 @@ export fn classifyAt(text: str, offset: int): CharClass {
     // word character.
     return CharClass.Word;
 }
+
+// === Collation ================================================
+//
+// Sorting text the way people expect: by the Unicode Collation Algorithm
+// over CLDR's root order -- what ICU and JavaScript's `localeCompare` use by
+// default for German, English and most other languages. Case and accents
+// only break ties: "apple" < "Äpfel" < "banana", never "Zebra" < "apple"
+// the way a byte compare has it. With `numeric`, digit runs compare by value
+// ("file 2" < "file 10"; "02" equals "2").
+//
+// The full algorithm and its few omissions are described at the top of
+// ffi/haze_collation.c; tools/gen-collation.ts builds its table.
+
+namespace ffi {
+    export extern C fn haze_unicode_collation_key(text: str, numeric: bool): str :: final;
+    export extern C fn haze_unicode_compare_collation_keys(a: str, b: str): int :: final;
+    export extern C fn haze_unicode_collate(a: str, b: str, numeric: bool): int :: final;
+    export extern C fn haze_unicode_collation_version(): str :: final;
+}
+
+export struct CollationOptions {
+    // Compare runs of decimal digits (of any script) by their numeric value,
+    // ignoring leading zeros -- ICU's `numeric` option.
+    numeric: bool = false;
+}
+
+// -1, 0 or 1 as `a` sorts before, together with, or after `b`. 0 means equal
+// at every level the order considers, which is NOT byte equality: "a01" and
+// "a1" collate equal with `numeric`, and so do a precomposed "ä" and "a"
+// followed by a combining diaeresis. Break such ties yourself when the order
+// must be total.
+export fn collate(a: str, b: str, options: CollationOptions = {}): int {
+    return ffi.haze_unicode_collate(a, b, options.numeric);
+}
+
+// A sort key: an opaque byte string such that compareCollationKeys on two
+// keys gives exactly what collate() gives on their texts. Build each key once
+// when the same strings are compared many times, as a sort does.
+export fn collationKey(text: str, options: CollationOptions = {}): str {
+    return ffi.haze_unicode_collation_key(text, options.numeric);
+}
+
+// Compares two keys from collationKey (built with the same options).
+export fn compareCollationKeys(a: str, b: str): int {
+    return ffi.haze_unicode_compare_collation_keys(a, b);
+}
+
+// The UCA version of the collation table, e.g. "16.0.0".
+export fn collationVersion(): str {
+    return ffi.haze_unicode_collation_version();
+}

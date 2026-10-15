@@ -1,0 +1,33 @@
+// Minimize, maximize and close, for a window whose titlebar the app draws
+// (see main.hz). Close goes out as the platform's own close request, so it
+// runs the same shutdown the window manager's does, the save on exit included.
+
+@props
+height: real = 40.0;
+
+@setup
+let maximizeIcon = computed(() => {
+    if ui.window.isMaximized() { return "chrome-restore"; }
+    return "chrome-maximize";
+});
+
+let minimizeWindow = () => {
+    ui.window.minimize();
+};
+
+let toggleMaximizeWindow = () => {
+    ui.window.toggleMaximize();
+};
+
+let closeWindow = () => {
+    ui.window.close();
+};
+
+@template [row w-fit h-[props.height]px items-center]
+
+IconButton [] icon="chrome-minimize" paddingX=[15.0] paddingY=[0.0] height=[props.height] rounded=[0.0]
+    @click=minimizeWindow {}
+IconButton [] icon=[rx.get(maximizeIcon)] paddingX=[15.0] paddingY=[0.0] height=[props.height] rounded=[0.0]
+    @click=toggleMaximizeWindow {}
+IconButton [] icon="chrome-close" paddingX=[15.0] paddingY=[0.0] height=[props.height] rounded=[0.0]
+    danger=[true] @click=closeWindow {}

@@ -52,6 +52,69 @@ export namespace array {
         return result;
     }
 
+    // Sorts the array in place, by `compare(a, b)`: negative when a goes
+    // first, positive when b does, 0 when either may. Stable -- elements that
+    // compare 0 keep their order -- so a sort by one key after a sort by
+    // another orders by both.
+    //
+    // A bottom-up merge sort, O(n log n) comparisons, with one scratch array
+    // of n elements.
+    export fn sort<T>(items: []T, compare: immediate (a: T, b: T) => int) {
+        let count = items.length;
+        if count < 2 {
+            return;
+        }
+        let source: []T = [];
+        source.reserve(count);
+        for item in items {
+            source.push(item);
+        }
+        let target: []T = [];
+        target.reserve(count);
+        let width = 1;
+        while width < count {
+            target.clear();
+            let start = 0;
+            while start < count {
+                let middle = start + width < count ? start + width : count;
+                let end = start + width * 2 < count ? start + width * 2 : count;
+                let left = start;
+                let right = middle;
+                while left < middle && right < end {
+                    // Bound to locals: an indexed element of a value-struct
+                    // array passed straight into a call generates bad C.
+                    let a = source[left];
+                    let b = source[right];
+                    // Only a strictly smaller right element goes first,
+                    // which is what keeps the sort stable.
+                    if compare(b, a) < 0 {
+                        target.push(b);
+                        right += 1;
+                    } else {
+                        target.push(a);
+                        left += 1;
+                    }
+                }
+                while left < middle {
+                    target.push(source[left]);
+                    left += 1;
+                }
+                while right < end {
+                    target.push(source[right]);
+                    right += 1;
+                }
+                start = end;
+            }
+            let swap = source;
+            source = target;
+            target = swap;
+            width = width * 2;
+        }
+        for (let i = 0; i < count; i++) {
+            items[i] = source[i];
+        }
+    }
+
     // Append one element.
     //
     // This is the whole of `items.push(x)`: the compiler no longer implements

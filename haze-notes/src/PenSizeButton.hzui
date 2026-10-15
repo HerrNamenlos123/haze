@@ -1,0 +1,49 @@
+// One pen thickness to pick, drawn as a stroke of that thickness in the pen's
+// own colour -- on paper (it sits in a PaperStrip), so it shows exactly what
+// the pen will draw, a black pen as black in any theme.
+
+@props
+sizeMm: real;
+color: str;
+selected: bool = false;
+// The whole button is this square.
+extent: real = 32.0;
+
+@emit
+pick: (real,);
+
+@setup
+let rootRef = elementRef<DivElement>();
+let hovered = computed(() => rootRef?.hover() ?? false);
+
+// Shades of the paper it sits on, not of the theme.
+let background = computed((): str => {
+    if props.selected { return theme().paperSelected; }
+    if hovered { return theme().paperHover; }
+    return "#00000000";
+});
+
+// 0.1 mm to 0.9 mm pens, from a hairline to a bold bar.
+let strokeHeight = computed((): real => 1.0 + props.sizeMm * 8.0);
+
+let pressed = (event: PointerEvent) => {
+    event.stopPropagation();
+    if event.button != PointerButton.Left { return; }
+    if event.activatesOnPress() { emits.pick(props.sizeMm); }
+};
+
+let tapped = (event: PointerEvent) => {
+    if event.activatesOnPress() { return; }
+    event.stopPropagation();
+    emits.pick(props.sizeMm);
+};
+
+@template [
+        w-[props.extent]px h-[props.extent]px items-center justify-center
+        rounded-7 bg-[background] cursor-pointer
+    ]
+    ref=rootRef
+    @pointerdown=pressed
+    @click=tapped
+
+div [w-[props.extent * 0.55]px h-[strokeHeight]px rounded-[strokeHeight / 2.0]px bg-[props.color]]

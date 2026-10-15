@@ -46,6 +46,9 @@ const comptime gridLineThicknessMm = 0.2;
 // panel, the tiles.
 const comptime paperZIndex = -2.0;
 const comptime gridLineZIndex = -1.0;
+// The shadow under a page on screen, behind the paper: its layers go further
+// back the further out they reach.
+const comptime pageShadowZIndex = -3.0;
 
 fn pageOriginY(doc: DocumentFile, pageIndex: int): real {
     return pageIndex as real * (doc.data.pageHeightMm + pageGapMm);
@@ -451,6 +454,18 @@ ref struct DocumentRenderer {
             this.pool.release(tile);
         }
         page.tiles.clear();
+    }
+
+    // Gives back every GPU resource this renderer holds -- tiles, the free
+    // tiles kept for reuse, decoded images. For when it is done for good:
+    // the workspace it drew for was closed. Nothing drawn with any of them
+    // may still be waiting for its commit().
+    fn releaseResources() {
+        this.clearAll();
+        this.liveShapes.clear();
+        this.livePages.clear();
+        this.imageCache.releaseAll();
+        this.pool.trim(0);
     }
 
     // Releases every tile on every page and forgets each page's level,
@@ -1039,6 +1054,8 @@ ref struct DocumentRenderer {
                 }
             }
 
+            this.drawPageShadow(r, doc, i);
+
             // The page as its tiles show it, less the content: what a square
             // without a picture yet shows.
             this.drawPaper(r, doc, zoom * dpiScale, this.pageToScreenTransform(doc, i));
@@ -1075,6 +1092,31 @@ ref struct DocumentRenderer {
 
     // Page mm -> canvas px for one page: what a shape's own coordinates go
     // through to land where its page is on screen.
+    // A soft shadow around a page on screen, so the page stands off the desk
+    // behind it in any theme -- the paper is a light grey, and a light desk
+    // is nearly the same colour. Rings of fainter and fainter black, a pixel
+    // lower than the page, the way light from above casts one. Never drawn
+    // into a tile or an export: it is not part of the page.
+    fn drawPageShadow(r: mut renderer.gfx.Renderer, doc: DocumentFile, pageIndex: int) {
+        let zoom = this.viewport.zoomPxPerMm;
+        let x = this.viewport.offsetX;
+        let y = pageOriginY(doc, pageIndex) * zoom + this.viewport.offsetY;
+        let w = doc.data.pageWidthMm * zoom;
+        let h = doc.data.pageHeightMm * zoom;
+        let spreads: []real = [1.0, 3.0, 6.0, 11.0];
+        let alphas: []real = [0.16, 0.08, 0.045, 0.02];
+        for (let k = 0; k < spreads.length; k++) {
+            let spread = spreads[k];
+            r.drawRect({
+                pos: Vec2(x - spread, y - spread + 1.0),
+                size: Vec2(w + 2.0 * spread, h + 2.0 * spread),
+                fillColor: Color(0.0, 0.0, 0.0, alphas[k]),
+                cornerRadius: { topLeft: spread, topRight: spread, bottomLeft: spread, bottomRight: spread },
+                zIndex: pageShadowZIndex - k as real * 0.1,
+            });
+        }
+    }
+
     fn pageToScreenTransform(doc: DocumentFile, pageIndex: int): mat4.Mat4f {
         let zoom = this.viewport.zoomPxPerMm;
         return mat4.translation(Vec3(

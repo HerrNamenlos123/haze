@@ -1,0 +1,100 @@
+from codicons import CodiconComponent
+
+// One row of the file tree: a folder with its chevron, or a note. Exactly
+// `rowHeight` tall -- FileTree's arithmetic depends on it, so nothing here
+// may add a margin.
+//
+// Each level of depth gets a slot `indent` wide holding a guide line, which
+// lands under the chevron of the folder it belongs to.
+
+@props
+path: str;
+name: str;
+depth: int;
+isDir: bool;
+// For a folder: its children are listed below it.
+expanded: bool = false;
+// The note that is open in the editor.
+active: bool = false;
+rowHeight: real = 28.0;
+indent: real = 16.0;
+
+@emit
+toggle: (str,);
+open: (str,);
+
+@setup
+let rootRef = elementRef<DivElement>();
+let hovered = computed(() => rootRef?.hover() ?? false);
+
+let background = computed((): str => {
+    if props.active { return theme().selected; }
+    if hovered { return theme().hover; }
+    return "#00000000";
+});
+
+let levels = computed((): []int => {
+    let result: []int = [];
+    for (let i = 0; i < props.depth; i++) {
+        result.push(i);
+    }
+    return result;
+});
+
+let chevron = computed((): str => props.expanded ? "chevron-down" : "chevron-right");
+let icon = computed((): str => {
+    if props.isDir { return props.expanded ? "folder-opened" : "folder"; }
+    return "notebook";
+});
+let iconColor = computed((): str => props.active ? theme().accent : theme().icon);
+let textColor = computed((): str => props.active || hovered ? theme().text : theme().textMuted);
+
+let activate = () => {
+    if props.isDir {
+        emits.toggle(props.path);
+    } else {
+        emits.open(props.path);
+    }
+};
+
+// A mouse or pen acts on the press, so a row answers at once and a click is
+// never lost to the release landing elsewhere; a finger acts on the tap, so a
+// swipe over the rows scrolls them instead. The same rule as a Button.
+let pressed = (event: PointerEvent) => {
+    if event.button != PointerButton.Left { return; }
+    if event.activatesOnPress() {
+        event.stopPropagation();
+        activate();
+    }
+};
+
+let tapped = (event: PointerEvent) => {
+    if event.activatesOnPress() { return; }
+    event.stopPropagation();
+    activate();
+};
+
+@template [
+        row w-grow h-[props.rowHeight]px items-center pl-[4]px pr-2 rounded-6
+        bg-[background] cursor-pointer
+    ]
+    ref=rootRef
+    @pointerdown=pressed
+    @click=tapped
+
+div for=[level in levels] key=[level] [w-[props.indent]px h-[props.rowHeight]px justify-center] {
+    div [w-[1]px h-[props.rowHeight]px bg-[theme().indentGuide]]
+}
+
+div [w-[props.indent]px h-[props.rowHeight]px items-center justify-center
+     font-size-14 text-color-[theme().icon]] {
+    Codicon if=[props.isDir] [] icon=[chevron] {}
+}
+
+div [w-fit h-fit pr-[6]px font-size-15 text-color-[iconColor]] {
+    Codicon [] icon=[icon] {}
+}
+
+div [w-grow h-[props.rowHeight]px items-center overflow-hidden] {
+    text [text-nowrap font-size-13 text-color-[textColor]] [props.name]
+}

@@ -1,0 +1,26 @@
+from codicons import CodiconComponent
+
+// What a region shows when there is nothing in it yet: an icon, a line saying
+// what is missing, and a hint at what to do. Buttons go in `actions`.
+
+@props
+icon: str;
+title: str;
+hint: str = "";
+
+@slot
+actions: {};
+
+@template [col w-grow h-grow items-center justify-center gap-3 p-6]
+
+div [w-[56]px h-[56]px rounded-14 items-center justify-center bg-[theme().hover]
+     text-color-[theme().textMuted] font-size-28] {
+    Codicon [] icon=[props.icon] {}
+}
+div [col items-center gap-1] {
+    text [text-nowrap font-size-15 text-color-[theme().text]] [props.title]
+    text if=[props.hint.length > 0] [font-size-13 text-color-[theme().textMuted]] [props.hint]
+}
+div [row items-center gap-2] {
+    slot actions {}
+}

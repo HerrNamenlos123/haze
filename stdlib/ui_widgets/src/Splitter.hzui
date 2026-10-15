@@ -19,6 +19,9 @@ activeColor: str = "#0078D4";
 
 @emit
 drag: (real,);
+// The drag is over: the button was let go. An owner that persists the size
+// writes it here rather than on every drag frame.
+end: ();
 
 @setup
 let rootRef = elementRef<DivElement>();
@@ -36,6 +39,7 @@ ui.onFrame(() => {
     if !rx.get(dragging) { return; }
     if !ui.leftMouseHeld() {
         dragging := false;
+        emits.end();
         return;
     }
     emits.drag(props.vertical ? ui.mousePos.x : ui.mousePos.y);

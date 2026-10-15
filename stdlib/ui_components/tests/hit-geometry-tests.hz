@@ -1,0 +1,271 @@
+import ui_components
+import ui_elements
+import ui_styling
+
+// Drives the component system headlessly to verify that hit testing and
+// hover use only geometry that is really on screen:
+//
+//   * Overflow clipping. What an element clips is drawn nowhere outside the
+//     element's box, so it must not be hit or hovered there either. The case
+//     that broke an app: a sidebar with a header row above a scrolled list.
+//     The rows scrolled out of the top of the list sit, unclipped, right where
+//     the header is -- and the list comes after the header in the tree, so
+//     hit testing (last child first) found a hidden row under the header's
+//     buttons and gave it every press meant for them.
+//
+//   * Stale boxes. The layout engine culls what lies wholly outside the
+//     window (Clay emits no text or canvas command for it), so such an element
+//     is told no new box, and the box it had stayed where it WAS. A row that
+//     scrolled away left its label's old box behind, over the row that took
+//     its place, and that row's clicks went to the invisible label. A box is
+//     valid only for the layout pass that reported it (UIContext.beginRenderFeedback).
+//
+// Like pointer-click-tests.hz, the boxes are given by hand
+// (applyRenderFeedback); no layout engine is wired up.
+//
+// Run from a throwaway exe project inside the repository that depends on
+// ui_components, ui_elements and ui_styling, with this file as its main.hz.
+
+ref struct TestArgs {}
+
+ref struct State {
+    log: str = "";
+    mouseX: real = 0.0;
+    mouseY: real = 0.0;
+    leftHeld: bool = false;
+    // Which layout the boxes below come from: 1 before the scroll, 2 after.
+    layout: int = 1;
+    failures: int = 0;
+    checks: int = 0;
+
+    mut fn checkStr(name: str, actual: str, expected: str) {
+        this.checks = this.checks + 1;
+        if actual != expected {
+            this.failures = this.failures + 1;
+            fmt.println(f"FAIL: {name}\n  expected '{expected}'\n  got      '{actual}'");
+        }
+    }
+
+    mut fn checkBool(name: str, actual: bool, expected: bool) {
+        this.checks = this.checks + 1;
+        if actual != expected {
+            this.failures = this.failures + 1;
+            fmt.println(f"FAIL: {name} (expected {expected}, got {actual})");
+        }
+    }
+
+    mut fn record(what: str) {
+        this.log = f"{this.log}{what};";
+    }
+}
+
+fn newRef(): ui_components.ElementRef<ui_elements.DivElement> {
+    return rx.shallowReactive<ui_components.ElementWrapper<ui_elements.DivElement> | null>(null);
+}
+
+fn main(): int {
+    let state = State {};
+
+    let rootRef = newRef();
+    let headerRef = newRef();
+    let listRef = newRef();
+    let hiddenRowRef = newRef();
+    let visibleRowRef = newRef();
+    let stripRef = newRef();
+    let wideItemRef = newRef();
+    let rowARef = newRef();
+    let rowBRef = newRef();
+    let labelBRef = newRef();
+
+    let edges: []ui_components.PointerEdge = [];
+
+    let ui = ui_components.UIContext({
+        ui: (ctx: ui_components.UIContext) => {
+            ctx.defineComponent(0, {} as TestArgs, (instance: ui_components.InstanceData<TestArgs>) => {
+                return (): ui_components.DivProps => {
+                    ctx.div({ id: 1, elementRef: rootRef }, () => {
+                        ctx.div({
+                            id: 2,
+                            elementRef: headerRef,
+                            onPointerDown: (e: ui_components.PointerEvent) => { state.record("header"); },
+                        }, () => {});
+                        // Clips both axes, like a scroll view's viewport.
+                        ctx.div({
+                            id: 3,
+                            elementRef: listRef,
+                            style: {
+                                overflowX: ui_styling.Overflow.Hidden,
+                                overflowY: ui_styling.Overflow.Hidden,
+                            },
+                            onPointerDown: (e: ui_components.PointerEvent) => { state.record("list"); },
+                        }, () => {
+                            ctx.div({
+                                id: 4,
+                                elementRef: hiddenRowRef,
+                                onPointerDown: (e: ui_components.PointerEvent) => { state.record("hiddenRow"); },
+                            }, () => {});
+                            ctx.div({
+                                id: 5,
+                                elementRef: visibleRowRef,
+                                onPointerDown: (e: ui_components.PointerEvent) => { state.record("visibleRow"); },
+                            }, () => {});
+                        });
+                        // Clips the x axis only: what overflows it vertically
+                        // is still there to be hit.
+                        ctx.div({
+                            id: 6,
+                            elementRef: stripRef,
+                            style: { overflowX: ui_styling.Overflow.Hidden },
+                        }, () => {
+                            ctx.div({
+                                id: 7,
+                                elementRef: wideItemRef,
+                                onPointerDown: (e: ui_components.PointerEvent) => { state.record("wideItem"); },
+                            }, () => {});
+                        });
+                        // Two rows of a list that scrolls by one row between
+                        // the two layouts: B leaves the window, A takes its
+                        // place. B's label is culled in the second layout.
+                        ctx.div({
+                            id: 8,
+                            elementRef: rowARef,
+                            onPointerDown: (e: ui_components.PointerEvent) => { state.record("rowA"); },
+                        }, () => {});
+                        ctx.div({
+                            id: 9,
+                            elementRef: rowBRef,
+                            onPointerDown: (e: ui_components.PointerEvent) => { state.record("rowB"); },
+                        }, () => {
+                            ctx.div({ id: 10, elementRef: labelBRef }, () => {});
+                        });
+                    });
+                    return { id: 0 };
+                };
+            });
+        },
+        mousePos: (): Vec2 => { return Vec2(state.mouseX, state.mouseY); },
+        pointerButtons: ui_components.PointerHeldCallbacks {
+            leftHeld: (): bool => { return state.leftHeld; },
+            middleHeld: (): bool => { return false; },
+            rightHeld: (): bool => { return false; },
+            edgesThisFrame: (): []ui_components.PointerEdge => {
+                let out: []ui_components.PointerEdge = [];
+                for e in edges { out.push(e); }
+                edges.clear();
+                return out;
+            },
+        },
+    });
+
+    ui.process();
+
+    let root = rx.get(rootRef);
+    let header = rx.get(headerRef);
+    let list = rx.get(listRef);
+    let hiddenRow = rx.get(hiddenRowRef);
+    let visibleRow = rx.get(visibleRowRef);
+    let strip = rx.get(stripRef);
+    let wideItem = rx.get(wideItemRef);
+    let rowA = rx.get(rowARef);
+    let rowB = rx.get(rowBRef);
+    let labelB = rx.get(labelBRef);
+    assert(root);
+    assert(header);
+    assert(list);
+    assert(hiddenRow);
+    assert(visibleRow);
+    assert(strip);
+    assert(wideItem);
+    assert(rowA);
+    assert(rowB);
+    assert(labelB);
+
+    // The elements themselves, for the closure below: narrowing does not
+    // reach into a closure.
+    let rootEl: ui_elements.Element = root._element;
+    let headerEl: ui_elements.Element = header._element;
+    let listEl: ui_elements.Element = list._element;
+    let hiddenRowEl: ui_elements.Element = hiddenRow._element;
+    let visibleRowEl: ui_elements.Element = visibleRow._element;
+    let stripEl: ui_elements.Element = strip._element;
+    let wideItemEl: ui_elements.Element = wideItem._element;
+    let rowAEl: ui_elements.Element = rowA._element;
+    let rowBEl: ui_elements.Element = rowB._element;
+    let labelBEl: ui_elements.Element = labelB._element;
+
+    // What a layout pass reports. The window: a 40 px header, a list from
+    // y 40 to 240, a strip below it. The hidden row is scrolled up out of the
+    // list, to y 10..40 -- under the header. The wide item hangs out of the
+    // strip's left and bottom. Rows A and B sit at 400 and 430 in the first
+    // layout; in the second, B has left the window and A is at 430, and B's
+    // label, culled, is told nothing.
+    let layout = (pass: int): none => {
+        let p = ui.beginRenderFeedback();
+        ui_components.applyRenderFeedback(rootEl, Vec2(0.0, 0.0), Vec2(300.0, 600.0), p);
+        ui_components.applyRenderFeedback(headerEl, Vec2(0.0, 0.0), Vec2(300.0, 40.0), p);
+        ui_components.applyRenderFeedback(listEl, Vec2(0.0, 40.0), Vec2(300.0, 200.0), p);
+        ui_components.applyRenderFeedback(hiddenRowEl, Vec2(0.0, 10.0), Vec2(300.0, 30.0), p);
+        ui_components.applyRenderFeedback(visibleRowEl, Vec2(0.0, 50.0), Vec2(300.0, 30.0), p);
+        ui_components.applyRenderFeedback(stripEl, Vec2(100.0, 250.0), Vec2(100.0, 50.0), p);
+        ui_components.applyRenderFeedback(wideItemEl, Vec2(50.0, 260.0), Vec2(200.0, 100.0), p);
+        if pass == 1 {
+            ui_components.applyRenderFeedback(rowAEl, Vec2(0.0, 400.0), Vec2(300.0, 30.0), p);
+            ui_components.applyRenderFeedback(rowBEl, Vec2(0.0, 430.0), Vec2(300.0, 30.0), p);
+            ui_components.applyRenderFeedback(labelBEl, Vec2(10.0, 430.0), Vec2(100.0, 30.0), p);
+        } else {
+            ui_components.applyRenderFeedback(rowAEl, Vec2(0.0, 430.0), Vec2(300.0, 30.0), p);
+            ui_components.applyRenderFeedback(rowBEl, Vec2(0.0, 1000.0), Vec2(300.0, 30.0), p);
+        }
+    };
+
+    let click = (x: real, y: real): none => {
+        state.log = "";
+        state.mouseX = x;
+        state.mouseY = y;
+        state.leftHeld = true;
+        edges.push({ button: ui_components.PointerButton.Left, kind: ui_components.PointerEdgeKind.Pressed, pos: Vec2(x, y) });
+        ui.process();
+        state.leftHeld = false;
+        edges.push({ button: ui_components.PointerButton.Left, kind: ui_components.PointerEdgeKind.Released, pos: Vec2(x, y) });
+        ui.process();
+    };
+
+    let hoverAt = (x: real, y: real): none => {
+        state.mouseX = x;
+        state.mouseY = y;
+        ui.process();
+    };
+
+    layout(1);
+
+    // ── Clipping ────────────────────────────────────────────────────
+    click(150.0, 25.0);
+    state.checkStr("a press over a clipped-away row reaches the header", state.log, "header;");
+    hoverAt(150.0, 25.0);
+    state.checkBool("a clipped-away row is not hovered", hiddenRow.hover(), false);
+    state.checkBool("the header under it is", header.hover(), true);
+
+    click(150.0, 60.0);
+    state.checkStr("a row in view is hit and bubbles to the list", state.log, "visibleRow;list;");
+
+    // The strip clips x only: its item is hit below the strip (y not
+    // clipped) but not beside it (x clipped).
+    click(150.0, 320.0);
+    state.checkStr("an axis that does not clip does not stop hits", state.log, "wideItem;");
+    click(70.0, 280.0);
+    state.checkStr("an axis that clips stops hits", state.log, "");
+
+    // ── Stale boxes ─────────────────────────────────────────────────
+    click(150.0, 445.0);
+    state.checkStr("before the scroll, row B is hit where it is", state.log, "rowB;");
+
+    layout(2);
+    click(50.0, 445.0);
+    state.checkStr("after the scroll, the row now there is hit, not B's left-behind label", state.log, "rowA;");
+    hoverAt(50.0, 445.0);
+    state.checkBool("the row now there is hovered", rowA.hover(), true);
+    state.checkBool("the row that left is not", rowB.hover(), false);
+
+    fmt.println(f"hit-geometry-tests: {state.checks - state.failures}/{state.checks} passed");
+    return state.failures == 0 ? 0 : 1;
+}

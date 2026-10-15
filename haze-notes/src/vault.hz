@@ -1,3 +1,4 @@
+import unicode
 
 struct FSFileEntry {
   type: "file";
@@ -19,26 +20,218 @@ struct VaultFS {
   entries: rx.Reactive<[]FSEntry>;
 }
 
-fn indexDirectory(path: str): []FSEntry :: final {
-    let entries: []FSEntry = [];
-    if let dirs = fs.listDir(path) {
-        for dir in dirs {
-            if dir.isFile {
-                entries.push(FSFileEntry {
-                    type: "file",
-                    filename: dir.name,
-                    fullPath: dir.path,
-                });
-            }
-            if dir.isDirectory {
-                entries.push(FSDirEntry {
-                    type: "directory",
-                    dirname: dir.name,
-                    fullPath: dir.path,
-                    children: indexDirectory(dir.path),
-                });
+// ── Order ───────────────────────────────────────────────────────────────
+//
+// Every folder's entries are in technicalsketcher.web's order: its
+// compareEntries (src/components/store.ts), which the sidebar sorted each
+// folder with. Folders come first. Then come names starting with a date
+// (DD.MM.YYYY or DD-MM-YYYY), oldest first. Everything else follows by
+// `a.localeCompare(b, "de", { numeric: true })`: ICU's collation, which
+// unicode.collate reproduces.
+//
+// Wherever compareEntries returned 0, the web app's stable sort kept the
+// order the folder was listed in, and its Electron build listed with node's
+// readdir, which sorts by bytes. So both of its ties go by byte order here
+// too: two names with the same date ("12.03.2024 Physik" before
+// "12.03.2024 analysis"), and two names that collate equal ("a01" and "a1",
+// whose numbers are equal).
+
+// Byte order: plain memcmp, because haze has no `<` on str and a byte loop
+// in Haze is far slower.
+fn compareBytes(a: str, b: str): int {
+    let result = 0;
+    do unsafe {
+        __c__("{ size_t n = a.length < b.length ? (size_t)a.length : (size_t)b.length; int c = n ? memcmp(a.data, b.data, n) : 0; result = c < 0 ? -1 : (c > 0 ? 1 : (a.length < b.length ? -1 : (a.length > b.length ? 1 : 0))); }");
+    };
+    return result;
+}
+
+fn floorDiv(a: int, b: int): int {
+    let q = a / b;
+    if a % b != 0 && ((a < 0) != (b < 0)) {
+        q = q - 1;
+    }
+    return q;
+}
+
+// Days since 1970-01-01 of a proleptic Gregorian date (month 1-12).
+// Howard Hinnant's days_from_civil.
+fn daysFromCivil(year: int, month: int, day: int): int {
+    let y = month <= 2 ? year - 1 : year;
+    let era = floorDiv(y, 400);
+    let yearOfEra = y - era * 400;
+    let shiftedMonth = month > 2 ? month - 3 : month + 9;
+    let dayOfYear = (153 * shiftedMonth + 2) / 5 + day - 1;
+    let dayOfEra = yearOfEra * 365 + yearOfEra / 4 - yearOfEra / 100 + dayOfYear;
+    return era * 146097 + dayOfEra - 719468;
+}
+
+// The day JavaScript's `new Date(year, monthIndex, day)` lands on, as a day
+// count. Years 0-99 mean 1900-1999, and a month or day out of range rolls
+// over (31.02.2026 is 3 March; month 00 is December of the year before; day
+// 00 is the last day of the month before). The web app compared such dates
+// by getTime(), the local midnight of that day, which orders days exactly
+// as this count does.
+fn javascriptDateDay(year: int, monthIndex: int, day: int): int {
+    let fullYear = year >= 0 && year <= 99 ? year + 1900 : year;
+    let yearShift = floorDiv(monthIndex, 12);
+    let month = monthIndex - yearShift * 12;
+    return daysFromCivil(fullYear + yearShift, month + 1, 1) + day - 1;
+}
+
+fn isAsciiDigit(c: int): bool {
+    return c >= 48 && c <= 57;
+}
+
+fn digitsValue(name: str, start: int, count: int): int {
+    let value = 0;
+    for (let i = start; i < start + count; i++) {
+        value = value * 10 + (name[i] as int - 48);
+    }
+    return value;
+}
+
+// The date a name starts with, as a day count, or none without one. This is
+// the web app's /^(\d{2})[-.](\d{2})[-.](\d{4})/: ASCII digits only, each
+// separator "-" or ".", and anything may follow, so "12.03.20245" is
+// 12.03.2024. Any digits pass (00.00.0000 is 30 November 1899): the web
+// app's validity check could never fail for them.
+fn nameDateDay(name: str): int | none {
+    if name.length < 10 {
+        return none;
+    }
+    let digitPositions: []int = [0, 1, 3, 4, 6, 7, 8, 9];
+    for position in digitPositions {
+        if !isAsciiDigit(name[position] as int) {
+            return none;
+        }
+    }
+    let separatorPositions: []int = [2, 5];
+    for position in separatorPositions {
+        let c = name[position] as int;
+        if c != 45 && c != 46 { // '-' '.'
+            return none;
+        }
+    }
+    let day = digitsValue(name, 0, 2);
+    let month = digitsValue(name, 3, 2);
+    let year = digitsValue(name, 6, 4);
+    return javascriptDateDay(year, month - 1, day);
+}
+
+// What the order looks at in an entry, worked out once per entry rather than
+// once per comparison: building a collation key is the expensive part.
+struct VaultOrderKey {
+    isDirectory: bool;
+    name: str;
+    hasDate: bool;
+    day: int;
+    collation: str;
+}
+
+fn vaultOrderKey(isDirectory: bool, name: str): VaultOrderKey {
+    let hasDate = false;
+    let day = 0;
+    if let d = nameDateDay(name) {
+        hasDate = true;
+        day = d;
+    }
+    return VaultOrderKey {
+        isDirectory: isDirectory,
+        name: name,
+        hasDate: hasDate,
+        day: day,
+        collation: unicode.collationKey(name, { numeric: true }),
+    };
+}
+
+// The web app's compareEntries, with its ties broken as described above.
+fn compareVaultOrder(a: VaultOrderKey, b: VaultOrderKey): int {
+    if a.isDirectory != b.isDirectory {
+        return a.isDirectory ? -1 : 1;
+    }
+    if a.hasDate && b.hasDate {
+        if a.day != b.day {
+            return a.day < b.day ? -1 : 1;
+        }
+        return compareBytes(a.name, b.name);
+    }
+    if a.hasDate {
+        return -1;
+    }
+    if b.hasDate {
+        return 1;
+    }
+    let order = unicode.compareCollationKeys(a.collation, b.collation);
+    if order != 0 {
+        return order;
+    }
+    return compareBytes(a.name, b.name);
+}
+
+struct VaultOrderItem {
+    key: VaultOrderKey;
+    entry: FSEntry;
+}
+
+// ── Indexing ────────────────────────────────────────────────────────────
+//
+// What the tree holds is what technicalsketcher.web's readVault kept: files
+// whose name contains ".tsk", folders whose name does not start with "."
+// (.hznotes is the app's own; .obsidian, .trash and .git belong to other
+// tools), and of those folders only the ones with something left in them. A
+// vault is often shared with other tools, and a file haze-notes cannot open
+// has no place in its tree -- clicking one used to close the open note.
+
+fn isNoteFile(name: str): bool {
+    return name.contains(".tsk");
+}
+
+fn isHiddenFolder(name: str): bool {
+    return name.startsWith(".");
+}
+
+// Deeper than any real vault's folders go. A folder linked into itself (a
+// symlink cycle) would otherwise be followed forever.
+const MAX_FOLDER_DEPTH = 32;
+
+fn indexDirectory(path: str, depth: int = 0): []FSEntry :: final {
+    let items: []VaultOrderItem = [];
+    if depth <= MAX_FOLDER_DEPTH {
+        if let dirs = fs.listDir(path) {
+            for dir in dirs {
+                if dir.isFile && isNoteFile(dir.name) {
+                    items.push(VaultOrderItem {
+                        key: vaultOrderKey(false, dir.name),
+                        entry: FSFileEntry {
+                            type: "file",
+                            filename: dir.name,
+                            fullPath: dir.path,
+                        },
+                    });
+                }
+                if dir.isDirectory && !isHiddenFolder(dir.name) {
+                    let children = indexDirectory(dir.path, depth + 1);
+                    if children.length > 0 {
+                        items.push(VaultOrderItem {
+                            key: vaultOrderKey(true, dir.name),
+                            entry: FSDirEntry {
+                                type: "directory",
+                                dirname: dir.name,
+                                fullPath: dir.path,
+                                children: children,
+                            },
+                        });
+                    }
+                }
             }
         }
+    }
+    items.sort((a: VaultOrderItem, b: VaultOrderItem) => compareVaultOrder(a.key, b.key));
+    let entries: []FSEntry = [];
+    entries.reserve(items.length);
+    for item in items {
+        entries.push(item.entry);
     }
     return entries;
 }
@@ -48,4 +241,33 @@ fn indexVault(vaultPath: str): VaultFS {
         entries: rx.reactive<[]FSEntry>(indexDirectory(vaultPath)),
     };
     return vault;
+}
+
+// ── Names ───────────────────────────────────────────────────────────────
+
+fn isSeparator(c: int): bool {
+    return c == 47 || c == 92;
+}
+
+// The last part of a path, either separator: a vault's or a folder's own name.
+fn baseName(path: str): str {
+    let end = path.length;
+    while end > 1 && isSeparator(path[end - 1] as int) {
+        end = end - 1;
+    }
+    let start = end;
+    while start > 0 && !isSeparator(path[start - 1] as int) {
+        start = start - 1;
+    }
+    return path.slice(start, end);
+}
+
+// What a note is called in the tree and the app bar: its file name without
+// the extension every note has.
+fn noteTitle(path: str): str {
+    let name = baseName(path);
+    if name.endsWith(".tsk") {
+        return name.slice(0, name.length - 4);
+    }
+    return name;
 }

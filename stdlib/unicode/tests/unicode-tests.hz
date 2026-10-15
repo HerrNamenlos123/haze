@@ -252,3 +252,50 @@ fn test_word_classification_handles_non_ascii() {
     assert(unicode.classifyAt("_x", 0) == unicode.CharClass.Word);
     assert(unicode.classifyAt("9x", 0) == unicode.CharClass.Word);
 }
+
+fn test_collation_ignores_case_and_accents_until_a_tie() {
+    // Primary level first: the base letters decide, wherever case or
+    // accents differ -- a byte compare would put every capital first.
+    assert(unicode.collate("apple", "Banana") < 0);
+    assert(unicode.collate("Äpfel", "banana") < 0);
+    assert(unicode.collate("Zebra", "apple") > 0);
+    // Only a tie on the letters falls through to accents, then to case.
+    assert(unicode.collate("a", "ä") < 0);
+    assert(unicode.collate("ä", "ae") < 0);
+    assert(unicode.collate("a", "A") < 0);
+    assert(unicode.collate("ss", "ß") < 0);
+    assert(unicode.collate("ß", "st") < 0);
+    // Canonically equivalent spellings are equal: precomposed and combining.
+    assert(unicode.collate(eCombining(), ePrecomposed()) == 0);
+}
+
+fn test_collation_orders_character_groups() {
+    // whitespace < punctuation < symbols < digits < letters
+    assert(unicode.collate("a b", "a_b") < 0);
+    assert(unicode.collate("a_b", "a-b") < 0);
+    assert(unicode.collate("a-b", "a€b") < 0);
+    assert(unicode.collate("a€b", "a1b") < 0);
+    assert(unicode.collate("a1b", "aab") < 0);
+}
+
+fn test_collation_numeric_compares_digit_runs_by_value() {
+    assert(unicode.collate("file 2", "file 10") > 0);
+    assert(unicode.collate("file 2", "file 10", { numeric: true }) < 0);
+    assert(unicode.collate("a01", "a1", { numeric: true }) == 0);
+    assert(unicode.collate("0", "000", { numeric: true }) == 0);
+    assert(unicode.collate("x9", "x10", { numeric: true }) < 0);
+    // Digit-like non-digits keep their ordinary weights, after every number.
+    assert(unicode.collate("x²", "x10", { numeric: true }) > 0);
+}
+
+fn test_collation_keys_agree_with_collate() {
+    let words: []str = ["b", "A", "a", "ä", "Ä", "ae", "a1", "a10", "a2", "", " ", "_", "日本"];
+    for x in words {
+        for y in words {
+            let direct = unicode.collate(x, y, { numeric: true });
+            let viaKeys = unicode.compareCollationKeys(
+                unicode.collationKey(x, { numeric: true }), unicode.collationKey(y, { numeric: true }));
+            assert(direct == viaKeys);
+        }
+    }
+}

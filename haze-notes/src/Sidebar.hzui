@@ -1,0 +1,61 @@
+from codicons import CodiconComponent
+
+// The vault's sidebar: its name and tree actions, the tree of notes, and the
+// way to another vault. It fills whatever width its owner gives it -- the
+// owner resizes and collapses it.
+
+@props
+vaultName: str;
+entries: Reactive<[]FSEntry>;
+// The open folders -- FileTree's model, passed through.
+expanded: Reactive<[]str>;
+activePath: str = "";
+
+@emit
+open: (str,);
+refresh: ();
+switchVault: ();
+
+@setup
+let hasNotes = computed((): bool => props.entries.length > 0);
+let anyExpanded = computed((): bool => props.expanded.length > 0);
+
+let collapseAll = () => {
+    let closed: []Reactive<str> = [];
+    props.expanded := closed;
+};
+
+let refresh = () => {
+    emits.refresh();
+};
+
+let switchVault = () => {
+    emits.switchVault();
+};
+
+let openNote = (path: str) => {
+    emits.open(path);
+};
+
+@template [col w-grow h-grow bg-[theme().chrome] border-r-1 border-color-[theme().border]]
+
+div [row w-grow h-[40]px items-center pl-3 pr-1.5 gap-2] {
+    div [w-fit h-fit font-size-16 text-color-[theme().accent]] {
+        Codicon [] icon="library" {}
+    }
+    div [w-grow h-fit overflow-hidden] {
+        text [text-nowrap font-size-13 text-color-[theme().text]] [props.vaultName]
+    }
+    IconButton [] icon="collapse-all" paddingX=[5.0] paddingY=[5.0] enabled=[anyExpanded] @click=collapseAll {}
+    IconButton [] icon="refresh" paddingX=[5.0] paddingY=[5.0] @click=refresh {}
+}
+
+FileTree if=hasNotes [] entries=[props.entries] expanded=[props.expanded]
+    activePath=[props.activePath] @open=openNote {}
+
+EmptyState else [] icon="notebook" title="No notes yet"
+    hint="Notes this vault holds show up here." {}
+
+div [row w-grow h-fit items-center px-1.5 py-1.5 border-t-1 border-color-[theme().border]] {
+    IconButton [] icon="folder-opened" label="Open another vault" paddingX=[8.0] @click=switchVault {}
+}

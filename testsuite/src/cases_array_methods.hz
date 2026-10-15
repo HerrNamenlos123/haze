@@ -127,6 +127,124 @@ members  2 10 20 6 4
 alias    0 2,4,6,
 """);
 
+        // `sort` is a stable merge sort in place. Stability is checked with
+        // elements that compare equal but carry their original position, and
+        // the element kinds cover what codegen treats differently: a
+        // primitive, a str, a value struct, a ref struct and a union of value
+        // structs (indexing an array of value structs is where generated C
+        // has gone wrong before).
+        s.run(
+            "array methods: sort is a stable in-place sort",
+            """
+struct Item { key: int; seq: int; }
+ref struct Node { key: int; seq: int; }
+struct Leaf { name: str; }
+struct Branch { name: str; size: int; }
+type Entry = Leaf | Branch;
+
+fn describe(items: []int): str {
+    let out = "";
+    for item in items {
+        out = f"{out}{item},";
+    }
+    return out;
+}
+
+fn entryName(e: Entry): str {
+    if e is Leaf { return e.name; }
+    if e is Branch { return e.name; }
+    return "";
+}
+
+fn compareStr(a: str, b: str): int {
+    let n = a.length < b.length ? a.length : b.length;
+    for (let i = 0; i < n; i++) {
+        if a[i] != b[i] { return a[i] < b[i] ? -1 : 1; }
+    }
+    return a.length == b.length ? 0 : (a.length < b.length ? -1 : 1);
+}
+
+fn main(): int {
+    let nums: []int = [5, 3, 9, 1, 3, 7, 0, 3];
+    nums.sort((a: int, b: int) => a - b);
+    fmt.println(f"ints     {describe(nums)}");
+    nums.sort((a: int, b: int) => b - a);
+    fmt.println(f"reversed {describe(nums)}");
+
+    let empty: []int = [];
+    empty.sort((a: int, b: int) => a - b);
+    let one: []int = [42];
+    one.sort((a: int, b: int) => a - b);
+    fmt.println(f"small    {empty.length} {describe(one)}");
+
+    let words: []str = ["pear", "apple", "fig", "apple", "banana"];
+    words.sort((a: str, b: str) => compareStr(a, b));
+    let joined = "";
+    for w in words { joined = f"{joined}{w},"; }
+    fmt.println(f"strs     {joined}");
+
+    // Stable: equal keys keep their order (seq ascending within a key).
+    let items: []Item = [];
+    let nodes: []Node = [];
+    for (let i = 0; i < 12; i++) {
+        items.push(Item { key: (i * 7) % 4, seq: i });
+        nodes.push(Node { key: (i * 5) % 3, seq: i });
+    }
+    items.sort((a: Item, b: Item) => a.key - b.key);
+    let itemOut = "";
+    for it in items { itemOut = f"{itemOut}{it.key}.{it.seq},"; }
+    fmt.println(f"values   {itemOut}");
+    nodes.sort((a: Node, b: Node) => a.key - b.key);
+    let nodeOut = "";
+    for n in nodes { nodeOut = f"{nodeOut}{n.key}.{n.seq},"; }
+    fmt.println(f"refs     {nodeOut}");
+
+    // A union of value structs, with a capturing comparator.
+    let entries: []Entry = [];
+    entries.push(Leaf { name: "c" });
+    entries.push(Branch { name: "b", size: 2 });
+    entries.push(Leaf { name: "a" });
+    entries.push(Branch { name: "d", size: 1 });
+    let calls: ref Box<int> = { value: 0 };
+    entries.sort((a: Entry, b: Entry) => {
+        calls.value += 1;
+        return compareStr(entryName(a), entryName(b));
+    });
+    let entryOut = "";
+    for e in entries { entryOut = f"{entryOut}{entryName(e)},"; }
+    fmt.println(f"unions   {entryOut} {calls.value > 0}");
+
+    // Many elements: sorted, and still the same multiset.
+    let big: []int = [];
+    let x = 12345;
+    let sum = 0;
+    for (let i = 0; i < 1000; i++) {
+        x = (x * 1103515245 + 12345) % 2147483648;
+        big.push(x % 100);
+        sum += x % 100;
+    }
+    big.sort((a: int, b: int) => a - b);
+    let ordered = true;
+    let after = 0;
+    for (let i = 0; i < big.length; i++) {
+        after += big[i];
+        if i > 0 && big[i - 1] > big[i] { ordered = false; }
+    }
+    fmt.println(f"big      {big.length} {ordered} {after == sum}");
+    return 0;
+}
+""",
+            """
+ints     0,1,3,3,3,5,7,9,
+reversed 9,7,5,3,3,3,1,0,
+small    0 42,
+strs     apple,apple,banana,fig,pear,
+values   0.0,0.4,0.8,1.3,1.7,1.11,2.2,2.6,2.10,3.1,3.5,3.9,
+refs     0.0,0.3,0.6,0.9,1.2,1.5,1.8,1.11,2.1,2.4,2.7,2.10,
+unions   a,b,c,d, true
+big      1000 true true
+""");
+
         // The rewrite must not invent a candidate: a closure of the wrong shape
         // is an ordinary argument mismatch against array.map.
         s.compileFails(

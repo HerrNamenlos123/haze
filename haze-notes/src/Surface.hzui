@@ -1,0 +1,18 @@
+// A floating panel over the page: the tool palette, the selection's colours,
+// the pen menu. Rounded, outlined, on the theme's surface colour.
+
+@props
+column: bool = false;
+gap: real = 2.0;
+padding: real = 4.0;
+
+@slot
+content: {};
+
+@template [
+        w-fit h-fit items-center [props.column]?col [!props.column]?row
+        gap-[props.gap]px p-[props.padding]px rounded-10
+        bg-[theme().surface] border-1 border-color-[theme().surfaceBorder]
+    ]
+
+slot content {}

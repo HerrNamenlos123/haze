@@ -1,0 +1,57 @@
+// The tool palette over the page: the pen at five thicknesses, the selection
+// and the eraser, and the pen's colours. The pen's barrel-button menu offers
+// the same; this is for a pen without one, and for the mouse.
+
+enum Tool { Pen, Selection, Eraser }
+
+@props
+tool: Tool;
+penColor: str;
+penSizeMm: real;
+
+@emit
+pen: (real,);
+selection: ();
+eraser: ();
+color: (str,);
+
+@setup
+let colors = penColors();
+let sizes = penThicknesses();
+
+let pickPen = (size: real) => {
+    emits.pen(size);
+};
+
+let pickSelection = () => {
+    emits.selection();
+};
+
+let pickEraser = () => {
+    emits.eraser();
+};
+
+let pickColor = (color: str) => {
+    emits.color(color);
+};
+
+@template [w-fit h-fit]
+
+Surface [] {
+    #content {
+        PaperStrip [] {
+            #content {
+                PenSizeButton for=[size, i in sizes] key=[i] [] sizeMm=[size] color=[props.penColor]
+                    selected=[props.tool == Tool.Pen && props.penSizeMm == size] @pick=pickPen {}
+            }
+        }
+        Divider [] {}
+        IconButton [] icon="inspect" selected=[props.tool == Tool.Selection] paddingX=[8.0] paddingY=[8.0]
+            @click=pickSelection {}
+        IconButton [] icon="eraser" selected=[props.tool == Tool.Eraser] paddingX=[8.0] paddingY=[8.0]
+            @click=pickEraser {}
+        Divider [] {}
+        ColorSwatch for=[color, i in colors] key=[i] [] color=[color] selected=[props.penColor == color]
+            @pick=pickColor {}
+    }
+}

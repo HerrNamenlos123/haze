@@ -1,0 +1,156 @@
+// The file tree's model, without any UI: what of a vault is indexed, how the
+// open folders flatten into rows, and which rows a scrolled viewport builds
+// (src/vault.hz, src/filetree.hz). The ORDER of the entries is
+// technicalsketcher.web's and has its own test, vault-order-tests.hz.
+//
+// The window is checked against a property, not only examples: for every
+// scroll position its rows plus its two spacers add up to the whole list, so
+// the scrolled content is the same height wherever it is scrolled to. When
+// that failed (rows taller than the arithmetic assumed) the list flickered up
+// and down at its end.
+//
+// haze-notes is an executable, so nothing can depend on it: run this from a
+// throwaway exe project inside the repository that depends on unicode, with
+// src/vault.hz and src/filetree.hz copied in verbatim and this file as its
+// main.hz.
+
+ref struct State {
+    checks: int = 0;
+    failures: int = 0;
+
+    mut fn check(name: str, ok: bool) {
+        this.checks = this.checks + 1;
+        if !ok {
+            this.failures = this.failures + 1;
+            fmt.println(f"FAIL: {name}");
+        }
+    }
+
+    mut fn checkStr(name: str, actual: str, expected: str) {
+        this.checks = this.checks + 1;
+        if actual != expected {
+            this.failures = this.failures + 1;
+            fmt.println(f"FAIL: {name}\n  expected '{expected}'\n  got      '{actual}'");
+        }
+    }
+}
+
+// A new directory each run, so nothing a previous run left behind is indexed.
+fn fixtureDir(): str {
+    let base = "/tmp";
+    if let tmp = env.get("TMPDIR") {
+        base = tmp;
+    }
+    let stamp = (time.now() * 1000.0) as int;
+    return f"{base}/haze-notes-filetree-tests-{stamp}";
+}
+
+fn rowsText(rows: []TreeRow): str {
+    let text = "";
+    for row in rows {
+        let indent = "";
+        for (let i = 0; i < row.depth; i++) { indent = indent + "  "; }
+        let mark = row.isDir ? (row.open ? "v " : "> ") : "- ";
+        text = text + indent + mark + row.name + "\n";
+    }
+    return text;
+}
+
+fn main(): int {
+    let state = State {};
+
+    // ── Indexing ────────────────────────────────────────────────────
+    let root = fixtureDir();
+    fs.writeText(f"{root}/b note.tsk", "{}");
+    fs.writeText(f"{root}/A note.tsk", "{}");
+    fs.writeText(f"{root}/readme.md", "not a note");
+    fs.writeText(f"{root}/.hidden.tsk", "{}");
+    fs.writeText(f"{root}/.hznotes/vault.json", "{}");
+    fs.writeText(f"{root}/Week 10/x.tsk", "{}");
+    fs.writeText(f"{root}/Week 2/Inner/deep.tsk", "{}");
+    fs.writeText(f"{root}/Week 2/scan.pdf", "pdf");
+    fs.writeText(f"{root}/Only pdfs/scan.pdf", "pdf");
+    fs.createDirectory(f"{root}/Empty");
+
+    let index = indexDirectory(root);
+    let all: []str = [];
+    let out: []TreeRow = [];
+    let everything: []str = [f"{root}/Week 2", f"{root}/Week 2/Inner", f"{root}/Week 10"];
+    flattenTree(index, expandedSet(everything), 0, out);
+    // technicalsketcher.web's rules: files whose name contains ".tsk" (a
+    // dot-file note included), no folder starting with ".", no folder left
+    // empty by that.
+    state.checkStr("index: notes only, no hidden folders, no note-less folders",
+        rowsText(out),
+        "v Week 2\n  v Inner\n    - deep\nv Week 10\n  - x\n- .hidden\n- A note\n- b note\n");
+
+    // ── Flattening ──────────────────────────────────────────────────
+    let closed: []TreeRow = [];
+    flattenTree(index, expandedSet(all), 0, closed);
+    state.checkStr("nothing open: only the top level", rowsText(closed), "> Week 2\n> Week 10\n- .hidden\n- A note\n- b note\n");
+    let inner: []TreeRow = [];
+    let onlyInner: []str = [f"{root}/Week 2/Inner"];
+    flattenTree(index, expandedSet(onlyInner), 0, inner);
+    state.checkStr("an open folder inside a closed one stays hidden", rowsText(inner),
+        "> Week 2\n> Week 10\n- .hidden\n- A note\n- b note\n");
+    state.check("rowIndexOf finds a row", rowIndexOf(out, f"{root}/A note.tsk") == 6);
+    state.check("rowIndexOf misses", rowIndexOf(out, f"{root}/nope.tsk") == -1);
+
+    // ── The folders a note is in ────────────────────────────────────
+    let chain: []str = [];
+    state.check("folderChainTo finds a nested note", folderChainTo(index, f"{root}/Week 2/Inner/deep.tsk", chain));
+    state.check("its chain is outermost first",
+        chain.length == 2 && chain[0] == f"{root}/Week 2" && chain[1] == f"{root}/Week 2/Inner");
+    let topChain: []str = [];
+    state.check("a top-level note has no folders", folderChainTo(index, f"{root}/A note.tsk", topChain) && topChain.length == 0);
+    let missChain: []str = ["kept"];
+    state.check("a missing note is not found, and out is left as it was",
+        !folderChainTo(index, f"{root}/Week 2/Inner/gone.tsk", missChain) && missChain.length == 1 && missChain[0] == "kept");
+    // A path that only shares a name's beginning with a folder ("Week 2" in
+    // "Week 20/...") is not in it.
+    let prefixChain: []str = [];
+    state.check("a folder name that is a prefix of another is not its parent",
+        !folderChainTo(index, f"{root}/Week 20/x.tsk", prefixChain) && prefixChain.length == 0);
+
+    // ── Toggling ────────────────────────────────────────────────────
+    let paths: []str = ["a", "b"];
+    let opened = toggledPaths(paths, "c");
+    state.check("toggle adds a missing path", opened.length == 3 && opened[2] == "c");
+    let closedAgain = toggledPaths(opened, "b");
+    state.check("toggle removes a present path", closedAgain.length == 2 && closedAgain[0] == "a" && closedAgain[1] == "c");
+    state.check("toggle leaves its input alone", paths.length == 2);
+
+    // ── Windowing ───────────────────────────────────────────────────
+    let empty = treeWindow(0, 28.0, 6.0, 0.0, 600.0, 6);
+    state.check("empty list: empty window", empty.start == 0 && empty.end == 0 && empty.rowsBefore == 0 && empty.rowsAfter == 0);
+
+    let top = treeWindow(1000, 28.0, 6.0, 0.0, 560.0, 6);
+    state.check("at the top: starts at row 0", top.start == 0 && top.rowsBefore == 0);
+    state.check("at the top: covers the viewport", top.end * 28 >= 560);
+
+    // Property: every scroll position, every viewport, every list length.
+    let ok = true;
+    let covered = true;
+    let counts: []int = [0, 1, 7, 50, 1000];
+    for count in counts {
+        let maxScroll = 12.0 + count as real * 28.0;
+        let scroll = 0.0;
+        while scroll <= maxScroll {
+            let w = treeWindow(count, 28.0, 6.0, scroll, 400.0, 6);
+            if w.rowsBefore + (w.end - w.start) + w.rowsAfter != count { ok = false; }
+            if w.start < 0 || w.end > count || w.start > w.end { ok = false; }
+            // Every row that intersects the viewport is built.
+            let firstVisible = ((scroll - 6.0) / 28.0) as int;
+            if scroll < 6.0 { firstVisible = 0; }
+            let lastVisible = ((scroll - 6.0 + 400.0) / 28.0) as int;
+            if firstVisible < count && w.start > firstVisible { covered = false; }
+            if lastVisible < count && w.end <= lastVisible { covered = false; }
+            scroll = scroll + 7.0;
+        }
+    }
+    state.check("window: rows + spacers always add up to the whole list", ok);
+    state.check("window: every row in the viewport is built", covered);
+
+    fmt.println(f"filetree-tests: {state.checks - state.failures}/{state.checks} passed");
+    return state.failures == 0 ? 0 : 1;
+}

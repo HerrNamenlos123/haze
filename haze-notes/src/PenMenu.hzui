@@ -1,0 +1,51 @@
+// The menu the pen's barrel button opens where the pen is: the colours above,
+// the selection tool and the five pens below -- what the web app offered.
+
+@props
+tool: Tool;
+penColor: str;
+penSizeMm: real;
+
+@emit
+pen: (real,);
+selection: ();
+color: (str,);
+
+@setup
+let colors = penColors();
+let sizes = penThicknesses();
+
+let pickPen = (size: real) => {
+    emits.pen(size);
+};
+
+let pickSelection = () => {
+    emits.selection();
+};
+
+let pickColor = (color: str) => {
+    emits.color(color);
+};
+
+@template [w-fit h-fit]
+
+Surface [] column=[true] gap=[4.0] padding=[6.0] {
+    #content {
+        div [row w-fit h-fit items-center gap-0.5] {
+            ColorSwatch for=[color, i in colors] key=[i] [] color=[color] size=[22.0]
+                selected=[props.penColor == color] @pick=pickColor {}
+        }
+        Divider [] vertical=[false] {}
+        div [row w-fit h-fit items-center gap-0.5] {
+            IconButton [] icon="inspect" selected=[props.tool == Tool.Selection] paddingX=[10.0] paddingY=[10.0]
+                @click=pickSelection {}
+            PaperStrip [] {
+                #content {
+                    PenSizeButton for=[size, i in sizes] key=[i] [] sizeMm=[size] color=[props.penColor]
+                        extent=[34.0] selected=[props.tool == Tool.Pen && props.penSizeMm == size]
+                        @pick=pickPen {}
+                }
+            }
+        }
+    }
+}

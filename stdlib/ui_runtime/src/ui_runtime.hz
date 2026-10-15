@@ -52,6 +52,9 @@ export opaque ref struct Runtime {
     // allocates nothing, while a lambda that captures `frame`/`r`/`this`
     // heap-allocates a closure env on every single frame, per callback.
     currentFrame?: mut renderer.gfx.Frame;
+    // The layout pass the boxes reported by render() belong to -- see
+    // UIContext.beginRenderFeedback.
+    feedbackPass: int = 0;
 
     fn constructor(args: RuntimeArgs) {
         let layout = ui_layout.Context({
@@ -199,6 +202,11 @@ export opaque ref struct Runtime {
             return false;
         }
 
+        // The boxes this pass reports replace the last pass's. What it does
+        // not report (culled, wholly outside the window) is no longer where
+        // its old box says -- see UIContext.beginRenderFeedback.
+        this.feedbackPass = this.ui.beginRenderFeedback();
+
         // Bound methods, deliberately not lambdas: see currentFrame. Every
         // callback reaches the renderer through this.screenRenderer (see
         // activeRenderer()) and the frame through this.currentFrame.
@@ -258,7 +266,7 @@ export opaque ref struct Runtime {
     }
 
     fn onBoundingBox(element: ui_elements.Element, pos: Vec2, size: Vec2): void {
-        ui_components.applyRenderFeedback(element, pos, size);
+        ui_components.applyRenderFeedback(element, pos, size, this.feedbackPass);
     }
 
     fn renderCanvas(element: ui_elements.CanvasElement): void {

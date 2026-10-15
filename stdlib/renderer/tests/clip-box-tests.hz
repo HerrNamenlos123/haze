@@ -1,0 +1,81 @@
+import renderer
+
+// Every primitive carries a clip box, and the fragment shader discards what
+// falls outside it -- except that a box with no area means "not clipped at
+// all", which is how a primitive with no clip is written. So a clip that
+// comes out EMPTY must not be written as a box with no area, or what it was
+// meant to hide is drawn everywhere instead. It was: an element scrolled
+// wholly out of a container that clips it, inside a clipping element of its
+// own, got the empty intersection of the two -- and haze-notes' file tree drew
+// the labels of rows scrolled out of view across its app bar and header.
+//
+// `admits` is the shader's test (fs_main in renderer/resources/shaders.wgsl),
+// transcribed: what the GPU does with a box.
+//
+// Run from a throwaway exe project inside the repository that depends on
+// renderer, with this file as its main.hz.
+
+fn admits(box: Vec4f, x: f32, y: f32): bool {
+    if box.z > box.x && box.w > box.y {
+        if x < box.x || x > box.z || y < box.y || y > box.w {
+            return false;
+        }
+    }
+    return true;
+}
+
+// Whether the box lets any pixel of a 4000 x 4000 target through, sampled on
+// a grid fine enough for the boxes below.
+fn admitsAny(box: Vec4f): bool {
+    for (let y = 0; y < 4000; y += 5) {
+        for (let x = 0; x < 4000; x += 5) {
+            if admits(box, (x as real + 0.5) as f32, (y as real + 0.5) as f32) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+ref struct State {
+    checks: int = 0;
+    failures: int = 0;
+
+    mut fn check(name: str, ok: bool) {
+        this.checks = this.checks + 1;
+        if !ok {
+            this.failures = this.failures + 1;
+            fmt.println(f"FAIL: {name}");
+        }
+    }
+}
+
+fn main(): int {
+    let state = State {};
+
+    let viewport = renderer.gfx.clipBox(0.0, 80.0, 260.0, 557.0);
+    state.check("a clip admits what is inside it", admits(viewport, 100.0, 300.0));
+    state.check("a clip rejects what is outside it", !admits(viewport, 100.0, 20.0));
+
+    // A row's label box, scrolled above the viewport, inside it.
+    let label = renderer.gfx.clipBox(30.0, 10.0, 250.0, 38.0);
+    let both = renderer.gfx.intersectClipBoxes(viewport, label);
+    state.check("a box scrolled wholly out of its clipping parent admits nothing", !admitsAny(both));
+
+    let inverted = renderer.gfx.clipBox(0.0, 80.0, 260.0, 10.0);
+    state.check("an inverted clip admits nothing", !admitsAny(inverted));
+    let flat = renderer.gfx.clipBox(0.0, 80.0, 260.0, 80.0);
+    state.check("a clip with no height admits nothing", !admitsAny(flat));
+
+    // Nesting under a clip that admits nothing admits nothing.
+    let nested = renderer.gfx.intersectClipBoxes(both, renderer.gfx.clipBox(0.0, 0.0, 4000.0, 4000.0));
+    state.check("inside an empty clip, nothing is admitted", !admitsAny(nested));
+
+    // Partly overlapping: the overlap and only it.
+    let half = renderer.gfx.intersectClipBoxes(viewport, renderer.gfx.clipBox(30.0, 60.0, 250.0, 100.0));
+    state.check("an overlap admits its common part", admits(half, 100.0, 90.0));
+    state.check("an overlap rejects the parent's outside", !admits(half, 100.0, 70.0));
+
+    fmt.println(f"clip-box-tests: {state.checks - state.failures}/{state.checks} passed");
+    return state.failures == 0 ? 0 : 1;
+}

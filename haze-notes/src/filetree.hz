@@ -1,0 +1,149 @@
+// The file tree as a list: what FileTree.hzui shows, worked out without any
+// UI so it can be tested on its own.
+//
+// The tree is drawn the way VS Code draws one: every open folder's children
+// are flattened into a single list of rows, all exactly one row high, and only
+// the rows in view are built. The list's height is then known exactly
+// (rows x row height) whatever is scrolled into view, which is what keeps a
+// scroll container from correcting itself frame after frame at the end of the
+// list. Clay caps a layout at 8192 elements, so building only the rows in view
+// is also what lets a huge open folder render at all.
+
+// One row of the tree.
+struct TreeRow {
+    path: str;
+    // What the row says: a folder's name, or a note's title.
+    name: str;
+    // How many open folders it sits in.
+    depth: int;
+    isDir: bool;
+    // For a folder, whether its children are listed below it.
+    open: bool;
+}
+
+// The rows of `entries` and of every open folder below them, depth first --
+// the order they are drawn in. `expanded` holds the open folders' paths.
+fn flattenTree(entries: []FSEntry, expanded: LinearMap<str, bool>, depth: int, out: []TreeRow): void :: final {
+    for entry in entries {
+        if entry is FSDirEntry {
+            let open = expanded.has(entry.fullPath);
+            out.push(TreeRow {
+                path: entry.fullPath,
+                name: entry.dirname,
+                depth: depth,
+                isDir: true,
+                open: open,
+            });
+            if open {
+                flattenTree(entry.children, expanded, depth + 1, out);
+            }
+        } else if entry is FSFileEntry {
+            out.push(TreeRow {
+                path: entry.fullPath,
+                name: noteTitle(entry.filename),
+                depth: depth,
+                isDir: false,
+                open: false,
+            });
+        }
+    }
+}
+
+// The open folders, by path, as flattenTree looks them up.
+fn expandedSet(paths: []str): LinearMap<str, bool> {
+    let set = LinearMap<str, bool>();
+    for path in paths {
+        set.set(path, true);
+    }
+    return set;
+}
+
+// The index of the row showing `path`, or -1.
+fn rowIndexOf(rows: []TreeRow, path: str): int {
+    for (let i = 0; i < rows.length; i++) {
+        // Bound first: an indexed element of a value-struct array used in
+        // a call (string == is one) generates C that does not compile.
+        let row = rows[i];
+        if row.path == path {
+            return i;
+        }
+    }
+    return -1;
+}
+
+// The folders the entry at `path` lies in, outermost first -- the ones that
+// have to be open for its row to show -- appended to `out`. False, and `out`
+// as it was, when no entry has that path.
+fn folderChainTo(entries: []FSEntry, path: str, out: []str): bool :: final {
+    for entry in entries {
+        if entry is FSDirEntry {
+            if path.startsWith(entry.fullPath + "/") {
+                out.push(entry.fullPath);
+                if folderChainTo(entry.children, path, out) {
+                    return true;
+                }
+                out.pop();
+            }
+        } else if entry is FSFileEntry {
+            if entry.fullPath == path {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+// `paths` with `path` added when it is missing and removed when it is there:
+// opening or closing one folder.
+fn toggledPaths(paths: []str, path: str): []str {
+    let result: []str = [];
+    let found = false;
+    for existing in paths {
+        if existing == path {
+            found = true;
+        } else {
+            result.push(existing);
+        }
+    }
+    if !found {
+        result.push(path);
+    }
+    return result;
+}
+
+// The slice of the list to build: rows [start, end), with the space of the
+// rows before and after it held open by a spacer each.
+struct TreeWindow {
+    start: int = 0;
+    end: int = 0;
+    rowsBefore: int = 0;
+    rowsAfter: int = 0;
+}
+
+// Which rows of `count` to build for a viewport `viewHeight` tall scrolled
+// `scrollTop` into a list that starts `padding` below the scrolled content's
+// top, plus `overscan` rows past each edge so a row scrolling in is already
+// there.
+fn treeWindow(count: int, rowHeight: real, padding: real, scrollTop: real, viewHeight: real, overscan: int): TreeWindow {
+    if count <= 0 || rowHeight <= 0.0 {
+        return TreeWindow {};
+    }
+    let top = scrollTop - padding;
+    let first = (top / rowHeight) as int;
+    if top < 0.0 {
+        first = 0;
+    }
+    let visible = (viewHeight / rowHeight) as int + 2;
+    let start = first - overscan;
+    if start < 0 { start = 0; }
+    if start > count { start = count; }
+    let end = first + visible + overscan;
+    if end > count { end = count; }
+    if end < start { end = start; }
+    return TreeWindow {
+        start: start,
+        end: end,
+        rowsBefore: start,
+        rowsAfter: count - end,
+    };
+}

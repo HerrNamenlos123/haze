@@ -1,0 +1,198 @@
+from ui_widgets import SplitterComponent
+
+// An open vault: the app bar, the sidebar with its tree, and the open note.
+// Mounted once per vault (UI.hzui keys it by the vault), so switching vaults
+// starts from a fresh one.
+
+// The sidebar's width is the user's, within reason: never so narrow the tree
+// is unreadable, never so wide the page has no room.
+const SIDEBAR_MIN = 180.0;
+const SIDEBAR_MAX = 560.0;
+// Room for the tool palette across the top of the page.
+const CANVAS_MIN = 520.0;
+
+@props
+[[hzui.untracked]]
+cache: json.CacheFile<VaultCache>;
+[[hzui.untracked]]
+gfx: mut renderer.gfx.Context;
+vaultPath: str;
+
+@emit
+switchVault: ();
+
+@setup
+let rootRef = elementRef<DivElement>();
+
+let currentDocumentPath = reactive<str | none>(none);
+if props.cache.data.lastOpenedFile {
+    currentDocumentPath := props.cache.data.lastOpenedFile;
+}
+
+let documentRenderer = DocumentRenderer(props.gfx);
+let canvasRef = ui.canvasRef();
+
+// The renderer's state is plain data the canvas cannot track, so every
+// change to it says so. The redraw happens once, at the canvas's step of the
+// next frame, however often this is called before then.
+let invalidateCanvas: () => none = () => {
+    canvasRef?.invalidate();
+};
+let controls = EditorControls(documentRenderer, invalidateCanvas);
+
+let openFile = (path: str) => {
+    // Picking the open note again does not reload it -- unless it failed to
+    // open, then it is tried again.
+    if let current = rx.get(currentDocumentPath) {
+        if current == path {
+            if rx.get(controls.loadFailed) {
+                controls.open(path);
+            }
+            return;
+        }
+    }
+    currentDocumentPath := path;
+    props.cache.data.lastOpenedFile := path;
+};
+
+// The document lives in `controls`, which loads, edits and saves it.
+ui.watch(() => rx.get(currentDocumentPath), (old, new) => {
+    controls.open(rx.get(currentDocumentPath));
+}, { immediate: true });
+
+// Unsaved work is written before the app goes -- there are no more frames to
+// spread the save over, but the window is already gone. A workspace that was
+// closed before that (another vault was opened) has written its work already,
+// and must not write it again: the note may have been opened and changed
+// since, and this copy is stale.
+let closed: ref Box<bool> = { value: false };
+onExit(() => {
+    if closed.value { return; }
+    controls.finishSaves();
+    controls.finishExport();
+});
+
+ui.onUnmount(() => {
+    closed.value = true;
+    controls.finishSaves();
+    controls.finishExport();
+    documentRenderer.releaseResources();
+});
+
+// ── What is open ─────────────────────────────────────────────────────
+
+let activePath = computed((): str => {
+    if let path = rx.get(currentDocumentPath) { return path; }
+    return "";
+});
+
+let documentTitle = computed((): str => {
+    if rx.get(controls.documentOpen) || rx.get(controls.loadingDocument) {
+        return noteTitle(rx.get(activePath));
+    }
+    return baseName(props.vaultPath);
+});
+
+// The folder the open note is in, unless it is the vault itself.
+let documentContext = computed((): str => {
+    if !rx.get(controls.documentOpen) && !rx.get(controls.loadingDocument) { return ""; }
+    let path = rx.get(activePath);
+    let folder = path.slice(0, max(0, path.length - baseName(path).length - 1));
+    if folder.length == 0 || folder == props.vaultPath { return ""; }
+    return baseName(folder);
+});
+
+let vaultName = computed((): str => baseName(props.vaultPath));
+
+// ── The sidebar ──────────────────────────────────────────────────────
+
+let sidebarOpen = computed((): bool => rx.get(props.cache.data.sidepanelOpen));
+
+// While a drag is on, the width lives here and the cache keeps the last
+// committed one: the cache is written to disk whenever it changes, and a
+// drag changes the width every frame.
+let dragWidth = reactive<real>(rx.get(props.cache.data.sidepanelWidth));
+
+let sidebarWidth = computed((): real => {
+    let width = rx.get(dragWidth);
+    let limit = SIDEBAR_MAX;
+    if let size = rootRef?.size() {
+        limit = min(limit, size.x - CANVAS_MIN);
+    }
+    return max(SIDEBAR_MIN, min(width, limit));
+});
+
+let toggleSidebar = () => {
+    props.cache.data.sidepanelOpen := !rx.get(props.cache.data.sidepanelOpen);
+};
+
+// The splitter reports the pointer's window x, and the sidebar starts at the
+// window's left edge, so that is the width.
+let dragSidebar = (x: real) => {
+    dragWidth := x;
+};
+
+let commitSidebarWidth = () => {
+    let width = rx.get(sidebarWidth);
+    dragWidth := width;
+    props.cache.data.sidepanelWidth := width;
+};
+
+let refreshVault = () => {
+    props.cache.data.vault := indexVault(props.vaultPath);
+};
+
+let switchVault = () => {
+    emits.switchVault();
+};
+
+let exportPdf = () => {
+    controls.exportPdf();
+};
+
+// Keys reach here from whatever inside the workspace has focus -- the page,
+// a button just clicked -- so the shortcuts work wherever the focus is.
+let onKeyDown = (e: KeyboardEvent) => {
+    if hasModifier(e.modifiers, KeyModifiers.Ctrl) && e.key == Key.B {
+        e.preventDefault();
+        e.stopPropagation();
+        // Held down, the key repeats; the sidebar toggles once per press.
+        if !e.repeat {
+            toggleSidebar();
+        }
+        return;
+    }
+    controls.keyDown(e, ui);
+};
+
+@template [col w-grow h-grow bg-[theme().chrome] text-color-[theme().text] font-size-13]
+    ref=rootRef
+    focusable=[true]
+    autofocus=[true]
+    @keydown=onKeyDown
+
+AppBar [] title=[documentTitle] context=[documentContext] sidebarOpen=[sidebarOpen]
+    windowControls=[!ui.window.hasNativeTitlebar()]
+    exportVisible=[rx.get(controls.documentOpen)] exportLabel=[rx.get(controls.exportLabel)]
+    exportEnabled=[!rx.get(controls.exportBusy)]
+    @toggleSidebar=toggleSidebar @exportPdf=exportPdf {}
+
+div [relative row w-grow h-grow] {
+    // Hidden rather than unmounted when collapsed, so the tree keeps where
+    // it was scrolled to.
+    div [h-grow w-[sidebarWidth]px [!sidebarOpen]?hidden] {
+        Sidebar if=[props.cache.data.vault] [] vaultName=[vaultName]
+            entries=[props.cache.data.vault.entries] expanded=[props.cache.data.expandedFolders]
+            activePath=[activePath] @open=openFile @refresh=refreshVault @switchVault=switchVault {}
+    }
+
+    DocumentView [] controls=[controls] canvasRef=[canvasRef] title=[documentTitle] {}
+
+    // Over the sidebar's edge rather than beside it: a few pixels to grab,
+    // and the line it shows is the sidebar's own border. Mostly on the page
+    // side, so it leaves the tree's scrollbar alone.
+    div if=sidebarOpen [absolute top-[0] left-[sidebarWidth - 1.0] w-[6]px h-grow] {
+        Splitter [] thickness=[6.0] color="#00000000" activeColor=[theme().accent]
+            @drag=dragSidebar @end=commitSidebarWidth {}
+    }
+}

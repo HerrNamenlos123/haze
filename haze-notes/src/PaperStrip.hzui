@@ -1,0 +1,16 @@
+// A strip of paper in the tool palette: what sits on it is shown the way it
+// will look on the page -- ink samples in their real colour, whatever the
+// app's theme. The page is the same paper in every theme, so this is too.
+
+@props
+column: bool = false;
+
+@slot
+content: {};
+
+@template [
+        w-fit h-fit items-center [props.column]?col [!props.column]?row gap-0.5 p-[3]px rounded-9
+        bg-[theme().paper] border-1 border-color-[theme().paperEdge]
+    ]
+
+slot content {}

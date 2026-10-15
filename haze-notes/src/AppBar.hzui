@@ -1,0 +1,85 @@
+// The bar across the top of the window: the sidebar's toggle, what is open,
+// exporting, and -- when the platform draws no titlebar -- the window's own
+// buttons.
+//
+// When it is the titlebar, its root carries `os-titlebar`: the window manager
+// moves, maximizes and snaps the window by that box (see
+// ui_styling.OSTitlebar), and every control on it is carved out of the drag
+// region automatically.
+
+@props
+title: str = "";
+// Shown muted before the title: where the open note is.
+context: str = "";
+sidebarButton: bool = true;
+sidebarOpen: bool = true;
+exportVisible: bool = false;
+exportLabel: str = "Export PDF";
+exportEnabled: bool = true;
+windowControls: bool = true;
+height: real = 40.0;
+
+@emit
+toggleSidebar: ();
+exportPdf: ();
+
+@setup
+let rootRef = elementRef<DivElement>();
+
+let actionsRef = elementRef<DivElement>();
+
+// The title sits at the bar's midpoint whatever is beside it: out of flow,
+// placed at half the bar's width, then shifted back by half its own.
+let centerX = computed((): real => {
+    let size = rootRef?.size();
+    if size { return size.x / 2.0; }
+    return 0.0;
+});
+
+// As wide as it can be without reaching the buttons: the room left once the
+// widest side (the actions) is kept clear on both sides. A longer title is
+// cut off rather than drawn over a button.
+let titleWidth = computed((): real => {
+    let bar = rootRef?.size();
+    let actions = actionsRef?.size();
+    if bar && actions {
+        return max(0.0, bar.x - 2.0 * (actions.x + 8.0));
+    }
+    return 0.0;
+});
+
+let sidebarIcon = computed((): str => props.sidebarOpen ? "layout-sidebar-left" : "layout-sidebar-left-off");
+let hasContext = computed((): bool => props.context.length > 0);
+
+let toggleSidebar = () => {
+    emits.toggleSidebar();
+};
+
+let exportPdf = () => {
+    emits.exportPdf();
+};
+
+
+@template [
+        relative row w-grow h-[props.height]px items-center gap-1 pl-1.5
+        bg-[theme().chrome] border-b-1 border-color-[theme().border]
+        [props.windowControls]?os-titlebar
+    ]
+    ref=rootRef
+
+IconButton if=[props.sidebarButton] [] icon=[sidebarIcon] selected=[false] @click=toggleSidebar {}
+
+div [absolute left-[centerX] translate-x-[-0.5] h-[props.height]px w-[titleWidth]px
+     row items-center justify-center gap-1.5 overflow-hidden] {
+    text if=hasContext [text-nowrap font-size-13 text-color-[theme().textSubtle]] [props.context]
+    text if=hasContext [text-nowrap font-size-13 text-color-[theme().textSubtle]] ["/"]
+    text [text-nowrap font-size-13 text-color-[theme().text]] [props.title]
+}
+
+div [w-grow h-fit] {}
+
+div [row w-fit h-[props.height]px items-center gap-1] ref=actionsRef {
+    IconButton if=[props.exportVisible] [] icon="file-pdf" label=[props.exportLabel]
+        enabled=[props.exportEnabled] paddingX=[8.0] @click=exportPdf {}
+    WindowControls if=[props.windowControls] [] height=[props.height] {}
+}
