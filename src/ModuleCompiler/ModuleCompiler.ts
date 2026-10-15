@@ -2274,7 +2274,10 @@ export class ModuleCompiler {
     // linkerFlags.addWin32(`"${HAZE_GLOBAL_DIR}/pcre2/lib/gc.lib"`);
 
     compilerFlags.addWin32("-D_CRT_SECURE_NO_WARNINGS");
-    linkerFlags.addWin32("-fuse-ld=lld");
+    // lld everywhere. On Linux clang otherwise links with the system's GNU ld,
+    // which takes 0.7 s for haze-notes where lld (shipped next to our clang)
+    // takes 0.2 s, and the final link ends every build, incremental or not.
+    linkerFlags.addAll("-fuse-ld=lld");
     linkerFlags.addWin32("-lntdll");
     linkerFlags.addWin32("-lkernel32");
     linkerFlags.addWin32("-luser32");
