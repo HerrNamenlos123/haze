@@ -181,6 +181,11 @@ export namespace Semantic {
     // alive with a stale copy, which is warned about (H7190, see
     // Elaborate.ts staleByValueCapture).
     byValueCaptures?: { lambda: ExprId; sourceloc: SourceLoc }[];
+    // The hidden `this` of a plain `fn` method of a value struct: a raw
+    // pointer the caller lends for the duration of the call, with no witness
+    // (§12.2). A closure may capture it only if the closure cannot outlive
+    // the call (Lower.ts rejects the rest with H7218).
+    uncheckedReceiver?: boolean;
     parentSymbolId: SymbolId | null;
     sourceloc: SourceLoc;
     comptime: boolean;
@@ -639,6 +644,11 @@ export namespace Semantic {
     // non-escaping): the env block can live in the caller's frame for the
     // duration of the call instead of on the heap.
     stackEnv?: boolean;
+    // Set when this lambda literal is the initialiser of a `let stackref`:
+    // its env is built in the stackref's own buffer and every call checks
+    // that scope's witness first (§7.3), so it cannot run after the frame
+    // that created it is gone.
+    builtInPlace?: boolean;
   };
 
   /**
@@ -956,6 +966,13 @@ export namespace Semantic {
     variant: ENode.BlockScopeExpr;
     instanceIds: InstanceId[];
     block: BlockScopeId;
+    // A user-written `do` block whose emitted value is an existing binding
+    // (`do { a }`, or a local declared inside the block): it is an rvalue,
+    // but it hands out a copy of something that still exists, so for
+    // `nocopy` (§9) it is not a fresh value. See Conversion.isFreshValue.
+    // `isTemporary` stays true: lowering relies on it to materialise the
+    // block's result before taking its address.
+    emitsNamedValue?: boolean;
   };
 
   export type Expression =

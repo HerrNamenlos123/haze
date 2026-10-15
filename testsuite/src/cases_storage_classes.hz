@@ -321,7 +321,7 @@ fn main(): int {
     return 0;
 }
 """,
-            [testsuite.mustHave(errorcodes.Code.NoSuitableConversionFound)]);
+            [testsuite.mustHave(errorcodes.Code.NocopySecondBinding)]);
 
         s.compileFails(
             "nocopy: a closure cannot capture a nocopy value (§9)",

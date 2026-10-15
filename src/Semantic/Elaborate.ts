@@ -2541,10 +2541,30 @@ export class SemanticElaborator {
       ? parameterTypes.findIndex((p) => this.isParameterPackType(p.type))
       : -1;
 
+    // An argument a pack or C varargs take as it is goes through no
+    // conversion, so nocopy (§9.2) is checked here: a named nocopy value
+    // passed this way is a by-value copy into the callee.
+    const passAsIs = (arg: Semantic.ExprId, index: number) => {
+      const argExpr = this.sr.exprNodes.get(arg);
+      if (
+        Conversion.isNocopyUse(this.sr, argExpr.type) &&
+        !Conversion.isFreshValue(this.sr, arg)
+      ) {
+        throw new CompilerError(
+          `'${Semantic.serializeTypeUse(this.sr, argExpr.type)}' is 'nocopy': passing an existing value to a parameter pack or variadic parameter copies it. Pass a freshly constructed value, or a 'ref'/'stackref' to the existing one.`,
+          index < argumentSourcelocs.length
+            ? argumentSourcelocs[index]
+            : fallbackSourceloc,
+          HazeErrorCode.NocopySecondBinding
+        );
+      }
+      return arg;
+    };
+
     return givenArgs.map((arg, index) => {
       // If this is the parameter pack position, keep args as-is (they'll be bundled by codegen)
       if (index === packParameterIndex) {
-        return arg;
+        return passAsIs(arg, index);
       }
 
       // Only convert if we have a corresponding non-pack parameter
@@ -2566,10 +2586,11 @@ export class SemanticElaborator {
       }
       if (hasVararg && index >= parameterTypes.length) {
         // Vararg: pass remaining args as-is
-        return arg;
+        return passAsIs(arg, index);
       }
-      // Default: pass as-is (shouldn't reach here if validation passed)
-      return arg;
+      // Default: pass as-is (the remaining elements of a parameter pack;
+      // anything else was rejected by validation)
+      return passAsIs(arg, index);
     });
   }
 
@@ -8654,9 +8675,18 @@ export class SemanticElaborator {
                     : EStorageClass.Ref,
                   func.sourceloc
                 )[1];
+                // A plain `fn` on a value struct gets a raw pointer with no
+                // witness (§12.2); `ref fn`, `stackref fn` and every method of
+                // a `ref struct` get a receiver that stays valid on its own.
+                const receiverDef = this.sr.typeDefNodes.get(symbol.methodOf);
+                const uncheckedReceiver =
+                  symbol.methodReceiverStorage === null &&
+                  receiverDef.variant === Semantic.ENode.StructDatatype &&
+                  !receiverDef.refByDefault;
                 const variableId = this.sr.b.addSymbol(this.sr, {
                   variant: Semantic.ENode.VariableSymbol,
                   memberOfStruct: symbol.methodOf,
+                  uncheckedReceiver: uncheckedReceiver,
                   mutability: EVariableMutability.Default,
                   name: collectedThisRef.name,
                   type: thisRef,
@@ -17090,6 +17120,7 @@ export class SemanticElaborator {
               // not let it outlive the frame (a stored stackref callable
               // is witness-checked before its env is ever touched).
               this.consumeLambdaCaptures(valueId);
+              srcExpr.builtInPlace = true;
             } else if (
               srcExpr.variant === Semantic.ENode.CallableExpr &&
               srcExpr.envValue?.type === "method"
@@ -17113,7 +17144,7 @@ export class SemanticElaborator {
               stackrefInit = "from-ref";
             } else {
               if (
-                !srcExpr.isTemporary &&
+                !Conversion.isFreshValue(this.sr, valueId) &&
                 Conversion.isNocopyType(this.sr, srcUse.type)
               ) {
                 throw new CompilerError(
@@ -17770,6 +17801,17 @@ export class SemanticElaborator {
           }
         }
 
+        // The loop variable is a copy of each element. For nocopy elements
+        // that is a second binding (§9.2); they are used in place through
+        // `arr[i]` instead (§8).
+        if (Conversion.isNocopyUse(this.sr, elementTypeUse)) {
+          throw new CompilerError(
+            `'for ${s.loopVariable} in ...' would copy every element, and '${Semantic.serializeTypeUse(this.sr, elementTypeUse)}' is 'nocopy'. Iterate by index and use the elements in place: 'for (let i = 0; i < arr.length; i++) { arr[i]... }'.`,
+            s.sourceloc,
+            HazeErrorCode.NocopySecondBinding
+          );
+        }
+
         // Step 3: Create loop variable (element) with the array's element type
         const [_, loopVariableId] = this.sr.b.addSymbol(this.sr, {
           variant: Semantic.ENode.VariableSymbol,
@@ -18347,6 +18389,26 @@ export class SemanticElaborator {
           HazeErrorCode.SpreadOfOpaqueStruct
         );
       }
+      // Spreading copies every member out of the source: for a nocopy value
+      // that is a second binding (§9.2), unless the source is a fresh value.
+      // Out of a ref/stackref it duplicates an object that keeps existing, so
+      // it is rejected even from a temporary (as `let x: W = someRef` is).
+      //
+      // This closes the spread, not field access: `W { n: a.n }` still
+      // rebuilds a nocopy value from its members one by one. Preventing that
+      // needs private fields, which do not exist yet; until then the stdlib's
+      // nocopy types rely on `opaque` and on not being used adversarially.
+      if (
+        Conversion.isNocopyType(this.sr, sourceUse.type) &&
+        (sourceUse.storage !== EStorageClass.Value ||
+          !Conversion.isFreshValue(this.sr, sourceExprId))
+      ) {
+        throw new CompilerError(
+          `'${Semantic.serializeTypeUse(this.sr, sourceExpr.type)}' is 'nocopy': spreading it would copy it into a second value. Spread a freshly constructed value, or reference the existing one instead.`,
+          element.sourceloc,
+          HazeErrorCode.NocopySecondBinding
+        );
+      }
 
       // Bind the source to a temporary and read the members off THAT, so it is
       // evaluated exactly once however many members it contributes and however
@@ -18781,17 +18843,16 @@ export class SemanticElaborator {
 
     const byValue = this.isCapturedByValue(capturedVariable.type);
     if (byValue) {
-      const capUse = this.sr.typeUseNodes.get(
-        this.resolveAlias(capturedVariable.type)
-      );
-      const capDef = this.sr.typeDefNodes.get(capUse.type);
-      if (
-        capDef.variant === Semantic.ENode.StructDatatype &&
-        capUse.storage === EStorageClass.Value &&
-        Conversion.isNocopyType(this.sr, capUse.type)
-      ) {
+      // A struct, or a fixed array / union holding one by value.
+      if (Conversion.isNocopyUse(this.sr, capturedVariable.type)) {
+        const capDef = this.sr.typeDefNodes.get(
+          this.sr.typeUseNodes.get(this.resolveAlias(capturedVariable.type))
+            .type
+        );
         throw new CompilerError(
-          `'${capturedVariable.name}' is a 'nocopy' value and cannot be captured by a closure (that would copy it). Declare it with 'let stackref' and capture the reference instead.`,
+          capDef.variant === Semantic.ENode.StructDatatype
+            ? `'${capturedVariable.name}' is a 'nocopy' value and cannot be captured by a closure (that would copy it). Declare it with 'let stackref' and capture the reference instead.`
+            : `'${capturedVariable.name}' holds a 'nocopy' value and cannot be captured by a closure (that would copy it). Keep it inside a struct declared with 'let stackref' (or a 'ref' struct) and capture that reference instead.`,
           resultingExpr.sourceloc,
           HazeErrorCode.NocopySecondBinding
         );
@@ -20537,6 +20598,9 @@ export class SemanticElaborator {
       flow: flow,
       writes: writes,
       isTemporary: true,
+      // `do { a }` hands out a copy of `a`, and a local declared inside the
+      // block is no different: there is no last-use move (§9.3).
+      emitsNamedValue: !Conversion.isFreshValue(this.sr, scope.emittedExpr),
       type: this.sr.exprNodes.get(scope.emittedExpr).type,
       sourceloc: blockScopeExpr.sourceloc,
     });

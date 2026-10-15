@@ -278,6 +278,7 @@ export enum HazeErrorCode {
   FieldHasNoDefaultValue = 7215, // Field '' of '' has no default value
   UnionMemberNotCallable = 7216, // Calling a member across a union: in some variant it is a field that cannot be called
   FieldDoesNotHaveAttributeNamed = 7217, // Field '' of type does not have an attribute named ''
+  ThisCapturedByEscapingClosure = 7218, // A closure that can outlive the call captures 'this' of a plain method; declare the method 'stackref fn'
   ThisDistroPackageManagerNotSupportedYetPlease = 8001, // This Distro/Package Manager is not supported yet, please report
   DeadCodeDetectedAndStripped = 9001, // Dead code detected and stripped
   EmbeddedFileSizeMBExceeds50MB = 9002, // Embedded file size ( MB) exceeds 50 MB:

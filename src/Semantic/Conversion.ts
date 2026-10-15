@@ -1185,7 +1185,7 @@ export namespace Conversion {
     throw new CompilerError(
       c.error,
       sourceloc,
-      HazeErrorCode.NoSuitableConversionFound
+      c.code ?? HazeErrorCode.NoSuitableConversionFound
     );
   }
 
@@ -1982,6 +1982,18 @@ export namespace Conversion {
           return false;
         }
 
+        // The same struct in a different storage class is not this variant
+        // as it stands: storing the reference into a value slot (or a value
+        // into a reference slot) is a conversion of its own, handled below.
+        if (
+          sr.typeDefNodes.get(resolvedSourceTypeUse.type).variant ===
+            Semantic.ENode.StructDatatype &&
+          sr.typeUseNodes.get(sr.e.resolveAlias(m)).storage !==
+            resolvedSourceTypeUse.storage
+        ) {
+          return false;
+        }
+
         // Check match with implicit mutability change
         if (
           resolvedSourceTypeUse.mutability ===
@@ -2012,6 +2024,48 @@ export namespace Conversion {
           kind: "value-to-union",
           index: matching,
         };
+      }
+
+      // The source's own struct as a variant, in another storage class
+      // (§6.2): a ref or stackref stored into a value variant is a copy, a ref
+      // into a stackref variant is free. Matching these by type alone stored
+      // the reference itself as the value payload, which emitted
+      // uncompilable C. Converting into the variant first applies the
+      // ordinary rules, including nocopy (§9) and the directions that are
+      // never allowed (a value never becomes a ref).
+      if (
+        sr.typeDefNodes.get(resolvedSourceTypeUse.type).variant ===
+        Semantic.ENode.StructDatatype
+      ) {
+        const storageMatches: number[] = [];
+        resolvedTargetTypeDef.members.forEach((m, index) => {
+          const mUse = sr.typeUseNodes.get(sr.e.resolveAlias(m));
+          if (
+            mUse.type !== resolvedSourceTypeUse.type ||
+            mUse.storage === resolvedSourceTypeUse.storage
+          ) {
+            return;
+          }
+          const memberPlan = buildConversionPlan(
+            sr,
+            sourceExprId,
+            m,
+            constraints,
+            _sourceloc,
+            mode,
+            unsafe
+          );
+          if (memberPlan.kind !== "error") {
+            storageMatches.push(index);
+          }
+        });
+        if (storageMatches.length === 1) {
+          return {
+            kind: "convert-into-union-variant",
+            index: storageMatches[0],
+            memberTypeUseId: resolvedTargetTypeDef.members[storageMatches[0]],
+          };
+        }
       }
 
       // No variant is the source's type outright. §4.2 requires `operator as`
@@ -2060,8 +2114,17 @@ export namespace Conversion {
           return true;
         }
 
-        // Check match with implicit mutability change
+        // Check match with implicit mutability change. For a struct, only
+        // within one storage class: a reference is never stored as a value
+        // payload (or the reverse) by a mutability match.
         const mUse = sr.typeUseNodes.get(sr.e.resolveAlias(m.type));
+        if (
+          sr.typeDefNodes.get(mUse.type).variant ===
+            Semantic.ENode.StructDatatype &&
+          mUse.storage !== resolvedSourceTypeUse.storage
+        ) {
+          return false;
+        }
         if (
           resolvedSourceTypeUse.mutability === EDatatypeMutability.Const &&
           mUse.mutability === EDatatypeMutability.Default &&
@@ -3021,7 +3084,9 @@ export namespace Conversion {
     sourceloc: SourceLoc,
     mode: Mode,
     unsafe?: boolean
-  ): { ok: true; expr: Semantic.ExprId } | { ok: false; error: string } {
+  ):
+    | { ok: true; expr: Semantic.ExprId }
+    | { ok: false; error: string; code?: HazeErrorCode } {
     const sourceExpr = sr.exprNodes.get(sourceExprId);
 
     // Intrinsic values cannot be assigned to variables - they can only be called
@@ -3114,25 +3179,31 @@ export namespace Conversion {
       return { ok: false, error: conversionPlan.message };
     }
 
-    // nocopy (R&D/Storage Classes and References.md §9): landing a value of a
-    // nocopy struct type in a new slot is a second binding unless the source
-    // is a temporary (nothing else can observe it afterwards). Copying out of
-    // a ref/stackref duplicates an object that keeps existing: always rejected.
-    {
+    // nocopy (R&D/Storage Classes and References.md §9): landing a nocopy
+    // value in a new slot is a second binding unless the source is a fresh
+    // value (nothing else can observe it afterwards). The slot is anything
+    // that holds the value inline -- the struct itself, a union variant or
+    // optional, a fixed array (isNocopyUse) -- and so is the source. Copying
+    // out of a ref/stackref duplicates an object that keeps existing: always
+    // rejected. A conversion that only inspects the value (a truthiness or
+    // tag check into `bool`) lands nothing and is unaffected.
+    if (
+      isNocopyUse(sr, targetTypeUseId) &&
+      (conversionPlan.kind === "clone-struct-to-target-type" ||
+        (isNocopyUse(sr, sourceExpr.type) && !isFreshValue(sr, sourceExprId)))
+    ) {
+      const targetText = Semantic.serializeTypeUse(sr, targetTypeUseId);
       const targetUse = sr.typeUseNodes.get(sr.e.resolveAlias(targetTypeUseId));
-      const targetDef = sr.typeDefNodes.get(targetUse.type);
-      if (
-        targetDef.variant === Semantic.ENode.StructDatatype &&
-        targetUse.storage === EStorageClass.Value &&
-        isNocopyType(sr, targetUse.type) &&
-        (conversionPlan.kind === "clone-struct-to-target-type" ||
-          !sourceExpr.isTemporary)
-      ) {
-        return {
-          ok: false,
-          error: `'${Semantic.serializeTypeUse(sr, targetTypeUseId)}' is 'nocopy' and this would create a second binding of an existing value. Pass it as 'stackref ${Semantic.serializeTypeUse(sr, targetTypeUseId)}' or 'ref ${Semantic.serializeTypeUse(sr, targetTypeUseId)}' instead, or construct a fresh value here.`,
-        };
-      }
+      const targetIsStruct =
+        sr.typeDefNodes.get(targetUse.type).variant ===
+        Semantic.ENode.StructDatatype;
+      return {
+        ok: false,
+        code: HazeErrorCode.NocopySecondBinding,
+        error: targetIsStruct
+          ? `'${targetText}' is 'nocopy' and this would create a second binding of an existing value. Pass it as 'stackref ${targetText}' or 'ref ${targetText}' instead, or construct a fresh value here.`
+          : `'${targetText}' holds a 'nocopy' value and this would create a second binding of an existing one (from '${Semantic.serializeTypeUse(sr, sourceExpr.type)}'). Construct a fresh value here, or hold a 'ref'/'stackref' to the existing one instead.`,
+      };
     }
 
     return {
@@ -3152,7 +3223,11 @@ export namespace Conversion {
     Map<Semantic.TypeDefId, boolean>
   >();
 
-  /** `nocopy` is viral: a struct holding a nocopy value field is nocopy too. */
+  /**
+   * `nocopy` is viral: a struct holding a nocopy value inline -- as a value
+   * field, in a fixed array, or as a variant of a union / optional field -- is
+   * nocopy too (§9.2). A `ref` or `stackref` member only refers to one.
+   */
   export function isNocopyType(
     sr: Semantic.Context,
     typeDefId: Semantic.TypeDefId
@@ -3168,11 +3243,13 @@ export namespace Conversion {
     }
     const def = sr.typeDefNodes.get(typeDefId);
     let result = false;
+    // Cycle guard. A type can only contain itself through a reference, which
+    // never carries nocopy, so "not nocopy" is the right answer mid-cycle.
+    nocopyCache.set(typeDefId, false);
     if (def.variant === Semantic.ENode.StructDatatype) {
       if (def.nocopy) {
         result = true;
       } else {
-        nocopyCache.set(typeDefId, false); // cycle guard
         for (const memberId of def.members) {
           const member = sr.symbolNodes.get(memberId);
           if (
@@ -3181,36 +3258,68 @@ export namespace Conversion {
           ) {
             continue;
           }
-          const mUse = sr.typeUseNodes.get(sr.e.resolveAlias(member.type));
-          const mDef = sr.typeDefNodes.get(mUse.type);
-          if (
-            mDef.variant === Semantic.ENode.StructDatatype &&
-            mUse.storage === EStorageClass.Value &&
-            isNocopyType(sr, mUse.type)
-          ) {
-            result = true;
-            break;
-          }
-          if (
-            mDef.variant === Semantic.ENode.FixedArrayDatatype &&
-            isNocopyType(
-              sr,
-              sr.typeUseNodes.get(sr.e.resolveAlias(mDef.datatype)).type
-            )
-          ) {
+          if (isNocopyUse(sr, member.type)) {
             result = true;
             break;
           }
         }
       }
     } else if (def.variant === Semantic.ENode.FixedArrayDatatype) {
-      const elemUse = sr.typeUseNodes.get(sr.e.resolveAlias(def.datatype));
-      result =
-        elemUse.storage === EStorageClass.Value &&
-        isNocopyType(sr, elemUse.type);
+      result = isNocopyUse(sr, def.datatype);
+    } else if (def.variant === Semantic.ENode.UntaggedUnionDatatype) {
+      result = def.members.some((m) => isNocopyUse(sr, m));
+    } else if (def.variant === Semantic.ENode.TaggedUnionDatatype) {
+      result = def.members.some((m) => isNocopyUse(sr, m.type));
     }
     nocopyCache.set(typeDefId, result);
     return result;
+  }
+
+  /**
+   * Whether a value of this type carries a nocopy value inline, so that
+   * copying the value copies it: a nocopy value struct, or a fixed array /
+   * union / optional holding one. A `ref` or `stackref` is a reference --
+   * copying it copies the pointer, never the value -- and a dynamic array is
+   * a GC handle. This is the question every second-binding check asks.
+   */
+  export function isNocopyUse(
+    sr: Semantic.Context,
+    typeUseId: Semantic.TypeUseId
+  ): boolean {
+    const use = sr.typeUseNodes.get(sr.e.resolveAlias(typeUseId));
+    const def = sr.typeDefNodes.get(use.type);
+    switch (def.variant) {
+      case Semantic.ENode.StructDatatype:
+        return use.storage === EStorageClass.Value && isNocopyType(sr, use.type);
+      case Semantic.ENode.FixedArrayDatatype:
+      case Semantic.ENode.UntaggedUnionDatatype:
+      case Semantic.ENode.TaggedUnionDatatype:
+        // Always stored inline: the definition decides.
+        return isNocopyType(sr, use.type);
+      default:
+        return false;
+    }
+  }
+
+  /**
+   * Whether an expression produces a fresh value that nothing else can
+   * observe afterwards -- the only kind that may initialise a nocopy slot
+   * (§9.2). `isTemporary`, except that a `do` block handing out an existing
+   * binding is not fresh. A cast of such a block needs no special case: every
+   * cast is built by a conversion, which checks the block itself first.
+   */
+  export function isFreshValue(
+    sr: Semantic.Context,
+    exprId: Semantic.ExprId
+  ): boolean {
+    const expr = sr.exprNodes.get(exprId);
+    if (!expr.isTemporary) {
+      return false;
+    }
+    if (expr.variant === Semantic.ENode.BlockScopeExpr) {
+      return expr.emitsNamedValue !== true;
+    }
+    return true;
   }
 
   export function MakeDefaultValue(

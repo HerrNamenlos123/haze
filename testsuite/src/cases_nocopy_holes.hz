@@ -1,0 +1,477 @@
+// ============================================================================
+// REGRESSION TESTS: the paths that used to copy a `nocopy` value anyway.
+//
+// Design of record: R&D/Storage Classes and References.md §9.2 -- no second
+// binding of a nocopy value may ever be created; only a temporary may
+// initialise a new slot. A probe on 2026-10-15 found every route below still
+// copying one:
+//
+//   * unions: a named value into a union, a union into a union, union
+//     parameters, returns, fields -- and union / optional FIELDS also ended
+//     the viral rule, so a struct holding `W | none` was freely copyable
+//   * fixed arrays: `let fb = fa`, and a closure capturing one
+//   * struct spread `{ ...a }`, which binds its source with no conversion
+//   * `for x in arr`, whose loop variable is a copy of each element
+//   * parameter packs and C varargs, which pass arguments as-is
+//   * a `do` block handing out an existing binding (`do { a }`)
+//
+// Each must now fail with H7180 (the dedicated nocopy code; conversions used
+// to report the generic H4001), while the same shapes built from temporaries,
+// or holding references, keep compiling.
+//
+// Two storage-class bugs on the union path are fixed with it (§6.2): a `ref`
+// or `stackref` stored into a value variant of a union is a copy (it used to
+// emit uncompilable C), and a struct holding `[N]ref W` is copyable (the old
+// viral check ignored the element's storage class).
+// ============================================================================
+
+namespace cases_nocopy_holes {
+
+    export fn register(s: mut testsuite.Suite) {
+
+        s.run(
+            "nocopy holes: temporaries and references still flow through unions, arrays, spreads, loops, packs and do blocks",
+            """
+nocopy struct W { n: int;
+    mut fn bump() { this.n = this.n + 1; }
+}
+struct P { n: int; }
+struct HoldsRefs { items: [2]mut ref W; }
+ref struct H { u: W | none = none; }
+
+fn makeW(n: int): W { return W { n: n }; }
+fn maybe(n: int): W | none { if n > 0 { return W { n: n }; } return none; }
+fn takeU(u: W | none): int { if u { return u.n; } return -1; }
+fn count(args: ...): int { return args.length; }
+
+fn main(): int {
+    // 1. Temporaries into unions: locals, parameters, returns, fields.
+    //    Reading through a narrowed union does not copy it.
+    let u: W | none = W { n: 1 };
+    let t = takeU(W { n: 2 });
+    let m = maybe(3);
+    let h: ref H = {};
+    h.u = W { n: 4 };
+    let nothing = none;
+    let empty: W | none = nothing;
+    let un = 0;
+    if u { un = u.n; }
+    let mn = 0;
+    if m { mn = m.n; }
+    let en = 0;
+    if empty { en = 1; }
+    fmt.println(f"1: {un} {t} {mn} {en}");
+
+    // 2. Fixed arrays built from temporaries, used in place; a struct of
+    //    references to nocopy values copies the references.
+    let fa: [2]W = [W { n: 1 }, W { n: 2 }];
+    fa[0].bump();
+    fa[1].n = 7;
+    let r1: mut ref W = { n: 1 };
+    let r2: mut ref W = { n: 2 };
+    let hr = HoldsRefs { items: [r1, r2] };
+    let hr2 = hr;
+    hr2.items[0].n = 9;
+    fmt.println(f"2: {fa[0].n} {fa[1].n} {hr.items[0].n}");
+
+    // 3. Spreading a temporary, and a plain struct.
+    let s1 = W { ...makeW(5) };
+    let p1 = P { n: 1 };
+    let p2 = P { ...p1 };
+    p2.n = 2;
+    fmt.println(f"3: {s1.n} {p1.n} {p2.n}");
+
+    // 4. for-each over references; an index loop over nocopy values.
+    let q1: ref W = { n: 1 };
+    let q2: ref W = { n: 2 };
+    let refs: []ref W = [q1, q2];
+    let sum = 0;
+    for r in refs { sum += r.n; }
+    let vals: []W = [W { n: 3 }, W { n: 4 }];
+    for (let i = 0; i < vals.length; i++) {
+        vals[i].bump();
+        sum += vals[i].n;
+    }
+    fmt.println(f"4: {sum}");
+
+    // 5. Packs take temporaries; a reference passes as a reference.
+    fmt.println(f"5: {count(W { n: 1 }, makeW(2))} {count(r1, 3)}");
+
+    // 6. A do block that builds a fresh value is a temporary.
+    let d = do { W { n: 6 } };
+    let d2 = do {
+        let x = 3;
+        W { n: x + 4 }
+    };
+    fmt.println(f"6: {d.n} {d2.n}");
+
+    // 7. A ref or stackref stored into a value variant is a copy (§6.2).
+    let rp: ref P = { n: 1 };
+    let up: P | none = rp;
+    rp.n = 2;
+    let stackref sp = P { n: 10 };
+    let usp: P | none = sp;
+    sp.n = 11;
+    let a = 0;
+    let b = 0;
+    if up { a = up.n; }
+    if usp { b = usp.n; }
+    fmt.println(f"7: {a} {b} {rp.n} {sp.n}");
+    return 0;
+}
+""",
+            """
+1: 1 2 3 0
+2: 2 7 9
+3: 5 1 2
+4: 12
+5: 2 2
+6: 6 7
+7: 1 10 2 11
+""");
+
+        // ── Array types keep their element's storage class ───────────────────
+        //
+        // Array types were interned by element DEFINITION alone, so in one
+        // module `[2]P` and `[2]mut ref P` (or `[]P` and `[]mut ref P`) were the
+        // same type, shaped by whichever was seen first: a value array became
+        // an array of references (and failed to accept values), or an array of
+        // references silently held copies. Whether an array holds nocopy
+        // values (and whether writes reach the original) depends on this.
+        s.run(
+            "array types keep their element's storage class whichever is seen first",
+            """
+struct P { n: int; }
+struct HoldsRefs { items: [2]mut ref P; }   // references seen before values
+struct HoldsVals { items: []P; }            // values seen before references
+fn main(): int {
+    let r1: mut ref P = { n: 1 };
+    let r2: mut ref P = { n: 2 };
+    let hr = HoldsRefs { items: [r1, r2] };
+    let fa: [2]P = [P { n: 3 }, P { n: 4 }];
+    hr.items[0].n = 10;
+    fa[0].n = 30;
+    let hv = HoldsVals { items: [P { n: 5 }] };
+    let dr: []mut ref P = [r2];
+    dr[0].n = 20;
+    hv.items[0].n = 50;
+    fmt.println(f"{r1.n} {r2.n} {fa[0].n} {fa[1].n} {hv.items[0].n}");
+    return 0;
+}
+""",
+            "10 20 30 4 50");
+
+        // ── Unions ────────────────────────────────────────────────────────────
+        s.compileFails(
+            "nocopy holes: a named value into a union",
+            """
+nocopy struct W { n: int; }
+fn main(): int {
+    let a = W { n: 1 };
+    let u: W | none = a;
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.NocopySecondBinding)]);
+
+        s.compileFails(
+            "nocopy holes: a union copied into another binding",
+            """
+nocopy struct W { n: int; }
+fn main(): int {
+    let u: W | none = W { n: 1 };
+    let v = u;
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.NocopySecondBinding)]);
+
+        s.compileFails(
+            "nocopy holes: a union widened into a larger union",
+            """
+nocopy struct W { n: int; }
+fn main(): int {
+    let u: W | none = W { n: 1 };
+    let v: W | int | none = u;
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.NocopySecondBinding)]);
+
+        s.compileFails(
+            "nocopy holes: a named value passed to a union parameter",
+            """
+nocopy struct W { n: int; }
+fn g(u: W | none): int { return 0; }
+fn main(): int {
+    let a = W { n: 1 };
+    return g(a);
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.NocopySecondBinding)]);
+
+        s.compileFails(
+            "nocopy holes: a named local returned as a union",
+            """
+nocopy struct W { n: int; }
+fn make(): W | none {
+    let w = W { n: 1 };
+    return w;
+}
+fn main(): int {
+    let m = make();
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.NocopySecondBinding)]);
+
+        s.compileFails(
+            "nocopy holes: a union field assigned from another",
+            """
+nocopy struct W { n: int; }
+ref struct H { u: W | none = none; }
+fn main(): int {
+    let h1: ref H = {};
+    let h2: ref H = {};
+    h2.u = W { n: 1 };
+    h1.u = h2.u;
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.NocopySecondBinding)]);
+
+        s.compileFails(
+            "nocopy holes: a ref stored into a value variant copies out of it",
+            """
+nocopy struct W { n: int; }
+fn main(): int {
+    let r: ref W = { n: 1 };
+    let u: W | none = r;
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.NocopySecondBinding)]);
+
+        s.compileFails(
+            "nocopy holes: a union field makes the struct nocopy (viral)",
+            """
+nocopy struct W { n: int; }
+struct U { w: W | none = none; }
+fn main(): int {
+    let u1 = U {};
+    let u2 = u1;
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.NocopySecondBinding)]);
+
+        s.compileFails(
+            "nocopy holes: an optional field makes the struct nocopy (viral)",
+            """
+nocopy struct W { n: int; }
+struct O { w?: W; }
+fn main(): int {
+    let o1 = O {};
+    let o2 = o1;
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.NocopySecondBinding)]);
+
+        // ── A value never becomes a ref variant (§6.2, I6) ───────────────────
+        s.compileFails(
+            "a value is not stored into a ref variant of a union",
+            """
+struct P { n: int; }
+fn main(): int {
+    let p = P { n: 1 };
+    let u: ref P | none = p;
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.NoSuitableConversionFound)]);
+
+        // ── Fixed arrays ──────────────────────────────────────────────────────
+        s.compileFails(
+            "nocopy holes: a fixed array of nocopy values copied",
+            """
+nocopy struct W { n: int; }
+fn main(): int {
+    let fa: [2]W = [W { n: 1 }, W { n: 2 }];
+    let fb = fa;
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.NocopySecondBinding)]);
+
+        s.compileFails(
+            "nocopy holes: a closure capturing a fixed array of nocopy values",
+            """
+nocopy struct W { n: int; }
+fn main(): int {
+    let fa: [1]W = [W { n: 1 }];
+    let f = (): int => fa[0].n;
+    return f();
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.NocopySecondBinding)]);
+
+        s.compileFails(
+            "nocopy holes: a closure capturing a union holding a nocopy value",
+            """
+nocopy struct W { n: int; }
+fn main(): int {
+    let u: W | none = W { n: 1 };
+    let f = (): int => { if u { return u.n; } return 0; };
+    return f();
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.NocopySecondBinding)]);
+
+        // ── Struct spread ────────────────────────────────────────────────────
+        s.compileFails(
+            "nocopy holes: spreading a named nocopy value",
+            """
+nocopy struct W { n: int; }
+fn main(): int {
+    let a = W { n: 1 };
+    let b = W { ...a };
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.NocopySecondBinding)]);
+
+        s.compileFails(
+            "nocopy holes: spreading a struct that holds a nocopy member",
+            """
+nocopy struct W { n: int; }
+struct Outer { w: W; k: int; }
+fn main(): int {
+    let o = Outer { w: W { n: 1 }, k: 2 };
+    let o2 = Outer { ...o };
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.NocopySecondBinding)]);
+
+        s.compileFails(
+            "nocopy holes: spreading out of a ref",
+            """
+nocopy struct W { n: int; }
+fn main(): int {
+    let r: ref W = { n: 1 };
+    let c: W = { ...r };
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.NocopySecondBinding)]);
+
+        s.compileFails(
+            "nocopy holes: spreading a temporary ref copies an object that still exists",
+            """
+nocopy struct W { n: int; }
+let keep: ref W | none = none;
+fn shared(): ref W {
+    let r: ref W = { n: 1 };
+    keep = r;
+    return r;
+}
+fn main(): int {
+    let c: W = { ...shared() };
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.NocopySecondBinding)]);
+
+        // ── for-each ──────────────────────────────────────────────────────────
+        s.compileFails(
+            "nocopy holes: for-each over a dynamic array of nocopy values",
+            """
+nocopy struct W { n: int; }
+fn main(): int {
+    let arr: []W = [W { n: 1 }];
+    let sum = 0;
+    for x in arr { sum += x.n; }
+    return sum;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.NocopySecondBinding)]);
+
+        s.compileFails(
+            "nocopy holes: for-each with an index over a fixed array of nocopy values",
+            """
+nocopy struct W { n: int; }
+fn main(): int {
+    let fa: [2]W = [W { n: 1 }, W { n: 2 }];
+    let sum = 0;
+    for x, i in fa { sum += x.n + i; }
+    return sum;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.NocopySecondBinding)]);
+
+        // ── Parameter packs ──────────────────────────────────────────────────
+        s.compileFails(
+            "nocopy holes: a named value passed into a parameter pack",
+            """
+nocopy struct W { n: int; }
+fn count(args: ...): int { return args.length; }
+fn main(): int {
+    let a = W { n: 1 };
+    return count(a);
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.NocopySecondBinding)]);
+
+        s.compileFails(
+            "nocopy holes: forwarding a pack element copies it",
+            """
+nocopy struct W { n: int; }
+fn inner(args: ...): int { return args.length; }
+fn outer(args: ...): int { return inner(...args); }
+fn main(): int {
+    return outer(W { n: 1 });
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.NocopySecondBinding)]);
+
+        // ── do blocks ─────────────────────────────────────────────────────────
+        s.compileFails(
+            "nocopy holes: a do block handing out a named value",
+            """
+nocopy struct W { n: int; }
+fn main(): int {
+    let a = W { n: 1 };
+    let x = do { a };
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.NocopySecondBinding)]);
+
+        s.compileFails(
+            "nocopy holes: a do block handing out its own named local",
+            """
+nocopy struct W { n: int; }
+fn main(): int {
+    let x = do {
+        let w = W { n: 1 };
+        w
+    };
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.NocopySecondBinding)]);
+
+        s.compileFails(
+            "nocopy holes: a cast does not make a do block's named value fresh",
+            """
+nocopy struct W { n: int; }
+fn main(): int {
+    let a = W { n: 1 };
+    let x = (do { a }) as W;
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.NocopySecondBinding)]);
+    }
+}

@@ -234,7 +234,7 @@ fn main(): int {
     return b.h.fd;
 }
 """,
-            [testsuite.mustHave(errorcodes.Code.NoSuitableConversionFound)]);
+            [testsuite.mustHave(errorcodes.Code.NocopySecondBinding)]);
 
         // ── Recursion (§1.5, §3.5) ──────────────────────────────────────────
         //

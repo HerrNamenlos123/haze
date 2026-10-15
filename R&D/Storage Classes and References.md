@@ -1000,6 +1000,35 @@ implementation refined or extended the design; each is normative from here on.
   Struct-backed primitives (`str`, …) keep the old one-slot env block.
 - "Immediately called" is decided at the call-expression node (`immediatelyCalled`), so operator
   overloads and subscripts on value receivers are fine.
+- **A closure in a plain method captures `this` itself, not its fields (2026-10-15).** The capture
+  is the hidden pointer, by reference, so mutations inside the closure reach the receiver; §12.2's
+  "captures fields by value" did not describe the implementation, and a closure returned from a
+  method on a stack value read a dead frame (I1). Rule: in a plain `fn` of a value struct, a
+  closure that captures `this` must provably run inside the call: passed to a non-retaining
+  parameter (`stackEnv`), built in place by `let stackref`, or invoked on the spot. Any other such
+  closure is H7218 (checked in Lower, on the final tree, so speculative elaboration cannot leave
+  stale state). The fix-it is `stackref fn`: `this` is then a checked reference, the closure
+  carries its witness, and a call after the receiver is gone panics. `ref fn` and methods of a
+  `ref struct` capture a GC reference and are unaffected; so is copying first (`let copy = this`).
+
+**`nocopy` (§9), 2026-10-15**
+- Every second-binding check asks one question, `Conversion.isNocopyUse`: does a value of this
+  type hold a nocopy value inline? A nocopy value struct, or a fixed array, union or optional
+  holding one. A `ref`/`stackref` element or variant does not. Virality follows the same rule, so
+  a struct with a `W | none` or `w?: W` field is nocopy.
+- Paths that bound a value without going through `MakeConversion` check it themselves: struct
+  spread (rejected even from a temporary `ref`, which still exists afterwards), the `for x in arr`
+  loop variable (use `arr[i]` in place), parameter packs and C varargs, and closure captures of
+  fixed arrays and unions. Every nocopy violation reports H7180.
+- "Fresh" is `isTemporary`, except that a `do` block handing out an existing binding is not
+  (`do { a }`, or a local declared inside it: there is no last-use move, §9.3). The block keeps
+  `isTemporary` for lowering; the flag is `emitsNamedValue`.
+- Not closed: rebuilding a value from its fields (`W { n: a.n }`). That needs private fields;
+  until then the stdlib's nocopy types rely on `opaque` and on not being used adversarially.
+- Union and array storage classes, fixed with it: a `ref`/`stackref` stored into a value variant
+  of a union is the §6.2 copy (it used to store the reference as the payload and emit invalid C),
+  a value into a `ref` variant is an error, and array types are interned by element definition
+  *and storage class* (`[2]P` and `[2]ref P` were one type, shaped by whichever came first).
 
 **Runtime**
 - The generation table is runtime-managed (`malloc`/`realloc`, never GC memory: it holds no

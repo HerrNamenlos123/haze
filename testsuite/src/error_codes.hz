@@ -276,6 +276,7 @@ namespace errorcodes {
         FieldHasNoDefaultValue = 7215,
         UnionMemberNotCallable = 7216,
         FieldDoesNotHaveAttributeNamed = 7217,
+        ThisCapturedByEscapingClosure = 7218,
         ThisDistroPackageManagerNotSupportedYetPlease = 8001,
         DeadCodeDetectedAndStripped = 9001,
         EmbeddedFileSizeMBExceeds50MB = 9002,

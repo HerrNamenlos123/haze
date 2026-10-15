@@ -2148,6 +2148,30 @@ export function lowerExpr(
         };
       } else if (expr.envValue?.type === "lambda") {
         assert(expr.envType?.type === "lambda");
+        // `this` of a plain method on a value struct is a raw pointer the
+        // caller lends for the duration of the call, with no witness
+        // (R&D/Storage Classes and References.md §12.2). A closure may keep it
+        // only if the closure provably runs inside that call: its env lives on
+        // the stack for a non-retaining parameter, it is built in place by
+        // `let stackref` (and so checked against this frame), or it is invoked
+        // on the spot. Anything else could read the receiver after it is gone
+        // (I1). Checked here, on the final tree, so that lambdas elaborated
+        // speculatively during overload resolution cannot leave stale state.
+        if (!expr.stackEnv && !expr.builtInPlace && !expr.immediatelyCalled) {
+          for (const c of expr.envValue.captures) {
+            const captured = lr.sr.symbolNodes.get(c.variable);
+            if (
+              captured.variant === Semantic.ENode.VariableSymbol &&
+              captured.uncheckedReceiver
+            ) {
+              throw new CompilerError(
+                `This closure captures 'this' and can outlive the call, but 'this' in a plain method of a value struct is only lent for the duration of the call: the closure could run after the receiver is gone. Declare the method 'stackref fn' (or 'mut stackref fn') so the closure holds a checked reference that panics instead. Alternatively capture a copy ('let copy = this;'), build the closure in place with 'let stackref', or pass it straight to an 'immediate' parameter.`,
+                expr.sourceloc,
+                HazeErrorCode.ThisCapturedByEscapingClosure
+              );
+            }
+          }
+        }
         envType = {
           type: "lambda",
           captures: expr.envType.captures.map((c) => ({

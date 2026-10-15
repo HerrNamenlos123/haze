@@ -480,12 +480,21 @@ export function makeStackArrayDatatypeAvailable(
   storage: EStorageClass,
   sourceloc: SourceLoc
 ): Semantic.TypeUseId {
-  const resolvedElemDefId = sr.typeUseNodes.get(sr.e.resolveAlias(datatype)).type;
+  // Interned by the element's definition AND storage class. The element's
+  // mutability is deliberately not part of the key (see ffba18fc), but its
+  // storage class is what the array holds: `[2]P` stores values, `[2]ref P`
+  // stores references. Keying on the definition alone made them one type,
+  // shaped by whichever was seen first.
+  const resolvedElemUse = sr.typeUseNodes.get(sr.e.resolveAlias(datatype));
   for (const id of sr.fixedArrayTypeCache) {
     const type = sr.typeDefNodes.get(id);
     assert(type.variant === Semantic.ENode.FixedArrayDatatype);
-    const cachedElemDefId = sr.typeUseNodes.get(sr.e.resolveAlias(type.datatype)).type;
-    if (cachedElemDefId !== resolvedElemDefId || type.length !== length) {
+    const cachedElemUse = sr.typeUseNodes.get(sr.e.resolveAlias(type.datatype));
+    if (
+      cachedElemUse.type !== resolvedElemUse.type ||
+      cachedElemUse.storage !== resolvedElemUse.storage ||
+      type.length !== length
+    ) {
       continue;
     }
     return makeTypeUse(sr, id, mutability, storage, sourceloc)[1];
@@ -511,12 +520,17 @@ export function makeDynamicArrayDatatypeAvailable(
   storage: EStorageClass,
   sourceloc: SourceLoc
 ): Semantic.TypeUseId {
-  const resolvedElemDefId = sr.typeUseNodes.get(sr.e.resolveAlias(datatype)).type;
+  // Keyed like makeStackArrayDatatypeAvailable: element definition and
+  // storage class (`[]P` and `[]ref P` are different arrays).
+  const resolvedElemUse = sr.typeUseNodes.get(sr.e.resolveAlias(datatype));
   for (const id of sr.dynamicArrayTypeCache) {
     const type = sr.typeDefNodes.get(id);
     assert(type.variant === Semantic.ENode.DynamicArrayDatatype);
-    const cachedElemDefId = sr.typeUseNodes.get(sr.e.resolveAlias(type.datatype)).type;
-    if (cachedElemDefId !== resolvedElemDefId) {
+    const cachedElemUse = sr.typeUseNodes.get(sr.e.resolveAlias(type.datatype));
+    if (
+      cachedElemUse.type !== resolvedElemUse.type ||
+      cachedElemUse.storage !== resolvedElemUse.storage
+    ) {
       continue;
     }
     return makeTypeUse(sr, id, mutability, storage, sourceloc)[1];

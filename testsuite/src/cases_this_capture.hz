@@ -1,0 +1,196 @@
+// ============================================================================
+// REGRESSION TESTS: closures that capture `this`.
+//
+// Design of record: R&D/Storage Classes and References.md §12.2 / §12.3, I1.
+//
+// In a plain method of a value struct, the receiver is a hidden pointer the
+// caller lends for the duration of the call (§12.2). A closure capturing
+// `this` copied that raw pointer into its env. Returned from a method called
+// on a stack value, it read a dead frame: a probe on 2026-10-15 printed
+// 94045428830464 instead of 42, with no check and no panic -- I1 broken.
+//
+// The rule now: a closure that captures a plain method's `this` must not be
+// able to outlive the call, or the method is rejected with H7218. Closures
+// that provably cannot outlive it keep capturing by reference, exactly as
+// before: one passed to an `immediate` or inferred non-escaping parameter,
+// one built in place with `let stackref`, one invoked on the spot. A closure
+// that has to outlive the call needs a receiver with a witness: the method
+// declares `stackref fn` (§12.3), `this` is a checked reference, and using it
+// after the receiver is gone panics instead of reading dead memory. A `ref`
+// receiver (`ref struct`, or a `stackref fn` called on a `ref`) never dies
+// while referenced.
+// ============================================================================
+
+namespace cases_this_capture {
+
+    export fn register(s: mut testsuite.Suite) {
+
+        s.run(
+            "this capture: non-escaping closures, stackref receivers, copies and ref receivers",
+            """
+struct V {
+    n: int;
+
+    // The closure runs during the call: capture by reference stays.
+    mut fn addAll(xs: []int) { each(xs, (x: int): void => { this.n = this.n + x; }); }
+    fn viaInferred(): int { return apply((): int => this.n * 2); }
+    fn inPlace(): int {
+        let stackref f = (): int => this.n + 1;
+        return f();
+    }
+    fn onTheSpot(): int { return ((): int => this.n + 3)(); }
+
+    // Outlives the call through a checked reference (§12.3).
+    stackref fn getter(): () => int { return (): int => this.n; }
+    mut stackref fn incrementer(): () => void { return (): void => { this.n = this.n + 1; }; }
+
+    // Outlives the call holding a copy: nothing refers back to the receiver.
+    fn snapshot(): () => int {
+        let copy = this;
+        return (): int => copy.n;
+    }
+}
+
+ref struct R {
+    n: int;
+    fn getter(): () => int { return (): int => this.n; }
+}
+
+fn each(xs: []int, f: immediate (x: int) => void) { for x in xs { f(x); } }
+fn apply(f: () => int): int { return f(); }
+
+fn main(): int {
+    let stackref v = V { n: 1 };
+    v.addAll([1, 2, 3]);
+    let a = v.viaInferred();
+    let b = v.inPlace();
+    let c = v.onTheSpot();
+    let g = v.getter();
+    let inc = v.incrementer();
+    inc();
+    inc();
+    let snap = v.snapshot();
+    v.n = 100;
+    fmt.println(f"{v.n} {a} {b} {c} {g()} {snap()}");
+
+    let r: ref R = { n: 5 };
+    let rg = r.getter();
+    r.n = 6;
+    let rv: ref V = { n: 40 };
+    let rvg = rv.getter();
+    rv.n = 41;
+    fmt.println(f"{rg()} {rvg()}");
+    return 0;
+}
+""",
+            """
+100 14 8 10 100 9
+6 41
+""");
+
+        // ── The receiver is gone: a checked reference panics (§5.3) ───────────
+        s.runExitCode(
+            "this capture: a stackref fn closure used after its receiver is gone panics",
+            """
+struct V {
+    n: int;
+    stackref fn getter(): () => int { return (): int => this.n; }
+}
+fn make(): () => int {
+    let stackref v = V { n: 42 };
+    return v.getter();
+}
+fn main(): int {
+    let g = make();
+    fmt.println(f"{g()}");
+    return 0;
+}
+""",
+            255);   // an unrecovered panic ends the process with _exit(-1)
+
+        // ── A plain method's closure must not outlive the call ───────────────
+        s.compileFails(
+            "this capture: a closure returned from a plain method",
+            """
+struct V {
+    n: int;
+    fn getter(): () => int { return (): int => this.n; }
+}
+fn make(): () => int {
+    let v = V { n: 42 };
+    return v.getter();
+}
+fn main(): int {
+    let g = make();
+    return g();
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.ThisCapturedByEscapingClosure)]);
+
+        s.compileFails(
+            "this capture: a closure stored into a field",
+            """
+ref struct Holder { cb: (() => void) | none = none; }
+struct V {
+    n: int;
+    mut fn register(h: mut ref Holder) { h.cb = (): void => { this.n = this.n + 1; }; }
+}
+fn main(): int {
+    let h: mut ref Holder = {};
+    let v = V { n: 1 };
+    v.register(h);
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.ThisCapturedByEscapingClosure)]);
+
+        s.compileFails(
+            "this capture: a closure pushed into an array",
+            """
+struct V {
+    n: int;
+    fn collect(out: mut []() => int) { out.push((): int => this.n); }
+}
+fn main(): int {
+    let out: mut []() => int = [];
+    let v = V { n: 1 };
+    v.collect(out);
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.ThisCapturedByEscapingClosure)]);
+
+        s.compileFails(
+            "this capture: a heap closure in a local, even if only called locally",
+            """
+struct V {
+    n: int;
+    fn twice(): int {
+        let f = (): int => this.n;
+        return f() + f();
+    }
+}
+fn main(): int {
+    let v = V { n: 1 };
+    return v.twice();
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.ThisCapturedByEscapingClosure)]);
+
+        s.compileFails(
+            "this capture: an escaping closure around a non-escaping one",
+            """
+fn apply(f: () => int): int { return f(); }
+struct V {
+    n: int;
+    fn getter(): () => int { return (): int => apply((): int => this.n); }
+}
+fn main(): int {
+    let v = V { n: 1 };
+    let g = v.getter();
+    return g();
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.ThisCapturedByEscapingClosure)]);
+    }
+}
