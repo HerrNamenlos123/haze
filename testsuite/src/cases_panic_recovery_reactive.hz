@@ -1,0 +1,137 @@
+// Regression coverage for the reactive core under a recovered panic
+// (hzstd_reactive_state_t, hzstd_reactive_restore_state).
+//
+// A panic longjmps out of every computed being evaluated and every write
+// being delivered between the panic site and the `attempt` that recovers it,
+// skipping the code that would have put the core's evaluation state back.
+// Before every recovery frame saved and restored that state, a recovered
+// panic left the cut-short computed "current" (every later read became its
+// dependency), clean with its stale value, and -- from a sync watcher -- the
+// delivery flag set, so no watcher anywhere was notified again. The nested
+// case pins down that restoring does not break propagation instead: a
+// computed marked dirty without its dependents would stop every later write
+// from reaching them.
+//
+// ui_components relies on this: it recovers a component's panics (see
+// stdlib/ui_components/tests/crash-recovery-tests.hz) and the app has to go
+// on with a sound reactive graph.
+
+namespace cases_panic_recovery_reactive {
+
+    export fn register(s: mut testsuite.Suite) {
+
+        s.run(
+            "a recovered panic restores the reactive core: cut-short computeds, tracking, write delivery",
+            """ref struct Checks {
+    checks: int = 0;
+    failures: int = 0;
+
+    mut fn check(name: str, ok: bool) {
+        this.checks = this.checks + 1;
+        if !ok {
+            this.failures = this.failures + 1;
+            fmt.println(f"FAIL: {name}");
+        }
+    }
+}
+
+fn main(): int {
+    let state = Checks {};
+    let sync: (job: rx.WatchJob) => none = (job: rx.WatchJob): none => {
+        job.run();
+    };
+
+    // ── a computed cut short by a panic, caught outside any computed ────
+    let a = rx.reactive<int>(1);
+    let failOn: ref Box<int> = { value: 2 };
+    let d = rx.computed((): int => {
+        let v = rx.get(a);
+        if v == failOn.value {
+            sys.panic("boom in computed");
+        }
+        return v * 10;
+    });
+    state.check("computed: first read", rx.get(d) == 10);
+    a := 2;
+    let caught: ref Box<bool> = { value: false };
+    attempt {
+        rx.get(d);
+    } recover e {
+        caught.value = true;
+    };
+    state.check("computed: the panic was caught", caught.value);
+    // Its result is unknown, so it is evaluated again on the next read
+    // instead of handing out the value from before the write.
+    failOn.value = 0;
+    state.check("computed: evaluated again after the recovery", rx.get(d) == 20);
+    // Reads outside any computed are recorded as nobody's dependency --
+    // the cut-short computed must not have stayed the one being evaluated.
+    let y = rx.reactive<int>(0);
+    rx.get(y);
+    y := 1;
+    state.check("computed: a later read is not recorded as its dependency", !rx.isDirty(d));
+
+    // ── the same, caught inside another computed (a template's pattern) ──
+    let p = rx.reactive<int>(1);
+    let q = rx.reactive<int>(1);
+    let inner = rx.computed((): int => {
+        let v = rx.get(p);
+        if v == 2 {
+            sys.panic("boom in inner computed");
+        }
+        return v;
+    });
+    let outer = rx.computed((): int => {
+        let v = attempt { rx.get(inner) } recover e { -1 };
+        return v + rx.get(q) * 100;
+    });
+    state.check("nested: first read", rx.get(outer) == 101);
+    p := 2;
+    state.check("nested: the inner panic is recovered inside the outer", rx.get(outer) == 99);
+    // What the outer read after the recovery is ITS dependency.
+    q := 2;
+    state.check("nested: the outer still tracks what it read after the recovery", rx.get(outer) == 199);
+    // And the inner, once it can be evaluated again, still reaches the outer.
+    p := 3;
+    state.check("nested: a write to the inner's source reaches the outer", rx.get(outer) == 203);
+
+    // ── a sync watcher panicking inside the write that triggered it ─────
+    let s = rx.reactive<int>(0);
+    let sCalls: ref Box<int> = { value: 0 };
+    let ws = rx.watch(() => s, (v, old) => {
+        sCalls.value++;
+        if v == 1 {
+            sys.panic("boom in watcher");
+        }
+    }, { scheduler: sync });
+    let t = rx.reactive<int>(0);
+    let tCalls: ref Box<int> = { value: 0 };
+    let wt = rx.watch(() => t, (v, old) => {
+        tCalls.value++;
+    }, { scheduler: sync });
+    let caughtWatcher: ref Box<bool> = { value: false };
+    attempt {
+        s := 1;
+    } recover e {
+        caughtWatcher.value = true;
+    };
+    state.check("watcher: the panic was caught", caughtWatcher.value);
+    // The write it interrupted must not leave every later write unable to
+    // notify anyone.
+    t := 1;
+    state.check("watcher: a later write still notifies its watcher", tCalls.value == 1);
+    s := 2;
+    state.check("watcher: the watcher that panicked fires again", sCalls.value == 2);
+
+    if state.failures > 0 {
+        fmt.println(f"{state.failures} of {state.checks} checks FAILED");
+        return 1;
+    }
+    fmt.println(f"all {state.checks} checks passed");
+    return 0;
+}
+""",
+            "all 11 checks passed"
+        );
+    }
+}

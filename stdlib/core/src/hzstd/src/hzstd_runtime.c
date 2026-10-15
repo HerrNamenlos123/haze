@@ -5,6 +5,7 @@
 #include "../include/hzstd_array.h"
 #include "../include/hzstd_demangle.h"
 #include "../include/hzstd_platform.h"
+#include "../include/hzstd_reactive.h"
 #include "../include/hzstd_runtime.h"
 #include "../include/hzstd_string.h"
 
@@ -836,6 +837,7 @@ hzstd_panic_recovery_frame_t *hzstd_push_panic_recovery_frame(hzstd_panic_recove
   frame->cleanup_overflow = NULL;
   memset(&frame->_hz_panic_stacktrace, 0, sizeof(frame->_hz_panic_stacktrace));
   frame->saved_stackref_depth = hzstd_gen_table.depth;
+  hzstd_reactive_save_state(&frame->saved_reactive);
 
   HZSTD_DYNAMIC_ARRAY_PUSH(panic_recovery_frames, frame);
   return frame;

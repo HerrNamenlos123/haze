@@ -1,0 +1,192 @@
+import renderer
+
+// Every tile is always tileSizePx x tileSizePx in hardware (512x512). Kept
+// as a bare top-level const, not inside the tilemath namespace below --
+// referencing a namespaced `const` as a *value* (as opposed to calling a
+// namespaced function) crashes this compiler with an internal assertion
+// failure in Elaborate.ts's elaborateSymbolInNamespace (its switch only
+// handles function-overload-group and nested-typedef symbols, so a plain
+// const value symbol falls through to `assert(false)`). Namespaced
+// *functions* (tilemath.zoomLevelFor() etc. below) are unaffected.
+const comptime tileSizePx = 512;
+
+// Google-Maps-style tile pyramid math. A "zoom level" is the power-of-two
+// native px/mm resolution chosen so that a tile rendered at that resolution
+// is between tileSizePx/2 and tileSizePx on screen at the *current*
+// viewport zoom. Recomputing the tile grid at a new level (see
+// DocumentRenderer in render.hz) is what makes one tile become the four
+// that cover the same area when zooming in a level, or four become one
+// zooming out -- there is no explicit "split"/"merge" step, it falls out of
+// the grid math.
+namespace tilemath {
+    // Sign-correct floor for reals (real -> int truncates toward zero, which
+    // is wrong for negative values -- page-local coordinates are usually
+    // non-negative, but world/viewport coordinates after panning are not).
+    fn floorToInt(v: real): int {
+        let truncated = v as int;
+        if v < 0.0 && (truncated as real) != v {
+            return truncated - 1;
+        }
+        return truncated;
+    }
+
+    // Smallest power-of-two "native" px/mm resolution >= zoomPxPerMm, found
+    // by doubling/halving instead of log2 (not available in math.hz).
+    //
+    // On-screen tile size = tileSizePx * zoomPxPerMm / native. For that to
+    // land in (tileSizePx/2, tileSizePx] (i.e. never below half-native
+    // detail, never above 1:1), native must be the smallest power of two
+    // that is still >= zoomPxPerMm -- NOT the largest one <= zoomPxPerMm.
+    // Picking the latter (an earlier version of this function did) instead
+    // gives on-screen size in [tileSizePx, 2*tileSizePx): every tile is
+    // *always* displayed at 1x-2x magnification past its own native
+    // texel resolution, showing up as constant blur regardless of zoom
+    // level -- confirmed by walking the actual on-screen-px math against a
+    // live debug print rather than just guessing.
+    fn zoomLevelFor(zoomPxPerMm: real): int {
+        if zoomPxPerMm <= 0.0 {
+            return 0;
+        }
+        let level = 0;
+        let native = 1.0;
+        if native < zoomPxPerMm {
+            while native < zoomPxPerMm {
+                native *= 2.0;
+                level += 1;
+            }
+        } else {
+            while native / 2.0 >= zoomPxPerMm {
+                native /= 2.0;
+                level -= 1;
+            }
+        }
+        return level;
+    }
+
+    // 2^level via an iterative loop (not math.pow) to avoid float rounding
+    // surprises landing exactly on power-of-two tile-grid boundaries.
+    fn nativeZoomForLevel(level: int): real {
+        let v = 1.0;
+        if level >= 0 {
+            for (let i = 0; i < level; i++) {
+                v *= 2.0;
+            }
+        } else {
+            for (let i = 0; i < -level; i++) {
+                v /= 2.0;
+            }
+        }
+        return v;
+    }
+
+    // World-space (mm) size of one tile at a given pyramid level.
+    fn tileWorldSize(level: int): real {
+        return (tileSizePx as real) / nativeZoomForLevel(level);
+    }
+}
+
+// One pooled 512x512 hardware tile: the picture of one square of one page at
+// one pyramid level. Never resized -- "moving" a tile to cover another square
+// is only bookkeeping (assign()), the GPU canvas itself is untouched.
+//
+// localMinX/localMinY are always relative to the *page* this tile belongs
+// to (pageIndex), never to document/world space -- a tile at page-local
+// (0,0) looks identical whether it's page 0 or page 5. The page's own
+// position in the vertically-stacked document (pageOriginY in render.hz)
+// only ever gets added in at the final composite step (screen position) and
+// nowhere else, so tile content/hit-testing/bbox-matching stays uniform
+// across every page.
+ref struct Tile {
+    canvas: mut renderer.gfx.Canvas;
+    pageIndex: int = 0;
+    level: int = 0;
+    tx: int = 0;
+    ty: int = 0;
+    localMinX: real = 0.0;
+    localMinY: real = 0.0;
+    localSize: real = 0.0;     // mm size of this tile's page-local rect (square) at its level
+    // It holds a picture of its square -- possibly an outdated one, see dirty.
+    // A tile without one is not drawn at all.
+    hasContent: bool = false;
+    // Its picture is outdated or missing, so it has to be drawn (again).
+    dirty: bool = true;
+    // It was drawn without images that were still loading, so it is drawn
+    // again once they are there.
+    waitingForImages: bool = false;
+
+    fn constructor(gfx: mut renderer.gfx.Context) {
+        return Tile {
+            canvas: renderer.gfx.Canvas({
+                gfx: gfx,
+                size: renderer.gfx.CanvasSize {
+                    logicalSize: Vec2i(tileSizePx, tileSizePx),
+                    framebufferSize: Vec2i(tileSizePx, tileSizePx),
+                },
+                // Every tile render starts from a clear canvas, so all tiles
+                // share one multisampled color buffer instead of each having
+                // a 4 MB one of its own.
+                alwaysClears: true,
+            }),
+        };
+    }
+
+    // Repoints this (possibly recycled) tile at a square of a page. It has no
+    // picture of that square yet.
+    fn assign(pageIndex: int, level: int, tx: int, ty: int) {
+        let size = tilemath.tileWorldSize(level);
+        this.pageIndex = pageIndex;
+        this.level = level;
+        this.tx = tx;
+        this.ty = ty;
+        this.localMinX = tx as real * size;
+        this.localMinY = ty as real * size;
+        this.localSize = size;
+        this.hasContent = false;
+        this.dirty = true;
+        this.waitingForImages = false;
+    }
+
+    fn isAt(level: int, tx: int, ty: int): bool {
+        return this.level == level && this.tx == tx && this.ty == ty;
+    }
+
+    fn bbox(): BBox {
+        return BBox {
+            left: this.localMinX,
+            right: this.localMinX + this.localSize,
+            top: this.localMinY,
+            bottom: this.localMinY + this.localSize,
+        };
+    }
+}
+
+// The tiles no page is using, kept for reuse. Every tile is a 1 MB GPU
+// texture, so only a few are kept; trim() frees the rest.
+ref struct TilePool {
+    gfx: mut renderer.gfx.Context;
+    free: []mut Tile = [];
+
+    fn constructor(gfx: mut renderer.gfx.Context) {
+        return TilePool { gfx: gfx };
+    }
+
+    fn acquire(pageIndex: int, level: int, tx: int, ty: int): mut Tile {
+        let tile = this.free.length > 0 ? this.free.pop() : Tile(this.gfx);
+        tile.assign(pageIndex, level, tx, ty);
+        return tile;
+    }
+
+    fn release(tile: mut Tile) {
+        this.free.push(tile);
+    }
+
+    // Frees the GPU memory of all but `keep` unused tiles. A tile drawn
+    // somewhere this frame must not be freed before that draw is committed
+    // (see Canvas.destroy), so this runs before anything draws.
+    fn trim(keep: int) {
+        while this.free.length > keep {
+            let tile = this.free.pop();
+            tile.canvas.destroy();
+        }
+    }
+}

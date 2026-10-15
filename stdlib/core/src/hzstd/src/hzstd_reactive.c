@@ -5,7 +5,13 @@
 
 #include <string.h>
 
-static hzstd_computed_node_t* g_current_computed = NULL;
+// The evaluation state -- these two and the two counters below -- is per
+// thread: a recovered panic restores it (hzstd_reactive_restore_state), and a
+// recovery on one thread must not rewind another thread's evaluation.
+static _Thread_local hzstd_computed_node_t* g_current_computed = NULL;
+// The computed whose `fn` is running, innermost first along eval_parent.
+// Unlike g_current_computed, pausing tracking does not hide it.
+static _Thread_local hzstd_computed_node_t* g_evaluating = NULL;
 
 // Effects whose scheduler is owed a call, collected while a write is
 // marking the graph dirty and delivered once it is done -- see
@@ -17,8 +23,8 @@ static size_t g_pending_effects_cap = 0;
 // > 0 while a write is marking. Nested writes (a scheduler writing a cell)
 // only ever happen with the depth back at 0, so they deliver their own
 // notifications right away, in order, like any other write.
-static int g_write_depth = 0;
-static int g_delivering_effects = 0;
+static _Thread_local int g_write_depth = 0;
+static _Thread_local int g_delivering_effects = 0;
 
 // TODO: The dirty marking system is deeply recursive.
 // On very large reactive graphs, marking dirty may lead to a stack overflow
@@ -77,6 +83,7 @@ hzstd_computed_node_t* hzstd_computed_create(hzstd_computed_fn_t fn, void* env)
   c->scheduler = NULL;
   c->scheduler_env = NULL;
   c->stopped = 0;
+  c->eval_parent = NULL;
   c->deps = NULL;
   c->free_deps = NULL;
   c->free_edges = NULL;
@@ -145,10 +152,13 @@ void* hzstd_computed_get(hzstd_computed_node_t* comp)
 
   hzstd_computed_node_t* prev = g_current_computed;
   g_current_computed = comp;
+  comp->eval_parent = g_evaluating;
+  g_evaluating = comp;
 
   comp->dirty = 0;
   comp->cached = comp->fn(comp->env);
 
+  g_evaluating = comp->eval_parent;
   g_current_computed = prev;
 
   return comp->cached;
@@ -179,6 +189,9 @@ static void queue_effect(hzstd_computed_node_t* comp)
 // own notifications while this loop is still running -- the guard keeps
 // the nested delivery from draining the list out from under the outer
 // one; the outer loop reaches the appended entries itself.
+//
+// A delivery a recovered panic cut short leaves its delivered entries NULL
+// and the rest pending; the next delivery skips the one and makes the other.
 static void deliver_effects(void)
 {
   if (g_delivering_effects) {
@@ -188,7 +201,7 @@ static void deliver_effects(void)
   for (size_t i = 0; i < g_pending_effects_len; i++) {
     hzstd_computed_node_t* comp = g_pending_effects[i];
     g_pending_effects[i] = NULL;
-    if (comp->scheduler && !comp->stopped) {
+    if (comp && comp->scheduler && !comp->stopped) {
       comp->scheduler(comp->scheduler_env);
     }
   }
@@ -258,6 +271,33 @@ hzstd_computed_node_t* hzstd_reactive_pause_tracking(void)
 }
 
 void hzstd_reactive_resume_tracking(hzstd_computed_node_t* prev) { g_current_computed = prev; }
+
+void hzstd_reactive_save_state(hzstd_reactive_state_t* state)
+{
+  state->current = g_current_computed;
+  state->evaluating = g_evaluating;
+  state->write_depth = g_write_depth;
+  state->delivering = g_delivering_effects;
+}
+
+void hzstd_reactive_restore_state(const hzstd_reactive_state_t* state)
+{
+  // Every evaluation the panic cut short: its result is unknown and its
+  // dependencies only half recorded, so it is dirty again. Its dependents
+  // are marked too, as if it had been written -- a dirty node with a clean
+  // dependent would stop every later write from reaching that dependent.
+  // What the marking owes a scheduler is delivered by the next write.
+  hzstd_computed_node_t* comp = g_evaluating;
+  while (comp && comp != state->evaluating) {
+    comp->dirty = 1;
+    mark_dirty(&comp->base);
+    comp = comp->eval_parent;
+  }
+  g_evaluating = state->evaluating;
+  g_current_computed = state->current;
+  g_write_depth = state->write_depth;
+  g_delivering_effects = state->delivering;
+}
 
 void* hzstd_slot_alloc(size_t size) { return hzstd_heap_allocate(size, NULL); }
 

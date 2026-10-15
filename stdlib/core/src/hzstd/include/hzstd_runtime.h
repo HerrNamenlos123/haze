@@ -3,6 +3,7 @@
 #define HZSTD_RUNTIME_H
 
 #include "../hzstd_types.h"
+#include "hzstd_reactive.h"
 #include "hzstd_source_location.h"
 #include "hzstd_string.h"
 
@@ -127,6 +128,8 @@ _Noreturn void hzstd_panic_dead_stackref(void);
       /* panic_machinery already set _hz_panic_stacktrace (TLS) */                                                     \
       /* The longjmp skipped every stackref scope exit between the panic site and here. */                             \
       hzstd_stackref_unwind_to(__hz_frame_##id->saved_stackref_depth);                                                 \
+      /* ...and every computed evaluation and write delivery: see hzstd_reactive_state_t. */                           \
+      hzstd_reactive_restore_state(&__hz_frame_##id->saved_reactive);                                                  \
       hzstd_panic_recovery_frame_run_cleanup(__hz_frame_##id);                                                         \
       hzstd_pop_panic_recovery_frame();                                                                                \
       goto recovery_label;                                                                                             \

@@ -445,6 +445,18 @@ typedef struct {
 // than HZSTD_RECOVERY_INLINE_CLEANUPS of them spills to a heap array.
 #define HZSTD_RECOVERY_INLINE_CLEANUPS 4
 
+// The reactive core's evaluation state (see hzstd_reactive.c) at the time a
+// recovery frame was pushed. A panic longjmps out of every computed being
+// evaluated and every write being delivered between the panic site and the
+// frame, skipping the code that would have put this state back, so the
+// recovery path restores it -- see hzstd_reactive_restore_state.
+typedef struct {
+  struct hzstd_computed_node_t *current;
+  struct hzstd_computed_node_t *evaluating;
+  int write_depth;
+  int delivering;
+} hzstd_reactive_state_t;
+
 typedef struct {
   hzstd_panic_recovery_cleanup_entry_t inline_cleanups[HZSTD_RECOVERY_INLINE_CLEANUPS];
   size_t cleanup_count; /* total, inline + overflow */
@@ -457,6 +469,8 @@ typedef struct {
   // this depth explicitly -- otherwise skipped slots keep live generations and a
   // stale stackref would pass its check (soundness hole, not a leak).
   size_t saved_stackref_depth;
+  // Same reason, for the reactive core.
+  hzstd_reactive_state_t saved_reactive;
 } hzstd_panic_recovery_frame_t;
 
 // ── Generational stack references ────────────────────────────────────────────
@@ -741,6 +755,10 @@ struct hzstd_computed_node_t {
   void *scheduler_env;
   // Set by hzstd_computed_stop: the node never runs or subscribes again.
   int stopped;
+  // While `fn` runs: the computed whose evaluation this one runs inside, if
+  // any -- the chain a recovered panic walks to find every evaluation it cut
+  // short (hzstd_reactive_restore_state). Meaningless otherwise.
+  struct hzstd_computed_node_t *eval_parent;
 
   hzstd_cell_dep_t *deps;
   // Edge/dep records unlinked by the last clear_dependencies(), kept for

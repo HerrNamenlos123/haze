@@ -48,6 +48,12 @@ void hzstd_computed_stop(hzstd_computed_node_t* c);
 hzstd_computed_node_t* hzstd_reactive_pause_tracking(void);
 void hzstd_reactive_resume_tracking(hzstd_computed_node_t* prev);
 
+// The panic machinery's side of the core (see hzstd_reactive_state_t): every
+// recovery frame saves the state when it is pushed, and its recovery path
+// restores it before any recovering code runs.
+void hzstd_reactive_save_state(hzstd_reactive_state_t* state);
+void hzstd_reactive_restore_state(const hzstd_reactive_state_t* state);
+
 void* hzstd_slot_alloc(size_t size);
 // The slot a computed's wrapper should write its result into: the node's
 // existing cached slot when it is being re-run (same size every time), a

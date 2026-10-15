@@ -1,0 +1,100 @@
+// Drives haze-notes' DocumentLoad (persistence.hz, copied verbatim) over
+// files that are not documents. Clicking a PDF in the file tree once made
+// the scan pop an empty container stack and panic, and the PDF stayed the
+// vault's lastOpenedFile, so every start crashed. A file that is not a
+// document must end the load as failed, never take the app down.
+
+ref struct State {
+    checks: int = 0;
+    failures: int = 0;
+
+    mut fn check(name: str, ok: bool) {
+        this.checks = this.checks + 1;
+        if !ok {
+            this.failures = this.failures + 1;
+            fmt.println(f"FAIL: {name}");
+        }
+    }
+}
+
+const dir = "/tmp/claude-1000/-home-fzachs-Projects-haze/48dc03c3-f300-4f97-84d6-27a2ff7897eb/scratchpad/hnload";
+
+// Parsed rather than built: a literal-union field (gridType) cannot be set
+// from a string literal in a struct literal yet.
+fn sampleDocument(): DocumentFile {
+    let parsed = json.parse<DocumentFile>("{\"filetype\":\"technicalsketcher\",\"fileversion\":1,\"data\":{\"pageColor\":\"#ffffff\",\"gridColor\":\"#cccccc\",\"gridType\":\"dots\",\"pages\":[{\"shapes\":[{\"variant\":\"Line\",\"points\":[{\"x\":10,\"y\":10,\"pressure\":0.5},{\"x\":20,\"y\":15,\"pressure\":0.5},{\"x\":30,\"y\":12,\"pressure\":0.5}],\"penColor\":\"#000000\",\"penThickness\":1}]},{\"shapes\":[]}],\"pageWidthMm\":210,\"pageHeightMm\":297,\"currentPageIndex\":0}}");
+    assert(parsed, "sample document parses");
+    let doc: DocumentFile = parsed;
+    return doc;
+}
+
+// Steps the load the way the editor does, a short budget at a time, until
+// it is over. False when it never ends.
+fn loadToEnd(load: DocumentLoad): bool {
+    for (let i = 0; i < 100000; i++) {
+        if load.step(time.now() + 0.005) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Loads a file holding `text`; true when the load ended as a failure with
+// no document.
+fn failsToLoad(state: mut State, name: str, text: str): bool {
+    fmt.println(f"case: {name}");
+    let path = f"{dir}/{name}.tsk";
+    state.check(f"{name}: fixture written", fs.writeText(path, text) ? true : false);
+    let load = DocumentLoad(path);
+    state.check(f"{name}: load ends", loadToEnd(load));
+    return load.failed && !load.doc;
+}
+
+fn main(): int {
+    let state = State {};
+    fs.createDirectory(dir);
+
+    // A real document, saved and loaded back: the scan must still accept
+    // everything a save writes.
+    fmt.println("case: round trip");
+    let path = f"{dir}/roundtrip.tsk";
+    let save = DocumentSave(path, sampleDocument());
+    save.finish();
+    state.check("round trip: saved", !save.failed);
+    let load = DocumentLoad(path);
+    state.check("round trip: load ends", loadToEnd(load));
+    state.check("round trip: loaded", !load.failed);
+    if let doc = load.doc {
+        state.check("round trip: 2 pages", doc.data.pages.length == 2);
+        if doc.data.pages.length == 2 {
+            state.check("round trip: page 1 has its stroke", doc.data.pages[0].shapes.length == 1);
+            state.check("round trip: page 2 is empty", doc.data.pages[1].shapes.length == 0);
+        }
+    } else {
+        state.check("round trip: has a document", false);
+    }
+    let saved = fs.readText(path);
+    state.check("round trip: file readable", saved ? true : false);
+    let valid: str = saved ? saved : "";
+
+    // Files that are not documents. Each one closes a container it never
+    // opened -- the first byte that does is where the scan used to die.
+    state.check("a lone ']' fails", failsToLoad(state, "lone-bracket", "]"));
+    state.check("a lone '}' fails", failsToLoad(state, "lone-brace", "}"));
+    state.check("'{}}' fails", failsToLoad(state, "extra-brace", "{}}"));
+    state.check("a document with a ']' after it fails", failsToLoad(state, "trailing-bracket", f"{valid}]"));
+    state.check("a PDF fails", failsToLoad(state, "pdf",
+        "%PDF-1.7\n%\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\nstream\n]x}\nendstream\n"));
+
+    // Already failing cleanly before; kept so the fix does not lose them.
+    state.check("a truncated document fails", failsToLoad(state, "truncated", valid.slice(0, valid.length - 1)));
+    state.check("text with no JSON at all fails", failsToLoad(state, "no-json", "%PDF-1.7\nhello"));
+    state.check("an empty file fails", failsToLoad(state, "empty", ""));
+
+    if state.failures > 0 {
+        fmt.println(f"{state.failures} of {state.checks} checks FAILED");
+        return 1;
+    }
+    fmt.println(f"all {state.checks} checks passed");
+    return 0;
+}

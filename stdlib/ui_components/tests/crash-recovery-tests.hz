@@ -1,0 +1,391 @@
+import ui_components
+import ui_elements
+
+// Drives the component system headlessly to verify CRASH RECOVERY: a panic in
+// a component's own code crashes that component and nothing else.
+//
+// Every kind of code the framework runs on a component's behalf is covered,
+// because each one is a separate place the framework calls in from -- setup,
+// the template, an onFrame hook, onMounted, onUnmount, a watcher, an event
+// handler. A crashed component stops: its watchers and its frame hook no
+// longer run, the components inside it are destroyed, and it shows the error
+// where its content was. Everything around it keeps working, which is what
+// the Healthy component and the app root's own click handler check after
+// every crash.
+//
+// haze-notes once died on startup from a panic in its editor's onFrame
+// hook: the setup and the template were the only component code anything
+// caught, so one bad file took the whole app down instead of one component.
+//
+// Not covered here: a canvas's draw function, which only runs with a GPU
+// renderer (see drawCanvasIfNeeded).
+
+ref struct TestArgs {}
+
+// All mutable test state in one ref struct so the UI closures can capture a
+// single handle and still see later writes.
+ref struct State {
+    frameBoom: bool = false;
+    // Always true. A closure that panics unconditionally is noreturn, and
+    // that does not convert to a handler's `=> none` type.
+    armed: bool = true;
+
+    healthyFrames: int = 0;
+    healthyWatchCalls: int = 0;
+    crasherFrames: int = 0;
+    crasherWatchCalls: int = 0;
+    childFrames: int = 0;
+    childUnmounts: int = 0;
+    templateChildFrames: int = 0;
+    templateChildUnmounts: int = 0;
+    setupWatchCalls: int = 0;
+    mounts: int = 0;
+    unmounts: int = 0;
+    watchCalls: int = 0;
+    targetClicks: int = 0;
+    crasherRootClicks: int = 0;
+    appClicks: int = 0;
+
+    mouseX: real = 0.0;
+    mouseY: real = 0.0;
+    leftHeld: bool = false;
+
+    failures: int = 0;
+    checks: int = 0;
+
+    mut fn check(name: str, ok: bool) {
+        this.checks = this.checks + 1;
+        if !ok {
+            this.failures = this.failures + 1;
+            fmt.println(f"FAIL: {name}");
+        }
+    }
+
+    mut fn checkInt(name: str, actual: int, expected: int) {
+        this.checks = this.checks + 1;
+        if actual != expected {
+            this.failures = this.failures + 1;
+            fmt.println(f"FAIL: {name} (expected {expected}, got {actual})");
+        }
+    }
+}
+
+// The root element of the component with this id, anywhere in the tree.
+fn findComponentRoot(element: ui_elements.Element, id: int): ui_elements.DivElement | none :: final {
+    if element is ui_elements.DivElement {
+        if element.id == id {
+            return element;
+        }
+        for child in element.children {
+            if let found = findComponentRoot(child, id) {
+                return found;
+            }
+        }
+    }
+    return none;
+}
+
+// Whether the component with this id shows its crash: one line, the error,
+// in place of everything it rendered.
+fn showsCrash(tree: mut ui_elements.DivElement | none, id: int): bool {
+    if let root = tree {
+        if let component = findComponentRoot(root, id) {
+            if component.children.length != 1 {
+                return false;
+            }
+            let only = component.children[0];
+            if only is ui_elements.TextElement {
+                return rx.get(only.text).startsWith("Component error: ");
+            }
+        }
+    }
+    return false;
+}
+
+// The text of the Healthy component's one line.
+fn healthyText(tree: mut ui_elements.DivElement | none): str {
+    if let root = tree {
+        if let component = findComponentRoot(root, -10) {
+            if component.children.length > 0 {
+                let first = component.children[0];
+                if first is ui_elements.TextElement {
+                    return rx.get(first.text);
+                }
+            }
+        }
+    }
+    return "";
+}
+
+fn main(): int {
+    let state = State {};
+
+    let healthyLabel = rx.reactive<str>("one");
+    let watched = rx.reactive<int>(0);
+    let watchSource = rx.reactive<int>(0);
+    let setupSource = rx.reactive<int>(0);
+    let templateBoom = rx.reactive<bool>(false);
+    let showUnmounter = rx.reactive<bool>(true);
+
+    let appRef: ui_components.ElementRef<ui_elements.DivElement> =
+        rx.shallowReactive<ui_components.ElementWrapper<ui_elements.DivElement> | null>(null);
+    let crasherRootRef: ui_components.ElementRef<ui_elements.DivElement> =
+        rx.shallowReactive<ui_components.ElementWrapper<ui_elements.DivElement> | null>(null);
+    let targetRef: ui_components.ElementRef<ui_elements.DivElement> =
+        rx.shallowReactive<ui_components.ElementWrapper<ui_elements.DivElement> | null>(null);
+
+    let edges: []ui_components.PointerEdge = [];
+
+    let ui = ui_components.UIContext({
+        ui: (ctx: ui_components.UIContext) => {
+            ctx.defineComponent(0, {} as TestArgs, (app: ui_components.InstanceData<TestArgs>) => {
+                return (): ui_components.DivProps => {
+
+                    // Keeps working through every crash below.
+                    ctx.defineComponent(-10, {} as TestArgs, (instance: ui_components.InstanceData<TestArgs>) => {
+                        ctx.onFrame(() => { state.healthyFrames++; });
+                        ctx.watch(() => watched, (v, old) => { state.healthyWatchCalls++; });
+                        return (): ui_components.DivProps => {
+                            ctx.text({ id: 1, text: rx.get(healthyLabel) });
+                            return { id: 0 };
+                        };
+                    });
+
+                    // Its frame hook panics once frameBoom is set.
+                    ctx.defineComponent(-20, {} as TestArgs, (instance: ui_components.InstanceData<TestArgs>) => {
+                        ctx.onFrame(() => {
+                            state.crasherFrames++;
+                            if state.frameBoom {
+                                sys.panic("boom in onFrame");
+                            }
+                        });
+                        ctx.watch(() => watched, (v, old) => { state.crasherWatchCalls++; });
+                        return (): ui_components.DivProps => {
+                            ctx.div({ id: 1 }, () => {});
+                            ctx.defineComponent(-21, {} as TestArgs, (child: ui_components.InstanceData<TestArgs>) => {
+                                ctx.onFrame(() => { state.childFrames++; });
+                                ctx.onUnmount(() => { state.childUnmounts++; });
+                                return (): ui_components.DivProps => {
+                                    return { id: 0 };
+                                };
+                            });
+                            return { id: 0 };
+                        };
+                    });
+
+                    // Its click handler panics. Its own root and the app root
+                    // both handle the same click, bubbling.
+                    ctx.defineComponent(-30, {} as TestArgs, (instance: ui_components.InstanceData<TestArgs>) => {
+                        return (): ui_components.DivProps => {
+                            ctx.div({
+                                id: 1,
+                                elementRef: targetRef,
+                                onClick: (e: ui_components.PointerEvent) => {
+                                    state.targetClicks++;
+                                    if state.armed {
+                                        sys.panic("boom in onClick");
+                                    }
+                                },
+                            }, () => {});
+                            return {
+                                id: 0,
+                                elementRef: crasherRootRef,
+                                onClick: (e: ui_components.PointerEvent) => { state.crasherRootClicks++; },
+                            };
+                        };
+                    });
+
+                    // Its watcher panics on the first change.
+                    ctx.defineComponent(-40, {} as TestArgs, (instance: ui_components.InstanceData<TestArgs>) => {
+                        ctx.watch(() => watchSource, (v, old) => {
+                            state.watchCalls++;
+                            if state.armed {
+                                sys.panic("boom in watch");
+                            }
+                        });
+                        return (): ui_components.DivProps => {
+                            ctx.div({ id: 1 }, () => {});
+                            return { id: 0 };
+                        };
+                    });
+
+                    // Its onMounted panics.
+                    ctx.defineComponent(-50, {} as TestArgs, (instance: ui_components.InstanceData<TestArgs>) => {
+                        ctx.onMounted(() => {
+                            state.mounts++;
+                            if state.armed {
+                                sys.panic("boom in onMounted");
+                            }
+                        });
+                        return (): ui_components.DivProps => {
+                            ctx.div({ id: 1 }, () => {});
+                            return { id: 0 };
+                        };
+                    });
+
+                    // Its onUnmount panics, when the app removes it.
+                    if rx.get(showUnmounter) {
+                        ctx.defineComponent(-60, {} as TestArgs, (instance: ui_components.InstanceData<TestArgs>) => {
+                            ctx.onUnmount(() => {
+                                state.unmounts++;
+                                if state.armed {
+                                    sys.panic("boom in onUnmount");
+                                }
+                            });
+                            return (): ui_components.DivProps => {
+                                return { id: 0 };
+                            };
+                        });
+                    }
+
+                    // Its template panics once templateBoom is set -- after
+                    // it already rendered a child component.
+                    ctx.defineComponent(-70, {} as TestArgs, (instance: ui_components.InstanceData<TestArgs>) => {
+                        return (): ui_components.DivProps => {
+                            if rx.get(templateBoom) {
+                                sys.panic("boom in template");
+                            }
+                            ctx.defineComponent(-71, {} as TestArgs, (child: ui_components.InstanceData<TestArgs>) => {
+                                ctx.onFrame(() => { state.templateChildFrames++; });
+                                ctx.onUnmount(() => { state.templateChildUnmounts++; });
+                                return (): ui_components.DivProps => {
+                                    return { id: 0 };
+                                };
+                            });
+                            return { id: 0 };
+                        };
+                    });
+
+                    // Its setup panics after it already created a watcher.
+                    ctx.defineComponent(-80, {} as TestArgs, (instance: ui_components.InstanceData<TestArgs>) => {
+                        ctx.watch(() => setupSource, (v, old) => { state.setupWatchCalls++; });
+                        if state.armed {
+                            sys.panic("boom in setup");
+                        }
+                        return (): ui_components.DivProps => {
+                            return { id: 0 };
+                        };
+                    });
+
+                    return {
+                        id: 0,
+                        elementRef: appRef,
+                        onClick: (e: ui_components.PointerEvent) => { state.appClicks++; },
+                    };
+                };
+            });
+        },
+        mousePos: (): Vec2 => { return Vec2(state.mouseX, state.mouseY); },
+        pointerButtons: ui_components.PointerHeldCallbacks {
+            leftHeld: (): bool => { return state.leftHeld; },
+            middleHeld: (): bool => { return false; },
+            rightHeld: (): bool => { return false; },
+            edgesThisFrame: (): []ui_components.PointerEdge => {
+                let out: []ui_components.PointerEdge = [];
+                for e in edges { out.push(e); }
+                edges.clear();
+                return out;
+            },
+        },
+    });
+
+    // ── frame 1: setup, template and onMounted run ──────────────────────
+    let tree = ui.process();
+    state.check("setup panic: crashed", showsCrash(tree, -80));
+    state.checkInt("onMounted panic: ran once", state.mounts, 1);
+    // A crash in onMounted is shown by the component's next template pass.
+    tree = ui.process();
+    state.check("onMounted panic: crashed", showsCrash(tree, -50));
+    state.check("healthy: renders", healthyText(tree) == "one");
+    state.check("frame hook owner: not crashed yet", !showsCrash(tree, -20));
+
+    // A watcher created by a setup that then panicked is stopped with it.
+    setupSource := 1;
+    tree = ui.process();
+    state.checkInt("setup panic: its watcher is stopped", state.setupWatchCalls, 0);
+
+    // ── an onFrame hook panics ──────────────────────────────────────────
+    let healthyFramesBefore = state.healthyFrames;
+    let childFramesBefore = state.childFrames;
+    state.frameBoom = true;
+    tree = ui.process();
+    state.check("onFrame panic: crashed", showsCrash(tree, -20));
+    state.checkInt("onFrame panic: the component inside it is unmounted", state.childUnmounts, 1);
+    let crasherFramesAfter = state.crasherFrames;
+    let childFramesAfter = state.childFrames;
+    watched := 1;
+    tree = ui.process();
+    tree = ui.process();
+    state.checkInt("onFrame panic: its hook stops", state.crasherFrames, crasherFramesAfter);
+    state.checkInt("onFrame panic: the hook of the component inside it stops", state.childFrames, childFramesAfter);
+    state.checkInt("onFrame panic: its watcher stops", state.crasherWatchCalls, 0);
+    state.checkInt("healthy: its watcher still fires", state.healthyWatchCalls, 1);
+    state.check("healthy: its frame hook still runs", state.healthyFrames >= healthyFramesBefore + 3);
+    state.check("healthy: unchanged", healthyText(tree) == "one");
+
+    // ── a watcher panics ────────────────────────────────────────────────
+    watchSource := 1;
+    tree = ui.process();
+    tree = ui.process();
+    state.check("watch panic: crashed", showsCrash(tree, -40));
+    state.checkInt("watch panic: the callback ran once", state.watchCalls, 1);
+    state.check("watch panic: no watcher is left active", !rx.activeWatcher());
+    watchSource := 2;
+    tree = ui.process();
+    state.checkInt("watch panic: the watcher is stopped", state.watchCalls, 1);
+
+    // ── an event handler panics ─────────────────────────────────────────
+    let app = rx.get(appRef);
+    let crasherRoot = rx.get(crasherRootRef);
+    let target = rx.get(targetRef);
+    assert(app);
+    assert(crasherRoot);
+    assert(target);
+    ui_components.applyRenderFeedback(app._element, Vec2(0.0, 0.0), Vec2(400.0, 400.0));
+    ui_components.applyRenderFeedback(crasherRoot._element, Vec2(0.0, 0.0), Vec2(200.0, 200.0));
+    ui_components.applyRenderFeedback(target._element, Vec2(10.0, 10.0), Vec2(100.0, 100.0));
+    state.mouseX = 50.0;
+    state.mouseY = 50.0;
+    state.leftHeld = true;
+    edges.push({ button: ui_components.PointerButton.Left, kind: ui_components.PointerEdgeKind.Pressed, pos: Vec2(50.0, 50.0) });
+    tree = ui.process();
+    state.leftHeld = false;
+    edges.push({ button: ui_components.PointerButton.Left, kind: ui_components.PointerEdgeKind.Released, pos: Vec2(50.0, 50.0) });
+    tree = ui.process();
+    tree = ui.process();
+    state.checkInt("click panic: the handler ran", state.targetClicks, 1);
+    state.check("click panic: crashed", showsCrash(tree, -30));
+    // The crashed component's own handlers do not run any more, not even
+    // for the rest of the event that crashed it; the app around it does.
+    state.checkInt("click panic: the crashed component's root handler does not run", state.crasherRootClicks, 0);
+    state.checkInt("click panic: the event still bubbles to the app", state.appClicks, 1);
+
+    // ── a template panics ───────────────────────────────────────────────
+    let templateChildFramesBefore = state.templateChildFrames;
+    templateBoom := true;
+    tree = ui.process();
+    state.check("template panic: crashed", showsCrash(tree, -70));
+    state.checkInt("template panic: the component inside it is unmounted", state.templateChildUnmounts, 1);
+    let templateChildFramesAfter = state.templateChildFrames;
+    tree = ui.process();
+    state.check("template panic: the component inside it had been running", templateChildFramesBefore > 0);
+    state.checkInt("template panic: the hook of the component inside it stops", state.templateChildFrames, templateChildFramesAfter);
+
+    // ── onUnmount panics ────────────────────────────────────────────────
+    showUnmounter := false;
+    tree = ui.process();
+    state.checkInt("onUnmount panic: ran once", state.unmounts, 1);
+
+    // ── and the app is still alive ──────────────────────────────────────
+    healthyLabel := "two";
+    tree = ui.process();
+    state.check("healthy: still updates after every crash", healthyText(tree) == "two");
+    state.check("healthy: never crashed", !showsCrash(tree, -10));
+
+    if state.failures > 0 {
+        fmt.println(f"{state.failures} of {state.checks} checks FAILED");
+        return 1;
+    }
+    fmt.println(f"all {state.checks} checks passed");
+    return 0;
+}

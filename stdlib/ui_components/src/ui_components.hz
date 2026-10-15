@@ -762,7 +762,11 @@ export fn drawCanvasIfNeeded(element: ui_elements.CanvasElement, context: mut re
         let drawFnBox = data.drawFn;
         if drawFnBox {
             let drawFn = drawFnBox.get<CanvasDrawFn>();
-            drawFn(context);
+            if let owner = data.owner {
+                runComponentCode(owner, "canvas draw", () => { drawFn(context); });
+            } else {
+                drawFn(context);
+            }
         }
         return drawnVersion;
     });
@@ -845,6 +849,13 @@ export ref struct ComponentElementRuntimeData {
     redrawRequested: bool = false;
     msaaSamples: int = 4;
     postEffect?: rx.Reactive<str>;
+
+    // The component this element belongs to: the one whose root it is, or
+    // whose template declared it (slot content included -- it is declared
+    // while the slot's host renders). A panic in one of its handlers or in
+    // its draw function crashes that component; see runComponentCode. Set
+    // once, when the element is created, and never changes.
+    owner: ComponentInstance | null = null;
 
     // This element's own direct children, created via div()/text()/canvas()
     // while this element was `currentParent` -- see getOrCreateDiv/Text/
@@ -1059,6 +1070,7 @@ fn getOrCreateDiv(parent: mut ui_elements.DivElement, id: int, parentPath: str):
     }
     let path = childIdPath(parentPath, id);
     let newElement = ui_elements.DivElement({ id: id, globalId: childGlobalId(parent, id), style: {} });
+    runtimeDataOf(newElement).owner = parentData.owner;
     parentData.childElements.push({ id: id, path: path, element: newElement });
     return { element: newElement, path: path };
 }
@@ -1073,6 +1085,7 @@ fn getOrCreateText(parent: ui_elements.DivElement, id: int, parentPath: str): Te
     }
     let path = childIdPath(parentPath, id);
     let newElement = ui_elements.TextElement({ id: id, globalId: childGlobalId(parent, id), text: "", style: {} });
+    runtimeDataOf(newElement).owner = parentData.owner;
     parentData.childElements.push({ id: id, path: path, element: newElement });
     return { element: newElement, path: path };
 }
@@ -1087,6 +1100,7 @@ fn getOrCreateCanvas(parent: mut ui_elements.DivElement, id: int, parentPath: st
     }
     let path = childIdPath(parentPath, id);
     let newElement = ui_elements.CanvasElement({ id: id, globalId: childGlobalId(parent, id), style: {} });
+    runtimeDataOf(newElement).owner = parentData.owner;
     parentData.childElements.push({ id: id, path: path, element: newElement });
     return { element: newElement, path: path };
 }
@@ -1416,19 +1430,28 @@ export enum WatchFlush {
 // lands behind the cursor and runs in the same flush; a job that keeps
 // re-queueing itself is cut off after Vue's 100 runs and skipped, which
 // breaks the cycle.
+//
+// A job carries the component whose watcher it is: it runs as that
+// component's code (runComponentCode), so a panic in the getter or the
+// callback crashes the component and the flush goes on with the next job.
+export struct QueuedWatchJob {
+    job: rx.WatchJob;
+    owner: ComponentInstance | null;
+}
+
 export ref struct WatchJobQueue {
-    jobs: []rx.WatchJob = [];
+    jobs: []QueuedWatchJob = [];
     flushing: bool = false;
     cursor: int = 0;
     generation: int = 0;
 
-    fn queue(job: rx.WatchJob) {
+    fn queue(job: rx.WatchJob, owner: ComponentInstance | null) {
         let i = 0;
         if this.flushing {
             i = this.cursor + 1;
         }
         while i < this.jobs.length {
-            let queued = this.jobs[i];
+            let queued = this.jobs[i].job;
             if queued.id == job.id {
                 return;
             }
@@ -1437,7 +1460,7 @@ export ref struct WatchJobQueue {
             }
             i = i + 1;
         }
-        this.jobs.insert(i, job);
+        this.jobs.insert(i, { job: job, owner: owner });
     }
 
     fn flush() {
@@ -1445,7 +1468,8 @@ export ref struct WatchJobQueue {
         this.generation = this.generation + 1;
         this.cursor = 0;
         while this.cursor < this.jobs.length {
-            let job = this.jobs[this.cursor];
+            let entry = this.jobs[this.cursor];
+            let job = entry.job;
             if job.flushGeneration != this.generation {
                 job.flushGeneration = this.generation;
                 job.runs = 0;
@@ -1454,13 +1478,31 @@ export ref struct WatchJobQueue {
                 fmt.println("[ui] Maximum recursive updates exceeded. A watcher keeps writing state that triggers it again.");
             } else {
                 job.runs = job.runs + 1;
-                job.run();
+                runWatchJob(job, entry.owner);
             }
             this.cursor = this.cursor + 1;
         }
         this.jobs.clear();
         this.flushing = false;
     }
+}
+
+// A watcher's job, as code of the component the watcher belongs to. One that
+// belongs to no component (created outside any setup) runs bare.
+fn runWatchJob(job: rx.WatchJob, owner: ComponentInstance | null) {
+    if let component = owner {
+        runComponentCode(component, "watcher", () => { job.run(); });
+    } else {
+        job.run();
+    }
+}
+
+// One handler scheduled for the FIRE phase (see process()), with the
+// component whose element it was found on: it runs as that component's code
+// (runComponentCode). null for the framework's own default actions.
+export struct QueuedHandler {
+    owner: ComponentInstance | null;
+    fire: () => void;
 }
 
 export ref struct ComponentInstance {
@@ -1495,8 +1537,13 @@ export ref struct ComponentInstance {
     watchers: []rx.WatchHandle = [];
 
     mounted: bool = false;
+    // See crashComponent. A crashed component's own code never runs again.
     crashed: bool = false;
     crashInfo: sys.PanicInfo | none = none;
+    // Set by destroyComponent. Its code never runs again either: a handler
+    // queued before the destroy, or an element still in the tree until its
+    // parent's next template pass, must not reach it.
+    destroyed: bool = false;
 
     fn findChild(id: int): ComponentInstance | null {
         for n in this.childComponents {
@@ -1526,12 +1573,112 @@ export ref struct ComponentInstance {
             globalId: childGlobalId(parentElement, id),
             style: { width: ui_styling.SizeMode.Grow, height: ui_styling.SizeMode.Grow },
         });
-        return ComponentInstance {
+        let instance = ComponentInstance {
             id: id,
             rootElement: rootElement,
             propsVersion: rx.reactive<int>(0),
         };
+        runtimeDataOf(rootElement).owner = instance;
+        return instance;
     }
+}
+
+// Runs `body`, code of `component`'s own -- an onFrame hook, onMounted, a
+// watcher, an event handler, a canvas's draw function -- so that a panic in
+// it crashes that component and nothing else (crashComponent). The framework
+// calls every piece of component code through here, or, for setup and the
+// template, through the same crashComponent from their own recovery. Code of
+// a component that has crashed or been destroyed does not run at all.
+fn runComponentCode(component: ComponentInstance, what: str, body: immediate () => none) {
+    if component.crashed || component.destroyed {
+        return;
+    }
+    // A watcher callback that panics never puts the previous active watcher
+    // back (rx.watch's job does that after the callback returns).
+    let activeWatcher = rx.activeWatcher();
+    attempt {
+        body();
+    } recover e {
+        rx.setActiveWatcher(activeWatcher);
+        crashComponent(component, what, e);
+    };
+}
+
+fn reportComponentPanic(component: ComponentInstance, what: str, e: sys.PanicInfo) {
+    fmt.println(f"[crash] component {component.id} {what}:");
+    e.print();
+}
+
+// What a panic in a component's own code does to the component. It is marked
+// crashed and stopped -- its watchers, its frame hook and every component
+// inside it are gone -- and its template, which runs again for it
+// (`rerender`), shows the error in place of everything it rendered (see
+// defineComponentImpl). Nothing outside it is touched; the app keeps running.
+fn crashComponent(component: ComponentInstance, what: str, e: sys.PanicInfo, rerender: bool = true) {
+    reportComponentPanic(component, what, e);
+    if component.crashed {
+        return;
+    }
+    component.crashed = true;
+    component.crashInfo = e;
+    for watcher in component.watchers {
+        watcher.stop();
+    }
+    component.watchers.clear();
+    component.onFrame = none;
+    component.onMounted = none;
+    // A template pass the panic cut short may already have registered
+    // children of its own, new ones among them.
+    for child in component.newChildComponents {
+        if !component.findChild(child.id) {
+            destroyComponent(child.component);
+        }
+    }
+    for child in component.childComponents {
+        destroyComponent(child.component);
+    }
+    component.childComponents.clear();
+    component.newChildComponents.clear();
+    if rerender {
+        component.propsVersion++;
+    }
+}
+
+fn destroyComponent(component: ComponentInstance): void :: final {
+
+    for child in component.childComponents {
+        destroyComponent(child.component);
+    }
+    component.childComponents.clear();
+    component.newChildComponents.clear();
+
+    // Before the unmount hook, like Vue stops a component's effect scope
+    // before onUnmounted: nothing the hook does can trigger them again.
+    for watcher in component.watchers {
+        watcher.stop();
+    }
+    component.watchers.clear();
+
+    // Same reason, and the same lifetime: a hook parked on the context's
+    // per-frame list would otherwise keep running (and keep polling the
+    // pointer, or keep writing state) for a component that no longer
+    // exists. Clearing the callback is the whole unregistration --
+    // runFrameHooks() compacts the dead entry out of the list on its
+    // next pass, so this needs no identity search here.
+    component.onFrame = none;
+
+    // Its own code, so a panic in it must not take the app down -- but the
+    // component is going away regardless, so it is only reported.
+    if let hook = component.onUnmount {
+        let activeWatcher = rx.activeWatcher();
+        attempt {
+            hook();
+        } recover e {
+            rx.setActiveWatcher(activeWatcher);
+            reportComponentPanic(component, "onUnmount", e);
+        };
+    }
+    component.destroyed = true;
 }
 
 // A value: renderStack holds these inline, so pushing a context for every
@@ -2055,7 +2202,7 @@ export opaque ref struct UIContext {
     // (clear() keeps the capacity). An idle frame used to build six fresh
     // arrays plus a closure in process(); now it allocates nothing.
     _pendingEvents: []PendingPointerEvent = [];
-    _eventQueue: [](() => void) = [];
+    _eventQueue: []QueuedHandler = [];
     _finalHitPath: []ui_elements.Element = [];
     _eventHitPath: []ui_elements.Element = [];
     _focusPath: []ui_elements.Element = [];
@@ -2607,7 +2754,7 @@ export opaque ref struct UIContext {
     // Runs before input is dispatched, so a keystroke in the same frame that
     // hid the focused element already goes nowhere. Hover is handled by
     // updateHoverState's own `hidden` parameter instead -- see its comment.
-    fn releaseHiddenInputState(tree: ui_elements.Element, eventQueue: [](() => void)): void :: final {
+    fn releaseHiddenInputState(tree: ui_elements.Element, eventQueue: []QueuedHandler): void :: final {
         let focusPath = this._focusPath;
         this.buildFocusPathInto(focusPath, tree);
         if focusPath.length > 0 && this.pathIsHidden(focusPath) {
@@ -2732,7 +2879,7 @@ export opaque ref struct UIContext {
     // layer uncontained, which dismisses all of them. That is the right answer
     // and it needs no special case: ui_contains reports `none` as never
     // contained.
-    fn dispatchPointerDownOutside(hitPath: []ui_elements.Element, event: PointerEvent, eventQueue: [](() => void)): void :: final {
+    fn dispatchPointerDownOutside(hitPath: []ui_elements.Element, event: PointerEvent, eventQueue: []QueuedHandler): void :: final {
         let target = none as ui_elements.Element | none;
         if hitPath.length > 0 {
             target = hitPath[hitPath.length - 1];
@@ -2747,10 +2894,10 @@ export opaque ref struct UIContext {
                     // Narrowed copy for the closure: an enclosing narrowing does not
                     // reach into a closure that runs later (the FIRE phase).
                     let fire = cb;
-                    eventQueue.push((): void => {
+                    eventQueue.push({ owner: runtimeDataOf(layer).owner, fire: (): void => {
                         if event._stopped { return; }
                         fire(event);
-                    });
+                    } });
                 }
             }
             i = i + 1;
@@ -2760,7 +2907,7 @@ export opaque ref struct UIContext {
     // Focus counterpart of the above -- see DivProps.onFocusOutside. Each
     // layer gets its OWN event, so one layer stopping propagation cannot
     // silence another.
-    fn dispatchFocusOutside(newTarget: ui_elements.Element, eventQueue: [](() => void)): void :: final {
+    fn dispatchFocusOutside(newTarget: ui_elements.Element, eventQueue: []QueuedHandler): void :: final {
         let layers = this._dismissLayers;
         let i = 0;
         while i < layers.length {
@@ -2772,10 +2919,10 @@ export opaque ref struct UIContext {
                     // Narrowed copy for the closure: an enclosing narrowing does not
                     // reach into a closure that runs later (the FIRE phase).
                     let fire = cb;
-                    eventQueue.push((): void => {
+                    eventQueue.push({ owner: runtimeDataOf(layer).owner, fire: (): void => {
                         if event._stopped { return; }
                         fire(event);
-                    });
+                    } });
                 }
             }
             i = i + 1;
@@ -2791,7 +2938,7 @@ export opaque ref struct UIContext {
     //   - Whether dismissable layers are told about it (onFocusOutside). A
     //     press is already reported by onPointerDownOutside, and reporting it
     //     twice would queue the dismissal ahead of the trigger's own handler.
-    fn applyFocusChange(tree: ui_elements.Element, newTarget: ui_elements.Element | none, eventQueue: [](() => void), pointerDriven: bool): void :: final {
+    fn applyFocusChange(tree: ui_elements.Element, newTarget: ui_elements.Element | none, eventQueue: []QueuedHandler, pointerDriven: bool): void :: final {
         if newTarget is not none {
             if runtimeDataOf(newTarget).focused {
                 return;
@@ -2879,7 +3026,7 @@ export opaque ref struct UIContext {
     // in the DOM a non-bubbling event still has a full capture phase (that is
     // exactly what addEventListener(..., true) buys you for `focus`), and a
     // capture listener on the target itself fires too.
-    fn dispatchFocusCapturing(path: []ui_elements.Element, event: FocusEvent, kind: FocusEventKind, eventQueue: [](() => void)): void :: final {
+    fn dispatchFocusCapturing(path: []ui_elements.Element, event: FocusEvent, kind: FocusEventKind, eventQueue: []QueuedHandler): void :: final {
         let i = 0;
         while i < path.length {
             let data = runtimeDataOf(path[i]);
@@ -2892,10 +3039,10 @@ export opaque ref struct UIContext {
                 // Narrowed copy for the closure: an enclosing narrowing does not
                 // reach into a closure that runs later (the FIRE phase).
                 let fire = cb;
-                eventQueue.push((): void => {
+                eventQueue.push({ owner: data.owner, fire: (): void => {
                     if event._stopped { return; }
                     fire(event);
-                });
+                } });
             }
             i = i + 1;
         }
@@ -2905,7 +3052,7 @@ export opaque ref struct UIContext {
     // focusout walk the whole way up, focus and blur stop at the target and
     // reach no ancestor at all. That single flag is the entire difference
     // between the pairs in HTML.
-    fn dispatchFocusBubbling(path: []ui_elements.Element, event: FocusEvent, kind: FocusEventKind, bubbles: bool, eventQueue: [](() => void)): void :: final {
+    fn dispatchFocusBubbling(path: []ui_elements.Element, event: FocusEvent, kind: FocusEventKind, bubbles: bool, eventQueue: []QueuedHandler): void :: final {
         let i = path.length - 1;
         while i >= 0 {
             let data = runtimeDataOf(path[i]);
@@ -2918,10 +3065,10 @@ export opaque ref struct UIContext {
                 // Narrowed copy for the closure: an enclosing narrowing does not
                 // reach into a closure that runs later (the FIRE phase).
                 let fire = cb;
-                eventQueue.push((): void => {
+                eventQueue.push({ owner: data.owner, fire: (): void => {
                     if event._stopped { return; }
                     fire(event);
-                });
+                } });
             }
             if !bubbles {
                 return;
@@ -2961,7 +3108,7 @@ export opaque ref struct UIContext {
     // routing it through the very same applyFocusChange() a click uses -- so
     // programmatic and click-driven focus cannot drift apart in behavior
     // (blur-the-old-one, fire onBlur then onFocus, both onto `eventQueue`).
-    fn applyPendingFocus(tree: ui_elements.Element, eventQueue: [](() => void)): void :: final {
+    fn applyPendingFocus(tree: ui_elements.Element, eventQueue: []QueuedHandler): void :: final {
         let stackref found = FocusRequestTarget {};
         this.takeFocusRequest(tree, found);
 
@@ -3020,7 +3167,7 @@ export opaque ref struct UIContext {
     // freezes the last frame's answer, so the element under the pointer's exit
     // point stays lit and its onHoverLeave never fires. Same trap as `hidden`,
     // same fix.
-    fn updateHoverState(element: ui_elements.Element, mousePos: Vec2, buttons: PointerButtons, eventQueue: [](() => void), pointerPresent: bool = true, hidden: bool = false): bool :: final {
+    fn updateHoverState(element: ui_elements.Element, mousePos: Vec2, buttons: PointerButtons, eventQueue: []QueuedHandler, pointerPresent: bool = true, hidden: bool = false): bool :: final {
         let subtreeHidden = hidden || ui_elements.isDisplayNone(element);
         let elementPos = ui_position(element);
         let elementSize = ui_size(element);
@@ -3070,10 +3217,10 @@ export opaque ref struct UIContext {
                 let fire = cb;
                 let pos = mousePos;
                 let b = buttons;
-                eventQueue.push((): void => {
+                eventQueue.push({ owner: data.owner, fire: (): void => {
                     let e = PointerEvent { pointerId: 1, pointerType: "mouse", pos: pos, button: PointerButton.None, buttons: b, pressure: 0.0, isPrimary: true, modifiers: this.currentModifiers() };
                     fire(e);
-                });
+                } });
             }
             // Deliberately NOT resetting pointerDownHere here on hover-loss.
             // A click's eligibility is decided purely by "was this element in
@@ -3100,10 +3247,10 @@ export opaque ref struct UIContext {
                 let fire = cb;
                 let pos = mousePos;
                 let b = buttons;
-                eventQueue.push((): void => {
+                eventQueue.push({ owner: data.owner, fire: (): void => {
                     let e = PointerEvent { pointerId: 1, pointerType: "mouse", pos: pos, button: PointerButton.None, buttons: b, pressure: 0.0, isPrimary: true, modifiers: this.currentModifiers() };
                     fire(e);
-                });
+                } });
             }
         }
 
@@ -3163,7 +3310,7 @@ export opaque ref struct UIContext {
     // `eventQueue` -- the capture phase. Always scheduled before the
     // corresponding bubble-phase pass for the same event (see process()), so
     // it always runs first regardless of what a bubble handler later does.
-    fn dispatchCapturing(hitPath: []ui_elements.Element, event: PointerEvent, kind: PointerEventKind, eventQueue: [](() => void)): void :: final {
+    fn dispatchCapturing(hitPath: []ui_elements.Element, event: PointerEvent, kind: PointerEventKind, eventQueue: []QueuedHandler): void :: final {
         let i = 0;
         while i < hitPath.length {
             let data = runtimeDataOf(hitPath[i]);
@@ -3175,10 +3322,10 @@ export opaque ref struct UIContext {
                 // Narrowed copy for the closure: an enclosing narrowing does not
                 // reach into a closure that runs later (the FIRE phase).
                 let fire = cb;
-                eventQueue.push((): void => {
+                eventQueue.push({ owner: data.owner, fire: (): void => {
                     if event._stopped { return; }
                     fire(event);
-                });
+                } });
             }
             i = i + 1;
         }
@@ -3194,7 +3341,7 @@ export opaque ref struct UIContext {
     // cuts the path off below that index -- the capture phase runs down to it
     // and the bubble phase visits it alone -- which is how every later wheel
     // of a latched pan reaches that scroller and nothing beneath or above it.
-    fn dispatchWheelCapturing(hitPath: []ui_elements.Element, event: WheelEvent, eventQueue: [](() => void), depth: int = -1): void :: final {
+    fn dispatchWheelCapturing(hitPath: []ui_elements.Element, event: WheelEvent, eventQueue: []QueuedHandler, depth: int = -1): void :: final {
         let end = depth >= 0 && depth < hitPath.length ? depth + 1 : hitPath.length;
         let i = 0;
         while i < end {
@@ -3205,17 +3352,17 @@ export opaque ref struct UIContext {
                 // reach into a closure that runs later (the FIRE phase).
                 let fire = cb;
                 let index = i;
-                eventQueue.push((): void => {
+                eventQueue.push({ owner: data.owner, fire: (): void => {
                     if event._stopped { return; }
                     fire(event);
                     if event._stopped && event._consumedAt < 0 { event._consumedAt = index; }
-                });
+                } });
             }
             i = i + 1;
         }
     }
 
-    fn dispatchWheelBubbling(hitPath: []ui_elements.Element, event: WheelEvent, eventQueue: [](() => void), depth: int = -1): void :: final {
+    fn dispatchWheelBubbling(hitPath: []ui_elements.Element, event: WheelEvent, eventQueue: []QueuedHandler, depth: int = -1): void :: final {
         let latched = depth >= 0 && depth < hitPath.length;
         let i = latched ? depth : hitPath.length - 1;
         let lowest = latched ? depth : 0;
@@ -3227,11 +3374,11 @@ export opaque ref struct UIContext {
                 // reach into a closure that runs later (the FIRE phase).
                 let fire = cb;
                 let index = i;
-                eventQueue.push((): void => {
+                eventQueue.push({ owner: data.owner, fire: (): void => {
                     if event._stopped { return; }
                     fire(event);
                     if event._stopped && event._consumedAt < 0 { event._consumedAt = index; }
-                });
+                } });
             }
             i = i - 1;
         }
@@ -3241,7 +3388,7 @@ export opaque ref struct UIContext {
     // exactly -- `focusPath` (root -> focused element, see buildFocusPath)
     // plays the same role `hitPath` plays for pointer events, just found by
     // focus instead of hit-testing.
-    fn dispatchKeyCapturing(focusPath: []ui_elements.Element, event: KeyboardEvent, kind: KeyEdgeKind, eventQueue: [](() => void)): void :: final {
+    fn dispatchKeyCapturing(focusPath: []ui_elements.Element, event: KeyboardEvent, kind: KeyEdgeKind, eventQueue: []QueuedHandler): void :: final {
         let i = 0;
         while i < focusPath.length {
             let data = runtimeDataOf(focusPath[i]);
@@ -3252,16 +3399,16 @@ export opaque ref struct UIContext {
                 // Narrowed copy for the closure: an enclosing narrowing does not
                 // reach into a closure that runs later (the FIRE phase).
                 let fire = cb;
-                eventQueue.push((): void => {
+                eventQueue.push({ owner: data.owner, fire: (): void => {
                     if event._stopped { return; }
                     fire(event);
-                });
+                } });
             }
             i = i + 1;
         }
     }
 
-    fn dispatchKeyBubbling(focusPath: []ui_elements.Element, event: KeyboardEvent, kind: KeyEdgeKind, eventQueue: [](() => void)): void :: final {
+    fn dispatchKeyBubbling(focusPath: []ui_elements.Element, event: KeyboardEvent, kind: KeyEdgeKind, eventQueue: []QueuedHandler): void :: final {
         let i = focusPath.length - 1;
         while i >= 0 {
             let data = runtimeDataOf(focusPath[i]);
@@ -3272,16 +3419,16 @@ export opaque ref struct UIContext {
                 // Narrowed copy for the closure: an enclosing narrowing does not
                 // reach into a closure that runs later (the FIRE phase).
                 let fire = cb;
-                eventQueue.push((): void => {
+                eventQueue.push({ owner: data.owner, fire: (): void => {
                     if event._stopped { return; }
                     fire(event);
-                });
+                } });
             }
             i = i - 1;
         }
     }
 
-    fn dispatchTextInputCapturing(focusPath: []ui_elements.Element, event: TextInputEvent, eventQueue: [](() => void)): void :: final {
+    fn dispatchTextInputCapturing(focusPath: []ui_elements.Element, event: TextInputEvent, eventQueue: []QueuedHandler): void :: final {
         let i = 0;
         while i < focusPath.length {
             let data = runtimeDataOf(focusPath[i]);
@@ -3290,16 +3437,16 @@ export opaque ref struct UIContext {
                 // Narrowed copy for the closure: an enclosing narrowing does not
                 // reach into a closure that runs later (the FIRE phase).
                 let fire = cb;
-                eventQueue.push((): void => {
+                eventQueue.push({ owner: data.owner, fire: (): void => {
                     if event._stopped { return; }
                     fire(event);
-                });
+                } });
             }
             i = i + 1;
         }
     }
 
-    fn dispatchTextInputBubbling(focusPath: []ui_elements.Element, event: TextInputEvent, eventQueue: [](() => void)): void :: final {
+    fn dispatchTextInputBubbling(focusPath: []ui_elements.Element, event: TextInputEvent, eventQueue: []QueuedHandler): void :: final {
         let i = focusPath.length - 1;
         while i >= 0 {
             let data = runtimeDataOf(focusPath[i]);
@@ -3308,10 +3455,10 @@ export opaque ref struct UIContext {
                 // Narrowed copy for the closure: an enclosing narrowing does not
                 // reach into a closure that runs later (the FIRE phase).
                 let fire = cb;
-                eventQueue.push((): void => {
+                eventQueue.push({ owner: data.owner, fire: (): void => {
                     if event._stopped { return; }
                     fire(event);
-                });
+                } });
             }
             i = i - 1;
         }
@@ -3323,7 +3470,7 @@ export opaque ref struct UIContext {
     // during that later fire phase, still stops the rest of this same
     // chain: every scheduled closure below re-checks event._stopped right
     // before running, and skips if it's set.
-    fn dispatchBubbling(hitPath: []ui_elements.Element, event: PointerEvent, kind: PointerEventKind, eventQueue: [](() => void)): void :: final {
+    fn dispatchBubbling(hitPath: []ui_elements.Element, event: PointerEvent, kind: PointerEventKind, eventQueue: []QueuedHandler): void :: final {
         let i = hitPath.length - 1;
         while i >= 0 {
             let data = runtimeDataOf(hitPath[i]);
@@ -3335,10 +3482,10 @@ export opaque ref struct UIContext {
                 // Narrowed copy for the closure: an enclosing narrowing does not
                 // reach into a closure that runs later (the FIRE phase).
                 let fire = cb;
-                eventQueue.push((): void => {
+                eventQueue.push({ owner: data.owner, fire: (): void => {
                     if event._stopped { return; }
                     fire(event);
-                });
+                } });
             }
             i = i - 1;
         }
@@ -3355,7 +3502,7 @@ export opaque ref struct UIContext {
     // All three share one implementation because they differ in exactly one
     // thing: which handler they read. Which of them a given release produces
     // is decided in process(), from the button and the click count.
-    fn dispatchClickCapturing(hitPath: []ui_elements.Element, clickEligible: []bool, event: PointerEvent, kind: ClickEventKind, eventQueue: [](() => void)): void :: final {
+    fn dispatchClickCapturing(hitPath: []ui_elements.Element, clickEligible: []bool, event: PointerEvent, kind: ClickEventKind, eventQueue: []QueuedHandler): void :: final {
         let i = 0;
         while i < hitPath.length {
             if clickEligible[i] {
@@ -3368,10 +3515,10 @@ export opaque ref struct UIContext {
                     // Narrowed copy for the closure: an enclosing narrowing does not
                     // reach into a closure that runs later (the FIRE phase).
                     let fire = cb;
-                    eventQueue.push((): void => {
+                    eventQueue.push({ owner: data.owner, fire: (): void => {
                         if event._stopped { return; }
                         fire(event);
-                    });
+                    } });
                 }
             }
             i = i + 1;
@@ -3381,7 +3528,7 @@ export opaque ref struct UIContext {
     // Bubbles one of the synthesized press+release events along hitPath for
     // elements marked eligible in clickEligible (see dispatchClickCapturing
     // above for where that comes from and why one function covers all three).
-    fn dispatchClickBubbling(hitPath: []ui_elements.Element, clickEligible: []bool, event: PointerEvent, kind: ClickEventKind, eventQueue: [](() => void)): void :: final {
+    fn dispatchClickBubbling(hitPath: []ui_elements.Element, clickEligible: []bool, event: PointerEvent, kind: ClickEventKind, eventQueue: []QueuedHandler): void :: final {
         let i = hitPath.length - 1;
         while i >= 0 {
             if clickEligible[i] {
@@ -3394,10 +3541,10 @@ export opaque ref struct UIContext {
                     // Narrowed copy for the closure: an enclosing narrowing does not
                     // reach into a closure that runs later (the FIRE phase).
                     let fire = cb;
-                    eventQueue.push((): void => {
+                    eventQueue.push({ owner: data.owner, fire: (): void => {
                         if event._stopped { return; }
                         fire(event);
-                    });
+                    } });
                 }
             }
             i = i - 1;
@@ -3408,7 +3555,7 @@ export opaque ref struct UIContext {
     // above, because it is not a press+release pair at all: it fires from the
     // right button going down (see DivProps.onContextMenu), so the only path
     // it could possibly use is that press's own.
-    fn dispatchContextMenuCapturing(hitPath: []ui_elements.Element, event: PointerEvent, eventQueue: [](() => void)): void :: final {
+    fn dispatchContextMenuCapturing(hitPath: []ui_elements.Element, event: PointerEvent, eventQueue: []QueuedHandler): void :: final {
         let i = 0;
         while i < hitPath.length {
             let data = runtimeDataOf(hitPath[i]);
@@ -3417,16 +3564,16 @@ export opaque ref struct UIContext {
                 // Narrowed copy for the closure: an enclosing narrowing does not
                 // reach into a closure that runs later (the FIRE phase).
                 let fire = cb;
-                eventQueue.push((): void => {
+                eventQueue.push({ owner: data.owner, fire: (): void => {
                     if event._stopped { return; }
                     fire(event);
-                });
+                } });
             }
             i = i + 1;
         }
     }
 
-    fn dispatchContextMenuBubbling(hitPath: []ui_elements.Element, event: PointerEvent, eventQueue: [](() => void)): void :: final {
+    fn dispatchContextMenuBubbling(hitPath: []ui_elements.Element, event: PointerEvent, eventQueue: []QueuedHandler): void :: final {
         let i = hitPath.length - 1;
         while i >= 0 {
             let data = runtimeDataOf(hitPath[i]);
@@ -3435,10 +3582,10 @@ export opaque ref struct UIContext {
                 // Narrowed copy for the closure: an enclosing narrowing does not
                 // reach into a closure that runs later (the FIRE phase).
                 let fire = cb;
-                eventQueue.push((): void => {
+                eventQueue.push({ owner: data.owner, fire: (): void => {
                     if event._stopped { return; }
                     fire(event);
-                });
+                } });
             }
             i = i - 1;
         }
@@ -3504,7 +3651,7 @@ export opaque ref struct UIContext {
     // Click-to-focus: the nearest focusable element on the path (innermost
     // wins), or nothing -- which blurs whatever had focus. See
     // DivProps.focusable and applyFocusChange.
-    fn focusFromPress(tree: ui_elements.Element, path: []ui_elements.Element, eventQueue: [](() => void)): void :: final {
+    fn focusFromPress(tree: ui_elements.Element, path: []ui_elements.Element, eventQueue: []QueuedHandler): void :: final {
         let newFocusTarget = none as ui_elements.Element | none;
         for (let fi = path.length - 1; fi >= 0; fi--) {
             if runtimeDataOf(path[fi]).focusable {
@@ -3521,7 +3668,7 @@ export opaque ref struct UIContext {
     // told. The dismissal carries the finger's own pointerdown, so a trigger
     // that stopped that event keeps its layer open exactly as it does for the
     // mouse.
-    fn pressFromGesture(tree: ui_elements.Element, path: []ui_elements.Element, eventQueue: [](() => void)): void :: final {
+    fn pressFromGesture(tree: ui_elements.Element, path: []ui_elements.Element, eventQueue: []QueuedHandler): void :: final {
         this.focusFromPress(tree, path, eventQueue);
         let downEvent = this._touchDownEvent;
         if downEvent {
@@ -3543,7 +3690,7 @@ export opaque ref struct UIContext {
     // click produces, and the one thing on a touch screen that can produce it.
     // The finger stays down; what it does next is a raw drag, and lifting it
     // clicks nothing.
-    fn fireLongPress(tree: ui_elements.Element, eventQueue: [](() => void)): void :: final {
+    fn fireLongPress(tree: ui_elements.Element, eventQueue: []QueuedHandler): void :: final {
         this._touch.state = TouchGestureState.LongPressed;
         // Nor the first half of a double tap, whatever comes next.
         this._clickCount = 0;
@@ -3593,7 +3740,7 @@ export opaque ref struct UIContext {
     // pan cancels the pointer (the DOM's pointercancel, dispatched as an Up
     // that clicks nothing, like any cancelled pointer) and turns its movement
     // into scrolling from then on; anything else leaves it a raw drag.
-    fn trackTouchMove(pos: Vec2, now: real, targetPath: []ui_elements.Element, eventQueue: [](() => void)): bool :: final {
+    fn trackTouchMove(pos: Vec2, now: real, targetPath: []ui_elements.Element, eventQueue: []QueuedHandler): bool :: final {
         let state = this._touch.state;
         if state == TouchGestureState.Panning {
             this.accumulatePan(pos);
@@ -3710,7 +3857,7 @@ export opaque ref struct UIContext {
     // Pixel-mode wheel along the finger's down path -- latched to its scroller
     // once one consumed it (see WheelEvent). Returns the event so process()
     // can see after the FIRE phase who took it; none when nothing moved.
-    fn deliverScrollGesture(now: real, elapsed: real, eventQueue: [](() => void)): WheelEvent | none :: final {
+    fn deliverScrollGesture(now: real, elapsed: real, eventQueue: []QueuedHandler): WheelEvent | none :: final {
         if this._touch.state == TouchGestureState.Panning {
             this.samplePanVelocity(now);
         }
@@ -4405,10 +4552,10 @@ export opaque ref struct UIContext {
                     // separately from stopPropagation.
                     if ke.kind == KeyEdgeKind.Pressed && ke.key == Key.Tab {
                         let backwards = hasModifier(ke.modifiers, KeyModifiers.Shift);
-                        eventQueue.push((): void => {
+                        eventQueue.push({ owner: null, fire: (): void => {
                             if keyEvent._defaultPrevented { return; }
                             this.moveFocusByTab(tree, backwards);
-                        });
+                        } });
                     }
                 }
                 if focusUsable {
@@ -4424,7 +4571,13 @@ export opaque ref struct UIContext {
         // FIRE PHASE -- the tree has been fully walked and every applicable
         // handler for this frame is now scheduled; only now do any of them
         // actually run.
-        for fire in eventQueue { fire(); }
+        for queued in eventQueue {
+            if let owner = queued.owner {
+                runComponentCode(owner, "event handler", () => { queued.fire(); });
+            } else {
+                queued.fire();
+            }
+        }
         // Handlers are done; drop them now rather than holding the closures
         // (and whatever they captured) alive until next frame's clear().
         eventQueue.clear();
@@ -4797,11 +4950,13 @@ export opaque ref struct UIContext {
                     globalId: f"{id}",
                     style: { width: ui_styling.SizeMode.Grow, height: ui_styling.SizeMode.Grow },
                 });
-                this.rootComponent = ComponentInstance {
+                let root = ComponentInstance {
                     id: id,
                     rootElement: rootElement,
                     propsVersion: rx.reactive<int>(0),
                 };
+                runtimeDataOf(rootElement).owner = root;
+                this.rootComponent = root;
             }
             assert(this.rootComponent);
             instance = this.rootComponent;
@@ -4824,39 +4979,6 @@ export opaque ref struct UIContext {
     fn getCurrentParent() {
         assert(this.renderStack.length > 0);
         return this.renderStack[this.renderStack.length - 1].currentParent;
-    }
-
-    fn destroyComponent(
-        component: ComponentInstance
-    ) :: final {
-
-        for child in component.childComponents {
-            this.destroyComponent(
-                child.component
-            );
-        }
-
-        // Before the unmount hook, like Vue stops a component's effect scope
-        // before onUnmounted: nothing the hook does can trigger them again.
-        for watcher in component.watchers {
-            watcher.stop();
-        }
-        component.watchers.clear();
-
-        // Same reason, and the same lifetime: a hook parked on the context's
-        // per-frame list would otherwise keep running (and keep polling the
-        // pointer, or keep writing state) for a component that no longer
-        // exists. Clearing the callback is the whole unregistration --
-        // runFrameHooks() compacts the dead entry out of the list on its
-        // next pass, so this needs no identity search here.
-        component.onFrame = none;
-
-        if component.onUnmount {
-            component.onUnmount();
-        }
-
-        component.childComponents.clear();
-        component.newChildComponents.clear();
     }
 
     fn defineComponentImpl(
@@ -4887,11 +5009,9 @@ export opaque ref struct UIContext {
                 instance.currentTemplate = setupFn();
                 instance.setupDone = true;
             } recover e {
-                instance.crashed = true;
-                instance.crashInfo = e;
                 instance.setupDone = true;
-                fmt.println(f"[crash] component {instance.id} setup:");
-                e.print();
+                // No template has run yet; the first one shows the error.
+                crashComponent(instance, "setup", e, false);
             };
             this.popRenderContext();
         }
@@ -4933,13 +5053,11 @@ export opaque ref struct UIContext {
                 let rootProps = attempt {
                     instance.currentTemplate()
                 } recover e {
-                    instance.crashed = true;
-                    instance.crashInfo = e;
-                    fmt.println(f"[crash] component {instance.id}:");
-                    e.print();
                     while this.renderStack.length > stackDepthBefore {
                         this.popRenderContext();
                     }
+                    // This pass is the one that shows the error.
+                    crashComponent(instance, "template", e, false);
                     let errEl = getOrCreateText(instance.rootElement, -1, "").element;
                     errEl.text := f"Component error: {e.message}";
                     errEl.style := ui_styling.computeTextStyle({ textColor: Color(1, 0.2, 0.2, 1) }, none);
@@ -4997,7 +5115,7 @@ export opaque ref struct UIContext {
                     }
 
                     if !stillExists {
-                        this.destroyComponent(
+                        destroyComponent(
                             old.component
                         );
                     }
@@ -5022,8 +5140,8 @@ export opaque ref struct UIContext {
 
         if !instance.mounted {
             instance.mounted = true;
-            if instance.onMounted {
-                instance.onMounted();
+            if let hook = instance.onMounted {
+                runComponentCode(instance, "onMounted", () => { hook(); });
             }
         }
 
@@ -5183,11 +5301,19 @@ export opaque ref struct UIContext {
             }
             this._frameHooks[write] = component;
             write++;
-            hook();
+            runComponentCode(component, "onFrame", () => { hook(); });
         }
         while this._frameHooks.length > write {
             this._frameHooks.pop();
         }
+    }
+
+    // watch()'s `sync` scheduler, which runs the job inside the write. A
+    // method, not a call to runWatchJob from there: watch() is generic, so
+    // it is elaborated in the importing module, where this module's own
+    // functions are out of scope.
+    fn runSyncWatchJob(job: rx.WatchJob, owner: ComponentInstance | null) {
+        runWatchJob(job, owner);
     }
 
     ref struct WatchOptions {
@@ -5219,16 +5345,23 @@ export opaque ref struct UIContext {
             flush = requestedFlush;
         }
 
+        // The component whose setup this is, if any: the watcher runs as its
+        // code (see QueuedWatchJob) and is stopped with it.
+        let owner = null as ComponentInstance | null;
+        if this.renderStack.length > 0 {
+            owner = this.getCurrentComponent();
+        }
+
         let scheduler: (job: rx.WatchJob) => none = (job: rx.WatchJob): none => {
-            this._preJobs.queue(job);
+            this._preJobs.queue(job, owner);
         };
         if flush == WatchFlush.Post {
             scheduler = (job: rx.WatchJob): none => {
-                this._postJobs.queue(job);
+                this._postJobs.queue(job, owner);
             };
         } else if flush == WatchFlush.Sync {
             scheduler = (job: rx.WatchJob): none => {
-                job.run();
+                this.runSyncWatchJob(job, owner);
             };
         }
 
@@ -5239,8 +5372,8 @@ export opaque ref struct UIContext {
             scheduler: scheduler,
         });
 
-        if this.renderStack.length > 0 {
-            this.getCurrentComponent().watchers.push(handle);
+        if let component = owner {
+            component.watchers.push(handle);
         }
         return handle;
     }
