@@ -4065,9 +4065,7 @@ export class SemanticElaborator {
    * does not resolve two hops further along -- is somebody else's diagnostic,
    * raised where it is used and in terms the programmer can act on.
    */
-  private moduleHasImportedSymbol(
-    aliasTypeDefId: Collect.TypeDefId
-  ): boolean {
+  private moduleHasImportedSymbol(aliasTypeDefId: Collect.TypeDefId): boolean {
     const typedef = this.sr.cc.typeDefNodes.get(aliasTypeDefId);
     assert(typedef.variant === Collect.ENode.AliasDef);
     const access = this.sr.cc.exprNodes.get(typedef.target);
@@ -20069,7 +20067,7 @@ export class SemanticElaborator {
             this.sr,
             elemUse.type,
             EDatatypeMutability.Mut,
-            EStorageClass.Ref,
+            elemUse.storage,
             arraySubscript.sourceloc
           )[1];
         }
