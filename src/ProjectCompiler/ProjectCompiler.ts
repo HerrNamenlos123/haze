@@ -46,6 +46,8 @@ import {
 } from "../ModuleCompiler/ModuleCompiler";
 import { CLIPrinter } from "../ModuleCompiler/CLIPrinter";
 import { writeDesktopEntry } from "./DesktopEntry";
+import { projectRowKey, timeline } from "../Timing/BuildTimeline";
+import { writeTimingGraph } from "../Timing/TimelineSvg";
 
 const HAZE_BUILD_LOCKFILE = "build.lock";
 
@@ -92,6 +94,18 @@ async function detectPackageManager() {
   return "unknown";
 }
 
+/** The settings line in the timing graph's header. */
+function describeBuild(settings: BuildSettings, strip: boolean) {
+  return [
+    settings.optimize ? "-O3" : "-O0",
+    settings.debugInfo ? "-g" : "no -g",
+    settings.debug ? "debug features on" : "debug features off",
+    strip ? "stripped" : "",
+  ]
+    .filter((part) => part !== "")
+    .join(", ");
+}
+
 export class ProjectCompiler {
   cache: Cache = new Cache();
   globalBuildDir = "";
@@ -101,6 +115,11 @@ export class ProjectCompiler {
   showTiming: boolean;
   silent: boolean;
   settings: BuildSettings;
+  /**
+   * Set when this build is a generator's, started by the module on that row;
+   * its modules are drawn under that module in the timing graph.
+   */
+  parentTimelineRow: string | null = null;
 
   constructor(
     verbose = false,
@@ -183,6 +202,7 @@ export class ProjectCompiler {
     sourceloc?: boolean,
     fullRebuild?: boolean
   ) {
+    const buildStart = timeline.now();
     if (!(await this.setupToolchain())) {
       return false;
     }
@@ -190,6 +210,17 @@ export class ProjectCompiler {
     const config = await this.getConfig(singleFilename, explicitDir, sourceloc);
     if (!config) {
       return false;
+    }
+    const buildId = timeline.beginBuild(
+      config.name,
+      this.parentTimelineRow,
+      describeBuild(this.settings, this.strip)
+    );
+    const projectRow = projectRowKey(buildId);
+    if (this.parentTimelineRow === null) {
+      // Everything before build() was called: the runtime starting, the
+      // compiler's modules loading, arguments, the native parser spawned.
+      timeline.span(projectRow, "main", "startup", 0, buildStart);
     }
     this.globalBuildDir = join(process.cwd(), "__haze__");
     this.setEnv(config);
@@ -201,6 +232,7 @@ export class ProjectCompiler {
 
     const printer = this.silent ? null : new CLIPrinter(this.showTiming);
 
+    let schedulingEnd: number | null = null;
     try {
       if (!singleFilename) {
         await this.cache.load(join(this.globalBuildDir, "cache.json"));
@@ -365,14 +397,25 @@ export class ProjectCompiler {
       // Register all modules with the printer in topological order so indices
       // ([1/N]) are stable and correct from the very first frame.
       // -----------------------------------------------------------------------
+      const topoOrder = this.topoSortModules(modules);
+      for (const name of topoOrder) {
+        const { compiler, effectiveDeps } = modules.get(name)!;
+        compiler.timelineRow = timeline.addModuleRow(
+          buildId,
+          name,
+          effectiveDeps,
+          this.parentTimelineRow
+        );
+      }
       if (printer) {
-        for (const name of this.topoSortModules(modules)) {
+        for (const name of topoOrder) {
           assert(modules.has(name));
           const { compiler } = modules.get(name)!;
           compiler.setPrinter(printer, printer.addModule(compiler.config.name));
         }
         printer.start();
       }
+      timeline.span(projectRow, "main", "setup", buildStart, timeline.now());
 
       // -----------------------------------------------------------------------
       // Build in parallel, starting each module the moment its deps finish.
@@ -382,6 +425,7 @@ export class ProjectCompiler {
         config.name,
         fullRebuild
       );
+      schedulingEnd = timeline.now();
 
       if (!singleFilename) {
         await this.cache.save();
@@ -400,6 +444,24 @@ export class ProjectCompiler {
     } finally {
       printer?.stop();
       releaseBuildLock?.();
+      if (schedulingEnd !== null) {
+        timeline.span(
+          projectRow,
+          "main",
+          "finish",
+          schedulingEnd,
+          timeline.now()
+        );
+      }
+      const outermost = timeline.endBuild(buildId);
+      if (outermost && timeline.isEnabled) {
+        const written = writeTimingGraph(
+          timeline.snapshot(),
+          join(this.globalBuildDir, "timings"),
+          config.name
+        );
+        console.info(`Timing graph: ${written.svg}`);
+      }
     }
   }
 
@@ -473,6 +535,7 @@ export class ProjectCompiler {
           ? (fullRebuild ?? false) || this.strip
           : fullRebuild;
 
+        timeline.markReady(compiler.timelineRow);
         running.set(
           name,
           compiler
@@ -483,6 +546,13 @@ export class ProjectCompiler {
                 `[${name}] Unhandled build error: ${String(err)}\n`
               );
               return { name: name, success: false };
+            })
+            .then((result) => {
+              timeline.markDone(
+                compiler.timelineRow,
+                result.success ? "built" : "failed"
+              );
+              return result;
             })
         );
       }

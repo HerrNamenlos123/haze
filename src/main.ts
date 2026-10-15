@@ -6,6 +6,7 @@ import { getFile } from "./ModuleCompiler/ModuleCompiler";
 import { ProjectCompiler } from "./ProjectCompiler/ProjectCompiler";
 import { runScript } from "./ProjectCompiler/Scripts";
 import { buildSettingsFromFlags } from "./shared/BuildSettings";
+import { timeline } from "./Timing/BuildTimeline";
 import { GeneralError, SilentError } from "./shared/Errors";
 import {
   type ParserMode,
@@ -95,6 +96,15 @@ function addBuildSettingsArguments(subparser: ArgumentParser) {
   });
 }
 
+// Shared by every command that builds.
+function addTimingGraphArgument(subparser: ArgumentParser) {
+  subparser.add_argument("--timing-graph", {
+    action: "store_true",
+    dest: "timingGraph",
+    help: "Record where the build's time goes and write it as an SVG timeline under __haze__/timings",
+  });
+}
+
 // Translates the CLI flags into the environment the profiled process reads on
 // startup. Same variables a user can set by hand on an already-built binary --
 // the flags are a convenience over this, not a second mechanism.
@@ -160,6 +170,7 @@ async function main(): Promise<number> {
     help: "Skip build lock acquisition (internal use)",
   });
   addBuildSettingsArguments(build_parser);
+  addTimingGraphArgument(build_parser);
   build_parser.add_argument("--show-timing", {
     action: "store_true",
     dest: "showTiming",
@@ -229,6 +240,7 @@ async function main(): Promise<number> {
       "compiler/haze-parser), 'antlr' (the older, much slower one), or " +
       "'assert' (run both and require identical ASTs)",
   });
+  addTimingGraphArgument(run_parser);
   run_parser.add_argument("--show-timing", {
     action: "store_true",
     dest: "showTiming",
@@ -269,6 +281,7 @@ async function main(): Promise<number> {
     help: "Skip build lock acquisition (internal use)",
   });
   addBuildSettingsArguments(exec_parser);
+  addTimingGraphArgument(exec_parser);
   exec_parser.add_argument("--show-timing", {
     action: "store_true",
     dest: "showTiming",
@@ -340,6 +353,9 @@ async function main(): Promise<number> {
       // Get the parser processes running now; they take ~100ms to come up and
       // nothing below needs them until project loading is well under way.
       startNativeParser();
+      if (args.timingGraph) {
+        timeline.enable();
+      }
 
       const project = new ProjectCompiler(
         Boolean(args.verbose),

@@ -25,6 +25,12 @@ import tarFs from "tar-fs";
 import which from "which";
 import { version } from "../../package.json";
 import { generateCode } from "../Codegen/CodeGenerator";
+import {
+  mainThread,
+  projectRowKey,
+  type SpanKind,
+  timeline,
+} from "../Timing/BuildTimeline";
 import { LowerModule } from "../Lower/Lower";
 import { Parser } from "../Parser/Parser";
 import { releaseNativeParserBinary } from "../Parser/ParserMode";
@@ -943,6 +949,8 @@ export class ModuleCompiler {
   private printer: CLIPrinter | null = null;
   private printerHandle: ModuleHandle | null = null;
   importASTCache: ImportASTCache | null = null;
+  /** This module's row on the build timeline; set by ProjectCompiler. */
+  timelineRow = projectRowKey(-1);
 
   constructor(
     public config: ModuleConfig,
@@ -1092,6 +1100,16 @@ export class ModuleCompiler {
     if (this.printer && this.printerHandle) {
       this.printer.beginModule(this.printerHandle);
     }
+  }
+
+  /** One labelled piece of this module's work on the build timeline. */
+  private step<T>(label: string, fn: () => T, kind: SpanKind = "main"): T {
+    return timeline.measure(this.timelineRow, kind, label, fn);
+  }
+
+  /** Runs fn holding the main thread; see MainThreadLock. */
+  private onMainThread<T>(fn: () => Promise<T> | T): Promise<T> {
+    return mainThread.run(this.timelineRow, fn);
   }
 
   private printCmd(cmd: string) {
@@ -1769,6 +1787,7 @@ export class ModuleCompiler {
       true,
       this.settings
     );
+    project.parentTimelineRow = this.timelineRow;
     const moduleRootDir = this.currentModuleRootDir;
     const printer = this.printer;
     let failed = false;
@@ -1812,11 +1831,16 @@ export class ModuleCompiler {
       let failureMessage: string | null = null;
       await generatorOutputMutex.run(() =>
         withOutputCaptured(async () => {
-          const built = await project.build(
-            this.resolveExec(gen.exec),
-            undefined,
-            sourceloc,
-            false
+          const built = await this.step(
+            `build generator ${gen.name}`,
+            () =>
+              project.build(
+                this.resolveExec(gen.exec),
+                undefined,
+                sourceloc,
+                false
+              ),
+            "background"
           );
           if (!built) {
             failureMessage = `Generator "${gen.name}" failed to build — see ${logPath}`;
@@ -1836,22 +1860,27 @@ export class ModuleCompiler {
         // is asynchronous, so a global mutation would be visible to every
         // other module building concurrently, and the restore would land
         // whenever this generator happened to finish.
-        const ran = await project.runCaptured(
-          this.resolveExec(gen.exec),
-          undefined,
-          sourceloc,
-          [],
-          {
-            HAZE_WORKSPACE_DIR: this.hazeWorkspaceDirectory,
-            HAZE_MODULE_SOURCE_DIR: moduleRootDir,
-            HAZE_MODULE_BUILD_DIR: this.moduleDir + "/build",
-            HAZE_MODULE_BINARY_DIR: this.moduleDir + "/bin",
-            HAZE_MODULE_TMP_DIR: this.moduleDir + "/tmp",
-            HAZE_MODULE_AUTOGEN_DIR: this.moduleDir + "/autogen",
-            HAZE_GLOBAL_DIR: HAZE_GLOBAL_DIR,
-            HAZE_C_COMPILER: HAZE_C_COMPILER,
-            HAZE_CXX_COMPILER: HAZE_CXX_COMPILER,
-          }
+        const ran = await this.step(
+          `run generator ${gen.name}`,
+          () =>
+            project.runCaptured(
+              this.resolveExec(gen.exec),
+              undefined,
+              sourceloc,
+              [],
+              {
+                HAZE_WORKSPACE_DIR: this.hazeWorkspaceDirectory,
+                HAZE_MODULE_SOURCE_DIR: moduleRootDir,
+                HAZE_MODULE_BUILD_DIR: this.moduleDir + "/build",
+                HAZE_MODULE_BINARY_DIR: this.moduleDir + "/bin",
+                HAZE_MODULE_TMP_DIR: this.moduleDir + "/tmp",
+                HAZE_MODULE_AUTOGEN_DIR: this.moduleDir + "/autogen",
+                HAZE_GLOBAL_DIR: HAZE_GLOBAL_DIR,
+                HAZE_C_COMPILER: HAZE_C_COMPILER,
+                HAZE_CXX_COMPILER: HAZE_CXX_COMPILER,
+              }
+            ),
+          "background"
         );
         logChunks.push(ran.output);
 
@@ -1990,8 +2019,8 @@ export class ModuleCompiler {
 
   private async phaseCollect() {
     await this.addInternalBuiltinSources();
-    await this.collectImports();
-    await this.addProjectSourceFiles();
+    await this.step("import deps", () => this.collectImports());
+    await this.step("collect sources", () => this.addProjectSourceFiles());
   }
 
   private phaseAnalyze() {
@@ -2030,6 +2059,143 @@ export class ModuleCompiler {
     sr: ReturnType<ModuleCompiler["phaseAnalyze"]>,
     paths: ReturnType<ModuleCompiler["computeBuildPaths"]>,
     allModules: [string, string, string][],
+    isTopLevelModule: boolean
+  ) {
+    const prepared = await this.onMainThread(() =>
+      this.step("prepare C", () =>
+        this.prepareCCompile(paths, isTopLevelModule)
+      )
+    );
+
+    if (this.verbose) {
+      this.printCmd(prepared.compileCmd);
+    }
+    await this.step(
+      "clang -c",
+      () => execAsync(prepared.compileCmd),
+      "background"
+    );
+
+    if (this.config.moduleType === ModuleType.Executable) {
+      this.advancePhase(EModulePrintCompilerPhase.Linking);
+
+      // Self-hosting: when the thing being linked is the native parser this
+      // build parsed through, the running parser holds the output path locked.
+      releaseNativeParserBinary(paths.moduleExecutable);
+
+      const linkCmd = prepared.linkCmd;
+      if (this.verbose) {
+        this.printCmd(linkCmd);
+      }
+      await this.step("link", () => execAsync(linkCmd), "background");
+
+      if (this.strip) {
+        const stripCmd = `strip --strip-unneeded "${paths.moduleExecutable}"`;
+        if (this.verbose) {
+          this.printCmd(stripCmd);
+        }
+        await this.step("strip", () => execAsync(stripCmd), "background");
+      }
+      return;
+    }
+
+    // "c" tells ar not to print "ar: creating <file>" to stderr when the archive
+    // doesn't exist yet -- that's an informational notice, not a warning/error,
+    // but execAsync surfaces any non-empty stderr on a successful run.
+    const archiveCmd =
+      PLATFORM === Platform.Linux
+        ? `"${ARCHIVE_TOOL}" rc "${paths.moduleAFile}" "${paths.moduleOFile}" > /dev/null`
+        : `"${ARCHIVE_TOOL}" rc "${paths.moduleAFile}" "${paths.moduleOFile}" > NUL 2>&1`;
+    if (this.verbose) {
+      this.printCmd(archiveCmd);
+    }
+    await this.step("ar", () => execAsync(archiveCmd), "background");
+
+    const { compileCommands, includeDirs, interfaceMacros } = prepared;
+    const makerel = (absolute: string) =>
+      absolute
+        .replaceAll("\\", "/")
+        .replace(this.moduleDir.replaceAll("\\", "/") + "/build/", "");
+
+    await this.onMainThread(async () => {
+      await this.step("write metadata", async () => {
+        const moduleMetadata: ModuleMetadata = {
+          compilerVersion: version,
+          fileformatVersion: 1,
+          name: this.config.name,
+          id: this.config.id,
+          version: this.config.version,
+          libs: [
+            {
+              filename: makerel(paths.moduleAFile),
+              platform: this.config.platform,
+              type: "static",
+            },
+          ],
+          linkerFlags: this.config.linkerFlags,
+          interfaceLinkerFlags: this.config.interfaceLinkerFlags,
+          includeDirs: includeDirs,
+          interfaceMacros: interfaceMacros,
+          compileCommands: compileCommands,
+          fullModuleGraph: allModules,
+          importFile: HAZE_LIB_IMPORT_FILE,
+        };
+        const moduleMetadataSerialized = {
+          ...moduleMetadata,
+          linkerFlags: {
+            all: moduleMetadata.linkerFlags.getAll(),
+            linux: moduleMetadata.linkerFlags.getLinux(),
+            win32: moduleMetadata.linkerFlags.getWin32(),
+          },
+          interfaceLinkerFlags: {
+            all: moduleMetadata.linkerFlags.getAll(),
+            linux: moduleMetadata.linkerFlags.getLinux(),
+            win32: moduleMetadata.linkerFlags.getWin32(),
+          },
+          includeDirs: {
+            all: moduleMetadata.includeDirs.getAll(),
+            linux: moduleMetadata.includeDirs.getLinux(),
+            win32: moduleMetadata.includeDirs.getWin32(),
+          },
+          interfaceMacros: {
+            all: moduleMetadata.interfaceMacros.getAll(),
+            linux: moduleMetadata.interfaceMacros.getLinux(),
+            win32: moduleMetadata.interfaceMacros.getWin32(),
+          },
+        };
+        await writeFile(
+          paths.moduleMetadataFile,
+          JSON.stringify(moduleMetadataSerialized, undefined, 2)
+        );
+      });
+      const importFile = this.step("export interface", () => ExportSymbols(sr));
+      await this.step("write interface", async () => {
+        await writeFile(paths.importFilePath, importFile);
+
+        if (fs.existsSync(paths.moduleOutputLib)) {
+          fs.unlinkSync(paths.moduleOutputLib);
+        }
+      });
+      await this.step("tar.gz", () =>
+        createTarGz(
+          `${this.moduleDir}/build`,
+          [
+            makerel(paths.moduleAFile),
+            makerel(paths.importFilePath),
+            makerel(paths.moduleMetadataFile),
+          ],
+          paths.moduleOutputLib
+        )
+      );
+    });
+  }
+
+  /**
+   * Everything the C compile needs worked out up front: flags, the commands,
+   * and compile_commands.json written.
+   */
+  private async prepareCCompile(
+    paths: ReturnType<ModuleCompiler["computeBuildPaths"]>,
     isTopLevelModule: boolean
   ) {
     const compilerFlags = this.config.compilerFlags;
@@ -2171,147 +2337,29 @@ export class ModuleCompiler {
     const platformCompilerFlags = compilerFlags.combineForPlatform();
     const platformLinkerFlags = linkerFlags.combineForPlatform();
 
-    if (this.config.moduleType === ModuleType.Executable) {
-      const compileFlags = platformCompilerFlags.join(" ");
-      const linkFlags = [
-        ...archives.map((l) => `"${l}"`),
-        ...platformLinkerFlags,
-      ].join(" ");
+    const compileFlags = platformCompilerFlags.join(" ");
+    const compileCmd = `"${HAZE_C_COMPILER}" "${paths.moduleCFile}" -c -o "${paths.moduleOFile}" ${compileFlags}`;
+    compileCommands.push({
+      directory: cwd(),
+      file: paths.moduleCFile,
+      command: compileCmd,
+      output: paths.moduleOFile,
+    });
+    await this.writeCompileCommands(isTopLevelModule, compileCommands);
 
-      const compileCmd = `"${HAZE_C_COMPILER}" "${paths.moduleCFile}" -c -o "${paths.moduleOFile}" ${compileFlags}`;
+    const linkFlags = [
+      ...archives.map((l) => `"${l}"`),
+      ...platformLinkerFlags,
+    ].join(" ");
+    const linkCmd = `"${HAZE_C_COMPILER}" "${paths.moduleOFile}" -o "${paths.moduleExecutable}" ${linkFlags}`;
 
-      compileCommands.push({
-        directory: cwd(),
-        file: paths.moduleCFile,
-        command: compileCmd,
-        output: paths.moduleOFile,
-      });
-      await this.writeCompileCommands(isTopLevelModule, compileCommands);
-
-      if (this.verbose) {
-        this.printCmd(compileCmd);
-      }
-      await execAsync(compileCmd);
-
-      this.advancePhase(EModulePrintCompilerPhase.Linking);
-
-      // Self-hosting: when the thing being linked is the native parser this
-      // build parsed through, the running parser holds the output path locked.
-      releaseNativeParserBinary(paths.moduleExecutable);
-
-      const linkCmd = `"${HAZE_C_COMPILER}" "${paths.moduleOFile}" -o "${paths.moduleExecutable}" ${linkFlags}`;
-      if (this.verbose) {
-        this.printCmd(linkCmd);
-      }
-      await execAsync(linkCmd);
-
-      if (this.strip) {
-        const stripCmd = `strip --strip-unneeded "${paths.moduleExecutable}"`;
-        if (this.verbose) {
-          this.printCmd(stripCmd);
-        }
-        await execAsync(stripCmd);
-      }
-    } else {
-      const flags = `${platformCompilerFlags.join(" ")}`;
-      const cmd = `"${HAZE_C_COMPILER}" "${paths.moduleCFile}" -c -o "${paths.moduleOFile}" ${flags}`;
-
-      compileCommands.push({
-        directory: cwd(),
-        file: paths.moduleCFile,
-        command: cmd,
-        output: paths.moduleOFile,
-      });
-      await this.writeCompileCommands(isTopLevelModule, compileCommands);
-
-      if (this.verbose) {
-        this.printCmd(cmd);
-      }
-      await execAsync(cmd);
-
-      // "c" tells ar not to print "ar: creating <file>" to stderr when the archive
-      // doesn't exist yet -- that's an informational notice, not a warning/error,
-      // but execAsync surfaces any non-empty stderr on a successful run.
-      const archiveCmd =
-        PLATFORM === Platform.Linux
-          ? `"${ARCHIVE_TOOL}" rc "${paths.moduleAFile}" "${paths.moduleOFile}" > /dev/null`
-          : `"${ARCHIVE_TOOL}" rc "${paths.moduleAFile}" "${paths.moduleOFile}" > NUL 2>&1`;
-      if (this.verbose) {
-        this.printCmd(archiveCmd);
-      }
-      await execAsync(archiveCmd);
-
-      const makerel = (absolute: string) =>
-        absolute
-          .replaceAll("\\", "/")
-          .replace(this.moduleDir.replaceAll("\\", "/") + "/build/", "");
-
-      const moduleMetadata: ModuleMetadata = {
-        compilerVersion: version,
-        fileformatVersion: 1,
-        name: this.config.name,
-        id: this.config.id,
-        version: this.config.version,
-        libs: [
-          {
-            filename: makerel(paths.moduleAFile),
-            platform: this.config.platform,
-            type: "static",
-          },
-        ],
-        linkerFlags: this.config.linkerFlags,
-        interfaceLinkerFlags: this.config.interfaceLinkerFlags,
-        includeDirs: includeDirs,
-        interfaceMacros: interfaceMacros,
-        compileCommands: compileCommands,
-        fullModuleGraph: allModules,
-        importFile: HAZE_LIB_IMPORT_FILE,
-      };
-      const moduleMetadataSerialized = {
-        ...moduleMetadata,
-        linkerFlags: {
-          all: moduleMetadata.linkerFlags.getAll(),
-          linux: moduleMetadata.linkerFlags.getLinux(),
-          win32: moduleMetadata.linkerFlags.getWin32(),
-        },
-        interfaceLinkerFlags: {
-          all: moduleMetadata.linkerFlags.getAll(),
-          linux: moduleMetadata.linkerFlags.getLinux(),
-          win32: moduleMetadata.linkerFlags.getWin32(),
-        },
-        includeDirs: {
-          all: moduleMetadata.includeDirs.getAll(),
-          linux: moduleMetadata.includeDirs.getLinux(),
-          win32: moduleMetadata.includeDirs.getWin32(),
-        },
-        interfaceMacros: {
-          all: moduleMetadata.interfaceMacros.getAll(),
-          linux: moduleMetadata.interfaceMacros.getLinux(),
-          win32: moduleMetadata.interfaceMacros.getWin32(),
-        },
-      };
-      await writeFile(
-        paths.moduleMetadataFile,
-        JSON.stringify(moduleMetadataSerialized, undefined, 2)
-      );
-
-      const importFile = ExportSymbols(sr);
-      await writeFile(paths.importFilePath, importFile);
-
-      if (fs.existsSync(paths.moduleOutputLib)) {
-        fs.unlinkSync(paths.moduleOutputLib);
-      }
-
-      await createTarGz(
-        `${this.moduleDir}/build`,
-        [
-          makerel(paths.moduleAFile),
-          makerel(paths.importFilePath),
-          makerel(paths.moduleMetadataFile),
-        ],
-        paths.moduleOutputLib
-      );
-    }
+    return {
+      compileCmd: compileCmd,
+      linkCmd: linkCmd,
+      compileCommands: compileCommands,
+      includeDirs: includeDirs,
+      interfaceMacros: interfaceMacros,
+    };
   }
 
   async build(isTopLevelModule: boolean, fullRebuild?: boolean) {
@@ -2336,129 +2384,159 @@ export class ModuleCompiler {
           // reflect actual work time, not time spent waiting for prior modules.
           this.markBuildStart();
 
-          const buildCache = new ModuleBuildCache(
-            path.join(
-              this.hazeWorkspaceDirectory,
-              "build-cache",
-              `${this.config.name}.json`
-            )
+          const check = await this.onMainThread(() =>
+            this.step("check", () => this.checkUpToDate(fullRebuild))
           );
-          buildCache.load();
 
-          const compilerFingerprint = this.computeCompilerFingerprint();
-          // The build settings are part of the key: builds with different
-          // settings share this workspace, so a module built with one set is
-          // never reused by a build with another, and changing them rebuilds
-          // everything.
-          const compilerKey =
-            (compilerFingerprint
-              ? `${version}:${compilerFingerprint}`
-              : `${version}`) + buildSettingsCacheKey(this.settings);
-
-          await this.writeBuildSettingsSource();
-          const compilerKeyChanged =
-            buildCache.getModuleCompilerKey(this.config.name) !== compilerKey;
-          const forceFullRebuild = fullRebuild === true || compilerKeyChanged;
-
-          // Embedded resource files (embed_file_text/embed_file_binary,
-          // e.g. a .wgsl shader loaded via embed.watchText) are only
-          // discovered by name during analysis below, which is exactly the
-          // phase this check exists to decide whether to skip -- so this
-          // has to reuse what the *previous* successful build already found
-          // and recorded, rather than rediscovering them here.
-          const initialRelevantFiles = [
-            ...(await this.gatherModuleRelevantFiles()),
-            ...buildCache.getModuleTrackedFiles(this.config.name),
-          ];
-          // Generators are deliberately not forced by forceFullRebuild.
-          // A changed compiler fingerprint invalidates everything the
-          // compiler itself produced, but a generator produces native
-          // artifacts (sdl's cmake build, wgpu's cargo build) that don't
-          // depend on the compiler's source at all -- and in dev the
-          // fingerprint covers every file under src/, so tying the two
-          // together re-ran cmake and cargo on literally every compiler edit.
-          // Their own input/output stamps already catch a changed generator
-          // script or a missing output; only an explicit --full-rebuild
-          // forces them.
-          const forceGenerators = fullRebuild === true;
-          const generatorsNeedRun = forceGenerators
-            ? true
-            : this.generatorsNeedRun();
-          // The build cache only tracks inputs. If the output itself is gone
-          // (e.g. __haze__/<module> was deleted, or this is a fresh clone that
-          // received a cache file but no artifacts), the cache would happily
-          // report "up to date" and the module would never be rebuilt.
-          const outputMissing = !this.primaryOutputExists();
-          const moduleChanged =
-            forceFullRebuild || outputMissing
-              ? true
-              : buildCache.hasModuleChanged(
-                  this.config.name,
-                  initialRelevantFiles,
-                  compilerKey
-                );
-
-          if (!(moduleChanged || generatorsNeedRun)) {
+          if (!(check.moduleChanged || check.generatorsNeedRun)) {
             this.maybeStripExecutable();
             this.advancePhase(EModulePrintCompilerPhase.Done);
+            timeline.setOutcome(this.timelineRow, "up-to-date");
             return;
           }
 
-          const generatorsRan = generatorsNeedRun
-            ? await this.runAllGenerators(forceGenerators)
+          // Not on the main thread: a generator is built by a nested build,
+          // whose modules take the lock themselves, and then runs for as long
+          // as cmake or cargo take.
+          const generatorsRan = check.generatorsNeedRun
+            ? await this.runAllGenerators(check.forceGenerators)
             : false;
 
-          if (!(moduleChanged || generatorsRan)) {
+          if (!(check.moduleChanged || generatorsRan)) {
             this.maybeStripExecutable();
             this.advancePhase(EModulePrintCompilerPhase.Done);
+            timeline.setOutcome(this.timelineRow, "up-to-date");
             return;
           }
 
-          this.advancePhase(EModulePrintCompilerPhase.Collecting);
-          await this.phaseCollect();
+          const { sr, allModules, paths } = await this.onMainThread(
+            async () => {
+              this.advancePhase(EModulePrintCompilerPhase.Collecting);
+              await this.phaseCollect();
 
-          this.advancePhase(EModulePrintCompilerPhase.Analyzing);
-          const sr = this.phaseAnalyze();
+              this.advancePhase(EModulePrintCompilerPhase.Analyzing);
+              const sr = this.step("analyze", () => this.phaseAnalyze());
 
-          this.advancePhase(EModulePrintCompilerPhase.Lowering);
-          const lowered = this.phaseLower(sr);
+              this.advancePhase(EModulePrintCompilerPhase.Lowering);
+              const lowered = this.step("lower", () => this.phaseLower(sr));
 
-          const allModules: [string, string, string][] = [
-            [this.config.name, this.config.version, this.config.id],
-            ...(await this.loadDependencyModuleGraph()),
-          ];
+              const allModules: [string, string, string][] = [
+                [this.config.name, this.config.version, this.config.id],
+                ...(await this.loadDependencyModuleGraph()),
+              ];
 
-          const paths = this.computeBuildPaths();
+              const paths = this.computeBuildPaths();
 
-          this.advancePhase(EModulePrintCompilerPhase.Generating);
-          await this.phaseGenerate(lowered, allModules, paths);
+              this.advancePhase(EModulePrintCompilerPhase.Generating);
+              await this.step("codegen", () =>
+                this.phaseGenerate(lowered, allModules, paths)
+              );
+              timeline.markInterfaceReady(this.timelineRow);
+              return { sr: sr, allModules: allModules, paths: paths };
+            }
+          );
 
           this.advancePhase(EModulePrintCompilerPhase.CCompiling);
           await this.phaseCCompile(sr, paths, allModules, isTopLevelModule);
 
           this.advancePhase(EModulePrintCompilerPhase.Done);
 
-          // Now that analysis has actually run, sr.elaboratedEmbeddedFileTable
-          // holds every embed_file_text/embed_file_binary'd resource file
-          // this module referenced this build, with the exact absolute path
-          // already resolved for embedding -- record those too, so a later
-          // build's pre-analysis check (above) can tell one of them changed.
-          const embeddedFiles = [
-            ...sr.elaboratedEmbeddedFileTable.values(),
-          ].map((data) => data.absolutePath);
-          const finalRelevantFiles = [
-            ...(await this.gatherModuleRelevantFiles()),
-            ...embeddedFiles,
-          ];
-          buildCache.updateModule(
-            this.config.name,
-            finalRelevantFiles,
-            compilerKey
+          await this.onMainThread(() =>
+            this.step("save cache", async () => {
+              // Now that analysis has actually run, sr.elaboratedEmbeddedFileTable
+              // holds every embed_file_text/embed_file_binary'd resource file
+              // this module referenced this build, with the exact absolute path
+              // already resolved for embedding -- record those too, so a later
+              // build's pre-analysis check (above) can tell one of them changed.
+              const embeddedFiles = [
+                ...sr.elaboratedEmbeddedFileTable.values(),
+              ].map((data) => data.absolutePath);
+              const finalRelevantFiles = [
+                ...(await this.gatherModuleRelevantFiles()),
+                ...embeddedFiles,
+              ];
+              check.buildCache.updateModule(
+                this.config.name,
+                finalRelevantFiles,
+                check.compilerKey
+              );
+              check.buildCache.save();
+            })
           );
-          buildCache.save();
         }
       );
     });
+  }
+
+  /** Decides whether this module, or its generators, need to run. */
+  private async checkUpToDate(fullRebuild: boolean | undefined) {
+    const buildCache = new ModuleBuildCache(
+      path.join(
+        this.hazeWorkspaceDirectory,
+        "build-cache",
+        `${this.config.name}.json`
+      )
+    );
+    buildCache.load();
+
+    const compilerFingerprint = this.computeCompilerFingerprint();
+    // The build settings are part of the key: builds with different
+    // settings share this workspace, so a module built with one set is
+    // never reused by a build with another, and changing them rebuilds
+    // everything.
+    const compilerKey =
+      (compilerFingerprint
+        ? `${version}:${compilerFingerprint}`
+        : `${version}`) + buildSettingsCacheKey(this.settings);
+
+    await this.writeBuildSettingsSource();
+    const compilerKeyChanged =
+      buildCache.getModuleCompilerKey(this.config.name) !== compilerKey;
+    const forceFullRebuild = fullRebuild === true || compilerKeyChanged;
+
+    // Embedded resource files (embed_file_text/embed_file_binary,
+    // e.g. a .wgsl shader loaded via embed.watchText) are only
+    // discovered by name during analysis below, which is exactly the
+    // phase this check exists to decide whether to skip -- so this
+    // has to reuse what the *previous* successful build already found
+    // and recorded, rather than rediscovering them here.
+    const initialRelevantFiles = [
+      ...(await this.gatherModuleRelevantFiles()),
+      ...buildCache.getModuleTrackedFiles(this.config.name),
+    ];
+    // Generators are deliberately not forced by forceFullRebuild.
+    // A changed compiler fingerprint invalidates everything the
+    // compiler itself produced, but a generator produces native
+    // artifacts (sdl's cmake build, wgpu's cargo build) that don't
+    // depend on the compiler's source at all -- and in dev the
+    // fingerprint covers every file under src/, so tying the two
+    // together re-ran cmake and cargo on literally every compiler edit.
+    // Their own input/output stamps already catch a changed generator
+    // script or a missing output; only an explicit --full-rebuild
+    // forces them.
+    const forceGenerators = fullRebuild === true;
+    const generatorsNeedRun = forceGenerators ? true : this.generatorsNeedRun();
+    // The build cache only tracks inputs. If the output itself is gone
+    // (e.g. __haze__/<module> was deleted, or this is a fresh clone that
+    // received a cache file but no artifacts), the cache would happily
+    // report "up to date" and the module would never be rebuilt.
+    const outputMissing = !this.primaryOutputExists();
+    const moduleChanged =
+      forceFullRebuild || outputMissing
+        ? true
+        : buildCache.hasModuleChanged(
+            this.config.name,
+            initialRelevantFiles,
+            compilerKey
+          );
+
+    return {
+      buildCache: buildCache,
+      compilerKey: compilerKey,
+      forceGenerators: forceGenerators,
+      generatorsNeedRun: generatorsNeedRun,
+      moduleChanged: moduleChanged,
+    };
   }
 
   private async writeCompileCommands(
