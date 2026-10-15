@@ -16,7 +16,13 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import os from "node:os";
 import { InternalError } from "../shared/Errors";
 
-export type SpanKind = "main" | "queued" | "background";
+/**
+ * main: work on the main thread. queued: waiting for the main thread.
+ * background: a process of its own (clang, link, ar, a generator).
+ * waiting: blocked on other modules finishing (an executable's link waits for
+ * every library it links).
+ */
+export type SpanKind = "main" | "queued" | "background" | "waiting";
 
 export type TimelineSpan = {
   row: string;
@@ -38,12 +44,11 @@ export type TimelineRow = {
   parentRow: string | null;
   /** When the build this row belongs to started scheduling modules. */
   discovered: number;
-  /** When every dependency had finished and the module was started. */
+  /** When the module was started: every dependency's interface was ready. */
   ready: number | null;
   /**
-   * When everything a dependent module needs from this one was known: the
-   * end of C generation. Dependents are still only started at `done`, after
-   * this module's own clang, ar and packaging.
+   * When this library's import.hz and metadata.json were written, which is
+   * when its dependents may start; its own clang and ar run on after that.
    */
   interfaceReady: number | null;
   done: number | null;
@@ -234,6 +239,7 @@ class BuildTimeline {
       if (
         module === undefined ||
         s.kind === "queued" ||
+        s.kind === "waiting" ||
         s.label.startsWith("build generator") ||
         s.label.startsWith("run generator")
       ) {

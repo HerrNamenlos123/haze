@@ -570,8 +570,16 @@ export class ProjectCompiler {
 
   /**
    * Build all modules concurrently, respecting the dependency graph.
-   * A module starts building the instant all of its direct deps complete —
-   * no waiting for an entire "layer" to finish.
+   *
+   * A module starts the moment every direct dependency's interface is ready:
+   * its import.hz and metadata.json are written, which happens before that
+   * dependency's clang and ar (or when it turns out to be up to date). What
+   * needs a dependency's object code -- an executable's link, a generator's
+   * nested build -- waits through waitForDependencies until every module it
+   * depends on has finished.
+   *
+   * A failure starts nothing new and fails the build once everything already
+   * running has stopped; a module waiting on a failed dependency stops too.
    */
   private async buildInParallel(
     modules: Map<
@@ -585,70 +593,141 @@ export class ProjectCompiler {
     mainModuleName: string,
     fullRebuild: boolean | undefined
   ): Promise<boolean> {
-    type BuildResult = { name: string; success: boolean };
-
-    const completed = new Set<string>();
-    const running = new Map<string, Promise<BuildResult>>();
-    let anyFailed = false;
-
-    const startReady = () => {
-      for (const [name, { compiler, effectiveDeps }] of modules) {
-        if (completed.has(name) || running.has(name)) {
-          continue;
-        }
-        if (effectiveDeps.some((d) => !completed.has(d))) {
-          continue;
-        }
-        const isTopLevel = name === mainModuleName;
-        // The top-level module is forced to rebuild when strip is on (same
-        // behaviour as the old serial build).
-        const forceRebuild = isTopLevel
-          ? (fullRebuild ?? false) || this.strip
-          : fullRebuild;
-
-        timeline.markReady(compiler.timelineRow);
-        running.set(
-          name,
-          compiler
-            .build(isTopLevel, forceRebuild)
-            .then((success) => ({ name: name, success: !!success }))
-            .catch((err: unknown) => {
-              process.stderr.write(
-                `[${name}] Unhandled build error: ${String(err)}\n`
-              );
-              return { name: name, success: false };
-            })
-            .then((result) => {
-              timeline.markDone(
-                compiler.timelineRow,
-                result.success ? "built" : "failed"
-              );
-              return result;
-            })
-        );
-      }
+    type ModuleState = {
+      started: boolean;
+      interfaceReady: boolean;
+      /** null while not finished. */
+      succeeded: boolean | null;
+      finished: Promise<boolean>;
+      finish: (succeeded: boolean) => void;
     };
-
-    startReady();
-
-    while (running.size > 0) {
-      // Wait for whichever in-flight build finishes first.
-      const result = await Promise.race([...running.values()]);
-      running.delete(result.name);
-
-      if (result.success) {
-        completed.add(result.name);
-      } else {
-        anyFailed = true;
-      }
-
-      // Start any modules newly unblocked by this completion.
-      if (!anyFailed) {
-        startReady();
-      }
+    const state = new Map<string, ModuleState>();
+    for (const name of modules.keys()) {
+      let finish: (succeeded: boolean) => void = () => {};
+      const finished = new Promise<boolean>((resolve) => {
+        finish = resolve;
+      });
+      state.set(name, {
+        started: false,
+        interfaceReady: false,
+        succeeded: null,
+        finished: finished,
+        finish: finish,
+      });
     }
 
-    if (!anyFailed && completed.size < modules.size) {
+    const transitiveDeps = (name: string, into = new Set<string>()) => {
+      for (const dep of modules.get(name)?.effectiveDeps ?? []) {
+        if (!into.has(dep)) {
+          into.add(dep);
+          transitiveDeps(dep, into);
+        }
+      }
+      return into;
+    };
+
+    // Every event wakes the loop below, which then looks at all of `state`;
+    // an event that lands while the loop is busy is seen by that look.
+    let wake: () => void = () => {};
+    let event = new Promise<void>((resolve) => {
+      wake = resolve;
+    });
+    let anyFailed = false;
+
+    const start = (name: string) => {
+      const st = state.get(name)!;
+      const { compiler } = modules.get(name)!;
+      st.started = true;
+
+      const isTopLevel = name === mainModuleName;
+      // The top-level module is forced to rebuild when strip is on (same
+      // behaviour as the old serial build).
+      const forceRebuild = isTopLevel
+        ? (fullRebuild ?? false) || this.strip
+        : fullRebuild;
+
+      compiler.onInterfaceReady = () => {
+        st.interfaceReady = true;
+        wake();
+      };
+      const deps = [...transitiveDeps(name)];
+      // False as soon as any of them fails, true once all have succeeded.
+      compiler.waitForDependencies = () =>
+        new Promise<boolean>((resolve) => {
+          let left = deps.length;
+          if (left === 0) {
+            resolve(true);
+          }
+          for (const dep of deps) {
+            const finished = state.get(dep)?.finished ?? Promise.resolve(false);
+            finished.then((succeeded) => {
+              left--;
+              if (!succeeded) {
+                resolve(false);
+              } else if (left === 0) {
+                resolve(true);
+              }
+            });
+          }
+        });
+
+      timeline.markReady(compiler.timelineRow);
+      compiler
+        .build(isTopLevel, forceRebuild)
+        .then((success) => !!success)
+        .catch((err: unknown) => {
+          process.stderr.write(
+            `[${name}] Unhandled build error: ${String(err)}\n`
+          );
+          return false;
+        })
+        .then((succeeded) => {
+          timeline.markDone(
+            compiler.timelineRow,
+            succeeded ? "built" : "failed"
+          );
+          st.succeeded = succeeded;
+          // An up-to-date module never signals its interface on its own.
+          st.interfaceReady ||= succeeded;
+          anyFailed ||= !succeeded;
+          st.finish(succeeded);
+          wake();
+        });
+    };
+
+    while (true) {
+      if (anyFailed) {
+        // Nothing new starts, and nothing may wait forever on a module that
+        // never will.
+        for (const st of state.values()) {
+          if (!st.started) {
+            st.finish(false);
+          }
+        }
+      } else {
+        for (const [name, { effectiveDeps }] of modules) {
+          if (
+            !state.get(name)!.started &&
+            effectiveDeps.every((d) => state.get(d)?.interfaceReady)
+          ) {
+            start(name);
+          }
+        }
+      }
+      const running = [...state.values()].some(
+        (st) => st.started && st.succeeded === null
+      );
+      if (!running) {
+        break;
+      }
+      await event;
+      event = new Promise<void>((resolve) => {
+        wake = resolve;
+      });
+    }
+
+    const succeeded = [...state.values()].filter((st) => st.succeeded);
+    if (!anyFailed && succeeded.length < modules.size) {
       // Some modules never became runnable — dependency cycle.
       throw new GeneralError(
         "Build graph has a dependency cycle or unresolvable dependency"

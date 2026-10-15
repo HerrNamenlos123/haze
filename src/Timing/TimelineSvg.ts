@@ -2,12 +2,13 @@
 // `--timing-graph`, and writes it with the raw data next to it.
 //
 // One row per module, in dependency order, deps above their dependents. A
-// row shows: a dashed line while the module waits for its dependencies, a
-// hatched bar while it waits for the main thread, coloured bars for its own
-// main-thread work and its background processes, and a triangle where its
-// interface was ready (dependents could have started there; they start at
-// the end of the row). The critical path -- the chain of modules each of which
-// was the last thing its successor waited for -- is outlined in red. Above the
+// row shows: a dashed line while the module waits for its dependencies'
+// interfaces, a hatched orange bar while it waits for them to finish, a
+// grey hatched bar while it waits for the main thread, coloured bars for its
+// own main-thread work and its background processes, and a triangle where its
+// interface was ready, which is when its dependents may start. The critical
+// path -- the chain of modules each of which was the last thing its successor
+// waited for -- is outlined in red. Above the
 // rows: machine-wide CPU use, how many background processes ran at once, and
 // which module held the main thread.
 
@@ -26,14 +27,22 @@ import {
 
 export type CriticalStep = {
   row: TimelineRow;
-  /** ready -> done of this module, split by what it was doing. */
+  /**
+   * The part of this module's time that is on the path: from when its
+   * predecessor released it (its start, or the end of its wait for
+   * libraries) to when it released its successor (its interface, or done).
+   */
+  from: number;
+  to: number;
+  /** from -> to, split by what the module was doing. */
   main: number;
   queued: number;
   background: number;
+  waiting: number;
   other: number;
   /**
    * How long after this module's interface was ready its successor on the
-   * path was still waiting for it (its clang, ar and packaging).
+   * path was still waiting for it (its clang and ar).
    */
   waitedAfterInterface: number;
 };
@@ -114,38 +123,96 @@ export function analyzeTimeline(data: TimelineData): TimelineAnalysis {
   const upToDate = modules.filter((r) => r.outcome === "up-to-date").length;
   const failed = modules.filter((r) => r.outcome === "failed").length;
 
-  // Critical path of the outermost build: from the module that finished
-  // last, follow the dependency that finished last, back to the start.
+  // Critical path of the outermost build, walked back from the module that
+  // finished last. A module is released by the dependency whose release came
+  // last before it started: that dependency's interface (dependents start on
+  // it) or, if the dependency finished before then, its end (timelines from
+  // before interfaces gated anything). A module that waited for libraries
+  // (an executable's link) was released instead by whichever of all its
+  // dependencies finished last, and is on the path only from then.
   const criticalPath: CriticalStep[] = [];
   const rootRows = root ? rowsOfBuild(data, root.id) : [];
   const byName = new Map(rootRows.map((r) => [r.module, r]));
+  const transitive = (row: TimelineRow, into = new Set<TimelineRow>()) => {
+    for (const name of row.deps) {
+      const dep = byName.get(name);
+      if (dep && !into.has(dep)) {
+        into.add(dep);
+        transitive(dep, into);
+      }
+    }
+    return into;
+  };
+  const slack = 1; // ms between one module's release and the next one's start
   let current = rootRows
     .filter((r) => r.done !== null)
     .sort((a, b) => b.done! - a.done!)[0];
-  let successor: TimelineRow | null = null;
+  let to = current?.done ?? 0;
+  let waitedAfterInterface = 0;
   while (current) {
-    const spans = byRow.get(current.key) ?? [];
-    const span = (current.done ?? 0) - (current.ready ?? 0);
-    const main = sum(spans, (s) => s.kind === "main");
-    const queued = sum(spans, (s) => s.kind === "queued");
-    const background = sum(spans, (s) => s.kind === "background");
-    const waitedAfterInterface =
-      successor && current.interfaceReady !== null && current.done !== null
-        ? current.done - current.interfaceReady
-        : 0;
+    const row = current;
+    const waits = (byRow.get(row.key) ?? []).filter(
+      (s) => s.kind === "waiting" && s.end <= to + slack
+    );
+    const lastWait = waits.sort((x, y) => y.end - x.end)[0];
+    let from: number;
+    let predecessor: TimelineRow | undefined;
+    let predecessorTo = 0;
+    let waited = 0;
+    // A wait counts only if it held the module up.
+    if (lastWait && lastWait.end - lastWait.start >= slack) {
+      from = lastWait.end;
+      predecessor = [...transitive(row)]
+        .filter((d) => d.done !== null && d.done <= from + slack)
+        .sort((x, y) => y.done! - x.done!)[0];
+      predecessorTo = predecessor?.done ?? 0;
+      waited =
+        predecessor?.interfaceReady != null
+          ? predecessorTo - predecessor.interfaceReady
+          : 0;
+    } else {
+      from = row.ready ?? 0;
+      const released = row.deps
+        .map((name) => byName.get(name))
+        .filter((d): d is TimelineRow => !!d && d.done !== null)
+        .map((d) => {
+          const viaDone = d.done! <= from + slack;
+          const at = viaDone ? d.done! : (d.interfaceReady ?? d.done!);
+          const late =
+            viaDone && d.interfaceReady != null ? at - d.interfaceReady : 0;
+          return { dep: d, at: at, late: late };
+        })
+        .sort((x, y) => y.at - x.at)[0];
+      predecessor = released?.dep;
+      predecessorTo = released?.at ?? 0;
+      waited = released?.late ?? 0;
+    }
+    const clipped = (kind: string) =>
+      (byRow.get(row.key) ?? [])
+        .filter((s) => s.kind === kind)
+        .reduce(
+          (t, s) =>
+            t + Math.max(0, Math.min(s.end, to) - Math.max(s.start, from)),
+          0
+        );
+    const main = clipped("main");
+    const queued = clipped("queued");
+    const background = clipped("background");
+    const waiting = clipped("waiting");
     criticalPath.unshift({
-      row: current,
+      row: row,
+      from: from,
+      to: to,
       main: main,
       queued: queued,
       background: background,
-      other: Math.max(0, span - main - queued - background),
+      waiting: waiting,
+      other: Math.max(0, to - from - main - queued - background - waiting),
       waitedAfterInterface: waitedAfterInterface,
     });
-    successor = current;
-    const deps = current.deps
-      .map((d) => byName.get(d))
-      .filter((d): d is TimelineRow => !!d && d.done !== null);
-    current = deps.sort((a, b) => b.done! - a.done!)[0];
+    waitedAfterInterface = waited;
+    current = predecessor;
+    to = predecessorTo;
   }
 
   return {
@@ -158,8 +225,8 @@ export function analyzeTimeline(data: TimelineData): TimelineAnalysis {
     upToDate: upToDate,
     failed: failed,
     criticalPath: criticalPath,
-    criticalPathStart: criticalPath[0]?.row.ready ?? 0,
-    criticalPathEnd: criticalPath.at(-1)?.row.done ?? 0,
+    criticalPathStart: criticalPath[0]?.from ?? 0,
+    criticalPathEnd: criticalPath.at(-1)?.to ?? 0,
   };
 }
 
@@ -176,6 +243,9 @@ function styleOf(span: TimelineSpan): Style {
   const l = span.label;
   if (span.kind === "queued") {
     return { fill: "url(#queued)", text: DARK_TEXT };
+  }
+  if (span.kind === "waiting") {
+    return { fill: "url(#waiting)", text: DARK_TEXT };
   }
   if (span.kind === "background") {
     if (l === "clang -c") {
@@ -342,6 +412,7 @@ export function renderTimelineSvg(data: TimelineData): string {
   const cpQueued = cp.reduce((t, c) => t + c.queued, 0);
   const cpBackground = cp.reduce((t, c) => t + c.background, 0);
   const cpOther = cp.reduce((t, c) => t + c.other, 0);
+  const cpWaiting = cp.reduce((t, c) => t + c.waiting, 0);
   const cpWaited = cp.reduce((t, c) => t + c.waitedAfterInterface, 0);
   const header = [
     `Main thread: ${secs(a.mainThreadBusy)} held by modules (${Math.round(
@@ -355,10 +426,12 @@ export function renderTimelineSvg(data: TimelineData): string {
       a.criticalPathEnd - a.criticalPathStart
     )}: main thread ${secs(cpMain)} + background ${secs(
       cpBackground
-    )} + queued for main thread ${secs(cpQueued)} + other ${secs(cpOther)}.`,
-    `Along it, each dependent waited ${secs(
+    )} + queued for main thread ${secs(cpQueued)}${
+      cpWaiting >= 1 ? ` + waiting for dependencies ${secs(cpWaiting)}` : ""
+    } + other ${secs(cpOther)}.`,
+    `Along it, dependents waited ${secs(
       cpWaited
-    )} in total for clang/ar/packaging of a module whose interface was already ready.`,
+    )} in total for clang/ar of a module whose interface was already ready.`,
   ];
   y = 28;
   out.push(
@@ -408,11 +481,12 @@ export function renderTimelineSvg(data: TimelineData): string {
     );
   }
   legendItem("url(#queued)", "queued for the main thread", "#999");
+  legendItem("url(#waiting)", "waiting for dependencies to finish", "#e3a35c");
   out.push(
     `<line x1="${lx}" y1="${y + 6}" x2="${lx + 24}" y2="${y + 6}" class="depwait"/>`
   );
   out.push(
-    `<text x="${lx + 30}" y="${y + 10}" class="small">waiting for dependencies</text>`
+    `<text x="${lx + 30}" y="${y + 10}" class="small">waiting for dependency interfaces</text>`
   );
   lx += 190;
   out.push(
@@ -605,6 +679,7 @@ export function renderTimelineSvg(data: TimelineData): string {
     const mainT = sum(spans, (s) => s.kind === "main");
     const bgT = sum(spans, isProcessSpan);
     const qT = sum(spans, (s) => s.kind === "queued");
+    const wT = sum(spans, (s) => s.kind === "waiting");
     out.push(
       `<text x="${12 + depth * 16}" y="${ry + 14}" class="label${
         isCritical ? " crit" : ""
@@ -618,7 +693,7 @@ export function renderTimelineSvg(data: TimelineData): string {
     } else if (!isProject) {
       stats = `${secs(mainT)} main · ${secs(bgT)} bg${
         qT >= 1 ? ` · ${secs(qT)} queued` : ""
-      }`;
+      }${wT >= 1 ? ` · ${secs(wT)} waiting` : ""}`;
     }
     out.push(
       `<text x="${LABEL_W - 8}" y="${ry + 14}" class="small${
@@ -633,13 +708,19 @@ export function renderTimelineSvg(data: TimelineData): string {
           data.rows.find((r) => r.build === row.build && r.module === dn)
         )
         .filter((r): r is TimelineRow => !!r && r.done !== null)
-        .sort((p, q) => q.done! - p.done!)[0];
+        .map((r) => ({
+          row: r,
+          // Released by its end if it was over by then, else its interface.
+          at:
+            r.done! <= row.ready! + 1 ? r.done! : (r.interfaceReady ?? r.done!),
+        }))
+        .sort((p, q) => q.at - p.at)[0]?.row;
       out.push(
         `<line x1="${x(row.discovered)}" y1="${ry + ROW_H / 2}" x2="${x(
           row.ready
         )}" y2="${ry + ROW_H / 2}" class="depwait"><title>${esc(
           `${row.module} waited ${secs(row.ready - row.discovered)} for its dependencies${
-            lastDep ? `; the last to finish was ${lastDep.module}` : ""
+            lastDep ? `; the last one ready was ${lastDep.module}` : ""
           }`
         )}</title></line>`
       );
@@ -650,10 +731,13 @@ export function renderTimelineSvg(data: TimelineData): string {
     for (const s of spans) {
       const st = styleOf(s);
       const bw = w(s.start, s.end);
-      const drawW = s.kind === "queued" ? bw : Math.max(bw, 0.8);
+      const hatched = s.kind === "queued" || s.kind === "waiting";
+      const drawW = hatched ? bw : Math.max(bw, 0.8);
       let stroke = "";
       if (s.kind === "queued") {
         stroke = ' stroke="#9a9a9a" stroke-width="0.5"';
+      } else if (s.kind === "waiting") {
+        stroke = ' stroke="#e3a35c" stroke-width="0.5"';
       } else if (isCritical) {
         stroke = ' stroke="#c0392b" stroke-width="1"';
       }
@@ -688,23 +772,18 @@ export function renderTimelineSvg(data: TimelineData): string {
     }
   }
 
-  // Critical path connectors: from a dependency's finish to the start of the
-  // module that was waiting for it.
+  // Critical path connectors: from where a module released the next one
+  // (its interface, or its end) to where that one's part of the path begins.
   for (let i = 1; i < cp.length; i++) {
-    const from = cp[i - 1]!.row;
-    const to = cp[i]!.row;
-    const fy = rowY.get(from.key);
-    const ty = rowY.get(to.key);
-    if (
-      fy === undefined ||
-      ty === undefined ||
-      from.done === null ||
-      to.ready === null
-    ) {
+    const prev = cp[i - 1]!;
+    const next = cp[i]!;
+    const fy = rowY.get(prev.row.key);
+    const ty = rowY.get(next.row.key);
+    if (fy === undefined || ty === undefined) {
       continue;
     }
     out.push(
-      `<path d="M${x(from.done).toFixed(1)} ${fy + ROW_H / 2} L${x(to.ready).toFixed(1)} ${
+      `<path d="M${x(prev.to).toFixed(1)} ${fy + ROW_H / 2} L${x(next.from).toFixed(1)} ${
         ty + ROW_H / 2
       }" class="critline"/>`
     );
@@ -721,6 +800,10 @@ export function renderTimelineSvg(data: TimelineData): string {
   <pattern id="queued" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
     <rect width="6" height="6" fill="#ececec"/>
     <line x1="0" y1="0" x2="0" y2="6" stroke="#a8a8a8" stroke-width="2"/>
+  </pattern>
+  <pattern id="waiting" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(-45)">
+    <rect width="6" height="6" fill="#fdecd9"/>
+    <line x1="0" y1="0" x2="0" y2="6" stroke="#e3a35c" stroke-width="2"/>
   </pattern>
   <style>
     .title { font-size: 18px; font-weight: 700; fill: #1d232b; }

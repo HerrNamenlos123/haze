@@ -887,6 +887,17 @@ export class ModuleCompiler {
   private printerHandle: ModuleHandle | null = null;
   /** This module's row on the build timeline; set by ProjectCompiler. */
   timelineRow = projectRowKey(-1);
+  /**
+   * Called once this library's import.hz and metadata.json are written: all
+   * a dependent needs to start. Set by ProjectCompiler.
+   */
+  onInterfaceReady: () => void = () => {};
+  /**
+   * Resolves once every module this one depends on, directly or not, has
+   * finished: its library exists and its build cache is written. False if one
+   * of them failed. Set by ProjectCompiler.
+   */
+  waitForDependencies: () => Promise<boolean> = async () => true;
 
   constructor(
     public config: ModuleConfig,
@@ -1909,18 +1920,14 @@ export class ModuleCompiler {
     );
   }
 
-  private async phaseCCompile(
-    sr: ReturnType<ModuleCompiler["phaseAnalyze"]>,
+  /**
+   * clang, then the static library or, once every dependency's library
+   * exists, the executable. Off the main thread.
+   */
+  private async compileC(
     paths: ReturnType<ModuleCompiler["computeBuildPaths"]>,
-    allModules: [string, string, string][],
-    isTopLevelModule: boolean
+    prepared: Awaited<ReturnType<ModuleCompiler["prepareCCompile"]>>
   ) {
-    const prepared = await this.onMainThread(() =>
-      this.step("prepare C", () =>
-        this.prepareCCompile(paths, isTopLevelModule)
-      )
-    );
-
     if (this.verbose) {
       this.printCmd(prepared.compileCmd);
     }
@@ -1932,6 +1939,7 @@ export class ModuleCompiler {
 
     if (this.config.moduleType === ModuleType.Executable) {
       this.advancePhase(EModulePrintCompilerPhase.Linking);
+      await this.awaitDependencies("wait for libraries");
 
       // Self-hosting: when the thing being linked is the native parser this
       // build parsed through, the running parser holds the output path locked.
@@ -1964,72 +1972,94 @@ export class ModuleCompiler {
       this.printCmd(archiveCmd);
     }
     await this.step("ar", () => execAsync(archiveCmd), "background");
+  }
 
+  /**
+   * Waits for waitForDependencies; a failed dependency stops this module
+   * without another message (the dependency reported its own error).
+   */
+  private async awaitDependencies(label: string) {
+    const start = timeline.now();
+    const finished = await this.waitForDependencies();
+    const end = timeline.now();
+    if (end - start >= 0.1) {
+      timeline.span(this.timelineRow, "waiting", label, start, end);
+    }
+    if (!finished) {
+      throw new SilentError();
+    }
+  }
+
+  /** This library's metadata.json and import.hz, what its dependents read. */
+  private async writeInterface(
+    sr: ReturnType<ModuleCompiler["phaseAnalyze"]>,
+    paths: ReturnType<ModuleCompiler["computeBuildPaths"]>,
+    allModules: [string, string, string][],
+    prepared: Awaited<ReturnType<ModuleCompiler["prepareCCompile"]>>
+  ) {
     const { compileCommands, includeDirs, interfaceMacros } = prepared;
     const makerel = (absolute: string) =>
       absolute
         .replaceAll("\\", "/")
         .replace(this.moduleDir.replaceAll("\\", "/") + "/build/", "");
 
-    await this.onMainThread(async () => {
-      await this.step("write metadata", async () => {
-        const moduleMetadata: ModuleMetadata = {
-          compilerVersion: version,
-          fileformatVersion: 1,
-          name: this.config.name,
-          id: this.config.id,
-          version: this.config.version,
-          libs: [
-            {
-              filename: makerel(paths.moduleAFile),
-              platform: this.config.platform,
-              type: "static",
-            },
-          ],
-          linkerFlags: this.config.linkerFlags,
-          interfaceLinkerFlags: this.config.interfaceLinkerFlags,
-          includeDirs: includeDirs,
-          interfaceMacros: interfaceMacros,
-          compileCommands: compileCommands,
-          fullModuleGraph: allModules,
-          importFile: MODULE_IMPORT_FILE,
-        };
-        const moduleMetadataSerialized = {
-          ...moduleMetadata,
-          linkerFlags: {
-            all: moduleMetadata.linkerFlags.getAll(),
-            linux: moduleMetadata.linkerFlags.getLinux(),
-            win32: moduleMetadata.linkerFlags.getWin32(),
+    await this.step("write metadata", async () => {
+      const moduleMetadata: ModuleMetadata = {
+        compilerVersion: version,
+        fileformatVersion: 1,
+        name: this.config.name,
+        id: this.config.id,
+        version: this.config.version,
+        libs: [
+          {
+            filename: makerel(paths.moduleAFile),
+            platform: this.config.platform,
+            type: "static",
           },
-          interfaceLinkerFlags: {
-            all: moduleMetadata.linkerFlags.getAll(),
-            linux: moduleMetadata.linkerFlags.getLinux(),
-            win32: moduleMetadata.linkerFlags.getWin32(),
-          },
-          includeDirs: {
-            all: moduleMetadata.includeDirs.getAll(),
-            linux: moduleMetadata.includeDirs.getLinux(),
-            win32: moduleMetadata.includeDirs.getWin32(),
-          },
-          interfaceMacros: {
-            all: moduleMetadata.interfaceMacros.getAll(),
-            linux: moduleMetadata.interfaceMacros.getLinux(),
-            win32: moduleMetadata.interfaceMacros.getWin32(),
-          },
-        };
-        await writeFile(
-          paths.moduleMetadataFile,
-          JSON.stringify(moduleMetadataSerialized, undefined, 2)
-        );
-      });
-      const importFile = this.step("export interface", () => ExportSymbols(sr));
-      await this.step("write interface", async () => {
-        await writeFile(paths.importFilePath, importFile);
+        ],
+        linkerFlags: this.config.linkerFlags,
+        interfaceLinkerFlags: this.config.interfaceLinkerFlags,
+        includeDirs: includeDirs,
+        interfaceMacros: interfaceMacros,
+        compileCommands: compileCommands,
+        fullModuleGraph: allModules,
+        importFile: MODULE_IMPORT_FILE,
+      };
+      const moduleMetadataSerialized = {
+        ...moduleMetadata,
+        linkerFlags: {
+          all: moduleMetadata.linkerFlags.getAll(),
+          linux: moduleMetadata.linkerFlags.getLinux(),
+          win32: moduleMetadata.linkerFlags.getWin32(),
+        },
+        interfaceLinkerFlags: {
+          all: moduleMetadata.linkerFlags.getAll(),
+          linux: moduleMetadata.linkerFlags.getLinux(),
+          win32: moduleMetadata.linkerFlags.getWin32(),
+        },
+        includeDirs: {
+          all: moduleMetadata.includeDirs.getAll(),
+          linux: moduleMetadata.includeDirs.getLinux(),
+          win32: moduleMetadata.includeDirs.getWin32(),
+        },
+        interfaceMacros: {
+          all: moduleMetadata.interfaceMacros.getAll(),
+          linux: moduleMetadata.interfaceMacros.getLinux(),
+          win32: moduleMetadata.interfaceMacros.getWin32(),
+        },
+      };
+      await writeFile(
+        paths.moduleMetadataFile,
+        JSON.stringify(moduleMetadataSerialized, undefined, 2)
+      );
+    });
+    const importFile = this.step("export interface", () => ExportSymbols(sr));
+    await this.step("write interface", async () => {
+      await writeFile(paths.importFilePath, importFile);
 
-        if (fs.existsSync(paths.staleHzlibFile)) {
-          fs.unlinkSync(paths.staleHzlibFile);
-        }
-      });
+      if (fs.existsSync(paths.staleHzlibFile)) {
+        fs.unlinkSync(paths.staleHzlibFile);
+      }
     });
   }
 
@@ -2243,7 +2273,12 @@ export class ModuleCompiler {
 
           // Not on the main thread: a generator is built by a nested build,
           // whose modules take the lock themselves, and then runs for as long
-          // as cmake or cargo take.
+          // as cmake or cargo take. That nested build checks and links the
+          // same dependencies, so they must be finished, not just have their
+          // interfaces out.
+          if (check.generatorsNeedRun) {
+            await this.awaitDependencies("wait for dependencies");
+          }
           const generatorsRan = check.generatorsNeedRun
             ? await this.runAllGenerators(check.forceGenerators)
             : false;
@@ -2255,35 +2290,42 @@ export class ModuleCompiler {
             return;
           }
 
-          const { sr, allModules, paths } = await this.onMainThread(
-            async () => {
-              this.advancePhase(EModulePrintCompilerPhase.Collecting);
-              await this.phaseCollect();
+          const { sr, paths, prepared } = await this.onMainThread(async () => {
+            this.advancePhase(EModulePrintCompilerPhase.Collecting);
+            await this.phaseCollect();
 
-              this.advancePhase(EModulePrintCompilerPhase.Analyzing);
-              const sr = this.step("analyze", () => this.phaseAnalyze());
+            this.advancePhase(EModulePrintCompilerPhase.Analyzing);
+            const sr = this.step("analyze", () => this.phaseAnalyze());
 
-              this.advancePhase(EModulePrintCompilerPhase.Lowering);
-              const lowered = this.step("lower", () => this.phaseLower(sr));
+            this.advancePhase(EModulePrintCompilerPhase.Lowering);
+            const lowered = this.step("lower", () => this.phaseLower(sr));
 
-              const allModules: [string, string, string][] = [
-                [this.config.name, this.config.version, this.config.id],
-                ...(await this.loadDependencyModuleGraph()),
-              ];
+            const allModules: [string, string, string][] = [
+              [this.config.name, this.config.version, this.config.id],
+              ...(await this.loadDependencyModuleGraph()),
+            ];
 
-              const paths = this.computeBuildPaths();
+            const paths = this.computeBuildPaths();
 
-              this.advancePhase(EModulePrintCompilerPhase.Generating);
-              await this.step("codegen", () =>
-                this.phaseGenerate(lowered, allModules, paths)
-              );
+            this.advancePhase(EModulePrintCompilerPhase.Generating);
+            await this.step("codegen", () =>
+              this.phaseGenerate(lowered, allModules, paths)
+            );
+            const prepared = await this.step("prepare C", () =>
+              this.prepareCCompile(paths, isTopLevelModule)
+            );
+            // Dependents start from here: they need this library's
+            // interface and metadata, not its object code.
+            if (this.config.moduleType !== ModuleType.Executable) {
+              await this.writeInterface(sr, paths, allModules, prepared);
               timeline.markInterfaceReady(this.timelineRow);
-              return { sr: sr, allModules: allModules, paths: paths };
+              this.onInterfaceReady();
             }
-          );
+            return { sr: sr, paths: paths, prepared: prepared };
+          });
 
           this.advancePhase(EModulePrintCompilerPhase.CCompiling);
-          await this.phaseCCompile(sr, paths, allModules, isTopLevelModule);
+          await this.compileC(paths, prepared);
 
           this.advancePhase(EModulePrintCompilerPhase.Done);
 
@@ -2361,7 +2403,15 @@ export class ModuleCompiler {
     // script or a missing output; only an explicit --full-rebuild
     // forces them.
     const forceGenerators = fullRebuild === true;
-    const generatorsNeedRun = forceGenerators ? true : this.generatorsNeedRun();
+    // Only a module that has generators can need to run them. A forced
+    // rebuild (which `--release` also forces on the top-level module, to
+    // strip it) used to count as needing them, and running generators means
+    // waiting for every dependency to finish first.
+    const hasGenerators = this.config.generators.some(
+      (gen) => gen.type === "exec"
+    );
+    const generatorsNeedRun =
+      hasGenerators && (forceGenerators || this.generatorsNeedRun());
     // The build cache only tracks inputs. If the output itself is gone
     // (e.g. __haze__/<module> was deleted, or this is a fresh clone that
     // received a cache file but no artifacts), the cache would happily
