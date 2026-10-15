@@ -139,6 +139,10 @@ export namespace Lowered {
     cInjections: string[];
 
     loweredTypeDefs: Map<Semantic.TypeDefId, Lowered.TypeDefId>;
+    /** Lowered function types by vararg, return type and parameters, to intern equivalent ones. */
+    loweredFunctionTypesByShape: Map<string, Lowered.TypeDefId>;
+    /** Lowered callable types by the lowered function type they wrap, to intern them. */
+    loweredCallablesByFunctionType: Map<Lowered.TypeDefId, Lowered.TypeDefId>;
     loweredTypeUses: Map<Semantic.TypeUseId, Lowered.TypeUseId>;
     loweredFunctions: Map<Semantic.SymbolId, Lowered.FunctionId>;
     loweredPointers: Map<Lowered.TypeUseId, Lowered.TypeDefId>;
@@ -3621,18 +3625,13 @@ export function lowerTypeDef(
     const returnType = lowerTypeUse(lr, type.returnType);
 
     // Now additionally intern equivalent function types, that were not equivalent in elaboration
-    // but are not equivalent after lowering.
-    for (const [_, id] of lr.loweredTypeDefs) {
-      const t = lr.typeDefNodes.get(id);
-      if (
-        t.variant === Lowered.ENode.FunctionDatatype &&
-        t.vararg === type.vararg &&
-        t.returnType === returnType &&
-        t.parameters.length === parameters.length &&
-        t.parameters.every((p, i) => parameters[i] === p)
-      ) {
-        return id;
-      }
+    // but are not equivalent after lowering. By shape, in a map: scanning every lowered type
+    // for every function type was quadratic and about half of all lowering time.
+    const shape = `${type.vararg ? 1 : 0}|${returnType}|${parameters.join(",")}`;
+    const equivalent = lr.loweredFunctionTypesByShape.get(shape);
+    if (equivalent !== undefined) {
+      lr.loweredTypeDefs.set(typeId, equivalent);
+      return equivalent;
     }
 
     const [p, pId] = Lowered.addTypeDef<Lowered.FunctionDatatypeDef>(lr, {
@@ -3643,6 +3642,7 @@ export function lowerTypeDef(
       vararg: type.vararg,
     });
     lr.loweredTypeDefs.set(typeId, pId);
+    lr.loweredFunctionTypesByShape.set(shape, pId);
     return pId;
   }
   if (type.variant === Semantic.ENode.CallableDatatype) {
@@ -3678,15 +3678,10 @@ export function lowerTypeDef(
     // those can lower to the same function type (e.g. `(values: ...) => int`
     // instantiated with an empty pack and a plain `() => int`): their env
     // block is a `void*` either way, so they are the same C struct. Intern.
-    for (const [, id] of lr.loweredTypeDefs) {
-      const t = lr.typeDefNodes.get(id);
-      if (
-        t.variant === Lowered.ENode.CallableDatatype &&
-        t.functionType === ftypeId
-      ) {
-        lr.loweredTypeDefs.set(typeId, id);
-        return id;
-      }
+    const sameStruct = lr.loweredCallablesByFunctionType.get(ftypeId);
+    if (sameStruct !== undefined) {
+      lr.loweredTypeDefs.set(typeId, sameStruct);
+      return sameStruct;
     }
 
     const [_, pId] = Lowered.addTypeDef<Lowered.CallableDatatypeDef>(lr, {
@@ -3695,6 +3690,7 @@ export function lowerTypeDef(
       name: Semantic.makeNameSetTypeDef(lr.sr, typeId),
     });
     lr.loweredTypeDefs.set(typeId, pId);
+    lr.loweredCallablesByFunctionType.set(ftypeId, pId);
     return pId;
   }
   if (type.variant === Semantic.ENode.FixedArrayDatatype) {
@@ -5656,6 +5652,8 @@ export function LowerModule(sr: Semantic.Context): Lowered.Module {
 
     loweredTypeUses: new Map(),
     loweredTypeDefs: new Map(),
+    loweredFunctionTypesByShape: new Map(),
+    loweredCallablesByFunctionType: new Map(),
     loweredFunctions: new Map(),
     loweredPointers: new Map(),
     loweredGlobalVariables: [],
