@@ -48,6 +48,8 @@ export type TimelineRow = {
   interfaceReady: number | null;
   done: number | null;
   outcome: RowOutcome | null;
+  /** The module's main-thread priority (see MainThreadLock). */
+  priority?: number;
 };
 
 export type TimelineBuild = {
@@ -201,11 +203,45 @@ class BuildTimeline {
     }
   }
 
+  setPriority(row: string, priority: number) {
+    const r = this.rows.get(row);
+    if (r) {
+      r.priority = priority;
+    }
+  }
+
   setOutcome(row: string, outcome: RowOutcome) {
     const r = this.rows.get(row);
     if (r) {
       r.outcome = outcome;
     }
+  }
+
+  /**
+   * For every module this build rebuilt: its main-thread plus background
+   * time in ms, generators left out. Keyed by module name.
+   */
+  rebuiltModuleCosts(build: number) {
+    const rows = new Map<string, string>();
+    for (const r of this.rows.values()) {
+      if (r.build === build && r.outcome === "built") {
+        rows.set(r.key, r.module);
+      }
+    }
+    const costs = new Map<string, number>();
+    for (const s of this.spans) {
+      const module = rows.get(s.row);
+      if (
+        module === undefined ||
+        s.kind === "queued" ||
+        s.label.startsWith("build generator") ||
+        s.label.startsWith("run generator")
+      ) {
+        continue;
+      }
+      costs.set(module, (costs.get(module) ?? 0) + (s.end - s.start));
+    }
+    return costs;
   }
 
   span(row: string, kind: SpanKind, label: string, start: number, end: number) {
@@ -296,8 +332,14 @@ export const timeline = new BuildTimeline();
  * Interleaving several modules' work on one JS thread never made anything
  * faster -- the thread does the same amount of work either way -- it only made
  * every module's phases take the wall time of everyone's. With the lock, work
- * runs to completion in order of request, the background work it starts
- * (clang and friends) still overlaps freely, and each span is exact.
+ * runs to completion, the background work it starts (clang and friends) still
+ * overlaps freely, and each span is exact.
+ *
+ * Waiters are served by priority, then in request order. ProjectCompiler gives
+ * every module the cost of the longest chain of work waiting for it, so the
+ * module the rest of the build waits on goes first: in request order, the
+ * module every UI module depends on sat queued for 4 s behind twenty leaf
+ * modules.
  *
  * Whatever runs inside must not start a nested build: the nested build's own
  * modules would wait for a lock their caller holds. That is reported rather
@@ -305,8 +347,23 @@ export const timeline = new BuildTimeline();
  */
 class MainThreadLock {
   private held = false;
-  private waiters: (() => void)[] = [];
+  private waiters: {
+    priority: number;
+    order: number;
+    resolve: () => void;
+  }[] = [];
+  private requests = 0;
+  private priorities = new Map<string, number>();
   private holder = new AsyncLocalStorage<string>();
+
+  /** Rows with a higher priority get the lock first (default 0). */
+  setPriority(row: string, priority: number) {
+    this.priorities.set(row, priority);
+  }
+
+  priorityOf(row: string) {
+    return this.priorities.get(row) ?? 0;
+  }
 
   async run<T>(row: string, fn: () => Promise<T> | T): Promise<T> {
     const holding = this.holder.getStore();
@@ -318,7 +375,11 @@ class MainThreadLock {
     const requested = timeline.now();
     if (this.held) {
       await new Promise<void>((resolve) => {
-        this.waiters.push(resolve);
+        this.waiters.push({
+          priority: this.priorityOf(row),
+          order: this.requests++,
+          resolve: resolve,
+        });
       });
     }
     this.held = true;
@@ -330,15 +391,31 @@ class MainThreadLock {
       return await this.holder.run(row, fn);
     } finally {
       timeline.span(MAIN_THREAD_ROW, "main", row, acquired, timeline.now());
-      const next = this.waiters.shift();
+      const next = this.takeNextWaiter();
       if (next) {
         // Handed straight to the next waiter: `held` stays true, so nothing
         // that asks in between can jump the queue.
-        next();
+        next.resolve();
       } else {
         this.held = false;
       }
     }
+  }
+
+  private takeNextWaiter() {
+    let best = -1;
+    for (let i = 0; i < this.waiters.length; i++) {
+      const w = this.waiters[i]!;
+      const b = best < 0 ? undefined : this.waiters[best]!;
+      if (
+        !b ||
+        w.priority > b.priority ||
+        (w.priority === b.priority && w.order < b.order)
+      ) {
+        best = i;
+      }
+    }
+    return best < 0 ? undefined : this.waiters.splice(best, 1)[0];
   }
 }
 

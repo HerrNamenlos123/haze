@@ -46,10 +46,11 @@ import {
 } from "../ModuleCompiler/ModuleCompiler";
 import { CLIPrinter } from "../ModuleCompiler/CLIPrinter";
 import { writeDesktopEntry } from "./DesktopEntry";
-import { projectRowKey, timeline } from "../Timing/BuildTimeline";
+import { mainThread, projectRowKey, timeline } from "../Timing/BuildTimeline";
 import { writeTimingGraph } from "../Timing/TimelineSvg";
 
 const HAZE_BUILD_LOCKFILE = "build.lock";
+const MODULE_COSTS_FILE = "module-costs.json";
 
 let LLVM_TOOLCHAIN_DOWNLOAD_URL: string;
 if (PLATFORM === Platform.Win32) {
@@ -407,6 +408,7 @@ export class ProjectCompiler {
           this.parentTimelineRow
         );
       }
+      this.assignMainThreadPriorities(modules, topoOrder);
       if (printer) {
         for (const name of topoOrder) {
           assert(modules.has(name));
@@ -453,6 +455,7 @@ export class ProjectCompiler {
           timeline.now()
         );
       }
+      this.saveModuleCosts(buildId);
       const outermost = timeline.endBuild(buildId);
       if (outermost && timeline.isEnabled) {
         const written = writeTimingGraph(
@@ -495,6 +498,74 @@ export class ProjectCompiler {
     }
 
     return order;
+  }
+
+  /**
+   * A module's main-thread priority is the cost of the longest chain of work
+   * that waits for it: its own cost plus the costliest chain of dependents up
+   * to the top module, by what each module cost when it was last rebuilt (see
+   * saveModuleCosts). The more of the build waits on a module, the sooner it
+   * gets the thread (see MainThreadLock). A module never rebuilt in this
+   * workspace counts as the average. A generator's build blocks the module that
+   * runs it, so its modules rank above that module.
+   */
+  private assignMainThreadPriorities(
+    modules: Map<string, { compiler: ModuleCompiler; effectiveDeps: string[] }>,
+    topoOrder: string[]
+  ) {
+    const costs = this.loadModuleCosts();
+    const known = Object.values(costs);
+    const fallback =
+      known.length > 0
+        ? known.reduce((total, cost) => total + cost, 0) / known.length
+        : 1000;
+    const dependents = new Map<string, string[]>();
+    for (const [name, { effectiveDeps }] of modules) {
+      for (const dep of effectiveDeps) {
+        dependents.set(dep, [...(dependents.get(dep) ?? []), name]);
+      }
+    }
+    const base =
+      this.parentTimelineRow === null
+        ? 0
+        : mainThread.priorityOf(this.parentTimelineRow);
+    const chain = new Map<string, number>();
+    // Dependents come after their dependencies in topoOrder.
+    for (const name of [...topoOrder].reverse()) {
+      const above = (dependents.get(name) ?? []).map((d) => chain.get(d) ?? 0);
+      chain.set(name, (costs[name] ?? fallback) + Math.max(0, ...above));
+      const { compiler } = modules.get(name)!;
+      const priority = base + chain.get(name)!;
+      mainThread.setPriority(compiler.timelineRow, priority);
+      timeline.setPriority(compiler.timelineRow, priority);
+    }
+  }
+
+  private moduleCostsFile() {
+    return join(this.globalBuildDir, "build-cache", MODULE_COSTS_FILE);
+  }
+
+  private loadModuleCosts(): Record<string, number> {
+    try {
+      return JSON.parse(readFileSync(this.moduleCostsFile(), "utf8"));
+    } catch {
+      return {};
+    }
+  }
+
+  /**
+   * Records what each module rebuilt by this build cost: its main-thread work
+   * plus its background processes, in ms, without generators (they rarely
+   * run). Modules that were up to date keep their previous cost.
+   */
+  private saveModuleCosts(buildId: number) {
+    const costs = timeline.rebuiltModuleCosts(buildId);
+    if (costs.size === 0) {
+      return;
+    }
+    const merged = { ...this.loadModuleCosts(), ...Object.fromEntries(costs) };
+    mkdirSync(dirname(this.moduleCostsFile()), { recursive: true });
+    writeFileSync(this.moduleCostsFile(), JSON.stringify(merged, null, 2));
   }
 
   /**
