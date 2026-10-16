@@ -107,7 +107,7 @@ enum Mode {
     FTripleString,  // inside f"""..."""
 }
 
-export ref struct LexError {
+export struct LexError {
     message: str = "";
     line: int = 0;
     col: int = 0;

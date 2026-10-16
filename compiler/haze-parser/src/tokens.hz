@@ -169,7 +169,7 @@ export enum TK {
 // is one contiguous []Token allocation, and a token carries only offsets into
 // the source rather than an owned string. Materialising the text is a zero-copy
 // `src.slice(start, end)` and only happens for the few tokens that need it.
-export ref struct Token {
+export struct Token {
     kind: TK = TK.Invalid;
     start: int = 0;     // byte offset of first char
     end: int = 0;       // byte offset one past last char
