@@ -263,6 +263,20 @@ export nocopy opaque struct ByteBuffer {
     // --- Writing (build phase) -----------------------------------------------
 
     mut fn push(value: str): void :: final {
+        let n = value.length;
+        // The common case in one test, small enough to be inlined into every
+        // caller in this library (String.append): our own (or a fixed) block
+        // that is still being built and has room. Anything else, every panic
+        // included, is _pushSlow.
+        if (this._owned || this._fixed) && !this._committed && n > 0 && n <= this._capacity - this._length {
+            __c__("memcpy((hzstd_u8_t*)this->_data + this->_length, value.data, (size_t)n);");
+            this._length += n;
+            return;
+        }
+        this._pushSlow(value);
+    }
+
+    mut fn _pushSlow(value: str): void :: final {
         this._assertBuilding();
         let n = value.length;
         if this._measuring {
@@ -293,6 +307,16 @@ export nocopy opaque struct ByteBuffer {
     }
 
     mut fn push(value: u8): void :: final {
+        // As push(str): the common case in one test.
+        if (this._owned || this._fixed) && !this._committed && this._length < this._capacity {
+            __c__("((hzstd_u8_t*)this->_data)[this->_length] = value;");
+            this._length += 1;
+            return;
+        }
+        this._pushSlow(value);
+    }
+
+    mut fn _pushSlow(value: u8): void :: final {
         this._assertBuilding();
         if this._measuring {
             this._length += 1;
@@ -301,6 +325,64 @@ export nocopy opaque struct ByteBuffer {
         this._makeWritable(this._length + 1, false);
         __c__("((hzstd_u8_t*)this->_data)[this->_length] = value;");
         this._length += 1;
+    }
+
+    // The values, formatted exactly as fmt.format formats them, written
+    // straight into this buffer: nothing is allocated but this buffer's own
+    // growth. It takes any buffer, a struct field included, which a
+    // formatter's `mut stackref ByteBuffer` cannot. A str or int is written
+    // directly. Any other value is measured first, room is made for exactly
+    // that much, and its formatter writes into the room in place, through a
+    // fixed window that cannot grow and so cannot move this buffer.
+    mut fn pushFmt(values: ...): void {
+        this._assertBuilding();
+        for comptime value, i in values {
+            if comptime typeof(value) == str {
+                this.push(value);
+            }
+            else if comptime typeof(value) == int {
+                this._pushDecimal(value);
+            }
+            else {
+                this._pushFormatted(value);
+            }
+        }
+    }
+
+    // One value of pushFmt that is neither a str nor an int.
+    mut fn _pushFormatted<T>(value: T): void {
+        let stackref measure = ByteBuffer.measuring();
+        fmt.format_to_proxy(measure, value, {});
+        let n = measure.length();
+        if this._measuring {
+            this._length += n;
+            return;
+        }
+        if n == 0 {
+            return;
+        }
+        this._makeWritable(this._length + n, false);
+        let room = none as cptr;
+        __c__("room = (hzstd_u8_t*)this->_data + this->_length;");
+        let stackref window = ByteBuffer { _data: room, _capacity: n, _fixed: true };
+        fmt.format_to_proxy(window, value, {});
+        this._length += window.length();
+    }
+
+    // `value` in decimal, "-42", exactly as printf's %d writes it, in one
+    // push and without printf. For pushFmt and fmt's integer formatters.
+    mut fn _pushDecimal(value: i64): void :: final {
+        let digits = "";
+        __c__("""
+            char text[24];
+            char* textEnd = text + sizeof(text);
+            char* first = textEnd;
+            uint64_t magnitude = value < 0 ? (uint64_t)0 - (uint64_t)value : (uint64_t)value;
+            do { *--first = (char)('0' + magnitude % 10); magnitude /= 10; } while (magnitude != 0);
+            if (value < 0) { *--first = '-'; }
+            digits = HZSTD_STRING(first, textEnd - first);
+        """);
+        this.push(digits);
     }
 
     mut fn insert(index: int, value: str): void :: final {
@@ -348,6 +430,62 @@ export nocopy opaque struct ByteBuffer {
         let tail = this._length - index - count;
         __c__("memmove((hzstd_u8_t*)this->_data + index, (hzstd_u8_t*)this->_data + index + count, (size_t)tail);");
         this._length -= count;
+    }
+
+    // Moves the bytes [middle, end) to `start`, and the bytes [start, middle)
+    // after them (std::rotate): the way to reorder what was already written,
+    // such as putting a header in front of a body that had to be written
+    // first. Length and capacity stay as they are and nothing is allocated:
+    // the shorter side is parked on the stack when it is small, in the unused
+    // capacity when it fits there, and otherwise both sides are reversed in
+    // place.
+    mut fn rotate(start: int, middle: int, end: int): void :: final {
+        this._assertBuilding();
+        if start < 0 || middle < start || end < middle || end > this._length {
+            sys.panic("ByteBuffer: rotate range out of bounds");
+        }
+        if start == middle || middle == end || this._measuring {
+            return;
+        }
+        this._makeWritable(this._length, true);
+        __c__("""
+            hzstd_u8_t* at = (hzstd_u8_t*)this->_data + start;
+            size_t left = (size_t)(middle - start);
+            size_t right = (size_t)(end - middle);
+            size_t shorter = left < right ? left : right;
+            hzstd_u8_t parked[512];
+            hzstd_u8_t* park = NULL;
+            if (shorter <= sizeof(parked)) {
+                park = parked;
+            }
+            else if (shorter <= (size_t)(this->_capacity - this->_length)) {
+                park = (hzstd_u8_t*)this->_data + this->_length;
+            }
+            if (park != NULL && left <= right) {
+                memcpy(park, at, left);
+                memmove(at, at + left, right);
+                memcpy(at + right, park, left);
+            }
+            else if (park != NULL) {
+                memcpy(park, at + left, right);
+                memmove(at + right, at, left);
+                memcpy(at, park, right);
+            }
+            else {
+                // Reverse each side, then the whole: the classic in-place
+                // rotation, for when there is no room to park either side.
+                size_t ranges[3][2] = { { 0, left }, { left, right }, { 0, left + right } };
+                for (int r = 0; r < 3; r++) {
+                    hzstd_u8_t* lo = at + ranges[r][0];
+                    hzstd_u8_t* hi = lo + ranges[r][1] - 1;
+                    while (lo < hi) {
+                        hzstd_u8_t swap = *lo;
+                        *lo++ = *hi;
+                        *hi-- = swap;
+                    }
+                }
+            }
+        """);
     }
 
     mut fn setAt(index: int, value: u8): void :: final {

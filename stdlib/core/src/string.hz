@@ -40,8 +40,21 @@ export opaque ref struct String {
         this._buffer.reserve(capacity);
     }
 
+    // Room for exactly `capacity` bytes, for when the final size is known.
+    fn reserveExact(capacity: int) {
+        this._buffer.reserveExact(capacity);
+    }
+
     fn length(): int {
         return this._buffer.length();
+    }
+
+    fn capacity(): int {
+        return this._buffer.capacity();
+    }
+
+    fn isCommitted(): bool {
+        return this._buffer.isCommitted();
     }
 
     // The current text, in either phase: later edits do not change it.
@@ -71,6 +84,19 @@ export opaque ref struct String {
         return this;
     }
 
+    ref mut fn append(value: u8) {
+        this._buffer.push(value);
+        return this;
+    }
+
+    // The values formatted exactly as fmt.format formats them, written
+    // straight into this text with nothing allocated but its own growth
+    // (ByteBuffer.pushFmt).
+    ref mut fn appendFmt(values: ...) {
+        this._buffer.pushFmt(...values);
+        return this;
+    }
+
     ref mut fn setAt(index: int, value: u8) {
         this._buffer.setAt(index, value);
         return this;
@@ -85,8 +111,32 @@ export opaque ref struct String {
         return this;
     }
 
+    ref mut fn insert(index: int, value: u8) {
+        this._buffer.insert(index, value);
+        return this;
+    }
+
     ref mut fn remove(index: int, count: int) {
         this._buffer.remove(index, count);
+        return this;
+    }
+
+    // Drops everything from `length` on.
+    ref mut fn truncate(length: int) {
+        this._buffer.truncate(length);
+        return this;
+    }
+
+    // Empties the text and keeps its storage for reuse.
+    ref mut fn clear() {
+        this._buffer.clear();
+        return this;
+    }
+
+    // Moves the bytes [middle, end) to `start`, and [start, middle) after
+    // them, in place (ByteBuffer.rotate).
+    ref mut fn rotate(start: int, middle: int, end: int) {
+        this._buffer.rotate(start, middle, end);
         return this;
     }
 

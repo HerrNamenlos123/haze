@@ -147,7 +147,17 @@ _Noreturn void hzstd_panic_dead_stackref(void);
 // hzstd_panic_with_stacktrace directly there, which only touches globals (no
 // meaningful stack allocation).
 
-void hzstd_assert(bool condition);
+// Only reached when an assertion fails; the trace starts at the assertion.
+_Noreturn void hzstd_assert_failed(void);
+
+// Checked inline, so an assertion that holds costs a compare and a branch,
+// not two calls: it guards every dynamic array access.
+static inline void hzstd_assert(bool condition)
+{
+  if (__builtin_expect(!condition, 0)) {
+    hzstd_assert_failed();
+  }
+}
 void hzstd_assert_fmt(bool condition, const char *fmt, ...);
 void hzstd_assert_fmt_n(bool condition, int skip_n_frames, const char *fmt, ...);
 _Noreturn void hzstd_panic_fmt(const char *fmt, ...);

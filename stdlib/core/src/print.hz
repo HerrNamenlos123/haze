@@ -156,23 +156,23 @@ namespace fmt {
     }
 
     export fn format_to(writer: mut stackref ByteBuffer, value: i8, args: FormatArgs) {
-        format_to_sprintf<64, "\"%\" PRIi8", typeof(value)>(writer, value);
+        format_to_signed(writer, value);
     }
 
     export fn format_to(writer: mut stackref ByteBuffer, value: i16, args: FormatArgs) {
-        format_to_sprintf<64, "\"%\" PRIi16", typeof(value)>(writer, value);
+        format_to_signed(writer, value);
     }
 
     export fn format_to(writer: mut stackref ByteBuffer, value: i32, args: FormatArgs) {
-        format_to_sprintf<64, "\"%\" PRIi32", typeof(value)>(writer, value);
+        format_to_signed(writer, value);
     }
 
     export fn format_to(writer: mut stackref ByteBuffer, value: i64, args: FormatArgs) {
-        format_to_sprintf<64, "\"%\" PRIi64", typeof(value)>(writer, value);
+        format_to_signed(writer, value);
     }
 
     export fn format_to(writer: mut stackref ByteBuffer, value: int, args: FormatArgs) {
-        format_to_sprintf<64, "\"%\" PRIi64", typeof(value)>(writer, value);
+        format_to_signed(writer, value);
     }
 
     export fn format_to(writer: mut stackref ByteBuffer, value: str, args: FormatArgs) {
@@ -180,23 +180,23 @@ namespace fmt {
     }
     
     export fn format_to(writer: mut stackref ByteBuffer, value: u8, args: FormatArgs) {
-        format_to_sprintf<64, "\"%\" PRIu8", typeof(value)>(writer, value);
+        format_to_unsigned(writer, value);
     }
 
     export fn format_to(writer: mut stackref ByteBuffer, value: u16, args: FormatArgs) {
-        format_to_sprintf<64, "\"%\" PRIu16", typeof(value)>(writer, value);
+        format_to_unsigned(writer, value);
     }
 
     export fn format_to(writer: mut stackref ByteBuffer, value: u32, args: FormatArgs) {
-        format_to_sprintf<64, "\"%\" PRIu32", typeof(value)>(writer, value);
+        format_to_unsigned(writer, value);
     }
 
     export fn format_to(writer: mut stackref ByteBuffer, value: u64, args: FormatArgs) {
-        format_to_sprintf<64, "\"%\" PRIu64", typeof(value)>(writer, value);
+        format_to_unsigned(writer, value);
     }
 
     export fn format_to(writer: mut stackref ByteBuffer, value: usize, args: FormatArgs) {
-        format_to_sprintf<64, "\"%\" PRIu64", typeof(value)>(writer, value);
+        format_to_unsigned(writer, value);
     }
 
     export fn format_to(writer: mut stackref ByteBuffer, value: f32, args: FormatArgs) {
@@ -232,6 +232,27 @@ namespace fmt {
 
     export fn format_to(writer: mut stackref ByteBuffer, value: null, args: FormatArgs) {
         format_to(writer, "null", args);
+    }
+
+    // Integers in decimal, without printf: they are the most formatted values
+    // there are. ByteBuffer._pushDecimal writes the signed ones.
+    export fn format_to_signed(writer: mut stackref ByteBuffer, value: i64) :: final {
+        writer._pushDecimal(value);
+    }
+
+    // Unsigned values past the i64 range do not fit _pushDecimal: written
+    // from the last digit back into a stack buffer and pushed once.
+    export fn format_to_unsigned(writer: mut stackref ByteBuffer, value: u64) :: final {
+        let digits = "";
+        __c__("""
+char text[24];
+char* textEnd = text + sizeof(text);
+char* first = textEnd;
+uint64_t magnitude = value;
+do { *--first = (char)('0' + magnitude % 10); magnitude /= 10; } while (magnitude != 0);
+digits = HZSTD_STRING(first, textEnd - first);
+        """);
+        writer.push(digits);
     }
 
     export fn format_to_sprintf<BufferSize, Fmt, T>(writer: mut stackref ByteBuffer, value: T) {

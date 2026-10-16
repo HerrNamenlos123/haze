@@ -81,9 +81,10 @@ hzstd_str_t hzstd_errno_to_str(int err)
   return hzstd_str_from_cstr_dup(hzstd_make_heap_allocator(), (char *)msg);
 }
 
-void hzstd_assert(bool condition)
+_Noreturn void hzstd_assert_failed(void)
 {
-  hzstd_assert_fmt_n(condition, 1, "Assertion failed");
+  // Skips this frame, so the trace starts where the (inlined) assert was.
+  hzstd_panic_str_n(HZSTD_STRING_FROM_CSTR("Assertion failed"), 1);
 }
 
 void hzstd_assert_fmt(bool condition, const char *fmt, ...)
