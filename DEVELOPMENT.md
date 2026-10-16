@@ -311,3 +311,22 @@ The compiler has a two-phase import/export system:
 - No special "import deserialization" - it's just normal compilation of the export file
 
 This is why missing export data is so problematic: the export file is missing syntax, so the import sees incomplete symbols.
+
+## What an incremental build rebuilds
+
+Each module's outputs live in `__haze__/<module>/build/` for the default settings and in
+`build-<settings>/` for others (`--release` uses `build-optimize-nodebug-nodebuginfo/`), with one
+build cache per variant in `__haze__/build-cache/`. Switching between dev and release therefore
+rebuilds nothing that was built before. An executable is linked inside its variant directory (as
+`<name>-<platform>`) and copied to `__haze__/<module>/bin/<name>` (stripped there when stripping),
+which is the path everything runs. A module's record is dropped before its build rewrites any
+output, so a failed build is always redone.
+
+A module is rebuilt when something its compile read changed: its sources, `haze.toml`, autogen
+files, generator outputs, embedded files, the `import.hz` and `metadata.json` of every module it
+depends on (transitively), and every header or C file clang read (from a `-MMD` depfile).
+Files are compared by mtime and size first and by content hash only when those moved, so a touched
+file or a generator that writes the same bytes rebuilds nothing. A module's generated C depends
+only on its inputs (temp-id counters are per module, see `src/shared/store.ts`), so an unchanged
+`import.hz` stops the rebuild there. An executable whose own inputs are unchanged is only relinked
+when a library it links changed. `scripts/incremental-build.test.ts` pins all of this.

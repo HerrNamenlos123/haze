@@ -125,12 +125,23 @@ class CodeGenerator {
   };
 
   private embeddedFiles: Semantic.EmbeddedFileData[] = [];
+
+  private get buildDir() {
+    return path.join(this.moduleDir, this.buildDirName);
+  }
   private inGlobalScope = false;
   private emittedTagNameFunctions = new Set<Lowered.TypeDefId>();
 
+  /**
+   * moduleDir is the module's workspace directory; buildDirName the build
+   * directory in it of this build's settings ("build" for the defaults),
+   * which holds the regex and embedded-file tables. Every module's lives in
+   * the same-named directory of its own workspace directory.
+   */
   constructor(
     public config: ModuleConfig,
     public moduleDir: string,
+    public buildDirName: string,
     public allModules: [string, string, string][],
     public lr: Lowered.Module
   ) {
@@ -180,7 +191,7 @@ class CodeGenerator {
         }
         have.add(name);
         this.includeLocalHeader(
-          `${this.moduleDir}/../${module[0]}/build/regex/__hz_${name}_regex_table.h`
+          `${this.moduleDir}/../${module[0]}/${this.buildDirName}/regex/__hz_${name}_regex_table.h`
         );
         this.out.function_definitions.writeLine(
           `hzstd_regex_init_table(__hz_${name}_regex_table, __hz_${name}_regex_table_count);`
@@ -347,7 +358,7 @@ class CodeGenerator {
 
   compileRegex(regex: Semantic.RegexData) {
     const symbol = `__hz_${this.modulePrefix()}_regex_${regex.id}`;
-    const outPath = path.join(this.moduleDir, `build/regex/${symbol}.c`);
+    const outPath = path.join(this.buildDir, "regex", `${symbol}.c`);
     const regexCompilerPath = `${HAZE_GLOBAL_DIR}/regex-compiler/haze-regex-compile`;
     const flags = [...regex.flags].join("");
     mkdirSync(path.dirname(outPath), { recursive: true });
@@ -410,7 +421,7 @@ class CodeGenerator {
   }
 
   regexTablePath() {
-    const outDir = path.join(this.moduleDir, "build/regex");
+    const outDir = path.join(this.buildDir, "regex");
     const tablePath = path.join(
       outDir,
       `__hz_${this.modulePrefix()}_regex_table.c`
@@ -419,7 +430,7 @@ class CodeGenerator {
   }
 
   embeddedFilePath() {
-    const outDir = path.join(this.moduleDir, "build/embedded");
+    const outDir = path.join(this.buildDir, "embedded");
     const tablePath = path.join(
       outDir,
       `__hz_${this.modulePrefix()}_embedded_table.c`
@@ -544,7 +555,7 @@ class CodeGenerator {
   compileEmbeddedFile(embeddedFile: Semantic.EmbeddedFileData) {
     const typeName = embeddedFile.isBinary ? "binary" : "text";
     const symbol = `__hz_${this.modulePrefix()}_embedded_${typeName}_${embeddedFile.id}`;
-    const outDir = path.join(this.moduleDir, "build/embedded");
+    const outDir = path.join(this.buildDir, "embedded");
     mkdirSync(outDir, { recursive: true });
     const cFilePath = path.join(outDir, `${symbol}.c`);
 
@@ -573,7 +584,7 @@ class CodeGenerator {
   }
 
   compileEmbeddedFiles() {
-    const outDir = path.join(this.moduleDir, "build/embedded");
+    const outDir = path.join(this.buildDir, "embedded");
     mkdirSync(outDir, { recursive: true });
 
     const prefix = this.modulePrefix();
@@ -647,7 +658,7 @@ class CodeGenerator {
   }
 
   compileRegexes() {
-    const outDir = path.join(this.moduleDir, "build/regex");
+    const outDir = path.join(this.buildDir, "regex");
     mkdirSync(outDir, { recursive: true });
 
     const prefix = this.modulePrefix();
@@ -3658,10 +3669,17 @@ export function emitIntCompare(
 export function generateCode(
   config: ModuleConfig,
   moduleDir: string,
+  buildDirName: string,
   allModules: [string, string, string][],
   lr: Lowered.Module
 ): string {
-  const gen = new CodeGenerator(config, moduleDir, allModules, lr);
+  const gen = new CodeGenerator(
+    config,
+    moduleDir,
+    buildDirName,
+    allModules,
+    lr
+  );
   gen.generate();
   return gen.writeString();
 }

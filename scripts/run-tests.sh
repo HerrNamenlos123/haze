@@ -18,6 +18,12 @@ bun run build
 echo "==> Checking the parser bootstrap (§8.2)"
 bun test scripts/parser-bootstrap.test.ts
 
+# What an incremental build skips, and that the skipped work would have changed
+# nothing. Builds with the dev compiler, like the bootstrap check above.
+echo "==> Checking incremental builds"
+bun test src/ModuleCompiler/FileStamps.test.ts src/ModuleCompiler/ModuleBuildCache.test.ts \
+  src/shared/Workspace.test.ts scripts/incremental-build.test.ts
+
 # haze.toml validation, which no testsuite/ case can reach: the framework
 # writes every case's manifest itself, so they are well-formed by construction.
 echo "==> Checking haze.toml validation"

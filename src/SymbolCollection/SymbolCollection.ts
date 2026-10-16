@@ -37,7 +37,11 @@ import {
   getModuleGlobalNamespaceName,
   type ModuleConfig,
 } from "../shared/Config";
-import { defaultWorkspaceDir, moduleMetadataFile } from "../shared/Workspace";
+import {
+  DEFAULT_BUILD_DIR_NAME,
+  defaultWorkspaceDir,
+  moduleMetadataFile,
+} from "../shared/Workspace";
 import {
   type Brand,
   BrandedArray,
@@ -2298,7 +2302,8 @@ function collectGlobalDirective(
       }
       const metadataPath = moduleMetadataFile(
         cc.moduleCompiler?.hazeWorkspaceDirectory ?? defaultWorkspaceDir(),
-        dependency.name
+        dependency.name,
+        cc.moduleCompiler?.buildDirName ?? DEFAULT_BUILD_DIR_NAME
       );
       const filecontent = readFileSync(metadataPath, "utf8");
       const metadata: ModuleConfig = JSON.parse(filecontent);
@@ -2388,7 +2393,8 @@ function collectGlobalDirective(
       }
       const metadataPath = moduleMetadataFile(
         cc.moduleCompiler?.hazeWorkspaceDirectory ?? defaultWorkspaceDir(),
-        dependency.name
+        dependency.name,
+        cc.moduleCompiler?.buildDirName ?? DEFAULT_BUILD_DIR_NAME
       );
       const filecontent = readFileSync(metadataPath, "utf8");
       const metadata: ModuleConfig = JSON.parse(filecontent);

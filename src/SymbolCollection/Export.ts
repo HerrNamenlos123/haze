@@ -16,7 +16,11 @@ import {
   getModuleGlobalNamespaceName,
   type ModuleConfig,
 } from "../shared/Config";
-import { defaultWorkspaceDir, moduleMetadataFile } from "../shared/Workspace";
+import {
+  DEFAULT_BUILD_DIR_NAME,
+  defaultWorkspaceDir,
+  moduleMetadataFile,
+} from "../shared/Workspace";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { assert, formatSourceLoc, InternalError } from "../shared/Errors";
@@ -748,7 +752,8 @@ export function ExportCollectedSymbols(sr: Semantic.Context) {
     for (const dep of sr.cc.config.dependencies) {
       const metadataPath = moduleMetadataFile(
         sr.cc.moduleCompiler?.hazeWorkspaceDirectory ?? defaultWorkspaceDir(),
-        dep.name
+        dep.name,
+        sr.cc.moduleCompiler?.buildDirName ?? DEFAULT_BUILD_DIR_NAME
       );
       if (!existsSync(metadataPath)) {
         continue;

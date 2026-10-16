@@ -16,6 +16,7 @@ import { ModuleCompiler } from "./ModuleCompiler/ModuleCompiler";
 import { ProjectCompiler } from "./ProjectCompiler/ProjectCompiler";
 import { Semantic } from "./Semantic/SemanticTypes";
 import { ModuleType } from "./shared/Config";
+import { settingsOfExistingBuild } from "./shared/Workspace";
 import {
   type CompilerDiagnostic,
   CompilerError,
@@ -85,7 +86,8 @@ async function analyzeModule(
       globalBuildDir,
       moduleDir,
       false,
-      false
+      false,
+      settingsOfExistingBuild(globalBuildDir)
     );
     moduleCompiler.currentModuleRootDir = moduleRoot;
 

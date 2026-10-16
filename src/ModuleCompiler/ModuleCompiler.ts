@@ -22,6 +22,15 @@ import which from "which";
 import { version } from "../../package.json";
 import { generateCode } from "../Codegen/CodeGenerator";
 import {
+  checkFile,
+  checkFiles,
+  type FileStamp,
+  listFilesRecursively,
+  parseDependencyFile,
+  stampsDiffer,
+} from "./FileStamps";
+import { TempIdCounter, withTempIdCounter } from "../shared/store";
+import {
   mainThread,
   projectRowKey,
   type SpanKind,
@@ -48,6 +57,7 @@ import {
   type BuildSettings,
   buildSettingsCacheKey,
   buildSettingsSource,
+  buildVariantSuffix,
   DEFAULT_BUILD_SETTINGS,
 } from "../shared/BuildSettings";
 import { Semantic } from "../Semantic/SemanticTypes";
@@ -455,10 +465,6 @@ export class Cache {
   }
 }
 
-export type FileStamp = {
-  mtimeMs: number;
-};
-
 export class FileChangeCache {
   private cacheFile: string;
   private data: Record<string, FileStamp> = {};
@@ -529,45 +535,64 @@ export class FileChangeCache {
 
   /* ------------------ primitives ------------------ */
 
+  private remember(abs: string, stamp: FileStamp | null) {
+    if (stamp) {
+      this.data[abs] = stamp;
+    } else {
+      delete this.data[abs];
+    }
+    this.touched.add(abs);
+    this.dirty = true;
+  }
+
+  /**
+   * Changed since it was last stamped (see FileStamps.ts). A file whose
+   * content is the same under a new mtime is restamped, so saving this cache
+   * makes its next check cheap again.
+   */
   hasFileChanged(file: string): boolean {
     const abs = path.resolve(file);
-
-    if (!fs.existsSync(abs)) {
-      // missing file always counts as changed
-      return true;
+    const previous = this.data[abs];
+    const check = checkFile(abs, previous);
+    if (!check.changed && check.stamp && check.stamp !== previous) {
+      this.remember(abs, check.stamp);
     }
-
-    const stat = fs.statSync(abs);
-    const prev = this.data[abs];
-
-    return !prev || prev.mtimeMs < stat.mtimeMs;
+    return check.changed;
   }
 
   updateFile(file: string): void {
     const abs = path.resolve(file);
+    this.remember(abs, checkFile(abs, this.data[abs]).stamp);
+  }
 
-    if (!fs.existsSync(abs)) {
-      delete this.data[abs];
-      this.touched.add(abs);
-      this.dirty = true;
-      return;
+  /** The files' stamps now, to remember later with rememberStamps. */
+  stampFiles(files: string[]): Map<string, FileStamp | null> {
+    const stamps = new Map<string, FileStamp | null>();
+    for (const file of files) {
+      const abs = path.resolve(file);
+      stamps.set(abs, checkFile(abs, this.data[abs]).stamp);
     }
+    return stamps;
+  }
 
-    const stat = fs.statSync(abs);
-    this.data[abs] = { mtimeMs: stat.mtimeMs };
-    this.touched.add(abs);
-    this.dirty = true;
+  rememberStamps(stamps: Map<string, FileStamp | null>): void {
+    for (const [abs, stamp] of stamps) {
+      this.remember(abs, stamp);
+    }
   }
 
   /* ------------------ batch helpers ------------------ */
 
   haveAnyFilesChanged(files: string[]): boolean {
+    // Every file is checked, not just up to the first change, so the
+    // unchanged ones get restamped too.
+    let changed = false;
     for (const file of files) {
       if (this.hasFileChanged(file)) {
-        return true;
+        changed = true;
       }
     }
-    return false;
+    return changed;
   }
 
   updateFiles(files: string[]): void {
@@ -578,14 +603,19 @@ export class FileChangeCache {
 }
 
 type ModuleBuildCacheEntry = {
+  /** Everything the module's compile read, stamped before it read them. */
   files: Record<string, FileStamp>;
+  /** An executable's: everything its link read (see linkInputFiles). */
+  linkFiles?: Record<string, FileStamp>;
   compilerKey?: string;
 };
 
 type ModuleBuildCacheData = Record<string, ModuleBuildCacheEntry>;
 
-type LegacyModuleBuildCacheData = Record<string, Record<string, FileStamp>>;
-
+/**
+ * What a module was last built from. One file per module and build variant,
+ * written only by that module's build.
+ */
 export class ModuleBuildCache {
   private cacheFile: string;
   private data: ModuleBuildCacheData = {};
@@ -596,29 +626,23 @@ export class ModuleBuildCache {
   }
 
   load(): void {
+    this.data = {};
     if (!fs.existsSync(this.cacheFile)) {
-      this.data = {};
       return;
     }
-
-    const raw = fs.readFileSync(this.cacheFile, "utf8");
-    const parsed = JSON.parse(raw) as
-      | ModuleBuildCacheData
-      | LegacyModuleBuildCacheData;
-
-    const legacyEntry = Object.values(parsed)[0];
-    if (legacyEntry && !(legacyEntry as ModuleBuildCacheEntry).files) {
-      const legacy = parsed as LegacyModuleBuildCacheData;
-      const migrated: ModuleBuildCacheData = {};
-      for (const [moduleName, files] of Object.entries(legacy)) {
-        migrated[moduleName] = { files: files };
+    try {
+      const parsed = JSON.parse(fs.readFileSync(this.cacheFile, "utf8"));
+      for (const [name, entry] of Object.entries(parsed)) {
+        // Entries from compilers before the `files` field are dropped: the
+        // module is simply built once more.
+        if (entry && typeof entry === "object" && "files" in entry) {
+          this.data[name] = entry as ModuleBuildCacheEntry;
+        }
       }
-      this.data = migrated;
-      this.dirty = true;
-      return;
+    } catch {
+      // A corrupt cache means one rebuild, never a failed build.
+      this.data = {};
     }
-
-    this.data = parsed as ModuleBuildCacheData;
   }
 
   save(): void {
@@ -636,72 +660,109 @@ export class ModuleBuildCache {
   }
 
   // Every absolute path tracked for this module as of the last successful
-  // build, including any embed_file_text/embed_file_binary'd resource files
-  // discovered during that build's analysis phase (see ModuleCompiler.build:
-  // those aren't known until analysis runs, so this is how a later build's
-  // pre-analysis "did anything change" check can still notice one of them
-  // was touched, without having to re-analyze just to find out).
+  // build, including the files only that build's analysis and C compile
+  // found (embedded resource files, C headers): a later build's check, which
+  // runs before analysis, can still tell one of them changed.
   getModuleTrackedFiles(moduleName: string): string[] {
     return Object.keys(this.data[moduleName]?.files ?? {});
   }
 
-  hasModuleChanged(
-    moduleName: string,
-    files: string[],
-    compilerKey?: string
-  ): boolean {
-    const normalized = new Set(files.map((f) => path.resolve(f)));
+  /** Compares the module's compile inputs with the last build's. */
+  checkModule(moduleName: string, files: string[], compilerKey: string) {
     const entry = this.data[moduleName];
-
-    if (!entry) {
-      return true;
-    }
-    if (compilerKey && entry.compilerKey !== compilerKey) {
-      return true;
-    }
-
-    const prev = entry.files ?? {};
-
-    for (const file of normalized) {
-      if (!fs.existsSync(file)) {
-        return true;
-      }
-      const stat = fs.statSync(file);
-      const prevStamp = prev[file];
-      if (!prevStamp || prevStamp.mtimeMs < stat.mtimeMs) {
-        return true;
-      }
-    }
-
-    for (const prevFile of Object.keys(prev)) {
-      if (!normalized.has(prevFile)) {
-        return true;
-      }
-    }
-
-    return false;
+    const check = checkFiles(
+      files.map((f) => path.resolve(f)),
+      entry?.files
+    );
+    return {
+      changed: check.changed || entry?.compilerKey !== compilerKey,
+      stamps: check.stamps,
+    };
   }
 
+  /** Compares an executable's link inputs with the last link's. */
+  checkLink(moduleName: string, files: string[]) {
+    return checkFiles(
+      files.map((f) => path.resolve(f)),
+      this.data[moduleName]?.linkFiles
+    );
+  }
+
+  /**
+   * Records a successful build of `files`. Those stamped before the build
+   * read them (`stampedBefore`) keep that stamp, so an edit made while the
+   * build ran is never recorded as built. The others were found by the build
+   * itself and are stamped now; one written after the build's check
+   * (`checkedAtMs`) may have been read before that write, so it is recorded
+   * as unknown, which the next check takes for a change.
+   */
   updateModule(
     moduleName: string,
     files: string[],
-    compilerKey?: string
+    stampedBefore: Record<string, FileStamp>,
+    compilerKey: string,
+    linkFiles: Record<string, FileStamp> | undefined,
+    checkedAtMs: number
   ): void {
-    const normalized = files.map((f) => path.resolve(f));
+    const previous = this.data[moduleName];
     const next: Record<string, FileStamp> = {};
-
-    for (const file of normalized) {
-      if (!fs.existsSync(file)) {
+    for (const file of files) {
+      const abs = path.resolve(file);
+      if (abs in next) {
         continue;
       }
-      const stat = fs.statSync(file);
-      next[file] = { mtimeMs: stat.mtimeMs };
+      let stamp = stampedBefore[abs];
+      if (!stamp) {
+        const found = checkFile(abs, previous?.files[abs]).stamp;
+        if (!found) {
+          continue;
+        }
+        stamp = found.mtimeMs > checkedAtMs ? { mtimeMs: -1 } : found;
+      }
+      next[abs] = stamp;
     }
-
     this.data[moduleName] = {
       files: next,
+      linkFiles: linkFiles ?? previous?.linkFiles,
       compilerKey: compilerKey,
     };
+    this.dirty = true;
+  }
+
+  /** Keeps new stamps of unchanged files, so they are cheap to check again. */
+  refreshStamps(moduleName: string, files: Record<string, FileStamp>) {
+    const entry = this.data[moduleName];
+    if (entry && stampsDiffer(entry.files, files)) {
+      entry.files = files;
+      this.dirty = true;
+    }
+  }
+
+  /** The same for an executable's link inputs. */
+  refreshLinkStamps(moduleName: string, files: Record<string, FileStamp>) {
+    const entry = this.data[moduleName];
+    if (entry && stampsDiffer(entry.linkFiles, files)) {
+      entry.linkFiles = files;
+      this.dirty = true;
+    }
+  }
+
+  /**
+   * Drops the record of a module whose outputs are about to be rewritten:
+   * until the build that rewrites them succeeds, nothing describes them.
+   */
+  forget(moduleName: string) {
+    delete this.data[moduleName];
+    this.dirty = true;
+  }
+
+  /** Records a link done without a compile. */
+  updateLink(moduleName: string, linkFiles: Record<string, FileStamp>) {
+    const entry = this.data[moduleName];
+    if (!entry) {
+      return;
+    }
+    entry.linkFiles = linkFiles;
     this.dirty = true;
   }
 }
@@ -899,6 +960,21 @@ export class ModuleCompiler {
    */
   waitForDependencies: () => Promise<boolean> = async () => true;
 
+  /** Numbers this module's generated names; new for every build. */
+  private tempIds = new TempIdCounter();
+
+  /**
+   * This build's own directory in the module's workspace directory: one per
+   * set of build settings, "build" for the defaults (see buildVariantSuffix).
+   */
+  get buildDirName() {
+    return `build${buildVariantSuffix(this.settings)}`;
+  }
+
+  private get variantBuildDir() {
+    return join(this.moduleDir, this.buildDirName);
+  }
+
   constructor(
     public config: ModuleConfig,
     public cache: Cache,
@@ -964,7 +1040,7 @@ export class ModuleCompiler {
     const transformed = this.pluginHost.transform(filepath, fileText);
     if (transformed !== fileText) {
       // A plugin claimed this file. Dump the composed output into this
-      // module's build directory, mirroring the source tree:
+      // build's directory, mirroring the source tree:
       //   __haze__/<module>/build/transformed/<path relative to src>.hz
       // so it sits next to import.hz and the generated C. Inspection aid
       // only -- the transform otherwise exists only in memory.
@@ -974,8 +1050,7 @@ export class ModuleCompiler {
             ? path.relative(this.config.source.dirpath, filepath)
             : basename(filepath);
         const dumpPath = path.join(
-          this.moduleDir,
-          "build",
+          this.variantBuildDir,
           "transformed",
           `${rel}.hz`
         );
@@ -1010,9 +1085,14 @@ export class ModuleCompiler {
     return timeline.measure(this.timelineRow, kind, label, fn);
   }
 
-  /** Runs fn holding the main thread; see MainThreadLock. */
+  /**
+   * Runs fn holding the main thread (see MainThreadLock), with generated
+   * names numbered by this module's own counter (see src/shared/store.ts).
+   */
   private onMainThread<T>(fn: () => Promise<T> | T): Promise<T> {
-    return mainThread.run(this.timelineRow, fn);
+    return mainThread.run(this.timelineRow, () =>
+      withTempIdCounter(this.tempIds, fn)
+    );
   }
 
   private printCmd(cmd: string) {
@@ -1329,14 +1409,17 @@ export class ModuleCompiler {
     );
     cache.load();
 
+    let needRun = false;
     for (const batch of executionOrder) {
       const toRun = this.getGeneratorsToRun(batch, cache, false);
       if (toRun.length > 0) {
-        return true;
+        needRun = true;
+        break;
       }
     }
-
-    return false;
+    // Keeps the new stamps of files that only got a new mtime.
+    cache.save();
+    return needRun;
   }
 
   private computeCompilerFingerprint(): string | undefined {
@@ -1376,10 +1459,29 @@ export class ModuleCompiler {
     return hash.digest("hex");
   }
 
-  /** What this module reads from each direct dependency. */
-  private getDependencyInterfaceFiles() {
-    return this.effectiveDependencies.flatMap((dep) => {
-      const dir = moduleInterfaceDir(this.hazeWorkspaceDirectory, dep.name);
+  /**
+   * What this module reads from the modules it depends on: the interface and
+   * metadata of every one of them, not only the direct ones, because it
+   * imports them all (collectImports). A dependency whose own interface does
+   * not change can still pass on a changed type from below it.
+   */
+  private async getDependencyInterfaceFiles() {
+    // A direct dependency's module graph already names everything below it,
+    // so only those metadata files are read: every module checking every
+    // transitive one cost a build 30 ms of JSON parsing.
+    const names = new Set(this.effectiveDependencies.map((dep) => dep.name));
+    for (const dep of this.effectiveDependencies) {
+      const meta = await this.loadSingleDependencyMetadata(dep.name);
+      for (const [name] of meta?.fullModuleGraph ?? []) {
+        names.add(name);
+      }
+    }
+    return [...names].flatMap((name) => {
+      const dir = moduleInterfaceDir(
+        this.hazeWorkspaceDirectory,
+        name,
+        this.buildDirName
+      );
       return [join(dir, MODULE_IMPORT_FILE), join(dir, MODULE_METADATA_FILE)];
     });
   }
@@ -1394,23 +1496,16 @@ export class ModuleCompiler {
     const sourceFiles = await this.scanProjectSourceFiles();
     sourceFiles.forEach((f) => files.add(f));
 
-    for (const file of this.getDependencyInterfaceFiles()) {
+    for (const file of await this.getDependencyInterfaceFiles()) {
       files.add(file);
     }
 
+    // What generators produce is what the compile reads. Their scripts and
+    // inputs only decide whether a generator runs (generatorsNeedRun), and a
+    // generator that writes the same files again changes nothing here.
     for (const gen of this.config.generators) {
       if (gen.type !== "exec") {
         continue;
-      }
-      files.add(this.resolveExec(gen.exec));
-      for (const input of gen.inputs) {
-        if (
-          input.type !== "module-file" ||
-          !this.isFileForCurrentPlatform(input)
-        ) {
-          continue;
-        }
-        files.add(this.resolveGeneratorFile(input));
       }
       for (const output of gen.outputs) {
         if (
@@ -1428,20 +1523,27 @@ export class ModuleCompiler {
 
   /**
    * The build settings this module's code sees (src/shared/BuildSettings.ts),
-   * as a source file in its autogen directory. Rewritten only when they
-   * change, because the build cache goes by mtime.
+   * as a source file in this build's own directory, since every set of
+   * settings has its own. Written only when missing or different.
    */
   private async writeBuildSettingsSource() {
-    const file = join(
-      this.getModuleAutogenDir(this.config.name),
-      BUILD_SETTINGS_FILENAME
+    // Older compilers kept it in autogen/, which every variant shares and
+    // which is collected as source: one left there would be a second copy.
+    rmSync(
+      join(this.getModuleAutogenDir(this.config.name), BUILD_SETTINGS_FILENAME),
+      { force: true }
     );
+    const file = this.buildSettingsFile();
     const source = buildSettingsSource(this.settings);
     if (existsSync(file) && readFileSync(file, "utf8") === source) {
       return;
     }
     await mkdir(dirname(file), { recursive: true });
     await writeFile(file, source);
+  }
+
+  private buildSettingsFile() {
+    return join(this.variantBuildDir, BUILD_SETTINGS_FILENAME);
   }
 
   async addProjectSourceFiles() {
@@ -1461,6 +1563,9 @@ export class ModuleCompiler {
     if (existsSync(autogenDir)) {
       await this.collectDirectory(autogenDir, mode);
     }
+
+    await this.writeBuildSettingsSource();
+    await this.collectFile(this.buildSettingsFile(), mode);
   }
 
   private isFileForCurrentPlatform(file: GeneratorFile): boolean {
@@ -1561,17 +1666,23 @@ export class ModuleCompiler {
         ranAny = true;
       }
 
+      // What a generator reads is stamped before it runs, which can be
+      // minutes: a script or input saved meanwhile must make it run again.
+      const readBefore = toRun.map((item) => {
+        assert(item.gen.config.type === "exec");
+        return cache.stampFiles([
+          this.resolveExec(item.gen.config.exec),
+          ...item.inputPaths,
+        ]);
+      });
+
       await Promise.all(
         toRun.map((item) => this.executeGenerator(item.gen.config))
       );
 
-      for (const item of toRun) {
-        assert(item.gen.config.type === "exec");
-        cache.updateFiles([
-          this.resolveExec(item.gen.config.exec),
-          ...item.inputPaths,
-          ...item.outputPaths,
-        ]);
+      for (const [i, item] of toRun.entries()) {
+        cache.rememberStamps(readBefore[i]);
+        cache.updateFiles(item.outputPaths);
       }
       cache.save();
     }
@@ -1838,7 +1949,10 @@ export class ModuleCompiler {
   private primaryOutputExists(): boolean {
     const paths = this.computeBuildPaths();
     if (this.config.moduleType === ModuleType.Executable) {
-      return existsSync(paths.moduleExecutable);
+      // A relink needs the object file as much as the link needs to exist.
+      return (
+        existsSync(paths.moduleExecutable) && existsSync(paths.moduleOFile)
+      );
     }
     // A library's output is what its dependents read.
     return (
@@ -1848,37 +1962,29 @@ export class ModuleCompiler {
     );
   }
 
-  private maybeStripExecutable() {
-    if (!this.strip) {
-      return;
-    }
-    if (this.config.moduleType !== ModuleType.Executable) {
-      return;
-    }
-    if (PLATFORM !== Platform.Linux) {
-      return;
-    }
-    const moduleExecutable = join(this.moduleDir, `bin/${this.config.name}`);
-    if (!existsSync(moduleExecutable)) {
-      return;
-    }
-    exec(`strip --strip-unneeded "${moduleExecutable}"`);
-  }
-
   private computeBuildPaths() {
     const name = this.config.name;
     const platform = this.config.platform;
+    const dir = this.variantBuildDir;
+    const exe = PLATFORM === Platform.Win32 ? ".exe" : "";
     return {
-      moduleCFile: join(this.moduleDir, `build/${name}-${platform}.c`),
-      moduleOFile: join(this.moduleDir, `build/${name}-${platform}.o`),
-      moduleAFile: join(this.moduleDir, `build/${name}-${platform}.a`),
-      moduleExecutable:
-        join(this.moduleDir, `bin/${name}`) +
-        (PLATFORM === Platform.Win32 ? ".exe" : ""),
-      moduleMetadataFile: join(this.moduleDir, "build/metadata.json"),
+      moduleCFile: join(dir, `${name}-${platform}.c`),
+      moduleOFile: join(dir, `${name}-${platform}.o`),
+      moduleAFile: join(dir, `${name}-${platform}.a`),
+      /** What clang read for the module's C (-MMD -MF). */
+      depFile: join(dir, `${name}-${platform}.d`),
+      /**
+       * The executable of this build variant, never stripped. Named like the
+       * other outputs, so no module name can collide with a directory the
+       * build writes here (regex/, embedded/).
+       */
+      moduleExecutable: join(dir, `${name}-${platform}`) + exe,
+      /** Where it is published (see publishExecutable). */
+      publishedExecutable: join(this.moduleDir, "bin", name) + exe,
+      moduleMetadataFile: join(dir, MODULE_METADATA_FILE),
       // The package older compilers wrote for dependents to unpack.
       staleHzlibFile: join(this.moduleDir, `bin/${name}.hzlib`),
-      importFilePath: join(this.moduleDir, "build", MODULE_IMPORT_FILE),
+      importFilePath: join(dir, MODULE_IMPORT_FILE),
     };
   }
 
@@ -1907,9 +2013,15 @@ export class ModuleCompiler {
     allModules: [string, string, string][],
     paths: ReturnType<ModuleCompiler["computeBuildPaths"]>
   ) {
-    await mkdir(join(this.moduleDir, "build/"), { recursive: true });
+    await mkdir(this.variantBuildDir, { recursive: true });
     await mkdir(join(this.moduleDir, "bin/"), { recursive: true });
-    const code = generateCode(this.config, this.moduleDir, allModules, lowered);
+    const code = generateCode(
+      this.config,
+      this.moduleDir,
+      this.buildDirName,
+      allModules,
+      lowered
+    );
     // The clang-format guards are written with the file rather than prepended
     // later. phaseCCompile used to read the whole module back and rewrite it
     // just to wrap it in these two comments, which on 1-3MB generated sources
@@ -1922,43 +2034,39 @@ export class ModuleCompiler {
 
   /**
    * clang, then the static library or, once every dependency's library
-   * exists, the executable. Off the main thread.
+   * exists, the executable. Off the main thread. For an executable, returns
+   * the stamps of what its link read.
    */
   private async compileC(
     paths: ReturnType<ModuleCompiler["computeBuildPaths"]>,
-    prepared: Awaited<ReturnType<ModuleCompiler["prepareCCompile"]>>
-  ) {
+    prepared: Awaited<ReturnType<ModuleCompiler["prepareCCompile"]>>,
+    check: Awaited<ReturnType<ModuleCompiler["checkUpToDate"]>>
+  ): Promise<Record<string, FileStamp> | undefined> {
     if (this.verbose) {
       this.printCmd(prepared.compileCmd);
     }
-    await this.step(
-      "clang -c",
-      () => execAsync(prepared.compileCmd),
-      "background"
-    );
+    // The depfile lists every header and C file the compile read, so a
+    // change to one rebuilds this module (see readDependencyFile). Only on
+    // the command that runs: compile_commands.json is for editors.
+    const compileCmd = `${prepared.compileCmd} -MMD -MF "${paths.depFile}"`;
+    await this.step("clang -c", () => execAsync(compileCmd), "background");
 
     if (this.config.moduleType === ModuleType.Executable) {
       this.advancePhase(EModulePrintCompilerPhase.Linking);
       await this.awaitDependencies("wait for libraries");
-
-      // Self-hosting: when the thing being linked is the native parser this
-      // build parsed through, the running parser holds the output path locked.
-      releaseNativeParserBinary(paths.moduleExecutable);
+      // Stamped before the link reads them, now that every dependency is
+      // finished.
+      const link = check.buildCache.checkLink(
+        this.config.name,
+        await this.linkInputFiles()
+      );
 
       const linkCmd = prepared.linkCmd;
       if (this.verbose) {
         this.printCmd(linkCmd);
       }
       await this.step("link", () => execAsync(linkCmd), "background");
-
-      if (this.strip) {
-        const stripCmd = `strip --strip-unneeded "${paths.moduleExecutable}"`;
-        if (this.verbose) {
-          this.printCmd(stripCmd);
-        }
-        await this.step("strip", () => execAsync(stripCmd), "background");
-      }
-      return;
+      return link.stamps;
     }
 
     // "c" tells ar not to print "ar: creating <file>" to stderr when the archive
@@ -1972,6 +2080,7 @@ export class ModuleCompiler {
       this.printCmd(archiveCmd);
     }
     await this.step("ar", () => execAsync(archiveCmd), "background");
+    return undefined;
   }
 
   /**
@@ -2001,7 +2110,7 @@ export class ModuleCompiler {
     const makerel = (absolute: string) =>
       absolute
         .replaceAll("\\", "/")
-        .replace(this.moduleDir.replaceAll("\\", "/") + "/build/", "");
+        .replace(this.variantBuildDir.replaceAll("\\", "/") + "/", "");
 
     await this.step("write metadata", async () => {
       const moduleMetadata: ModuleMetadata = {
@@ -2239,6 +2348,7 @@ export class ModuleCompiler {
   }
 
   async build(isTopLevelModule: boolean, fullRebuild?: boolean) {
+    this.tempIds = new TempIdCounter();
     return await catchErrors(async () => {
       this.currentModuleRootDir = this.config.configFilePath
         ? dirname(this.config.configFilePath)
@@ -2263,13 +2373,8 @@ export class ModuleCompiler {
           const check = await this.onMainThread(() =>
             this.step("check", () => this.checkUpToDate(fullRebuild))
           );
-
-          if (!(check.moduleChanged || check.generatorsNeedRun)) {
-            this.maybeStripExecutable();
-            this.advancePhase(EModulePrintCompilerPhase.Done);
-            timeline.setOutcome(this.timelineRow, "up-to-date");
-            return;
-          }
+          const isExecutable =
+            this.config.moduleType === ModuleType.Executable;
 
           // Not on the main thread: a generator is built by a nested build,
           // whose modules take the lock themselves, and then runs for as long
@@ -2278,19 +2383,50 @@ export class ModuleCompiler {
           // interfaces out.
           if (check.generatorsNeedRun) {
             await this.awaitDependencies("wait for dependencies");
+            const generatorsRan = await this.runAllGenerators(
+              check.forceGenerators
+            );
+            // What the generators wrote is compared again: the same bytes
+            // change nothing, and the stamps saved for this build must be
+            // those of their new output.
+            if (generatorsRan) {
+              const again = await this.onMainThread(() =>
+                this.step("check", () => this.checkCompileInputs(check))
+              );
+              check.moduleChanged = check.moduleChanged || again.changed;
+              check.stamps = again.stamps;
+              check.relevantFiles = again.relevantFiles;
+              check.checkedAt = again.checkedAt;
+            }
           }
-          const generatorsRan = check.generatorsNeedRun
-            ? await this.runAllGenerators(check.forceGenerators)
-            : false;
 
-          if (!(check.moduleChanged || generatorsRan)) {
-            this.maybeStripExecutable();
+          const paths = this.computeBuildPaths();
+
+          if (!check.moduleChanged) {
+            const linked = isExecutable
+              ? await this.linkIfInputsChanged(check, isTopLevelModule, paths)
+              : false;
+            if (isExecutable) {
+              await this.publishExecutable(paths);
+            }
+            check.buildCache.refreshStamps(this.config.name, check.stamps);
+            check.buildCache.save();
             this.advancePhase(EModulePrintCompilerPhase.Done);
-            timeline.setOutcome(this.timelineRow, "up-to-date");
+            if (!linked) {
+              timeline.setOutcome(this.timelineRow, "up-to-date");
+            }
             return;
           }
 
-          const { sr, paths, prepared } = await this.onMainThread(async () => {
+          // From here on this module's outputs are rewritten, so its record
+          // goes first. A build that fails or is stopped part way would
+          // otherwise leave new outputs (an interface, an object file) under
+          // the old record, and sources put back to the recorded bytes would
+          // pass for up to date with them.
+          check.buildCache.forget(this.config.name);
+          check.buildCache.save();
+
+          const { sr, prepared } = await this.onMainThread(async () => {
             this.advancePhase(EModulePrintCompilerPhase.Collecting);
             await this.phaseCollect();
 
@@ -2305,8 +2441,6 @@ export class ModuleCompiler {
               ...(await this.loadDependencyModuleGraph()),
             ];
 
-            const paths = this.computeBuildPaths();
-
             this.advancePhase(EModulePrintCompilerPhase.Generating);
             await this.step("codegen", () =>
               this.phaseGenerate(lowered, allModules, paths)
@@ -2316,37 +2450,40 @@ export class ModuleCompiler {
             );
             // Dependents start from here: they need this library's
             // interface and metadata, not its object code.
-            if (this.config.moduleType !== ModuleType.Executable) {
+            if (!isExecutable) {
               await this.writeInterface(sr, paths, allModules, prepared);
               timeline.markInterfaceReady(this.timelineRow);
               this.onInterfaceReady();
             }
-            return { sr: sr, paths: paths, prepared: prepared };
+            return { sr: sr, prepared: prepared };
           });
 
           this.advancePhase(EModulePrintCompilerPhase.CCompiling);
-          await this.compileC(paths, prepared);
+          const linkStamps = await this.compileC(paths, prepared, check);
+          if (isExecutable) {
+            await this.publishExecutable(paths);
+          }
 
           this.advancePhase(EModulePrintCompilerPhase.Done);
 
           await this.onMainThread(() =>
-            this.step("save cache", async () => {
-              // Now that analysis has actually run, sr.elaboratedEmbeddedFileTable
-              // holds every embed_file_text/embed_file_binary'd resource file
-              // this module referenced this build, with the exact absolute path
-              // already resolved for embedding -- record those too, so a later
-              // build's pre-analysis check (above) can tell one of them changed.
-              const embeddedFiles = [
-                ...sr.elaboratedEmbeddedFileTable.values(),
-              ].map((data) => data.absolutePath);
-              const finalRelevantFiles = [
-                ...(await this.gatherModuleRelevantFiles()),
-                ...embeddedFiles,
+            this.step("save cache", () => {
+              // Files only this build could find: every
+              // embed_file_text/embed_file_binary'd resource analysis
+              // resolved, and every header and C file clang read.
+              const foundByBuild = [
+                ...[...sr.elaboratedEmbeddedFileTable.values()].map(
+                  (data) => data.absolutePath
+                ),
+                ...this.readDependencyFile(paths.depFile),
               ];
               check.buildCache.updateModule(
                 this.config.name,
-                finalRelevantFiles,
-                check.compilerKey
+                [...check.relevantFiles, ...foundByBuild],
+                check.stamps,
+                check.compilerKey,
+                linkStamps,
+                check.checkedAt
               );
               check.buildCache.save();
             })
@@ -2358,41 +2495,21 @@ export class ModuleCompiler {
 
   /** Decides whether this module, or its generators, need to run. */
   private async checkUpToDate(fullRebuild: boolean | undefined) {
-    const buildCache = new ModuleBuildCache(
-      path.join(
-        this.hazeWorkspaceDirectory,
-        "build-cache",
-        `${this.config.name}.json`
-      )
-    );
+    const buildCache = new ModuleBuildCache(this.buildCacheFile());
     buildCache.load();
 
     const compilerFingerprint = this.computeCompilerFingerprint();
-    // The build settings are part of the key: builds with different
-    // settings share this workspace, so a module built with one set is
-    // never reused by a build with another, and changing them rebuilds
-    // everything.
+    // The build settings are part of the key, though each set of settings
+    // has its own build directory and cache file anyway (see
+    // buildVariantSuffix).
     const compilerKey =
       (compilerFingerprint
         ? `${version}:${compilerFingerprint}`
         : `${version}`) + buildSettingsCacheKey(this.settings);
 
     await this.writeBuildSettingsSource();
-    const compilerKeyChanged =
-      buildCache.getModuleCompilerKey(this.config.name) !== compilerKey;
-    const forceFullRebuild = fullRebuild === true || compilerKeyChanged;
 
-    // Embedded resource files (embed_file_text/embed_file_binary,
-    // e.g. a .wgsl shader loaded via embed.watchText) are only
-    // discovered by name during analysis below, which is exactly the
-    // phase this check exists to decide whether to skip -- so this
-    // has to reuse what the *previous* successful build already found
-    // and recorded, rather than rediscovering them here.
-    const initialRelevantFiles = [
-      ...(await this.gatherModuleRelevantFiles()),
-      ...buildCache.getModuleTrackedFiles(this.config.name),
-    ];
-    // Generators are deliberately not forced by forceFullRebuild.
+    // Generators are deliberately not forced by a changed compiler key.
     // A changed compiler fingerprint invalidates everything the
     // compiler itself produced, but a generator produces native
     // artifacts (sdl's cmake build, wgpu's cargo build) that don't
@@ -2403,10 +2520,8 @@ export class ModuleCompiler {
     // script or a missing output; only an explicit --full-rebuild
     // forces them.
     const forceGenerators = fullRebuild === true;
-    // Only a module that has generators can need to run them. A forced
-    // rebuild (which `--release` also forces on the top-level module, to
-    // strip it) used to count as needing them, and running generators means
-    // waiting for every dependency to finish first.
+    // Only a module that has generators can need to run them, and running
+    // them means waiting for every dependency to finish first.
     const hasGenerators = this.config.generators.some(
       (gen) => gen.type === "exec"
     );
@@ -2417,22 +2532,218 @@ export class ModuleCompiler {
     // received a cache file but no artifacts), the cache would happily
     // report "up to date" and the module would never be rebuilt.
     const outputMissing = !this.primaryOutputExists();
-    const moduleChanged =
-      forceFullRebuild || outputMissing
-        ? true
-        : buildCache.hasModuleChanged(
-            this.config.name,
-            initialRelevantFiles,
-            compilerKey
-          );
+    const inputs = await this.checkCompileInputs({
+      buildCache: buildCache,
+      compilerKey: compilerKey,
+    });
 
     return {
       buildCache: buildCache,
       compilerKey: compilerKey,
       forceGenerators: forceGenerators,
       generatorsNeedRun: generatorsNeedRun,
-      moduleChanged: moduleChanged,
+      moduleChanged: fullRebuild === true || outputMissing || inputs.changed,
+      stamps: inputs.stamps,
+      relevantFiles: inputs.relevantFiles,
+      checkedAt: inputs.checkedAt,
     };
+  }
+
+  /**
+   * Compares everything this module's compile reads with what the last
+   * build read. The files only a build can find (embedded files, C headers)
+   * come from the last build's record.
+   */
+  private async checkCompileInputs(check: {
+    buildCache: ModuleBuildCache;
+    compilerKey: string;
+  }) {
+    const checkedAt = Date.now();
+    const relevantFiles = await this.gatherModuleRelevantFiles();
+    const result = check.buildCache.checkModule(
+      this.config.name,
+      [
+        ...relevantFiles,
+        ...check.buildCache.getModuleTrackedFiles(this.config.name),
+      ],
+      check.compilerKey
+    );
+    return {
+      changed: result.changed,
+      stamps: result.stamps,
+      relevantFiles: relevantFiles,
+      checkedAt: checkedAt,
+    };
+  }
+
+  /** This module's build cache, one per build variant. */
+  private buildCacheFile() {
+    return path.join(
+      this.hazeWorkspaceDirectory,
+      "build-cache",
+      `${this.config.name}${buildVariantSuffix(this.settings)}.json`
+    );
+  }
+
+  /**
+   * Everything an executable's link reads from the modules it depends on,
+   * directly or not: each one's static library and metadata (linker flags),
+   * and the native libraries its generators left in bin/lib and bin/lib64.
+   * The executable's own bin/lib too.
+   */
+  private async linkInputFiles(): Promise<string[]> {
+    const files: string[] = [];
+    const addLibraryDirs = (moduleName: string) => {
+      for (const sub of ["lib", "lib64"]) {
+        files.push(
+          ...listFilesRecursively(
+            join(this.getModuleBinaryDir(moduleName), sub)
+          )
+        );
+      }
+    };
+    for (const meta of await this.loadDependenciesMetadata()) {
+      const dir = moduleInterfaceDir(
+        this.hazeWorkspaceDirectory,
+        meta.name,
+        this.buildDirName
+      );
+      files.push(join(dir, MODULE_METADATA_FILE));
+      for (const lib of meta.libs) {
+        if (lib.platform === this.config.platform) {
+          files.push(join(dir, lib.filename));
+        }
+      }
+      addLibraryDirs(meta.name);
+    }
+    addLibraryDirs(this.config.name);
+    return files;
+  }
+
+  /**
+   * An executable whose own code is up to date still needs a new link when a
+   * library it links changed. That is only known once every dependency has
+   * finished. True if it linked.
+   */
+  private async linkIfInputsChanged(
+    check: Awaited<ReturnType<ModuleCompiler["checkUpToDate"]>>,
+    isTopLevelModule: boolean,
+    paths: ReturnType<ModuleCompiler["computeBuildPaths"]>
+  ) {
+    await this.awaitDependencies("wait for libraries");
+    const link = check.buildCache.checkLink(
+      this.config.name,
+      await this.linkInputFiles()
+    );
+    if (!link.changed) {
+      check.buildCache.refreshLinkStamps(this.config.name, link.stamps);
+      return false;
+    }
+    this.advancePhase(EModulePrintCompilerPhase.Linking);
+    const prepared = await this.onMainThread(() =>
+      this.step("prepare C", () =>
+        this.prepareCCompile(paths, isTopLevelModule)
+      )
+    );
+    if (this.verbose) {
+      this.printCmd(prepared.linkCmd);
+    }
+    await this.step("link", () => execAsync(prepared.linkCmd), "background");
+    check.buildCache.updateLink(this.config.name, link.stamps);
+    return true;
+  }
+
+  /**
+   * Makes bin/<name> the executable of this build's variant, which is the one
+   * path everything runs (haze run, generators, install scripts, the native
+   * parser). Copied rather than linked there, so the variant's own stays
+   * unstripped and switching variants back costs a copy, not a build; and
+   * renamed into place, which works while the old binary is running.
+   */
+  private async publishExecutable(
+    paths: ReturnType<ModuleCompiler["computeBuildPaths"]>
+  ) {
+    const source = paths.moduleExecutable;
+    const target = paths.publishedExecutable;
+    const stateFile = path.join(
+      this.hazeWorkspaceDirectory,
+      "build-cache",
+      `${this.config.name}.published.json`
+    );
+    const strip = this.strip && PLATFORM === Platform.Linux;
+    const sourceStat = statSync(source);
+    const wanted = {
+      source: source,
+      sourceMtimeMs: sourceStat.mtimeMs,
+      sourceSize: sourceStat.size,
+      strip: strip,
+    };
+
+    type Published = typeof wanted & { mtimeMs: number; size: number };
+    let state: Published | null = null;
+    try {
+      state = JSON.parse(readFileSync(stateFile, "utf8"));
+    } catch {
+      state = null;
+    }
+    if (
+      state &&
+      state.source === wanted.source &&
+      state.sourceMtimeMs === wanted.sourceMtimeMs &&
+      state.sourceSize === wanted.sourceSize &&
+      state.strip === wanted.strip &&
+      existsSync(target)
+    ) {
+      const targetStat = statSync(target);
+      if (
+        targetStat.mtimeMs === state.mtimeMs &&
+        targetStat.size === state.size
+      ) {
+        return;
+      }
+    }
+
+    await mkdir(dirname(target), { recursive: true });
+    const temporary = join(dirname(target), `.${basename(target)}.tmp`);
+    fs.copyFileSync(source, temporary, fs.constants.COPYFILE_FICLONE);
+    fs.chmodSync(temporary, sourceStat.mode);
+    if (strip) {
+      const stripCmd = `strip --strip-unneeded "${temporary}"`;
+      if (this.verbose) {
+        this.printCmd(stripCmd);
+      }
+      await this.step("strip", () => execAsync(stripCmd), "background");
+    }
+    // Self-hosting: when the thing published is the native parser this build
+    // parsed through, the running parser holds the path (on Windows).
+    releaseNativeParserBinary(target);
+    fs.renameSync(temporary, target);
+
+    const targetStat = statSync(target);
+    const published: Published = {
+      ...wanted,
+      mtimeMs: targetStat.mtimeMs,
+      size: targetStat.size,
+    };
+    await mkdir(dirname(stateFile), { recursive: true });
+    writeFileSync(stateFile, JSON.stringify(published, null, 2));
+  }
+
+  /**
+   * The files a clang depfile (-MMD -MF) names as inputs, minus what this
+   * module generates itself. Empty when there is none.
+   */
+  private readDependencyFile(depFile: string): string[] {
+    let text: string;
+    try {
+      text = readFileSync(depFile, "utf8");
+    } catch {
+      return [];
+    }
+    const ownOutputs = path.resolve(this.moduleDir, "build");
+    return parseDependencyFile(text)
+      .map((file) => path.resolve(file))
+      .filter((file) => !file.startsWith(ownOutputs));
   }
 
   private async writeCompileCommands(
@@ -2509,7 +2820,11 @@ export class ModuleCompiler {
 
       archives.push(
         join(
-          moduleInterfaceDir(this.hazeWorkspaceDirectory, meta.name),
+          moduleInterfaceDir(
+            this.hazeWorkspaceDirectory,
+            meta.name,
+            this.buildDirName
+          ),
           lib.filename
         )
       );
@@ -2566,7 +2881,11 @@ export class ModuleCompiler {
 
   /** A dependency's metadata, or undefined if it was not built here. */
   private async loadSingleDependencyMetadata(name: string) {
-    const file = moduleMetadataFile(this.hazeWorkspaceDirectory, name);
+    const file = moduleMetadataFile(
+      this.hazeWorkspaceDirectory,
+      name,
+      this.buildDirName
+    );
     if (!existsSync(file)) {
       return;
     }
@@ -2588,7 +2907,11 @@ export class ModuleCompiler {
       }
       await this.collectDependencyInterface(
         join(
-          moduleInterfaceDir(this.hazeWorkspaceDirectory, name),
+          moduleInterfaceDir(
+            this.hazeWorkspaceDirectory,
+            name,
+            this.buildDirName
+          ),
           MODULE_IMPORT_FILE
         )
       );

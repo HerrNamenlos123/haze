@@ -8,7 +8,7 @@
 // hot-reload file watcher -- and never "is this a release build".
 //
 // They reach Haze code as an ordinary source file that the compiler writes into
-// every module's autogen directory (buildSettingsSource below), so what a build
+// every module's build directory (buildSettingsSource below), so what a build
 // saw is always on disk to look at. Every module gets its own copy, unexported,
 // because a module's interface carries no constants to the modules using it.
 
@@ -55,12 +55,23 @@ export function buildSettingsCacheKey(settings: BuildSettings): string {
   );
 }
 
+/**
+ * What keeps the outputs of builds with different settings apart, so that
+ * switching between them (dev and --release) rebuilds nothing that was built
+ * before: each module's build directory is "build" plus this, and so is its
+ * build cache's name. Empty for the defaults, whose directory stays "build";
+ * "-optimize-nodebug-nodebuginfo" for --release.
+ */
+export function buildVariantSuffix(settings: BuildSettings): string {
+  return buildSettingsCacheKey(settings).replaceAll(":", "-");
+}
+
 export const BUILD_SETTINGS_FILENAME = "build_settings.hz";
 
 export function buildSettingsSource(settings: BuildSettings): string {
   return [
     "// Written by the Haze compiler: the settings this build is made with.",
-    "// Regenerated on every build -- see src/shared/BuildSettings.ts.",
+    "// Rewritten when they change -- see src/shared/BuildSettings.ts.",
     "namespace build {",
     `    const comptime optimize = ${settings.optimize};`,
     `    const comptime debug = ${settings.debug};`,

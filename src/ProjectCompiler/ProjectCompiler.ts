@@ -640,11 +640,6 @@ export class ProjectCompiler {
       st.started = true;
 
       const isTopLevel = name === mainModuleName;
-      // The top-level module is forced to rebuild when strip is on (same
-      // behaviour as the old serial build).
-      const forceRebuild = isTopLevel
-        ? (fullRebuild ?? false) || this.strip
-        : fullRebuild;
 
       compiler.onInterfaceReady = () => {
         st.interfaceReady = true;
@@ -673,7 +668,7 @@ export class ProjectCompiler {
 
       timeline.markReady(compiler.timelineRow);
       compiler
-        .build(isTopLevel, forceRebuild)
+        .build(isTopLevel, fullRebuild)
         .then((success) => !!success)
         .catch((err: unknown) => {
           process.stderr.write(
