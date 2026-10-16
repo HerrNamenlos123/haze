@@ -589,116 +589,20 @@ bool hzstd_get_cwd(char* buf, size_t buf_size)
 
 // ── Process spawn ─────────────────────────────────────────────────────────────
 
-static inline char* hzstd_strdup_gc(const char* src)
-{
-  size_t len = strlen(src);
-  char* buf = hzstd_allocate(hzstd_make_heap_allocator(), len + 1, NULL);
-  if (!buf) {
-    return NULL;
-  }
-  memcpy(buf, src, len);
-  buf[len] = '\0';
-  return buf;
-}
-
-static inline char** process_str_array_to_cstrv(hzstd_dynamic_array_t* arr)
-{
-  size_t count = hzstd_dynamic_array_size(arr);
-  hzstd_str_t* elems = (hzstd_str_t*)hzstd_dynamic_array_raw_buffer(arr);
-  hzstd_allocator_t allocator = hzstd_make_heap_allocator();
-  char** out = hzstd_allocate(allocator, sizeof(char*) * (count + 1), NULL);
-  if (!out) {
-    return NULL;
-  }
-  for (size_t i = 0; i < count; ++i) {
-    out[i] = hzstd_cstr_from_str(allocator, elems[i]);
-    if (!out[i]) {
-      return NULL;
-    }
-  }
-  out[count] = NULL;
-  return out;
-}
-
-static inline char* hzstd_quote_windows_arg(const char* arg)
-{
-  size_t len = strlen(arg);
-  bool need_quotes = false;
-  for (size_t i = 0; i < len; ++i) {
-    if (arg[i] == ' ' || arg[i] == '\t') {
-      need_quotes = true;
-      break;
-    }
-  }
-  if (!need_quotes) {
-    return hzstd_strdup_gc(arg);
-  }
-
-  size_t cap = len * 2 + 3;
-  char* out = hzstd_allocate(hzstd_make_heap_allocator(), cap, NULL);
-  char* dst = out;
-  *dst++ = '"';
-  size_t bs = 0;
-  for (size_t i = 0; i < len; ++i) {
-    if (arg[i] == '\\') {
-      bs++;
-    }
-    else if (arg[i] == '"') {
-      for (size_t j = 0; j < bs * 2 + 1; ++j) {
-        *dst++ = '\\';
-      }
-      *dst++ = '"';
-      bs = 0;
-    }
-    else {
-      for (size_t j = 0; j < bs; ++j) {
-        *dst++ = '\\';
-      }
-      bs = 0;
-      *dst++ = arg[i];
-    }
-  }
-  for (size_t j = 0; j < bs * 2; ++j) {
-    *dst++ = '\\';
-  }
-  *dst++ = '"';
-  *dst = '\0';
-  return out;
-}
-
-static inline char* hzstd_append_gc(hzstd_allocator_t alloc, char* dst, const char* src)
-{
-  size_t dl = dst ? strlen(dst) : 0;
-  size_t sl = strlen(src);
-  char* buf = hzstd_allocate(alloc, dl + sl + 2, NULL);
-  if (!buf) {
-    return NULL;
-  }
-  if (dl) {
-    memcpy(buf, dst, dl);
-  }
-  memcpy(buf + dl, src, sl);
-  buf[dl + sl] = '\0';
-  return buf;
-}
+#include "hzstd_win_cmdline.h"
 
 static inline char* read_all_handle(HANDLE h)
 {
+  // One GC block the collector does not scan (it is text), grown with
+  // GC_realloc, which frees the old block on the way. NUL-terminated, because
+  // the Haze side reads it as a C string.
   DWORD chunk = 4096;
   size_t cap = chunk, len = 0;
-  char* buf = hzstd_allocate(hzstd_make_heap_allocator(), cap + 1, NULL);
-  if (!buf) {
-    return NULL;
-  }
+  char* buf = hzstd_heap_allocate_atomic(cap + 1, "process output");
   for (;;) {
     if (len + chunk > cap) {
       cap *= 2;
-      char* nb = hzstd_allocate(hzstd_make_heap_allocator(), cap + 1, NULL);
-      if (!nb) {
-        return NULL;
-      }
-      memcpy(nb, buf, len);
-      buf = nb;
+      buf = hzstd_heap_realloc(buf, cap + 1, "process output");
     }
     DWORD read_bytes = 0;
     if (!ReadFile(h, buf + len, (DWORD)(cap - len), &read_bytes, NULL)) {
@@ -754,26 +658,16 @@ int hzstd_spawn_process(hzstd_str_t exe,
   out->stdout_data = (char*)"";
   out->stderr_data = (char*)"";
 
-  hzstd_allocator_t allocator = hzstd_make_heap_allocator();
-  char* exe_c = hzstd_cstr_from_str(allocator, exe);
-  if (!exe_c) {
+  // The command line in one malloc'd block (hzstd_win_cmdline.h) and the
+  // working directory as a scratch copy: neither outlives this call, so
+  // neither goes near the GC.
+  char* cmdline = hzstd_win_command_line(
+      exe, (const hzstd_str_t*)hzstd_dynamic_array_raw_buffer(argv), hzstd_dynamic_array_size(argv));
+  HZSTD_SCRATCH_CSTR(cwd_c, cwd);
+  if (!cmdline || !cwd_c) {
+    free(cmdline);
     return ENOMEM;
   }
-
-  char** argv_c = process_str_array_to_cstrv(argv);
-  if (!argv_c) {
-    return ENOMEM;
-  }
-
-  size_t argc = hzstd_dynamic_array_size(argv);
-  char* cmdline = hzstd_quote_windows_arg(exe_c);
-  for (size_t i = 0; i < argc; ++i) {
-    char* q = hzstd_quote_windows_arg(argv_c[i]);
-    cmdline = hzstd_append_gc(allocator, cmdline, " ");
-    cmdline = hzstd_append_gc(allocator, cmdline, q);
-  }
-
-  char* cwd_c = cwd.length > 0 ? hzstd_cstr_from_str(allocator, cwd) : NULL;
 
   SECURITY_ATTRIBUTES sa = { sizeof(sa), NULL, TRUE };
   HANDLE stdout_read = NULL, stdout_write = NULL;
@@ -782,6 +676,7 @@ int hzstd_spawn_process(hzstd_str_t exe,
   if (!inherit_stdio) {
     if (!CreatePipe(&stdout_read, &stdout_write, &sa, 0) || !CreatePipe(&stderr_read, &stderr_write, &sa, 0)) {
       DWORD err = GetLastError();
+      free(cmdline);
       process_set_error_message(out, err);
       return err;
     }
@@ -798,10 +693,12 @@ int hzstd_spawn_process(hzstd_str_t exe,
   }
 
   PROCESS_INFORMATION pi = { 0 };
-  if (!CreateProcessA(NULL, cmdline, NULL, NULL, TRUE, 0, NULL, cwd_c ? cwd_c : NULL, &si, &pi)) {
-    DWORD err = GetLastError();
-    process_set_error_message(out, err);
-    return err;
+  BOOL created = CreateProcessA(NULL, cmdline, NULL, NULL, TRUE, 0, NULL, cwd.length > 0 ? cwd_c : NULL, &si, &pi);
+  DWORD createErr = created ? 0 : GetLastError();
+  free(cmdline);
+  if (!created) {
+    process_set_error_message(out, createErr);
+    return createErr;
   }
 
   if (!inherit_stdio) {
@@ -869,28 +766,16 @@ hzstd_process_spawn(hzstd_str_t exe, hzstd_dynamic_array_t* argv, hzstd_dynamic_
 {
   hzstd_process_spawn_result_t result = { NULL, 0, NULL };
 
-  hzstd_allocator_t allocator = hzstd_make_heap_allocator();
-  char* exe_c = hzstd_cstr_from_str(allocator, exe);
-  if (!exe_c) {
+  // As in hzstd_spawn_process: one malloc'd command line, a scratch working
+  // directory, nothing on the GC.
+  char* cmdline = hzstd_win_command_line(
+      exe, (const hzstd_str_t*)hzstd_dynamic_array_raw_buffer(argv), hzstd_dynamic_array_size(argv));
+  HZSTD_SCRATCH_CSTR(cwd_c, cwd);
+  if (!cmdline || !cwd_c) {
+    free(cmdline);
     result.error_code = ENOMEM;
     return result;
   }
-
-  char** argv_c = process_str_array_to_cstrv(argv);
-  if (!argv_c) {
-    result.error_code = ENOMEM;
-    return result;
-  }
-
-  size_t argc = hzstd_dynamic_array_size(argv);
-  char* cmdline = hzstd_quote_windows_arg(exe_c);
-  for (size_t i = 0; i < argc; ++i) {
-    char* q = hzstd_quote_windows_arg(argv_c[i]);
-    cmdline = hzstd_append_gc(allocator, cmdline, " ");
-    cmdline = hzstd_append_gc(allocator, cmdline, q);
-  }
-
-  char* cwd_c = cwd.length > 0 ? hzstd_cstr_from_str(allocator, cwd) : NULL;
 
   SECURITY_ATTRIBUTES sa = { sizeof(sa), NULL, TRUE };
   HANDLE stdin_read = NULL, stdin_write = NULL;
@@ -900,6 +785,7 @@ hzstd_process_spawn(hzstd_str_t exe, hzstd_dynamic_array_t* argv, hzstd_dynamic_
   if (!CreatePipe(&stdin_read, &stdin_write, &sa, 0) || !CreatePipe(&stdout_read, &stdout_write, &sa, 0)
       || !CreatePipe(&stderr_read, &stderr_write, &sa, 0)) {
     DWORD err = GetLastError();
+    free(cmdline);
     result.error_code = (int)err;
     result.error_message = process_build_error_message_gc(err);
     if (stdin_read) {
@@ -936,7 +822,9 @@ hzstd_process_spawn(hzstd_str_t exe, hzstd_dynamic_array_t* argv, hzstd_dynamic_
   si.dwFlags |= STARTF_USESTDHANDLES;
 
   PROCESS_INFORMATION pi = { 0 };
-  BOOL ok = CreateProcessA(NULL, cmdline, NULL, NULL, TRUE, 0, NULL, cwd_c ? cwd_c : NULL, &si, &pi);
+  BOOL ok = CreateProcessA(NULL, cmdline, NULL, NULL, TRUE, 0, NULL, cwd.length > 0 ? cwd_c : NULL, &si, &pi);
+  DWORD createErr = ok ? 0 : GetLastError();
+  free(cmdline);
 
   // The child-side ends are only needed by the child process.
   CloseHandle(stdin_read);
@@ -944,7 +832,7 @@ hzstd_process_spawn(hzstd_str_t exe, hzstd_dynamic_array_t* argv, hzstd_dynamic_
   CloseHandle(stderr_write);
 
   if (!ok) {
-    DWORD err = GetLastError();
+    DWORD err = createErr;
     result.error_code = (int)err;
     result.error_message = process_build_error_message_gc(err);
     CloseHandle(stdin_write);

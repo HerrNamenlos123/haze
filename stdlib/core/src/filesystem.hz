@@ -47,7 +47,8 @@ namespace ffi {
 
     extern C noemit fn hzstd_fs_exists(path: str): hzstd_fs_exists_result_t :: final;
 
-    extern C noemit ref struct hzstd_fs_copy_options_t {
+    // A value, passed to C by value: three bools have no business on the heap.
+    extern C noemit struct hzstd_fs_copy_options_t {
         overwrite: bool;
         follow_symlinks: bool;
         skip_errors: bool;
@@ -460,7 +461,8 @@ export namespace fs {
         return Result<none, Error>.Err(mapErrorEnum(result.code));
     }
 
-    export ref struct CopyOptions {
+    // A value: the `{ overwrite: true }` a caller writes inline allocates nothing.
+    export struct CopyOptions {
         overwrite: bool = false;
         followSymlinks: bool = false;
         skipErrors: bool = false;

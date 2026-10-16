@@ -66,6 +66,31 @@ static hzstd_fs_error_code_t hzstd_fs_error_from_errno(int err)
   }
 }
 
+// The message for an errno value, as a str, without copying it where that is
+// safe. strerror() may hand back a buffer that the next call overwrites (for an
+// unknown code it formats one), which a str must never point into, so its text
+// had to be copied every time. glibc >= 2.32 has strerrordesc_np(), which
+// returns the immutable entry of its own table (or NULL for an unknown code):
+// a view of that is safe forever. It is declared here rather than through
+// _GNU_SOURCE because hzstd is one translation unit whose headers are already
+// in by now. Everywhere else, and for unknown codes, the text is copied.
+#if defined(__GLIBC__) && (__GLIBC__ > 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 32))
+#define HZSTD_FS_HAS_STRERRORDESC 1
+extern const char *strerrordesc_np(int errnum);
+#endif
+
+static hzstd_str_t hzstd_fs_errno_message(int err)
+{
+#ifdef HZSTD_FS_HAS_STRERRORDESC
+  const char* desc = strerrordesc_np(err);
+  if (desc) {
+    return (hzstd_str_t) { .data = (char*)desc, .length = (hzstd_int_t)strlen(desc) };
+  }
+#endif
+  const char* msg = strerror(err);
+  return msg ? hzstd_cstr_dup((char*)msg) : HZSTD_STRING(NULL, 0);
+}
+
 #if defined(HAZE_PLATFORM_WIN32)
 static hzstd_fs_error_code_t hzstd_fs_error_from_windows_error(DWORD err)
 {
@@ -118,7 +143,7 @@ static hzstd_str_t hzstd_fs_parent_dir(const char* path)
 
 hzstd_read_file_text_result_t hzstd_read_file_text(hzstd_allocator_t allocator, hzstd_str_t path)
 {
-  char* nullTermPath = hzstd_cstr_from_str(allocator, path);
+  HZSTD_SCRATCH_CSTR(nullTermPath, path);
   if (!nullTermPath) {
     return (hzstd_read_file_text_result_t) {
       .data = HZSTD_STRING(NULL, 0),
@@ -136,7 +161,7 @@ hzstd_read_file_text_result_t hzstd_read_file_text(hzstd_allocator_t allocator, 
       .data = HZSTD_STRING(NULL, 0),
       .error = {
         .code = hzstd_fs_error_from_errno(err),
-        .message = strerror(err) ? hzstd_str_from_cstr_dup(allocator, strerror(err)) : HZSTD_STRING(NULL, 0),
+        .message = hzstd_fs_errno_message(err),
       },
     };
   }
@@ -148,7 +173,7 @@ hzstd_read_file_text_result_t hzstd_read_file_text(hzstd_allocator_t allocator, 
       .data = HZSTD_STRING(NULL, 0),
       .error = {
         .code = hzstd_fs_error_from_errno(err),
-        .message = strerror(err) ? hzstd_str_from_cstr_dup(allocator, strerror(err)) : HZSTD_STRING(NULL, 0),
+        .message = hzstd_fs_errno_message(err),
       },
     };
   }
@@ -161,7 +186,7 @@ hzstd_read_file_text_result_t hzstd_read_file_text(hzstd_allocator_t allocator, 
       .data = HZSTD_STRING(NULL, 0),
       .error = {
         .code = hzstd_fs_error_from_errno(err),
-        .message = strerror(err) ? hzstd_str_from_cstr_dup(allocator, strerror(err)) : HZSTD_STRING(NULL, 0),
+        .message = hzstd_fs_errno_message(err),
       },
     };
   }
@@ -173,7 +198,7 @@ hzstd_read_file_text_result_t hzstd_read_file_text(hzstd_allocator_t allocator, 
       .data = HZSTD_STRING(NULL, 0),
       .error = {
         .code = hzstd_fs_error_from_errno(err),
-        .message = strerror(err) ? hzstd_str_from_cstr_dup(allocator, strerror(err)) : HZSTD_STRING(NULL, 0),
+        .message = hzstd_fs_errno_message(err),
       },
     };
   }
@@ -209,7 +234,7 @@ hzstd_read_file_text_result_t hzstd_read_file_text(hzstd_allocator_t allocator, 
       .data = HZSTD_STRING(NULL, 0),
       .error = {
         .code = hzstd_fs_error_code_io_error,
-        .message = strerror(err) ? hzstd_str_from_cstr_dup(allocator, strerror(err)) : HZSTD_STRING(NULL, 0),
+        .message = hzstd_fs_errno_message(err),
       },
     };
   }
@@ -237,7 +262,7 @@ hzstd_fs_error_t hzstd_read_file_binary(hzstd_allocator_t allocator, hzstd_str_t
     };
   }
 
-  char* nullTermPath = hzstd_cstr_from_str(allocator, path);
+  HZSTD_SCRATCH_CSTR(nullTermPath, path);
   if (!nullTermPath) {
     return (hzstd_fs_error_t) {
       .code = hzstd_fs_error_code_out_of_memory,
@@ -250,7 +275,7 @@ hzstd_fs_error_t hzstd_read_file_binary(hzstd_allocator_t allocator, hzstd_str_t
     int err = errno;
     return (hzstd_fs_error_t) {
       .code = hzstd_fs_error_from_errno(err),
-      .message = strerror(err) ? hzstd_str_from_cstr_dup(allocator, strerror(err)) : HZSTD_STRING(NULL, 0),
+      .message = hzstd_fs_errno_message(err),
     };
   }
 
@@ -260,7 +285,7 @@ hzstd_fs_error_t hzstd_read_file_binary(hzstd_allocator_t allocator, hzstd_str_t
     fclose(f);
     return (hzstd_fs_error_t) {
       .code = hzstd_fs_error_code_io_error,
-      .message = strerror(err) ? hzstd_str_from_cstr_dup(allocator, strerror(err)) : HZSTD_STRING(NULL, 0),
+      .message = hzstd_fs_errno_message(err),
     };
   }
 
@@ -274,7 +299,7 @@ hzstd_fs_error_t hzstd_read_file_binary(hzstd_allocator_t allocator, hzstd_str_t
 
 hzstd_fs_error_t hzstd_write_file_text(hzstd_allocator_t allocator, hzstd_str_t path, hzstd_str_t input)
 {
-  char* nullTermPath = hzstd_cstr_from_str(allocator, path);
+  HZSTD_SCRATCH_CSTR(nullTermPath, path);
   if (!nullTermPath) {
     return (hzstd_fs_error_t) {
       .code = hzstd_fs_error_code_out_of_memory,
@@ -291,7 +316,7 @@ hzstd_fs_error_t hzstd_write_file_text(hzstd_allocator_t allocator, hzstd_str_t 
     int err = errno;
     return (hzstd_fs_error_t) {
       .code = hzstd_fs_error_from_errno(err),
-      .message = strerror(err) ? hzstd_str_from_cstr_dup(allocator, strerror(err)) : HZSTD_STRING(NULL, 0),
+      .message = hzstd_fs_errno_message(err),
     };
   }
 
@@ -302,7 +327,7 @@ hzstd_fs_error_t hzstd_write_file_text(hzstd_allocator_t allocator, hzstd_str_t 
       fclose(f);
       return (hzstd_fs_error_t) {
         .code = hzstd_fs_error_code_io_error,
-        .message = strerror(err) ? hzstd_str_from_cstr_dup(allocator, strerror(err)) : HZSTD_STRING(NULL, 0),
+        .message = hzstd_fs_errno_message(err),
       };
     }
   }
@@ -311,7 +336,7 @@ hzstd_fs_error_t hzstd_write_file_text(hzstd_allocator_t allocator, hzstd_str_t 
     int err = errno;
     return (hzstd_fs_error_t) {
       .code = hzstd_fs_error_from_errno(err),
-      .message = strerror(err) ? hzstd_str_from_cstr_dup(allocator, strerror(err)) : HZSTD_STRING(NULL, 0),
+      .message = hzstd_fs_errno_message(err),
     };
   }
 
@@ -338,7 +363,7 @@ hzstd_fs_error_t hzstd_file_open_write(hzstd_allocator_t allocator, hzstd_str_t 
   void** out_handle = (void**)out_handle_raw;
   *out_handle = NULL;
 
-  char* nullTermPath = hzstd_cstr_from_str(allocator, path);
+  HZSTD_SCRATCH_CSTR(nullTermPath, path);
   if (!nullTermPath) {
     return (hzstd_fs_error_t) {
       .code = hzstd_fs_error_code_out_of_memory,
@@ -356,7 +381,7 @@ hzstd_fs_error_t hzstd_file_open_write(hzstd_allocator_t allocator, hzstd_str_t 
     int err = errno;
     return (hzstd_fs_error_t) {
       .code = hzstd_fs_error_from_errno(err),
-      .message = strerror(err) ? hzstd_str_from_cstr_dup(allocator, strerror(err)) : HZSTD_STRING(NULL, 0),
+      .message = hzstd_fs_errno_message(err),
     };
   }
 
@@ -396,7 +421,7 @@ hzstd_fs_error_t hzstd_file_append_text(hzstd_allocator_t allocator, void* handl
     int err = errno;
     return (hzstd_fs_error_t) {
       .code = hzstd_fs_error_code_io_error,
-      .message = strerror(err) ? hzstd_str_from_cstr_dup(allocator, strerror(err)) : HZSTD_STRING(NULL, 0),
+      .message = hzstd_fs_errno_message(err),
     };
   }
 
@@ -420,7 +445,7 @@ hzstd_file_open_read(hzstd_allocator_t allocator, hzstd_str_t path, void* out_ha
   *out_handle = NULL;
   *out_size = 0;
 
-  char* nullTermPath = hzstd_cstr_from_str(allocator, path);
+  HZSTD_SCRATCH_CSTR(nullTermPath, path);
   if (!nullTermPath) {
     return (hzstd_fs_error_t) {
       .code = hzstd_fs_error_code_out_of_memory,
@@ -433,7 +458,7 @@ hzstd_file_open_read(hzstd_allocator_t allocator, hzstd_str_t path, void* out_ha
     int err = errno;
     return (hzstd_fs_error_t) {
       .code = hzstd_fs_error_from_errno(err),
-      .message = strerror(err) ? hzstd_str_from_cstr_dup(allocator, strerror(err)) : HZSTD_STRING(NULL, 0),
+      .message = hzstd_fs_errno_message(err),
     };
   }
 
@@ -443,7 +468,7 @@ hzstd_file_open_read(hzstd_allocator_t allocator, hzstd_str_t path, void* out_ha
     fclose(f);
     return (hzstd_fs_error_t) {
       .code = hzstd_fs_error_from_errno(err),
-      .message = strerror(err) ? hzstd_str_from_cstr_dup(allocator, strerror(err)) : HZSTD_STRING(NULL, 0),
+      .message = hzstd_fs_errno_message(err),
     };
   }
 
@@ -472,7 +497,7 @@ hzstd_fs_error_t hzstd_file_read_some(
     int err = errno;
     return (hzstd_fs_error_t) {
       .code = hzstd_fs_error_from_errno(err),
-      .message = strerror(err) ? hzstd_str_from_cstr_dup(allocator, strerror(err)) : HZSTD_STRING(NULL, 0),
+      .message = hzstd_fs_errno_message(err),
     };
   }
   return (hzstd_fs_error_t) {
@@ -497,7 +522,7 @@ hzstd_fs_error_t hzstd_file_close(hzstd_allocator_t allocator, void* handle)
     int err = errno;
     return (hzstd_fs_error_t) {
       .code = hzstd_fs_error_from_errno(err),
-      .message = strerror(err) ? hzstd_str_from_cstr_dup(allocator, strerror(err)) : HZSTD_STRING(NULL, 0),
+      .message = hzstd_fs_errno_message(err),
     };
   }
 
@@ -517,7 +542,7 @@ hzstd_write_file_binary(hzstd_allocator_t allocator, hzstd_str_t path, void* buf
     };
   }
 
-  char* nullTermPath = hzstd_cstr_from_str(allocator, path);
+  HZSTD_SCRATCH_CSTR(nullTermPath, path);
   if (!nullTermPath) {
     return (hzstd_fs_error_t) {
       .code = hzstd_fs_error_code_out_of_memory,
@@ -534,7 +559,7 @@ hzstd_write_file_binary(hzstd_allocator_t allocator, hzstd_str_t path, void* buf
     int err = errno;
     return (hzstd_fs_error_t) {
       .code = hzstd_fs_error_from_errno(err),
-      .message = strerror(err) ? hzstd_str_from_cstr_dup(allocator, strerror(err)) : HZSTD_STRING(NULL, 0),
+      .message = hzstd_fs_errno_message(err),
     };
   }
 
@@ -544,7 +569,7 @@ hzstd_write_file_binary(hzstd_allocator_t allocator, hzstd_str_t path, void* buf
     fclose(f);
     return (hzstd_fs_error_t) {
       .code = hzstd_fs_error_code_io_error,
-      .message = strerror(err) ? hzstd_str_from_cstr_dup(allocator, strerror(err)) : HZSTD_STRING(NULL, 0),
+      .message = hzstd_fs_errno_message(err),
     };
   }
 
@@ -552,7 +577,7 @@ hzstd_write_file_binary(hzstd_allocator_t allocator, hzstd_str_t path, void* buf
     int err = errno;
     return (hzstd_fs_error_t) {
       .code = hzstd_fs_error_from_errno(err),
-      .message = strerror(err) ? hzstd_str_from_cstr_dup(allocator, strerror(err)) : HZSTD_STRING(NULL, 0),
+      .message = hzstd_fs_errno_message(err),
     };
   }
 
@@ -601,7 +626,7 @@ hzstd_fs_error_t hzstd_mkdir_recursive(hzstd_str_t path)
           int err = errno;
           return (hzstd_fs_error_t) {
             .code = hzstd_fs_error_from_errno(err),
-            .message = strerror(err) ? HZSTD_STRING(strerror(err), strlen(strerror(err))) : HZSTD_STRING(NULL, 0),
+            .message = hzstd_fs_errno_message(err),
           };
         }
 
@@ -609,7 +634,7 @@ hzstd_fs_error_t hzstd_mkdir_recursive(hzstd_str_t path)
           int err = errno;
           return (hzstd_fs_error_t) {
             .code = hzstd_fs_error_from_errno(err),
-            .message = strerror(err) ? HZSTD_STRING(strerror(err), strlen(strerror(err))) : HZSTD_STRING(NULL, 0),
+            .message = hzstd_fs_errno_message(err),
           };
         }
       }
@@ -631,7 +656,7 @@ hzstd_fs_error_t hzstd_mkdir_recursive(hzstd_str_t path)
       int err = errno;
       return (hzstd_fs_error_t) {
         .code = hzstd_fs_error_from_errno(err),
-        .message = strerror(err) ? HZSTD_STRING(strerror(err), strlen(strerror(err))) : HZSTD_STRING(NULL, 0),
+        .message = hzstd_fs_errno_message(err),
       };
     }
 
@@ -639,7 +664,7 @@ hzstd_fs_error_t hzstd_mkdir_recursive(hzstd_str_t path)
       int err = errno;
       return (hzstd_fs_error_t) {
         .code = hzstd_fs_error_from_errno(err),
-        .message = strerror(err) ? HZSTD_STRING(strerror(err), strlen(strerror(err))) : HZSTD_STRING(NULL, 0),
+        .message = hzstd_fs_errno_message(err),
       };
     }
   }
@@ -701,14 +726,12 @@ hzstd_fs_exists_result_t hzstd_fs_exists(hzstd_str_t path)
   int err = errno;
   result.error = (hzstd_fs_error_t) {
     .code = hzstd_fs_error_from_errno(err),
-    .message = strerror(err) ? HZSTD_STRING(strerror(err), strlen(strerror(err))) : HZSTD_STRING(NULL, 0),
+    .message = hzstd_fs_errno_message(err),
   };
 
   return result;
 }
 
-// --- Helper: allocate GC string from static or system message ---
-static inline hzstd_str_t hzstd_fs_strdup_msg(char* msg) { return msg ? hzstd_cstr_dup(msg) : hzstd_cstr_dup(""); }
 
 #ifdef HAZE_PLATFORM_WIN32
 static inline hzstd_str_t hzstd_fs_windows_error(DWORD err)
@@ -723,7 +746,7 @@ static inline hzstd_str_t hzstd_fs_windows_error(DWORD err)
                        0,
                        NULL);
   if (size == 0 || !msg) {
-    return hzstd_cstr_dup("Unknown error");
+    return HZSTD_STRING("Unknown error", 13);
   }
   hzstd_str_t out = hzstd_cstr_dup(msg);
   LocalFree(msg);
@@ -739,7 +762,7 @@ hzstd_fs_copy_file_internal(const char* src, const char* dst, const hzstd_fs_cop
   if (STAT(src, &st) != 0) {
 #if defined(HAZE_PLATFORM_LINUX)
     return (hzstd_fs_error_t) { .code = hzstd_fs_error_from_errno(errno),
-                                .message = hzstd_fs_strdup_msg(strerror(errno)) };
+                                .message = hzstd_fs_errno_message(errno) };
 #elif defined(HAZE_PLATFORM_WIN32)
     DWORD err = GetLastError();
     return (hzstd_fs_error_t) { .code = hzstd_fs_error_from_windows_error(err),
@@ -756,21 +779,21 @@ hzstd_fs_copy_file_internal(const char* src, const char* dst, const hzstd_fs_cop
     struct STAT dst_st;
     if (STAT(dst, &dst_st) == 0) {
       return (hzstd_fs_error_t) { .code = hzstd_fs_error_code_already_exists,
-                                  .message = hzstd_cstr_dup("destination exists") };
+                                  .message = HZSTD_STRING("destination exists", 18) };
     }
   }
 
   int fd_src = open(src, O_RDONLY);
   if (fd_src < 0) {
     return (hzstd_fs_error_t) { .code = hzstd_fs_error_from_errno(errno),
-                                .message = hzstd_fs_strdup_msg(strerror(errno)) };
+                                .message = hzstd_fs_errno_message(errno) };
   }
 
   int fd_dst = open(dst, O_WRONLY | O_CREAT | O_TRUNC, st.st_mode & 0777);
   if (fd_dst < 0) {
     close(fd_src);
     return (hzstd_fs_error_t) { .code = hzstd_fs_error_from_errno(errno),
-                                .message = hzstd_fs_strdup_msg(strerror(errno)) };
+                                .message = hzstd_fs_errno_message(errno) };
   }
 
   char buf[8192];
@@ -781,7 +804,7 @@ hzstd_fs_copy_file_internal(const char* src, const char* dst, const hzstd_fs_cop
       close(fd_src);
       close(fd_dst);
       return (hzstd_fs_error_t) { .code = hzstd_fs_error_from_errno(errno),
-                                  .message = hzstd_fs_strdup_msg(strerror(errno)) };
+                                  .message = hzstd_fs_errno_message(errno) };
     }
   }
 
@@ -789,7 +812,7 @@ hzstd_fs_copy_file_internal(const char* src, const char* dst, const hzstd_fs_cop
   close(fd_dst);
   if (r < 0) {
     return (hzstd_fs_error_t) { .code = hzstd_fs_error_from_errno(errno),
-                                .message = hzstd_fs_strdup_msg(strerror(errno)) };
+                                .message = hzstd_fs_errno_message(errno) };
   }
 
 #elif defined(HAZE_PLATFORM_WIN32)
@@ -814,7 +837,7 @@ hzstd_fs_copy_dir_internal(const char* src, const char* dst, const hzstd_fs_copy
   DIR* dir = opendir(src);
   if (!dir) {
     return (hzstd_fs_error_t) { .code = hzstd_fs_error_from_errno(errno),
-                                .message = hzstd_fs_strdup_msg(strerror(errno)) };
+                                .message = hzstd_fs_errno_message(errno) };
   }
 
   struct dirent* entry;
@@ -835,7 +858,7 @@ hzstd_fs_copy_dir_internal(const char* src, const char* dst, const hzstd_fs_copy
       }
       closedir(dir);
       return (hzstd_fs_error_t) { .code = hzstd_fs_error_from_errno(errno),
-                                  .message = hzstd_fs_strdup_msg(strerror(errno)) };
+                                  .message = hzstd_fs_errno_message(errno) };
     }
 
     hzstd_fs_error_t err;
@@ -897,25 +920,44 @@ hzstd_fs_copy_dir_internal(const char* src, const char* dst, const hzstd_fs_copy
 // The internals take C strings. A str is pointer + length and not
 // NUL-terminated (a slice ends inside other bytes), so every path is copied by
 // its length first; handing over the raw pointer read past the end of the path.
-hzstd_fs_error_t hzstd_fs_copy_file(hzstd_str_t src, hzstd_str_t dst, const hzstd_fs_copy_options_t* opts)
+// The copies only live for the call, so they are scratch copies (HZSTD_SCRATCH_CSTR):
+// on the stack, not the GC heap. The options are three bools and come by value
+// for the same reason: as a pointer, Haze had to put them on the heap first.
+hzstd_fs_error_t hzstd_fs_copy_file(hzstd_str_t src, hzstd_str_t dst, hzstd_fs_copy_options_t options)
 {
-  return hzstd_fs_copy_file_internal(HZSTD_CSTR(src), HZSTD_CSTR(dst), opts);
+  const hzstd_fs_copy_options_t* opts = &options;
+  HZSTD_SCRATCH_CSTR(srcPath, src);
+  HZSTD_SCRATCH_CSTR(dstPath, dst);
+  if (!srcPath || !dstPath) {
+    return (hzstd_fs_error_t) { .code = hzstd_fs_error_code_out_of_memory, .message = HZSTD_STRING("out of memory", 13) };
+  }
+  return hzstd_fs_copy_file_internal(srcPath, dstPath, opts);
 }
 
-hzstd_fs_error_t hzstd_fs_copy_dir(hzstd_str_t src, hzstd_str_t dst, const hzstd_fs_copy_options_t* opts)
+hzstd_fs_error_t hzstd_fs_copy_dir(hzstd_str_t src, hzstd_str_t dst, hzstd_fs_copy_options_t options)
 {
-  return hzstd_fs_copy_dir_internal(HZSTD_CSTR(src), HZSTD_CSTR(dst), opts);
+  const hzstd_fs_copy_options_t* opts = &options;
+  HZSTD_SCRATCH_CSTR(srcPath, src);
+  HZSTD_SCRATCH_CSTR(dstPath, dst);
+  if (!srcPath || !dstPath) {
+    return (hzstd_fs_error_t) { .code = hzstd_fs_error_code_out_of_memory, .message = HZSTD_STRING("out of memory", 13) };
+  }
+  return hzstd_fs_copy_dir_internal(srcPath, dstPath, opts);
 }
 
-hzstd_fs_error_t hzstd_fs_copy(hzstd_str_t src, hzstd_str_t dst, const hzstd_fs_copy_options_t* opts)
+hzstd_fs_error_t hzstd_fs_copy(hzstd_str_t src, hzstd_str_t dst, hzstd_fs_copy_options_t options)
 {
-  const char* srcPath = HZSTD_CSTR(src);
-  const char* dstPath = HZSTD_CSTR(dst);
+  const hzstd_fs_copy_options_t* opts = &options;
+  HZSTD_SCRATCH_CSTR(srcPath, src);
+  HZSTD_SCRATCH_CSTR(dstPath, dst);
+  if (!srcPath || !dstPath) {
+    return (hzstd_fs_error_t) { .code = hzstd_fs_error_code_out_of_memory, .message = HZSTD_STRING("out of memory", 13) };
+  }
   struct STAT st;
   if (STAT(srcPath, &st) != 0) {
 #if defined(HAZE_PLATFORM_LINUX)
     return (hzstd_fs_error_t) { .code = hzstd_fs_error_from_errno(errno),
-                                .message = hzstd_fs_strdup_msg(strerror(errno)) };
+                                .message = hzstd_fs_errno_message(errno) };
 #elif defined(HAZE_PLATFORM_WIN32)
     DWORD err = GetLastError();
     return (hzstd_fs_error_t) { .code = hzstd_fs_error_from_windows_error(err),
@@ -931,22 +973,26 @@ hzstd_fs_error_t hzstd_fs_copy(hzstd_str_t src, hzstd_str_t dst, const hzstd_fs_
   }
 }
 
-hzstd_fs_error_t hzstd_fs_move(hzstd_str_t src, hzstd_str_t dst, const hzstd_fs_copy_options_t* opts)
+hzstd_fs_error_t hzstd_fs_move(hzstd_str_t src, hzstd_str_t dst, hzstd_fs_copy_options_t options)
 {
+  const hzstd_fs_copy_options_t* opts = &options;
   // Within one filesystem a move is a rename: instant whatever the size, and
   // atomic -- dst is the old file or the whole new one, never a partial copy,
   // which is what makes "write a temporary file, then move it over the real
   // one" a save that a crash cannot corrupt. Only a move to another
   // filesystem (or a directory onto an existing one, which is merged) falls
   // back to copying and deleting.
-  const char* srcPath = HZSTD_CSTR(src);
-  const char* dstPath = HZSTD_CSTR(dst);
+  HZSTD_SCRATCH_CSTR(srcPath, src);
+  HZSTD_SCRATCH_CSTR(dstPath, dst);
+  if (!srcPath || !dstPath) {
+    return (hzstd_fs_error_t) { .code = hzstd_fs_error_code_out_of_memory, .message = HZSTD_STRING("out of memory", 13) };
+  }
 #if defined(HAZE_PLATFORM_LINUX)
   {
     struct STAT dst_st;
     if (!opts->overwrite && STAT(dstPath, &dst_st) == 0) {
       return (hzstd_fs_error_t) { .code = hzstd_fs_error_code_already_exists,
-                                  .message = hzstd_cstr_dup("destination exists") };
+                                  .message = HZSTD_STRING("destination exists", 18) };
     }
     hzstd_mkdir_recursive(hzstd_fs_parent_dir(dstPath));
     if (rename(srcPath, dstPath) == 0) {
@@ -954,7 +1000,7 @@ hzstd_fs_error_t hzstd_fs_move(hzstd_str_t src, hzstd_str_t dst, const hzstd_fs_
     }
     if (errno != EXDEV && errno != ENOTEMPTY && errno != EEXIST && errno != EISDIR) {
       return (hzstd_fs_error_t) { .code = hzstd_fs_error_from_errno(errno),
-                                  .message = hzstd_fs_strdup_msg(strerror(errno)) };
+                                  .message = hzstd_fs_errno_message(errno) };
     }
   }
 #elif defined(HAZE_PLATFORM_WIN32)
@@ -972,7 +1018,7 @@ hzstd_fs_error_t hzstd_fs_move(hzstd_str_t src, hzstd_str_t dst, const hzstd_fs_
   }
 #endif
 
-  hzstd_fs_error_t err = hzstd_fs_copy(src, dst, opts);
+  hzstd_fs_error_t err = hzstd_fs_copy(src, dst, options);
   if (err.code != hzstd_fs_error_code_none) {
     return err;
   }
@@ -981,19 +1027,19 @@ hzstd_fs_error_t hzstd_fs_move(hzstd_str_t src, hzstd_str_t dst, const hzstd_fs_
   struct STAT st;
   if (STAT(srcPath, &st) != 0) {
     return (hzstd_fs_error_t) { .code = hzstd_fs_error_from_errno(errno),
-                                .message = hzstd_fs_strdup_msg(strerror(errno)) };
+                                .message = hzstd_fs_errno_message(errno) };
   }
 
   if (IS_DIR(st.st_mode)) {
     if (rmdir(srcPath) != 0) {
       return (hzstd_fs_error_t) { .code = hzstd_fs_error_from_errno(errno),
-                                  .message = hzstd_fs_strdup_msg(strerror(errno)) };
+                                  .message = hzstd_fs_errno_message(errno) };
     }
   }
   else {
     if (unlink(srcPath) != 0) {
       return (hzstd_fs_error_t) { .code = hzstd_fs_error_from_errno(errno),
-                                  .message = hzstd_fs_strdup_msg(strerror(errno)) };
+                                  .message = hzstd_fs_errno_message(errno) };
     }
   }
 #elif defined(HAZE_PLATFORM_WIN32)

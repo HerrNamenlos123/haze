@@ -948,60 +948,74 @@ bool hzstd_get_cwd(char *buf, size_t buf_size)
 
 // ── Process spawn ─────────────────────────────────────────────────────────────
 
-// Every str is copied by its length: a str is pointer + length and is not
-// NUL-terminated (a slice ends inside other bytes, a committed ByteBuffer's view
-// is followed by whatever its storage held), so strdup() would read past it.
-static inline char **process_str_array_to_cstrv_with_exe_malloc(hzstd_str_t exe, hzstd_dynamic_array_t *arr)
+// A NULL-terminated array of C strings for posix_spawn, in ONE malloc'd block:
+// the pointer array, then every string copied by its length and NUL-terminated.
+// (A str is pointer + length and is not NUL-terminated, so strdup() read past
+// it.) One allocation for the whole array instead of one per string plus the
+// array, released with a single free(). `first`, when given, becomes element 0
+// (the program, for argv).
+static inline char *process_copy_cstr(char **cursor, hzstd_str_t s)
+{
+  char *dst = *cursor;
+  if (s.length > 0) {
+    memcpy(dst, s.data, (size_t)s.length);
+  }
+  dst[s.length] = '\0';
+  *cursor = dst + s.length + 1;
+  return dst;
+}
+
+static char **process_cstr_block(const hzstd_str_t *first, hzstd_dynamic_array_t *arr)
 {
   size_t count = hzstd_dynamic_array_size(arr);
   hzstd_str_t *elems = (hzstd_str_t *)hzstd_dynamic_array_raw_buffer(arr);
-  char **out = malloc(sizeof(char *) * (count + 2));
+  size_t total = count + (first ? 1 : 0);
+  size_t bytes = sizeof(char *) * (total + 1);
+  if (first) {
+    bytes += (size_t)first->length + 1;
+  }
+  for (size_t i = 0; i < count; ++i) {
+    bytes += (size_t)elems[i].length + 1;
+  }
+  char **out = malloc(bytes);
   if (!out) {
     return NULL;
   }
-  out[0] = (char *)hzstd_raw_malloc_null_terminated_str(exe);
-  if (!out[0]) {
-    free(out);
-    return NULL;
+  char *cursor = (char *)(out + total + 1);
+  size_t k = 0;
+  if (first) {
+    out[k++] = process_copy_cstr(&cursor, *first);
   }
   for (size_t i = 0; i < count; ++i) {
-    out[i + 1] = (char *)hzstd_raw_malloc_null_terminated_str(elems[i]);
-    if (!out[i + 1]) {
-      for (size_t j = 0; j <= i; ++j) {
-        free(out[j]);
-      }
-      free(out);
-      return NULL;
-    }
+    out[k++] = process_copy_cstr(&cursor, elems[i]);
   }
-  out[count + 1] = NULL;
+  out[k] = NULL;
   return out;
 }
 
+// A child's whole output, read to the end into one GC block that the collector
+// does not scan (it is text), grown with GC_realloc -- which frees the old block
+// on the way, so a large output leaves no garbage behind. NUL-terminated,
+// because the Haze side reads it as a C string. A failed read keeps what was
+// read so far: NULL would be read as a C string and crash.
 static inline char *read_all_fd_gc(int fd)
 {
   size_t cap = 4096, len = 0;
-  hzstd_allocator_t allocator = hzstd_make_heap_allocator();
-  char *buf = hzstd_allocate(allocator, cap + 1, NULL);
-  if (!buf) {
-    return NULL;
-  }
+  char *buf = hzstd_heap_allocate_atomic(cap + 1, "process output");
   for (;;) {
     if (len + 2048 > cap) {
       cap *= 2;
-      char *nb = hzstd_allocate(allocator, cap + 1, NULL);
-      if (!nb) {
-        return NULL;
-      }
-      memcpy(nb, buf, len);
-      buf = nb;
+      buf = hzstd_heap_realloc(buf, cap + 1, "process output");
     }
     ssize_t r = read(fd, buf + len, cap - len);
     if (r == 0) {
       break;
     }
     if (r < 0) {
-      return NULL;
+      if (errno == EINTR) {
+        continue;
+      }
+      break;
     }
     len += r;
   }
@@ -1059,6 +1073,20 @@ int hzstd_spawn_process(hzstd_str_t exe,
   out->stdout_data = (char *)"";
   out->stderr_data = (char *)"";
 
+  // The C strings posix_spawn needs, built before any pipe or spawn attribute
+  // exists so that running out of memory has nothing to clean up. argv and the
+  // environment are one malloc'd block each; the working directory is a
+  // scratch copy on the stack.
+  char **argv_c = process_cstr_block(&exe, argv);
+  char **envp_c = hzstd_dynamic_array_size(envp) > 0 ? process_cstr_block(NULL, envp) : NULL;
+  HZSTD_SCRATCH_CSTR(cwd_c, cwd);
+  if (!argv_c || (hzstd_dynamic_array_size(envp) > 0 && !envp_c) || !cwd_c) {
+    free(argv_c);
+    free(envp_c);
+    process_set_error_message(out, ENOMEM);
+    return ENOMEM;
+  }
+
   posix_spawn_file_actions_t actions;
   posix_spawnattr_t attrs;
   posix_spawn_file_actions_init(&actions);
@@ -1084,32 +1112,8 @@ int hzstd_spawn_process(hzstd_str_t exe,
     posix_spawn_file_actions_addclose(&actions, stderr_pipe[0]);
   }
 
-  char **argv_c = process_str_array_to_cstrv_with_exe_malloc(exe, argv);
-  if (!argv_c) {
-    return ENOMEM;
-  }
-
-  size_t envc = hzstd_dynamic_array_size(envp);
-  hzstd_str_t *env_elems = (hzstd_str_t *)hzstd_dynamic_array_raw_buffer(envp);
-  char **envp_c = NULL;
-  if (envc > 0) {
-    envp_c = malloc(sizeof(char *) * (envc + 1));
-    if (!envp_c) {
-      for (size_t i = 0; argv_c[i]; ++i) {
-        free(argv_c[i]);
-      }
-      free(argv_c);
-      return ENOMEM;
-    }
-    for (size_t i = 0; i < envc; ++i) {
-      envp_c[i] = (char *)hzstd_raw_malloc_null_terminated_str(env_elems[i]);
-    }
-    envp_c[envc] = NULL;
-  }
-
-  char *cwd_c = cwd.length > 0 ? (char *)hzstd_raw_malloc_null_terminated_str(cwd) : NULL;
 #ifdef __linux__
-  if (cwd_c) {
+  if (cwd.length > 0) {
     posix_spawn_file_actions_addchdir_np(&actions, cwd_c);
   }
 #endif
@@ -1117,17 +1121,8 @@ int hzstd_spawn_process(hzstd_str_t exe,
   pid_t pid;
   int rc = posix_spawnp(&pid, argv_c[0], &actions, &attrs, argv_c, envp_c ? envp_c : environ);
 
-  for (size_t i = 0; argv_c[i]; ++i) {
-    free(argv_c[i]);
-  }
   free(argv_c);
-  if (envp_c) {
-    for (size_t i = 0; i < envc; ++i) {
-      free(envp_c[i]);
-    }
-    free(envp_c);
-  }
-  free(cwd_c);
+  free(envp_c);
   posix_spawn_file_actions_destroy(&actions);
   posix_spawnattr_destroy(&attrs);
 
@@ -1254,11 +1249,26 @@ hzstd_process_spawn(hzstd_str_t exe, hzstd_dynamic_array_t *argv, hzstd_dynamic_
 {
   hzstd_process_spawn_result_t result = { .handle = NULL, .error_code = 0, .error_message = NULL };
 
+  // Built first, as in hzstd_spawn_process: one block each for argv and the
+  // environment, a scratch copy for the working directory.
+  char **argv_c = process_cstr_block(&exe, argv);
+  char **envp_c = hzstd_dynamic_array_size(envp) > 0 ? process_cstr_block(NULL, envp) : NULL;
+  HZSTD_SCRATCH_CSTR(cwd_c, cwd);
+  if (!argv_c || (hzstd_dynamic_array_size(envp) > 0 && !envp_c) || !cwd_c) {
+    free(argv_c);
+    free(envp_c);
+    result.error_code = ENOMEM;
+    result.error_message = process_build_error_message_gc(ENOMEM);
+    return result;
+  }
+
   int stdin_pipe[2] = { -1, -1 };
   int stdout_pipe[2] = { -1, -1 };
   int stderr_pipe[2] = { -1, -1 };
 
   if (pipe(stdin_pipe) != 0 || pipe(stdout_pipe) != 0 || pipe(stderr_pipe) != 0) {
+    free(argv_c);
+    free(envp_c);
     result.error_code = errno;
     result.error_message = process_build_error_message_gc(errno);
     for (int i = 0; i < 2; ++i) {
@@ -1287,37 +1297,8 @@ hzstd_process_spawn(hzstd_str_t exe, hzstd_dynamic_array_t *argv, hzstd_dynamic_
   posix_spawn_file_actions_addclose(&actions, stdout_pipe[0]);
   posix_spawn_file_actions_addclose(&actions, stderr_pipe[0]);
 
-  char **argv_c = process_str_array_to_cstrv_with_exe_malloc(exe, argv);
-  if (!argv_c) {
-    posix_spawn_file_actions_destroy(&actions);
-    posix_spawnattr_destroy(&attrs);
-    close(stdin_pipe[0]);
-    close(stdin_pipe[1]);
-    close(stdout_pipe[0]);
-    close(stdout_pipe[1]);
-    close(stderr_pipe[0]);
-    close(stderr_pipe[1]);
-    result.error_code = ENOMEM;
-    result.error_message = process_build_error_message_gc(ENOMEM);
-    return result;
-  }
-
-  size_t envc = hzstd_dynamic_array_size(envp);
-  hzstd_str_t *env_elems = (hzstd_str_t *)hzstd_dynamic_array_raw_buffer(envp);
-  char **envp_c = NULL;
-  if (envc > 0) {
-    envp_c = malloc(sizeof(char *) * (envc + 1));
-    if (envp_c) {
-      for (size_t i = 0; i < envc; ++i) {
-        envp_c[i] = (char *)hzstd_raw_malloc_null_terminated_str(env_elems[i]);
-      }
-      envp_c[envc] = NULL;
-    }
-  }
-
-  char *cwd_c = cwd.length > 0 ? (char *)hzstd_raw_malloc_null_terminated_str(cwd) : NULL;
 #ifdef __linux__
-  if (cwd_c) {
+  if (cwd.length > 0) {
     posix_spawn_file_actions_addchdir_np(&actions, cwd_c);
   }
 #endif
@@ -1325,17 +1306,8 @@ hzstd_process_spawn(hzstd_str_t exe, hzstd_dynamic_array_t *argv, hzstd_dynamic_
   pid_t pid;
   int rc = posix_spawnp(&pid, argv_c[0], &actions, &attrs, argv_c, envp_c ? envp_c : environ);
 
-  for (size_t i = 0; argv_c[i]; ++i) {
-    free(argv_c[i]);
-  }
   free(argv_c);
-  if (envp_c) {
-    for (size_t i = 0; i < envc; ++i) {
-      free(envp_c[i]);
-    }
-    free(envp_c);
-  }
-  free(cwd_c);
+  free(envp_c);
   posix_spawn_file_actions_destroy(&actions);
   posix_spawnattr_destroy(&attrs);
 

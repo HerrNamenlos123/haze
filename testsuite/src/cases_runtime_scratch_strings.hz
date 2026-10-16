@@ -1,0 +1,139 @@
+// ============================================================================
+// REGRESSION TESTS: strings the C runtime only needs for the duration of one
+// call (stdlib/core/src/hzstd).
+//
+// A C API that wants a C string (a path for fopen(), argv, a working directory)
+// needs a NUL-terminated copy of a str. Those copies used to be GC
+// allocations, one per path per call (and one per argument, per environment
+// entry, plus every intermediate of the Windows command line). They live only
+// for the call, so they now go on the stack (HZSTD_SCRATCH_CSTR in
+// hzstd_string.h; malloc beyond 512 bytes) or into one malloc'd block, and the
+// GC never sees them. errno messages are views of glibc's immutable table
+// instead of copies.
+//
+// Checked here: the GC allocation counts of the filesystem calls, and that
+// every path still works past the 512-byte stack buffer, where the copy moves
+// to malloc.
+// ============================================================================
+
+namespace cases_runtime_scratch_strings {
+
+    export fn register(s: mut testsuite.Suite) {
+
+        // Upper bounds, so that removing more allocations later does not fail
+        // the test. What is left is the data a call returns. Copy options are
+        // plain values (they used to be heap objects, twice: the caller's
+        // CopyOptions and the wrapper's ffi struct), so the literal a caller
+        // writes inline allocates nothing either.
+        s.runExitCode(
+            "runtime strings: filesystem calls do not copy their path to the GC heap",
+            """
+fn profiler(): Profiler {
+    return Profiler({ samplingRate: 0, memoryInstrumentation: true, memoryInstrumentationStacktraces: false });
+}
+fn main(): int {
+    let dir = "/tmp/haze-testsuite-scratch-strings";
+    let made = fs.createDirectory(dir);
+    let path = f"{dir}/a.txt";
+    let copyTo = f"{dir}/b.txt";
+    let missing = f"{dir}/missing.txt";
+
+    let p1 = profiler();
+    let w = fs.writeText(path, "hello");
+    let r1 = p1.stop();
+    let p2 = profiler();
+    let t = fs.readText(path);
+    let r2 = p2.stop();
+    let p3 = profiler();
+    let m = fs.readText(missing);
+    let r3 = p3.stop();
+    let p4 = profiler();
+    let c = fs.copyFile(path, copyTo, { overwrite: true });
+    let r4 = p4.stop();
+
+    // The Profiler object itself is the one allocation every window has.
+    let writes = r1.memoryInstrumentationFrames.length - 1;
+    let reads = r2.memoryInstrumentationFrames.length - 1;
+    let fails = r3.memoryInstrumentationFrames.length - 1;
+    let copies = r4.memoryInstrumentationFrames.length - 1;
+    assert(writes == 0, f"writeText allocated {writes}");
+    assert(reads <= 1, f"readText allocated {reads} (only the contents may be)");
+    assert(fails == 0, f"a failing readText allocated {fails}");
+    assert(copies == 0, f"copyFile allocated {copies}");
+    if let text = fs.readText(copyTo) {
+        assert(text == "hello", "copied contents");
+    }
+    else {
+        assert(false, "copy is missing");
+    }
+    return 0;
+}
+""",
+            0);
+
+        // Past the 512-byte stack buffer the copy is malloc'd instead; every
+        // path-taking call must still see exactly the path.
+        s.run(
+            "runtime strings: paths longer than the stack buffer",
+            """
+fn main(): int {
+    let seg = "0123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789";
+    let dir = f"/tmp/haze-testsuite-long-paths/{seg}/{seg}/{seg}/{seg}/{seg}/{seg}";
+    let path = f"{dir}/file.txt";
+    let copyTo = f"{dir}/copy.txt";
+    let w = fs.writeText(path, "far away");
+    let back = "";
+    if let text = fs.readText(path) { back = text; }
+    let there = false;
+    if let e = fs.exists(path) { there = e; }
+    let c = fs.copyFile(path, copyTo, { overwrite: true });
+    let copied = "";
+    if let text = fs.readText(copyTo) { copied = text; }
+    fmt.println(f"{path.length > 512} {back} {there} {copied}");
+    return 0;
+}
+""",
+            "true far away true far away");
+
+        // Child processes: argv and the environment are built in one block
+        // each, the working directory is a scratch copy (here a long one, so
+        // malloc'd), and the output grows in place past its first 4 KB.
+        s.run(
+            "runtime strings: child processes get their arguments, environment and long working directory",
+            """
+fn main(): int {
+    let seg = "0123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789";
+    let dir = f"/tmp/haze-testsuite-long-cwd/{seg}/{seg}/{seg}/{seg}/{seg}/{seg}";
+    let w = fs.writeText(f"{dir}/marker.txt", "x");
+
+    let r1 = process.runCaptured("sh", ["-c", "echo $HZ_A $HZ_B; pwd; echo \\"$0|$1|$2\\"", "zero", "one two", ""], { env: ["HZ_A=first", "HZ_B=second"], cwd: dir });
+    let lines = r1.stdoutResult.split("\\n");
+    fmt.println(f"{r1.exitCode} {lines[0]} {lines[1] == dir} {lines[2]}");
+
+    let r2 = process.runCaptured("sh", ["-c", "head -c 20000 /dev/zero | tr '\\\\0' 'a'"]);
+    fmt.println(f"{r2.exitCode} {r2.stdoutResult.length}");
+
+    let spawned = process.spawn("sh", ["-c", "echo $HZ_C; pwd"], { env: ["HZ_C=background"], cwd: dir });
+    if let p = spawned {
+        let out = "";
+        while p.isAlive() {
+            out = out + p.readStdout();
+        }
+        out = out + p.readStdout();
+        let code = p.join();
+        let parts = out.split("\\n");
+        fmt.println(f"{code} {parts[0]} {parts[1] == dir}");
+    }
+    else {
+        fmt.println("spawn failed");
+    }
+    return 0;
+}
+""",
+            """
+0 first second true zero|one two|
+0 20000
+0 background true
+""");
+    }
+}

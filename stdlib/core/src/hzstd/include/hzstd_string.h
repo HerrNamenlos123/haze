@@ -2,6 +2,7 @@
 #ifndef HZSTD_STRING_H
 #define HZSTD_STRING_H
 
+#include <stdlib.h>
 #include <string.h>
 
 #include "../hzstd_types.h"
@@ -120,5 +121,50 @@ hzstd_bool_t hzstd_strings_equal(hzstd_str_t a, hzstd_str_t b);
 
 #define HZSTD_CSTR(value) hzstd_cstr_from_str(hzstd_make_heap_allocator(), value)
 const char *hzstd_raw_malloc_null_terminated_str(hzstd_str_t str);
+
+// ── Scratch C strings ────────────────────────────────────────────────────────
+//
+// A str is pointer + length and is NOT NUL-terminated: a slice ends inside
+// other bytes, and a committed ByteBuffer's view is followed by whatever its
+// storage held. A C API that wants a C string (a path for fopen(), a working
+// directory) needs a terminated copy -- but when that copy only lives for the
+// one call, it has no business on the GC heap.
+//
+// HZSTD_SCRATCH_CSTR(name, str) declares `const char *name` in the current
+// scope: short strings (every ordinary path) are copied into a buffer on the
+// stack, longer ones into one malloc'd block, and the cleanup attribute frees
+// that block whenever the scope is left, on every return path. `name` is NULL
+// only if that malloc failed. Never let the pointer outlive the scope.
+#define HZSTD_SCRATCH_CSTR_INLINE 512
+
+typedef struct {
+  char *ptr;
+  char inline_buf[HZSTD_SCRATCH_CSTR_INLINE];
+} hzstd_scratch_cstr_t;
+
+static inline const char *hzstd_scratch_cstr_init(hzstd_scratch_cstr_t *s, hzstd_str_t str)
+{
+  size_t n = (size_t)str.length;
+  s->ptr = n < sizeof(s->inline_buf) ? s->inline_buf : (char *)malloc(n + 1);
+  if (!s->ptr) {
+    return NULL;
+  }
+  if (n > 0) {
+    memcpy(s->ptr, str.data, n);
+  }
+  s->ptr[n] = '\0';
+  return s->ptr;
+}
+
+static inline void hzstd_scratch_cstr_release(hzstd_scratch_cstr_t *s)
+{
+  if (s->ptr && s->ptr != s->inline_buf) {
+    free(s->ptr);
+  }
+}
+
+#define HZSTD_SCRATCH_CSTR(name, str)                                                                                  \
+  hzstd_scratch_cstr_t name##_scratch __attribute__((cleanup(hzstd_scratch_cstr_release)));                            \
+  const char *name = hzstd_scratch_cstr_init(&name##_scratch, (str))
 
 #endif // HZSTD_STRING_H
