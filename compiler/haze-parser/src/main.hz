@@ -24,6 +24,8 @@ extern C fn hz_arg_count(): int :: final;
 extern C fn hz_arg_at(index: int): ccstr :: final;
 extern C fn hz_read_line(): ccstr :: final;
 extern C fn hz_write_all(data: str): void :: final;
+// The `OK <byteLength>` line that precedes a response.
+extern C fn hz_write_ok(length: int): void :: final;
 extern C fn hz_flush(): void :: final;
 extern C fn hz_write_err(data: str): void :: final;
 // Read exactly n bytes of source from stdin (used by the TEXT request).
@@ -75,7 +77,8 @@ static void _hz_capture_args(int argc, const char** argv) {
 hzstd_str_t hz_read_exact(hzstd_int_t n) {
     hzstd_str_t s;
     if (n <= 0) { s.data = \"\"; s.length = 0; return s; }
-    char* buf = (char*)hzstd_allocate(hzstd_make_heap_allocator(), (size_t)n + 1, \"str\");
+    // Pointer-free: the GC never needs to scan source text.
+    char* buf = (char*)hzstd_heap_allocate_atomic((size_t)n + 1, \"str\");
     size_t got = fread(buf, 1, (size_t)n, stdin);
     buf[got] = 0;
     s.data = buf;
@@ -99,6 +102,10 @@ hzstd_ccstr_t hz_read_line(void) {
 // authoritative, so puts()/printf() are not usable.
 hzstd_void_t hz_write_all(hzstd_str_t data) {
     fwrite(data.data, 1, (size_t)data.length, stdout);
+}
+
+hzstd_void_t hz_write_ok(hzstd_int_t length) {
+    fprintf(stdout, \"OK %lld\\n\", (long long)length);
 }
 
 hzstd_void_t hz_write_err(hzstd_str_t data) {
@@ -165,7 +172,7 @@ fn runServer(): int {
             }
             else {
                 let out = p.w.result();
-                fmt.println(f"OK {out.length}");
+                hz_write_ok(out.length);
                 hz_write_all(out);
             }
             hz_flush();
@@ -174,7 +181,7 @@ fn runServer(): int {
 
         let result = parseFile(line);
         if result {
-            fmt.println(f"OK {result.length}");
+            hz_write_ok(result.length);
             hz_write_all(result);
         }
         else {

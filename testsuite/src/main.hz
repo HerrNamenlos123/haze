@@ -55,6 +55,7 @@ fn main(): int {
     cases_this_capture.register(suite);
     cases_bytebuffer.register(suite);
     cases_runtime_scratch_strings.register(suite);
+    cases_parser_output.register(suite);
     cases_parameter_packs.register(suite);
     cases_immediate.register(suite);
     cases_primitive_constructors.register(suite);

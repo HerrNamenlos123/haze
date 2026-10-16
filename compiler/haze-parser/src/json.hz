@@ -1,217 +1,407 @@
-// Streaming JSON writer.
+// JSON writer for the parser's output.
 //
-// The parser writes the AST straight into one growing byte buffer as it goes:
-// there is no intermediate object tree to allocate, walk and free. That makes
-// serialisation essentially free compared to building a DOM and stringifying it.
+// The whole AST is written into ONE String, front to back, and handed to
+// stdout as a view of it: nothing is copied out, nothing is built and then
+// stringified. Each node is written where it finally sits. A node whose kind
+// is only known after its first child has been written (`a + b`, `a.b`,
+// `a(...)`, `a ? b : c`, ...) is completed by writing its header at the end
+// and hoisting it in front of the child: one rotate, no copy elsewhere.
 //
-// Conventions agreed with the TypeScript bridge (see Bridge.ts):
-//   * Integer literal values are emitted as decimal STRINGS and revived to
-//     BigInt on the other side. They routinely exceed 2^53 and can exceed 64
-//     bits, so a JSON number would silently corrupt them.
-//   * Regex flags are emitted as an array and revived to a Set.
-//   * Fields whose value is `undefined` in the reference AST are simply omitted;
-//     `null` is emitted explicitly.
+// The writer knows nothing about commas: every value writes itself, and the
+// object or array it goes into writes the separators. Keys are always
+// constants from the AST schema, so they are never escaped.
+//
+// Conventions agreed with the TypeScript bridge (src/Parser/NativeParser.ts):
+//   * Integer literal values are decimal STRINGS, revived to BigInt there.
+//     They routinely exceed 2^53 and can exceed 64 bits, so a JSON number
+//     would silently corrupt them.
+//   * Regex flags are an array, revived to a Set.
+//   * Fields whose value is `undefined` in the AST are omitted; `null` is
+//     written explicitly.
+//   * A node's sourceloc is the compact "L":[startLine,startCol,endLine,
+//     endCol], with "F" only when a #source block names another file.
+//
+// The output is bound for a binary format (length-prefixed fields in a fixed
+// order): only this file knows it is JSON. The parser speaks in nodes, keys
+// and values, plus hoist() for the few fields that are parsed after the ones
+// that follow them.
 
-const SEP_FIRST: int = 0;
-const SEP_NEED: int = 1;
-const SEP_VALUE: int = 2;
+const DIGITS: str = "0123456789";
+const HEX_DIGITS: str = "0123456789abcdef";
 
-export ref struct JsonWriter {
-    // Raw byte buffer from outbuf.hz rather than a stdlib String: String and
-    // ByteBuffer append ONE BYTE PER CALL (~15 MB/s measured, a single 910KB
-    // append took 61ms), which would dominate the parser's runtime.
-    buf: cptr;
+export nocopy struct JsonWriter {
+    buf: mut String;
 
-    // Comma state for the innermost container, one entry per open container:
-    //   SEP_FIRST   nothing written yet -> no comma
-    //   SEP_NEED    an item was written -> next item needs a comma
-    //   SEP_VALUE   a key was written   -> its value must NOT emit a comma
-    //
-    // `key()` sets SEP_VALUE so the value that follows writes nothing, and the
-    // value then restores SEP_NEED. Arrays only ever use FIRST/NEED.
-    sepState: mut []int = [];
-
-    static fn create(sizeHint: int): mut JsonWriter {
-        return JsonWriter {
-            buf: hzob_new(sizeHint),
-        };
+    fn length(): int {
+        return this.buf.length();
     }
 
-    fn length(): int { return hzob_len(this.buf); }
-
-    // Release the underlying allocation (not GC-managed).
-    fn dispose() { hzob_free(this.buf); }
-
-    // Emit a separating comma when required, then mark the container as having
-    // content.
-    mut fn sep() {
-        if this.sepState.length == 0 { return; }
-        let top = this.sepState.length - 1;
-        let s = this.sepState[top];
-        if s == SEP_VALUE {
-            // Directly after a key: the colon already separates us.
-            this.sepState[top] = SEP_NEED;
-            return;
-        }
-        if s == SEP_NEED {
-            hzob_push_byte(this.buf, 44);
-        }
-        this.sepState[top] = SEP_NEED;
+    // Moves everything written since `moved` to `at`, ahead of what was
+    // written in between.
+    mut fn hoist(at: int, moved: int) {
+        this.buf.rotate(at, moved, this.buf.length());
     }
 
-    mut fn beginObject() {
-        this.sep();
-        hzob_push_byte(this.buf, 123);
-        this.sepState.push(SEP_FIRST);
+    // Drops everything written since `length`.
+    mut fn truncate(length: int) {
+        this.buf.truncate(length);
     }
 
-    mut fn endObject() {
-        hzob_push_byte(this.buf, 125);
-        this.sepState.pop();
+    mut fn remove(at: int, count: int) {
+        this.buf.remove(at, count);
     }
 
-    mut fn beginArray() {
-        this.sep();
-        hzob_push_byte(this.buf, 91);
-        this.sepState.push(SEP_FIRST);
+    // The finished document, as a view of the buffer: no copy.
+    mut fn result(): str {
+        this.buf.commit();
+        return this.buf.string();
+    }
+
+    // --- Structure ----------------------------------------------------------
+
+    // `{"variant":"<variant>"`: how every AST node begins.
+    mut fn node(variant: str) {
+        this.buf.append("{\"variant\":\"");
+        this.buf.append(variant);
+        this.buf.append(b"\"");
+    }
+
+    // `{` of an object that has no variant.
+    mut fn object() {
+        this.buf.append(b"{");
+    }
+
+    // `"<name>":`, the first key of an object without a variant.
+    mut fn firstKey(name: str) {
+        this.buf.append(b"\"");
+        this.buf.append(name);
+        this.buf.append("\":");
+    }
+
+    // `,"<name>":`, any later key.
+    mut fn key(name: str) {
+        this.buf.append(",\"");
+        this.buf.append(name);
+        this.buf.append("\":");
+    }
+
+    mut fn end() {
+        this.buf.append(b"}");
+    }
+
+    mut fn array() {
+        this.buf.append(b"[");
     }
 
     mut fn endArray() {
-        hzob_push_byte(this.buf, 93);
-        this.sepState.pop();
+        this.buf.append(b"]");
     }
 
-    // Emit a key. Keys here are always compile-time constants from the AST
-    // schema, so they never need escaping.
-    mut fn key(name: str) {
-        this.sep();
-        hzob_push_byte(this.buf, 34);
-        hzob_push_str(this.buf, name);
-        hzob_push_byte(this.buf, 34);
-        hzob_push_byte(this.buf, 58);
-        // The value that follows belongs to this key: suppress its comma.
-        this.sepState[this.sepState.length - 1] = SEP_VALUE;
+    mut fn comma() {
+        this.buf.append(b",");
     }
 
-    // Emit already-formatted JSON text (a canonicalised number, say). Distinct
-    // from captureValue, which splices a range of this buffer.
-    mut fn rawValue(text: str) {
-        this.sep();
-        hzob_push_str(this.buf, text);
-    }
-
-    // --- Capturing ---------------------------------------------------------
-    //
-    // A capture is written to the END of this buffer like any other value; the
-    // caller keeps its offsets and later splices it in with rangeValue(), then
-    // truncates. That turns "parse into a detached writer and clone the string"
-    // into a pair of memcpys inside one allocation.
-
-    mut fn beginCapture(): int {
-        this.sepState.push(SEP_FIRST);
-        return hzob_len(this.buf);
-    }
-
-    mut fn endCapture(): int {
-        this.sepState.pop();
-        return hzob_len(this.buf);
-    }
-
-    mut fn truncate(mark: int) { hzob_truncate(this.buf, mark); }
-
-    mut fn boolValue(v: bool) {
-        this.sep();
-        if v { hzob_push_str(this.buf, "true"); }
-        else { hzob_push_str(this.buf, "false"); }
-    }
+    // --- Values -------------------------------------------------------------
 
     mut fn nullValue() {
-        this.sep();
-        hzob_push_str(this.buf, "null");
+        this.buf.append("null");
+    }
+
+    mut fn boolValue(v: bool) {
+        if v { this.buf.append("true"); }
+        else { this.buf.append("false"); }
     }
 
     mut fn intValue(v: int) {
-        this.sep();
-        hzob_push_int(this.buf, v);
+        this.buf.appendFmt(v);
     }
 
     mut fn stringValue(v: str) {
-        this.sep();
-        this.writeEscaped(v);
+        this.buf.append(b"\"");
+        this.escapedRun(v, 0, v.length, false);
+        this.buf.append(b"\"");
     }
 
-    // --- Convenience: key + value in one call -------------------------------
+    // A string value written in pieces: openString, stringPart..., closeString.
+    mut fn openString() {
+        this.buf.append(b"\"");
+    }
 
-    mut fn keyBool(name: str, v: bool) { this.key(name); this.boolValue(v); }
-    mut fn keyInt(name: str, v: int) { this.key(name); this.intValue(v); }
+    mut fn stringPart(v: str) {
+        this.escapedRun(v, 0, v.length, false);
+    }
+
+    mut fn closeString() {
+        this.buf.append(b"\"");
+    }
+
     mut fn keyString(name: str, v: str) { this.key(name); this.stringValue(v); }
+    mut fn keyInt(name: str, v: int) { this.key(name); this.intValue(v); }
+    mut fn keyBool(name: str, v: bool) { this.key(name); this.boolValue(v); }
     mut fn keyNull(name: str) { this.key(name); this.nullValue(); }
-    mut fn keyRaw(name: str, v: str) { this.key(name); this.rawValue(v); }
 
-    // -----------------------------------------------------------------------
-    // String escaping.
-    //
-    // Fast path: scan for the first byte that needs escaping. Most AST strings
-    // (identifiers, keywords, file paths) need none at all, so they are copied
-    // in a single append with no per-character work.
-    // -----------------------------------------------------------------------
-
-    mut fn writeEscaped(v: str) {
-        hzob_push_byte(this.buf, 34);
-
-        let n = v.length;
-        let chunkStart = 0;
-        for (let i = 0; i < n; i++) {
-            let c = v[i];
-            // Everything >= 0x20 except '"' and '\' passes through untouched.
-            if c >= 32 && c != 34 && c != 92 { continue; }
-
-            if i > chunkStart {
-                hzob_push_str(this.buf, v.slice(chunkStart, i));
-            }
-
-            if c == 34 { hzob_push_str(this.buf, "\\\""); }
-            else if c == 92 { hzob_push_str(this.buf, "\\\\"); }
-            else if c == 10 { hzob_push_str(this.buf, "\\n"); }
-            else if c == 9 { hzob_push_str(this.buf, "\\t"); }
-            else if c == 13 { hzob_push_str(this.buf, "\\r"); }
-            else if c == 8 { hzob_push_str(this.buf, "\\b"); }
-            else if c == 12 { hzob_push_str(this.buf, "\\f"); }
-            else {
-                // Other control characters -> \u00XX
-                hzob_push_str(this.buf, "\\u00");
-                hzob_push_str(this.buf, hexNibble((c as int) / 16));
-                hzob_push_str(this.buf, hexNibble((c as int) % 16));
-            }
-            chunkStart = i + 1;
-        }
-
-        if n > chunkStart {
-            hzob_push_str(this.buf, v.slice(chunkStart, n));
-        }
-        hzob_push_byte(this.buf, 34);
+    // `"<name>":"<value>"`, or `"<name>":null` for the empty string.
+    mut fn keyOptionalString(name: str, v: str) {
+        this.key(name);
+        if v.length == 0 { this.nullValue(); }
+        else { this.stringValue(v); }
     }
 
-    mut fn result(): str {
-        return hzob_slice(this.buf, 0, hzob_len(this.buf));
+    // --- Escaping -----------------------------------------------------------
+
+    // v[start, end) as the inside of a JSON string. Runs that need no
+    // escaping, which is nearly all of them, are copied in one push.
+    //
+    // With `collapseBraces`, `{{` and `}}` are one brace each: f-string text
+    // keeps them doubled in the token so it can stay a slice of the source.
+    mut fn escapedRun(v: str, start: int, end: int, collapseBraces: bool) {
+        let chunkStart = start;
+        let i = start;
+        while i < end {
+            let c = v[i];
+            if c >= 32 && c != 34 && c != 92 {
+                if collapseBraces && (c == b"{" || c == b"}") && i + 1 < end && v[i + 1] == c {
+                    this.buf.append(v.slice(chunkStart, i + 1));
+                    i += 2;
+                    chunkStart = i;
+                    continue;
+                }
+                i++;
+                continue;
+            }
+            if i > chunkStart { this.buf.append(v.slice(chunkStart, i)); }
+            this.escapeSpecial(c);
+            i++;
+            chunkStart = i;
+        }
+        if end > chunkStart { this.buf.append(v.slice(chunkStart, end)); }
+    }
+
+    // A byte that JSON does not allow inside a string as it is.
+    mut fn escapeSpecial(c: u8) {
+        if c == 34 { this.buf.append("\\\""); }
+        else if c == 92 { this.buf.append("\\\\"); }
+        else if c == 10 { this.buf.append("\\n"); }
+        else if c == 9 { this.buf.append("\\t"); }
+        else if c == 13 { this.buf.append("\\r"); }
+        else if c == 8 { this.buf.append("\\b"); }
+        else if c == 12 { this.buf.append("\\f"); }
+        else {
+            // Other control characters: \u00XX.
+            this.buf.append("\\u00");
+            this.buf.append(HEX_DIGITS[(c as int) / 16]);
+            this.buf.append(HEX_DIGITS[(c as int) % 16]);
+        }
+    }
+
+    // One decoded byte of a string literal, escaped. `\x` and octal escapes
+    // denote raw bytes (String.fromCharCode in the reference parser); a
+    // value past 255 (`\777`) is dropped, as the reference drops it.
+    mut fn escapedByte(v: int) {
+        if v >= 0 && v <= 255 {
+            let c = v as u8;
+            if c >= 32 && c != 34 && c != 92 {
+                this.buf.append(c);
+                return;
+            }
+            this.escapeSpecial(c);
+        }
+    }
+
+    // A code point from `\u` / `\U`, as UTF-8.
+    mut fn escapedCodepoint(cp: int) {
+        if cp < 0x80 {
+            this.escapedByte(cp);
+            return;
+        }
+        if cp < 0x800 {
+            this.escapedByte(0xC0 + cp / 64);
+            this.escapedByte(0x80 + cp % 64);
+            return;
+        }
+        if cp < 0x10000 {
+            this.escapedByte(0xE0 + cp / 4096);
+            this.escapedByte(0x80 + (cp / 64) % 64);
+            this.escapedByte(0x80 + cp % 64);
+            return;
+        }
+        this.escapedByte(0xF0 + cp / 262144);
+        this.escapedByte(0x80 + (cp / 4096) % 64);
+        this.escapedByte(0x80 + (cp / 64) % 64);
+        this.escapedByte(0x80 + cp % 64);
+    }
+
+    // A string literal's value, written straight from its source text: the
+    // delimiters are stripped, the text is trimmed and unescaped (strings.hz
+    // has the rules) and escaped again for JSON, all in one pass with no
+    // intermediate string.
+    mut fn literalString(raw: str, delimiters: int) {
+        if raw.length < delimiters * 2 {
+            this.buf.append("\"\"");
+            return;
+        }
+        this.unescapedString(raw.slice(delimiters, raw.length - delimiters), false);
+    }
+
+    // The value of a string body (delimiters already gone) as a JSON string.
+    //
+    // Unescaping then escaping is the same as escaping each decoded piece,
+    // because JSON escaping maps every byte on its own, so the decoded value
+    // never exists anywhere. With `collapseBraces` (f-string text) the `{{` /
+    // `}}` pairs are collapsed on the way, exactly as collapsing them first
+    // would: a pair is two braces, so it never touches the trimmed
+    // whitespace, a hex or octal digit, or a backslash.
+    mut fn unescapedString(raw: str, collapseBraces: bool) {
+        let s = trimStringBody(raw);
+        this.buf.append(b"\"");
+
+        let i = 0;
+        let chunkStart = 0;
+        while i < s.length {
+            if s[i] != b"\\" { i++; continue; }
+
+            if i > chunkStart { this.escapedRun(s, chunkStart, i, collapseBraces); }
+            i++;
+            // A lone backslash at the very end. The reference parser rejects
+            // it ("Invalid escape: trailing \"); this parser has always
+            // written the run before it a second time (the tail below starts
+            // at the old chunkStart). Kept as it was for now: an open bug.
+            if i >= s.length { break; }
+
+            let n = s[i];
+            if n == b"b" { this.escapedByte(8); i++; }
+            else if n == b"t" { this.escapedByte(9); i++; }
+            else if n == b"n" { this.escapedByte(10); i++; }
+            else if n == b"f" { this.escapedByte(12); i++; }
+            else if n == b"r" { this.escapedByte(13); i++; }
+            else if n == b"\\" { this.escapedByte(92); i++; }
+            else if n == b"\"" { this.escapedByte(34); i++; }
+            else if n == b"'" { this.escapedByte(39); i++; }
+            else if n == b"x" {
+                let v = hexRun(s, i + 1, 2);
+                if v >= 0 { this.escapedByte(v); i += 3; }
+                else { this.escapedByte(92); this.escapedByte(n as int); i++; }
+            }
+            else if n == b"u" {
+                let v = hexRun(s, i + 1, 4);
+                if v >= 0 { this.escapedCodepoint(v); i += 5; }
+                else { this.escapedByte(92); this.escapedByte(n as int); i++; }
+            }
+            else if n == b"U" {
+                let v = hexRun(s, i + 1, 8);
+                if v >= 0 { this.escapedCodepoint(v); i += 9; }
+                else { this.escapedByte(92); this.escapedByte(n as int); i++; }
+            }
+            else if isOctalDigit(n) {
+                // Up to three octal digits, matching \0 - \377.
+                let v = (n as int) - 48;
+                i++;
+                let taken = 1;
+                while taken < 3 && i < s.length && isOctalDigit(s[i]) {
+                    v = v * 8 + ((s[i] as int) - 48);
+                    i++;
+                    taken++;
+                }
+                this.escapedByte(v);
+            }
+            else {
+                // Unknown escape: the reference errors. We keep it verbatim so
+                // a single bad literal cannot abort the whole file.
+                this.escapedByte(92);
+                this.escapedByte(n as int);
+                i++;
+                // A brace pair after the backslash is one brace of the text.
+                if collapseBraces && (n == b"{" || n == b"}") && i < s.length && s[i] == n { i++; }
+            }
+            chunkStart = i;
+        }
+
+        if s.length > chunkStart { this.escapedRun(s, chunkStart, s.length, collapseBraces); }
+        this.buf.append(b"\"");
+    }
+
+    // --- Numbers ------------------------------------------------------------
+    //
+    // Literals are normalised the way the reference parser does it rather
+    // than passed through: 007 -> 7, 0x0f -> 15, 1.50 -> 1.5, 100.0 -> 100.
+
+    // Decimal digits as a JSON string, without leading zeros (one zero stays).
+    mut fn decimalString(dec: str) {
+        let first = 0;
+        while first < dec.length - 1 && dec[first] == b"0" { first++; }
+        this.buf.append(b"\"");
+        this.buf.append(dec.slice(first));
+        this.buf.append(b"\"");
+    }
+
+    // Hex digits (no 0x) as a decimal JSON string. Values may exceed 64 bits
+    // (0xFFFFFFFFFFFFFFFFFF is 72-bit): up to 15 significant digits fit an int,
+    // anything longer is multiplied out digit by digit in the output itself.
+    mut fn hexAsDecimalString(hex: str) {
+        let first = 0;
+        while first < hex.length && hex[first] == b"0" { first++; }
+        this.buf.append(b"\"");
+
+        if hex.length - first <= 15 {
+            let v = 0;
+            for (let i = first; i < hex.length; i++) {
+                v = v * 16 + hexDigitOrZero(hex[i]);
+            }
+            this.buf.appendFmt(v);
+            this.buf.append(b"\"");
+            return;
+        }
+
+        // Most significant digit first, starting from 0: for each hex digit,
+        // value = value * 16 + digit, carrying into new leading digits.
+        let at = this.buf.length();
+        this.buf.append(b"0");
+        for (let i = first; i < hex.length; i++) {
+            let carry = hexDigitOrZero(hex[i]);
+            for (let j = this.buf.length() - 1; j >= at; j--) {
+                let cur = ((this.buf.getAt(j) as int) - 48) * 16 + carry;
+                this.buf.setAt(j, DIGITS[cur % 10]);
+                carry = cur / 10;
+            }
+            while carry > 0 {
+                this.buf.insert(at, DIGITS[carry % 10]);
+                carry = carry / 10;
+            }
+        }
+        this.buf.append(b"\"");
+    }
+
+    // A float literal's digits as a JSON number, the way
+    // JSON.stringify(Number(x)) writes it for the literals Haze has: no
+    // leading zeros, no trailing zeros in the fraction, no empty fraction.
+    mut fn floatValue(raw: str) {
+        let intPart = raw;
+        let frac = "";
+        for (let i = 0; i < raw.length; i++) {
+            if raw[i] == b"." {
+                intPart = raw.slice(0, i);
+                frac = raw.slice(i + 1);
+                break;
+            }
+        }
+        let end = frac.length;
+        while end > 0 && frac[end - 1] == b"0" { end--; }
+
+        let first = 0;
+        while first < intPart.length - 1 && intPart[first] == b"0" { first++; }
+        this.buf.append(intPart.slice(first));
+        if end > 0 {
+            this.buf.append(b".");
+            this.buf.append(frac.slice(0, end));
+        }
     }
 }
 
-fn hexNibble(v: int): str {
-    if v == 0 { return "0"; }
-    if v == 1 { return "1"; }
-    if v == 2 { return "2"; }
-    if v == 3 { return "3"; }
-    if v == 4 { return "4"; }
-    if v == 5 { return "5"; }
-    if v == 6 { return "6"; }
-    if v == 7 { return "7"; }
-    if v == 8 { return "8"; }
-    if v == 9 { return "9"; }
-    if v == 10 { return "a"; }
-    if v == 11 { return "b"; }
-    if v == 12 { return "c"; }
-    if v == 13 { return "d"; }
-    if v == 14 { return "e"; }
-    return "f";
+// The value of a hex digit, and 0 for anything else (the lexer only lets hex
+// digits through).
+fn hexDigitOrZero(c: u8): int {
+    if c >= b"0" && c <= b"9" { return (c as int) - 48; }
+    if c >= b"a" && c <= b"f" { return (c as int) - 87; }
+    if c >= b"A" && c <= b"F" { return (c as int) - 55; }
+    return 0;
 }

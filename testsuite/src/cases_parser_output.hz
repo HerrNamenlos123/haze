@@ -1,0 +1,54 @@
+// ============================================================================
+// REGRESSION TESTS: what the native parser writes for the compiler to read.
+//
+// The parser writes each node where it finally sits in its output, and the
+// separators between list elements are written by the list, not by the
+// elements (compiler/haze-parser/src/json.hz). A `#source` block contributes
+// its declarations to the list it stands in, which can be none at all.
+// ============================================================================
+
+namespace cases_parser_output {
+
+    export fn register(s: mut testsuite.Suite) {
+
+        // An empty #source block in a namespace used to leave a stray comma
+        // in the namespace's declaration list ("declarations":[,{...}]), so
+        // the compiler could not read the file at all.
+        s.run(
+            "parser: an empty #source block inside a namespace",
+            """
+namespace a {
+    #source "elsewhere.hz:3:1" {
+    }
+    fn x(): int { return 7; }
+}
+
+fn main(): int {
+    fmt.println(f"{a.x()}");
+    return 0;
+}
+""",
+            "7");
+
+        // Several declarations from one #source block join the namespace's
+        // list between its other declarations.
+        s.run(
+            "parser: a #source block's declarations join the namespace around it",
+            """
+namespace b {
+    fn first(): int { return 1; }
+    #source "elsewhere.hz:10:1" {
+        fn second(): int { return 2; }
+        fn third(): int { return 3; }
+    }
+    fn fourth(): int { return 4; }
+}
+
+fn main(): int {
+    fmt.println(f"{b.first()} {b.second()} {b.third()} {b.fourth()}");
+    return 0;
+}
+""",
+            "1 2 3 4");
+    }
+}
