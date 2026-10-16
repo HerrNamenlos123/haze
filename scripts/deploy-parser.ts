@@ -20,6 +20,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   isParserUpToDate,
+  NATIVE_PARSER_BUILD_FLAGS,
   PARSER_PROJECT_DIR,
   stampNativeParser,
 } from "../src/Parser/NativeParser";
@@ -45,6 +46,7 @@ function build(parserMode: "native" | "antlr"): boolean {
       PARSER_PROJECT_DIR,
       "--parser",
       parserMode,
+      ...NATIVE_PARSER_BUILD_FLAGS,
     ],
     {
       cwd: REPO_ROOT,

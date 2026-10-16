@@ -39,7 +39,10 @@ import { homedir, tmpdir } from "node:os";
 import { basename, delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import chalk from "chalk";
-import { stampNativeParser } from "../src/Parser/NativeParser";
+import {
+  NATIVE_PARSER_BUILD_FLAGS,
+  stampNativeParser,
+} from "../src/Parser/NativeParser";
 import { version } from "../package.json";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -210,7 +213,14 @@ function buildNativeParser(): string {
     `haze-parser${EXE}`
   );
 
-  const args = ["run", "src/main.ts", "build", "--dir", "compiler/haze-parser"];
+  const args = [
+    "run",
+    "src/main.ts",
+    "build",
+    "--dir",
+    "compiler/haze-parser",
+    ...NATIVE_PARSER_BUILD_FLAGS,
+  ];
   const env = { NODE_ENV: "development" };
 
   let built = false;

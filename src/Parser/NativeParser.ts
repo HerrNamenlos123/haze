@@ -27,6 +27,13 @@ import { ensureAntlrParserCurrent } from "./AntlrGrammar";
 import { requestSync, warmupBridge } from "./SyncBridge";
 
 export const PARSER_PROJECT_DIR = path.join("compiler", "haze-parser");
+
+/**
+ * How every path that builds the parser builds it: optimized. It parses every
+ * file of every build, and at -O0 it was 2.2x slower for identical output.
+ * Part of the stamp (parserSourceHash), so changing these rebuilds it once.
+ */
+export const NATIVE_PARSER_BUILD_FLAGS = ["--release"];
 // The `.exe` suffix matters for more than spawning: isParserUpToDate() probes
 // this path with existsSync, which does no PATHEXT resolution, so an
 // extensionless path made the check fail forever on Windows and rebuilt the
@@ -206,6 +213,7 @@ function parserSourceHash(repoRoot: string): string {
   const srcDir = path.join(repoRoot, PARSER_PROJECT_DIR, "src");
   const hash = crypto.createHash("sha256");
 
+  hash.update(NATIVE_PARSER_BUILD_FLAGS.join(" "));
   const files = fs
     .readdirSync(srcDir)
     .filter((f) => f.endsWith(".hz"))
@@ -254,7 +262,14 @@ export function isParserUpToDate(repoRoot: string): boolean {
 export function nativeParserBuildArgs(
   hostIsCompiledCompiler: boolean
 ): string[] {
-  const command = ["build", "--dir", PARSER_PROJECT_DIR, "--parser", "antlr"];
+  const command = [
+    "build",
+    "--dir",
+    PARSER_PROJECT_DIR,
+    "--parser",
+    "antlr",
+    ...NATIVE_PARSER_BUILD_FLAGS,
+  ];
   return hostIsCompiledCompiler
     ? command
     : [path.join("src", "main.ts"), ...command];

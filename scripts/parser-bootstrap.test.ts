@@ -101,6 +101,7 @@ describe("§8.2 parser bootstrap", () => {
       PARSER_PROJECT_DIR,
       "--parser",
       "antlr",
+      "--release",
     ]);
   });
 
@@ -112,6 +113,7 @@ describe("§8.2 parser bootstrap", () => {
       PARSER_PROJECT_DIR,
       "--parser",
       "antlr",
+      "--release",
     ]);
   });
 
