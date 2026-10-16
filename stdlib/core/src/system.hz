@@ -190,12 +190,12 @@ namespace sys {
 }
 
 namespace fmt {
-    export fn format_to(writer: mut stackref StringWriter, value: sys.Stacktrace, args: FormatArgs) {
-        writer.write(value.stringify());
+    export fn format_to(writer: mut stackref ByteBuffer, value: sys.Stacktrace, args: FormatArgs) {
+        writer.push(value.stringify());
     }
 
-    export fn format_to(writer: mut stackref StringWriter, value: sys.PanicInfo, args: FormatArgs) {
-        writer.write(value.stringify());
+    export fn format_to(writer: mut stackref ByteBuffer, value: sys.PanicInfo, args: FormatArgs) {
+        writer.push(value.stringify());
     }
 }
 

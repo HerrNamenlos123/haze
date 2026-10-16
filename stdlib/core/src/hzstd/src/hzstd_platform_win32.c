@@ -749,8 +749,10 @@ int hzstd_spawn_process(hzstd_str_t exe,
                         hzstd_process_result_t* out)
 {
   out->exit_code = -1;
-  out->stdout_data = NULL;
-  out->stderr_data = NULL;
+  // Empty, not NULL: a spawn that fails leaves stdout untouched, and the
+  // Haze side reads both as C strings.
+  out->stdout_data = (char*)"";
+  out->stderr_data = (char*)"";
 
   hzstd_allocator_t allocator = hzstd_make_heap_allocator();
   char* exe_c = hzstd_cstr_from_str(allocator, exe);

@@ -917,11 +917,11 @@ namespace json {
 }
 
 namespace fmt {
-    export fn format_to(writer: mut stackref StringWriter, value: json.Node, args: FormatArgs) {
+    export fn format_to(writer: mut stackref ByteBuffer, value: json.Node, args: FormatArgs) {
         format_to(writer, value.print({ pretty: true }), args);
     }
 
-    export fn format_to(writer: mut stackref StringWriter, value: json.Error, args: FormatArgs) {
+    export fn format_to(writer: mut stackref ByteBuffer, value: json.Error, args: FormatArgs) {
         format_to(writer, f"json error: {value.error()}", args);
     }
 }

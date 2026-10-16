@@ -185,12 +185,10 @@ export namespace fs {
             return Bytes();
         }
         
-        let buffer = ByteBuffer();
-        buffer.resize(stat.size);
-        assert(buffer.data);
-        const ptr = none as cptr;
-        let data = buffer.data;
-        __c__("ptr = hzstd_dynamic_array_raw_buffer(data);");
+        // One allocation of exactly the file's size, read into directly; the
+        // commit below hands it out as Bytes without a copy.
+        let buffer = ByteBuffer(stat.size);
+        let ptr = buffer._appendUninitialized(stat.size);
         let result = ffi.hzstd_read_file_binary(allocator, path, ptr, buffer.length());
         if result.code == ffi.hzstd_fs_error_code_none {
             buffer.commit();
@@ -359,8 +357,8 @@ export namespace fs {
         // A ByteBuffer rather than a String: this file is compiled before
         // string.hz in the core module's own ordering, so String is not a
         // usable type here, while ByteBuffer (memory.hz) already is -- see
-        // readBinary above, which uses one.
-        pending: mut ByteBuffer;
+        // readBinary above, which uses one. Held inline: the writer owns it.
+        pending: ByteBuffer;
         pendingBytes: int = 0;
 
         // Opaque, so literals are only legal in here -- openWrite() below

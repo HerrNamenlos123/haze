@@ -99,7 +99,7 @@ fn main(): int {
     let bag: mut ref Bag = Bag {};
     bag.push(1);
     bag.push(2);
-    let buf: mut ref ByteBuffer = ByteBuffer();
+    let buf = ByteBuffer();
     buf.push("ab");
     buf.push("cd");
     let buflen = buf.length();

@@ -234,7 +234,7 @@ export type Vec4i = _Vec4<int>;
 export type Vec4f = _Vec4<f32>;
 
 namespace fmt {
-    export fn format_to(writer: mut stackref StringWriter, value: Vec2, args: FormatArgs) {
+    export fn format_to(writer: mut stackref ByteBuffer, value: Vec2, args: FormatArgs) {
         format_to(writer, "(", args);
         format_to(writer, value.x, args);
         format_to(writer, ", ", args);
@@ -242,7 +242,7 @@ namespace fmt {
         format_to(writer, ")", args);
     }
 
-    export fn format_to(writer: mut stackref StringWriter, value: Vec2f, args: FormatArgs) {
+    export fn format_to(writer: mut stackref ByteBuffer, value: Vec2f, args: FormatArgs) {
         format_to(writer, "(", args);
         format_to(writer, value.x, args);
         format_to(writer, ", ", args);
@@ -250,7 +250,7 @@ namespace fmt {
         format_to(writer, ")", args);
     }
 
-    export fn format_to(writer: mut stackref StringWriter, value: Vec2i, args: FormatArgs) {
+    export fn format_to(writer: mut stackref ByteBuffer, value: Vec2i, args: FormatArgs) {
         format_to(writer, "(", args);
         format_to(writer, value.x, args);
         format_to(writer, ", ", args);
@@ -258,7 +258,7 @@ namespace fmt {
         format_to(writer, ")", args);
     }
 
-    export fn format_to(writer: mut stackref StringWriter, value: rx.Deep<Vec2i>, args: FormatArgs) {
+    export fn format_to(writer: mut stackref ByteBuffer, value: rx.Deep<Vec2i>, args: FormatArgs) {
         format_to(writer, "(", args);
         format_to_proxy(writer, value.x, args);
         format_to(writer, ", ", args);

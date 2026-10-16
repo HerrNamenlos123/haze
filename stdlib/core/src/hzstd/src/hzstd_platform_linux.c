@@ -948,6 +948,9 @@ bool hzstd_get_cwd(char *buf, size_t buf_size)
 
 // ── Process spawn ─────────────────────────────────────────────────────────────
 
+// Every str is copied by its length: a str is pointer + length and is not
+// NUL-terminated (a slice ends inside other bytes, a committed ByteBuffer's view
+// is followed by whatever its storage held), so strdup() would read past it.
 static inline char **process_str_array_to_cstrv_with_exe_malloc(hzstd_str_t exe, hzstd_dynamic_array_t *arr)
 {
   size_t count = hzstd_dynamic_array_size(arr);
@@ -956,13 +959,13 @@ static inline char **process_str_array_to_cstrv_with_exe_malloc(hzstd_str_t exe,
   if (!out) {
     return NULL;
   }
-  out[0] = strdup(exe.data);
+  out[0] = (char *)hzstd_raw_malloc_null_terminated_str(exe);
   if (!out[0]) {
     free(out);
     return NULL;
   }
   for (size_t i = 0; i < count; ++i) {
-    out[i + 1] = strdup(elems[i].data);
+    out[i + 1] = (char *)hzstd_raw_malloc_null_terminated_str(elems[i]);
     if (!out[i + 1]) {
       for (size_t j = 0; j <= i; ++j) {
         free(out[j]);
@@ -1051,8 +1054,10 @@ int hzstd_spawn_process(hzstd_str_t exe,
                         hzstd_process_result_t *out)
 {
   out->exit_code = -1;
-  out->stdout_data = NULL;
-  out->stderr_data = NULL;
+  // Empty, not NULL: a spawn that fails leaves stdout untouched, and the
+  // Haze side reads both as C strings.
+  out->stdout_data = (char *)"";
+  out->stderr_data = (char *)"";
 
   posix_spawn_file_actions_t actions;
   posix_spawnattr_t attrs;
@@ -1097,12 +1102,12 @@ int hzstd_spawn_process(hzstd_str_t exe,
       return ENOMEM;
     }
     for (size_t i = 0; i < envc; ++i) {
-      envp_c[i] = strdup(env_elems[i].data);
+      envp_c[i] = (char *)hzstd_raw_malloc_null_terminated_str(env_elems[i]);
     }
     envp_c[envc] = NULL;
   }
 
-  char *cwd_c = cwd.length > 0 ? strdup(cwd.data) : NULL;
+  char *cwd_c = cwd.length > 0 ? (char *)hzstd_raw_malloc_null_terminated_str(cwd) : NULL;
 #ifdef __linux__
   if (cwd_c) {
     posix_spawn_file_actions_addchdir_np(&actions, cwd_c);
@@ -1304,13 +1309,13 @@ hzstd_process_spawn(hzstd_str_t exe, hzstd_dynamic_array_t *argv, hzstd_dynamic_
     envp_c = malloc(sizeof(char *) * (envc + 1));
     if (envp_c) {
       for (size_t i = 0; i < envc; ++i) {
-        envp_c[i] = strdup(env_elems[i].data);
+        envp_c[i] = (char *)hzstd_raw_malloc_null_terminated_str(env_elems[i]);
       }
       envp_c[envc] = NULL;
     }
   }
 
-  char *cwd_c = cwd.length > 0 ? strdup(cwd.data) : NULL;
+  char *cwd_c = cwd.length > 0 ? (char *)hzstd_raw_malloc_null_terminated_str(cwd) : NULL;
 #ifdef __linux__
   if (cwd_c) {
     posix_spawn_file_actions_addchdir_np(&actions, cwd_c);

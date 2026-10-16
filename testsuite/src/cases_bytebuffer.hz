@@ -1,0 +1,488 @@
+// ============================================================================
+// REGRESSION TESTS: ByteBuffer, the standard way to build binary data.
+//
+// The model (stdlib/core/src/memory.hz has the full comment):
+//
+//   * Two phases. While building, the buffer grows and is edited, and no view
+//     of it can exist. `commit()` ends that for good; from then on `bytes()`
+//     and `string()` are views into the buffer's own storage, with no copy.
+//     Crossing the line in either direction panics.
+//   * Behaviour never depends on the representation: a buffer that still
+//     borrows the `str` it was built from behaves exactly like one that
+//     copied it (`string()` before `commit()` panics either way).
+//   * It is a `nocopy` value: the buffer itself costs no allocation, and no
+//     second binding of it (a second writer) can exist.
+//   * Storage is growable (reallocated geometrically) or fixed (allocated
+//     once, from any allocator, never moved; overflowing it panics). A
+//     measuring buffer stores nothing and only counts, so the same code can
+//     run twice: measure, then write into an exactly sized buffer.
+//   * `reserve(total)` grows geometrically, `reserveExact(total)` exactly.
+//
+// The allocation counts are part of the contract, so they are asserted:
+// borrowing and committing allocate nothing, an exactly sized buffer
+// allocates once, growth reallocates at most log2(n) times.
+// ============================================================================
+
+namespace cases_bytebuffer {
+
+    export fn register(s: mut testsuite.Suite) {
+
+        s.run(
+            "bytebuffer: building, editing, committing, viewing, sizing and measuring",
+            """
+ref struct Log { pending: ByteBuffer; }
+
+fn writeGreeting(out: mut stackref ByteBuffer, name: str) {
+    out.push("hi ");
+    out.push(name);
+    out.push(10 as u8);
+}
+
+fn main(): int {
+    // 1. Every kind of push; reading in place.
+    let stackref b = ByteBuffer();
+    b.push("hello");
+    b.push(Bytes(" "));
+    b.push(119 as u8);
+    b.push(Bytes("orld"));
+    fmt.println(f"1: {b.length()} {b.cloneString()} {b[0].get()} {b.getAt(4)}");
+
+    // 2. Editing.
+    b.insert(0, ">> ");
+    b.insert(b.length(), 33 as u8);
+    b.remove(3, 6);
+    b.setAt(0, 60 as u8);
+    b[2] := 95 as u8;
+    fmt.println(f"2: {b.cloneString()}");
+    b.truncate(4);
+    b.resize(6);
+    fmt.println(f"2b: {b.length()} {b[5].get()} {b.cloneString().length}");
+    b.clear();
+    fmt.println(f"2c: {b.length()}");
+
+    // 3. Views after commit are the buffer's own memory, every time.
+    let c = ByteBuffer();
+    c.push("abc");
+    c.commit();
+    let s1 = c.string();
+    let s2 = c.string();
+    fmt.println(f"3: {s1} {s2} {c.bytes().refersToSameMemory(c.bytes())} {c.isCommitted()} {c.length()}");
+
+    // 4. Copy-on-write: the source never changes, and a buffer committed
+    //    without edits is the source itself.
+    let src = "source text";
+    let d = ByteBuffer(src);
+    d.setAt(0, 83 as u8);
+    d.commit();
+    let e = ByteBuffer(src);
+    e.commit();
+    fmt.println(f"4: {src} {d.string()} {e.bytes().refersToSameMemory(Bytes(src))}");
+
+    // 5. Capacity: the constructor is exact, reserve is geometric (and a
+    //    no-op when there is room), reserveExact is exact.
+    let g = ByteBuffer(10);
+    let g0 = g.capacity();
+    g.reserve(11);
+    let g1 = g.capacity();
+    g.reserve(15);
+    let g2 = g.capacity();
+    g.reserveExact(25);
+    let g3 = g.capacity();
+    g.reserve(26);
+    fmt.println(f"5: {g0} {g1} {g2} {g3} {g.capacity()}");
+
+    // 6. Measure, then write exactly that much.
+    let stackref m = ByteBuffer.measuring();
+    writeGreeting(m, "bob");
+    let stackref x = ByteBuffer(m.length());
+    writeGreeting(x, "bob");
+    x.commit();
+    fmt.println(f"6: {m.length()} {x.capacity()} {x.length()} {x.string().length}");
+
+    // 7. Fixed storage from an arena.
+    let stackref f = ByteBuffer.fixed(8, Alloc.arena());
+    f.push("1234");
+    f.push(Bytes("5678"));
+    f.commit();
+    fmt.println(f"7: {f.string()} {f.capacity()}");
+
+    // 8. Clones are independent of later edits, in any phase.
+    let h = ByteBuffer();
+    h.push("one");
+    let snapshot = h.cloneString();
+    h.setAt(0, 79 as u8);
+    h.push("two");
+    fmt.println(f"8: {snapshot} {h.cloneString()} {h.cloneBytes().length}");
+
+    // 9. A buffer held by a ref struct, replaced after commit: views of the
+    //    old one stay valid.
+    let log: mut ref Log = { pending: ByteBuffer() };
+    log.pending.push("first");
+    log.pending.commit();
+    let old = log.pending.string();
+    log.pending = ByteBuffer();
+    log.pending.push("second");
+    fmt.println(f"9: {old} {log.pending.cloneString()}");
+
+    // 10. A single-byte Bytes has no memory to borrow.
+    let one = ByteBuffer(Bytes(65 as u8));
+    one.commit();
+    fmt.println(f"10: {one.string()}");
+    return 0;
+}
+""",
+            """
+1: 11 hello world 104 111
+2: <>_world!
+2b: 6 0 6
+2c: 0
+3: abc abc true true 3
+4: source text Source text true
+5: 10 20 20 25 50
+6: 7 7 7 7
+7: 12345678 8
+8: one Onetwo 6
+9: first second
+10: A
+""");
+
+        // ── String: a shareable, editable text, built on one ByteBuffer ──────
+        s.run(
+            "bytebuffer: String is a ref wrapper with the same phases",
+            """
+fn shout(s: mut String) { s.append("!"); }
+fn main(): int {
+    let s = String("hello");
+    s.append(" world");
+    shout(s);
+    s.insert(0, ">");
+    s.remove(1, 1);
+    s.setAt(0, 72 as u8);
+    let shared = s;
+    shared.append("?");
+    let other = String("abc");
+    other.append(s);
+    fmt.println(f"{s.cloneString()} {s.length()} {s.getAt(1)} {s.startsWith("Hello")} {s.endsWith("!?")} {s.contains("o w")} {s.cloneSlice(1, 5)}");
+    fmt.println(f"{s} {other.cloneString()}");
+    s.commit();
+    fmt.println(s.string());
+    let empty = String();
+    empty.reserve(100);
+    fmt.println(f"{empty.length()}");
+    let twice = String("abcde");
+    twice.append("f");
+    twice.append(twice);
+    fmt.println(twice.cloneString());
+    return 0;
+}
+""",
+            """
+Hello world!? 13 101 true true true ello
+Hello world!? abcHello world!?
+Hello world!?
+0
+abcdefabcdef
+""");
+
+        // ── A str is pointer + length, never NUL-terminated ──────────────────
+        //
+        // A committed ByteBuffer's view is followed by whatever its storage
+        // held before, and a slice ends in the middle of other bytes. Code
+        // handing a str to C must copy it by length: the process spawner
+        // read argv, the program, the working directory and the environment
+        // up to the next NUL, which only worked while every formatted string
+        // happened to sit in zero-filled memory.
+        s.run(
+            "bytebuffer: a str handed to a child process is read by its length, not to a NUL",
+            """
+fn main(): int {
+    let b = ByteBuffer(64);
+    b.push("abc");
+    b.push("def");
+    b.truncate(3);
+    b.commit();
+    let arg = b.string();
+
+    let exe = "echoXYZ".slice(0, 4);
+    let r1 = process.runCaptured(exe, [arg, "one two".slice(0, 3)]);
+    let r2 = process.runCaptured("pwd", [], { cwd: "/tmpXYZ".slice(0, 4) });
+    let r3 = process.runCaptured("sh", ["-c", "echo $HZTEST"], { env: ["HZTEST=okXYZ".slice(0, 9)] });
+    fmt.println(f"{r1.exitCode} [{r1.stdoutResult.trim()}]");
+    fmt.println(f"{r2.exitCode} [{r2.stdoutResult.trim()}]");
+    fmt.println(f"{r3.exitCode} [{r3.stdoutResult.trim()}]");
+    return 0;
+}
+""",
+            """
+0 [abc one]
+0 [/tmp]
+0 [ok]
+""");
+
+        s.run(
+            "bytebuffer: copying a file through sliced paths reads them by length",
+            """
+fn main(): int {
+    let dir = "/tmp/haze-testsuite-str-copy";
+    let made = fs.createDirectory(dir);
+    let wrote = fs.writeText(f"{dir}/src.txt", "copied");
+    let src = f"{dir}/src.txtXYZ".slice(0, dir.length + 8);
+    let dst = f"{dir}/dst.txtXYZ".slice(0, dir.length + 8);
+    let a = fs.copyFile(src, dst, { overwrite: true });
+    let b = fs.copy(src, f"{dir}/dst2.txtXYZ".slice(0, dir.length + 9), { overwrite: true });
+    let back = "";
+    if let text = fs.readText(f"{dir}/dst.txt") { back = text; }
+    let back2 = "";
+    if let text = fs.readText(f"{dir}/dst2.txt") { back2 = text; }
+    fmt.println(f"{back} {back2}");
+    return 0;
+}
+""",
+            "copied copied");
+
+        // Not about strings, but found with them: a program that cannot be
+        // started left stdout as a NULL C string, and reading it crashed.
+        s.run(
+            "bytebuffer: a program that cannot be started reports a failure instead of crashing",
+            """
+fn main(): int {
+    let r = process.runCaptured("haze-testsuite-no-such-program", []);
+    fmt.println(f"{r.exitCode != 0} [{r.stdoutResult}]");
+    return 0;
+}
+""",
+            "true []");
+
+        // ── Allocation counts ────────────────────────────────────────────────
+        //
+        // Each window is measured with the memory profiler; the Profiler
+        // object itself is the one allocation every window contains.
+        s.runExitCode(
+            "bytebuffer: allocation counts are part of the contract",
+            """
+fn profiler(): Profiler {
+    return Profiler({ samplingRate: 0, memoryInstrumentation: true, memoryInstrumentationStacktraces: false });
+}
+fn main(): int {
+    let src = "borrowed source";
+
+    // Borrow, commit, view: nothing.
+    let p1 = profiler();
+    let a = ByteBuffer(src);
+    a.commit();
+    let av = a.string();
+    let r1 = p1.stop();
+
+    // Exact size: one allocation; pushing within it, committing and viewing
+    // add none.
+    let p2 = profiler();
+    let b = ByteBuffer(16);
+    b.push("0123456789");
+    b.push(Bytes("abcdef"));
+    b.commit();
+    let bs = b.string();
+    let bb = b.bytes();
+    let r2 = p2.stop();
+
+    // Measure (nothing), then write exactly (one).
+    let p3 = profiler();
+    let stackref m = ByteBuffer.measuring();
+    m.push("measured ");
+    m.push(src);
+    let stackref x = ByteBuffer(m.length());
+    x.push("measured ");
+    x.push(src);
+    x.commit();
+    let xs = x.string();
+    let r3 = p3.stop();
+
+    // Growth from empty: 1000 single bytes is one allocation plus at most
+    // log2(1000) reallocations.
+    let p4 = profiler();
+    let g = ByteBuffer();
+    for (let i = 0; i < 1000; i++) { g.push(97 as u8); }
+    g.commit();
+    let r4 = p4.stop();
+
+    // Formatting allocates exactly the resulting string.
+    let n = 42;
+    let p5 = profiler();
+    let formatted = fmt.format("n=", n, " src=", src);
+    let r5 = p5.stop();
+
+    // A String is its object plus its storage once edited.
+    let p6 = profiler();
+    let s = String("abc");
+    s.append("def");
+    let r6 = p6.stop();
+
+    assert(av == src, "borrowed view");
+    assert(bs == "0123456789abcdef" && bb.length == 16, "exact view");
+    assert(xs == "measured borrowed source", "measured view");
+    assert(g.length() == 1000, "growth length");
+    assert(formatted == "n=42 src=borrowed source", "formatted");
+    assert(s.cloneString() == "abcdef", "string");
+
+    let c1 = r1.memoryInstrumentationFrames.length - 1;
+    let c2 = r2.memoryInstrumentationFrames.length - 1;
+    let c3 = r3.memoryInstrumentationFrames.length - 1;
+    let c4 = r4.memoryInstrumentationFrames.length - 1;
+    let c5 = r5.memoryInstrumentationFrames.length - 1;
+    let c6 = r6.memoryInstrumentationFrames.length - 1;
+    assert(c1 == 0, f"borrow+commit+view allocated {c1}");
+    assert(c2 == 1, f"exact buffer allocated {c2}");
+    assert(c3 == 1, f"measure+exact allocated {c3}");
+    assert(c4 >= 1 && c4 <= 11, f"growth to 1000 bytes allocated {c4}");
+    assert(c5 == 1, f"fmt.format allocated {c5}");
+    assert(c6 == 2, f"String + edit allocated {c6}");
+    return 0;
+}
+""",
+            0);
+
+        // ── The phases are enforced at runtime ───────────────────────────────
+        s.runExitCode(
+            "bytebuffer: pushing after commit panics",
+            """
+fn main(): int {
+    let b = ByteBuffer();
+    b.push("a");
+    b.commit();
+    b.push("b");
+    return 0;
+}
+""",
+            255);
+
+        s.runExitCode(
+            "bytebuffer: a string view before commit panics",
+            """
+fn main(): int {
+    let b = ByteBuffer();
+    b.push("a");
+    fmt.println(b.string());
+    return 0;
+}
+""",
+            255);
+
+        s.runExitCode(
+            "bytebuffer: a bytes view before commit panics, even while still borrowing an immutable str",
+            """
+fn main(): int {
+    let b = ByteBuffer("immutable anyway");
+    fmt.println(f"{b.bytes().length}");
+    return 0;
+}
+""",
+            255);
+
+        s.runExitCode(
+            "bytebuffer: a measuring buffer has no contents to read",
+            """
+fn main(): int {
+    let stackref m = ByteBuffer.measuring();
+    m.push("abc");
+    fmt.println(f"{m.getAt(0)}");
+    return 0;
+}
+""",
+            255);
+
+        s.runExitCode(
+            "bytebuffer: a measuring buffer cannot be committed",
+            """
+fn main(): int {
+    let stackref m = ByteBuffer.measuring();
+    m.push("abc");
+    m.commit();
+    return 0;
+}
+""",
+            255);
+
+        s.runExitCode(
+            "bytebuffer: writing past a fixed capacity panics",
+            """
+fn main(): int {
+    let stackref f = ByteBuffer.fixed(4, Alloc.heap());
+    f.push("12345");
+    return 0;
+}
+""",
+            255);
+
+        s.runExitCode(
+            "bytebuffer: reading out of bounds panics",
+            """
+fn main(): int {
+    let b = ByteBuffer("abc");
+    fmt.println(f"{b.getAt(3)}");
+    return 0;
+}
+""",
+            255);
+
+        s.runExitCode(
+            "bytebuffer: inserting out of bounds panics",
+            """
+fn main(): int {
+    let b = ByteBuffer("abc");
+    b.insert(4, "x");
+    return 0;
+}
+""",
+            255);
+
+        s.runExitCode(
+            "bytebuffer: a String view before commit panics",
+            """
+fn main(): int {
+    let s = String("abc");
+    fmt.println(s.string());
+    return 0;
+}
+""",
+            255);
+
+        // ── nocopy: no second writer can exist (§9) ──────────────────────────
+        s.compileFails(
+            "bytebuffer: a buffer cannot be copied",
+            """
+fn main(): int {
+    let a = ByteBuffer();
+    let b = a;
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.NocopySecondBinding)]);
+
+        // `buffer[i]` is a value holding a checked reference to the buffer,
+        // so the buffer has to be one that can be referenced.
+        s.compileFails(
+            "bytebuffer: indexing needs a buffer that can be referenced",
+            """
+fn main(): int {
+    let b = ByteBuffer("abc");
+    b[0] := 65 as u8;
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.ReceiverStorageTooWeak)]);
+
+        s.compileFails(
+            "bytebuffer: a built buffer cannot be returned, only its views",
+            """
+fn build(): ByteBuffer {
+    let b = ByteBuffer();
+    b.push("x");
+    return b;
+}
+fn main(): int {
+    let b = build();
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.NocopySecondBinding)]);
+    }
+}

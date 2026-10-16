@@ -11,144 +11,87 @@ namespace ffi {
 export extern C fn hzstd_str_from_cstr_ref(data: cstr): str :: final;
 export extern C fn hzstd_str_from_ccstr_ref(data: ccstr): str :: final;
 
-// This is a dynamic String object. In Haze, 'str' is a string slice, which consists of pointer + length.
-// It has the invariant that whatever it points to, MUST NEVER EVER CHANGE, neither in length, nor location or content.
-// But this makes dynamic string handling hard and we need constant reallocation even when changing a single character.
-// However, this does not mean every string has to be this way. This is actually a low-level invariant that must
-// hold true to make the runtime possible, to make GC possible, to make string slices possible, and to make
-// the entire language 100% memory safe. It is not an abstract requirement that this must hold true for all types of
-// strings. It must only hold true for 'str' because of low-level memory constraints.
-// This means: we can and must build another string container, which also represents the concept of an array of
-// characters, but if it doesn't have the same low-level constraints as 'str', it also doesn't have to be immutable.
-// This means: We can absolutely make a dynamic string class, without requiring ByteBuffer's commit logic.
-// It just means, since the string may always change, we can never turn 'String' into 'str' unless we also
-// inherit ByteBuffer's commit logic. We must pass the String around everywhere.
-// But if every function can take either 'String' or 'str', then both of these string representations can work.
+// String: an editable text that is shared by reference.
+//
+// A `str` is an immutable slice, so a text that keeps changing (a document
+// line being typed into) needs a container of its own. String is that
+// container: a `ref` object around one ByteBuffer (memory.hz). Being a `ref`
+// it can be stored, passed and shared freely, and every holder sees the same
+// edits; the ByteBuffer inside does the work.
+//
+// It follows the ByteBuffer's phases: it is edited until commit(), and only
+// then is string() a view without a copy (before that it panics). Reading the
+// current text at any time is cloneString(), a copy, or no copy at all where
+// the text cannot change any more. Built from a `str`, a String borrows it
+// until the first edit, so wrapping a literal costs the object alone.
 export opaque ref struct String {
-    // SO: This is the main string container in Haze. 'str' is the lowest-level string primitive which is a slice.
-    // String is a dynamic container. However, since we can never automatically turn String into str, we don't want
-    // to always have to define every function twice. And a str function can never take String, unless we commit it.
-    // But we can turn it around: We can actually add an optimization, we can make sure a String can optionally
-    // be initialized with a 'str', where it does not actually use a dynamic buffer and instead keeps the 'str' for
-    // as long as it can, and only when something is changed, allocates a dynamic buffer. If nothing is changed, a
-    // String constructed from 'str' will actually remain just a 'str' wrapper with no allocation.
-    // Therefore, all high level functions should actually take a String rather than a 'str', because that means
-    // both types of strings can be accepted.
-
-    _data: mut ByteBuffer | str;
-    _reserve: int = 0;
-
-    // We do not actually use the byte buffer as a frozen string. We track commitment ourselves
-    // and when we do commit the buffer, we use the buffer's capabilities to get access to the string slice,
-    // but then replace the buffer here with the slice it produced. We do not want to distinguish between
-    // a slice we received and a buffer that later turned into a slice.
-
-    // We track the committed state separately. In theory we could commit a string, replace the buffer with its
-    // slice, and then mutate it and clone the slice back into a buffer, but this would be weird and unintuitive.
-    // Therefore to make it more intuitive, we say once a string is committed, you actually cannot change it.
-
-    _committed: bool = false;
+    _buffer: ByteBuffer;
 
     fn constructor() {
-        return String {
-            _data: "",
-        };
+        return String { _buffer: ByteBuffer() };
     }
 
     fn constructor(literal: str) {
-        return String {
-            _data: literal,
-        };
+        return String { _buffer: ByteBuffer(literal) };
     }
 
-    fn constructor(buffer: mut ByteBuffer) {
-        return String {
-            _data: buffer,
-        };
-    }
-    
-    fn reserve(reserve: int) {
-        this._reserve = reserve;
-        if this._data is mut ByteBuffer {
-            this._data.reserve(this._reserve);
-        }
+    // Room for `capacity` bytes in all; growth stays geometric.
+    fn reserve(capacity: int) {
+        this._buffer.reserve(capacity);
     }
 
-    fn length() {
-        if this._data is mut ByteBuffer {
-            return this._data.length();
-        }
-        else {
-            return this._data.length;
-        }
+    fn length(): int {
+        return this._buffer.length();
     }
 
+    // The current text, in either phase: later edits do not change it.
     fn cloneString(): str {
-        if this._data is mut ByteBuffer {
-            return this._data.cloneString();
-        }
-        else {
-            return this._data;
-        }
+        return this._buffer.cloneString();
     }
 
+    // The committed text, without a copy. Panics before commit().
     fn string(): str {
-        if this._data is mut ByteBuffer {
-            sys.panic("String.string() was called but the String is still mutable. We must not create a string slice from a mutable buffer. To get a slice from this String, either use String.cloneString() or call String.commit() before, to make the String permanently immutable.");
-        }
-        else {
-            return this._data;
-        }
+        return this._buffer.string();
     }
 
+    // Ends editing for good; afterwards string() is a view.
     fn commit() {
-        if this._data is mut ByteBuffer {
-            this._data.commit();
-            this._committed = true;
-            this._data = this._data.string();
-        }
+        this._buffer.commit();
     }
 
     ref mut fn append(string: String) {
-        let buffer = this._getBuffer();
-        buffer.push(string.bytes());
+        // A copy unless the other text can no longer change: appending a
+        // String to itself must read it before it grows.
+        this._buffer.push(string._buffer.cloneBytes());
         return this;
     }
 
     ref mut fn append(string: str) {
-        let buffer = this._getBuffer();
-        buffer.push(string);
+        this._buffer.push(string);
         return this;
     }
 
     ref mut fn setAt(index: int, value: u8) {
-        let buffer = this._getBuffer();
-        buffer.writeAt(index, Bytes(value));
+        this._buffer.setAt(index, value);
         return this;
     }
 
     fn getAt(index: int): u8 {
-        if this._data is mut ByteBuffer {
-            return this._data.getAt(index);
-        }
-        else {
-            return this._data[index];
-        }
+        return this._buffer.getAt(index);
     }
 
     ref mut fn insert(index: int, value: str) {
-        let buffer = this._getBuffer();
-        buffer.insert(index, value);
+        this._buffer.insert(index, value);
         return this;
     }
 
     ref mut fn remove(index: int, count: int) {
-        let buffer = this._getBuffer();
-        buffer.remove(index, count);
+        this._buffer.remove(index, count);
         return this;
     }
 
-    ref mut fn operator[](index: int) {
+    // `text[i] := v` writes a byte, `text[i].get()` reads one.
+    ref mut fn operator[](index: int): StringByteRef {
         return StringByteRef {
             string: this,
             index: index,
@@ -159,68 +102,52 @@ export opaque ref struct String {
         if prefix.length > this.length() {
             return false;
         }
-
-        let bytes = this.bytes();
-
         for (let i = 0; i < prefix.length; i++) {
-            if bytes.getAt(i) != prefix[i] {
+            if this._buffer.getAt(i) != prefix[i] {
                 return false;
             }
         }
-
         return true;
     }
 
     fn endsWith(suffix: str): bool {
         let len = this.length();
-
         if suffix.length > len {
             return false;
         }
-
         let offset = len - suffix.length;
-        let bytes = this.bytes();
-
         for (let i = 0; i < suffix.length; i++) {
-            if bytes.getAt(offset + i) != suffix[i] {
+            if this._buffer.getAt(offset + i) != suffix[i] {
                 return false;
             }
         }
-
         return true;
     }
 
     fn contains(needle: str): bool {
         let len = this.length();
-
         if needle.length == 0 {
             return true;
         }
-
         if needle.length > len {
             return false;
         }
-
-        let bytes = this.bytes();
-
         for (let start = 0; start <= len - needle.length; start++) {
             let matches = true;
-
             for (let j = 0; j < needle.length; j++) {
-                if bytes.getAt(start + j) != needle[j] {
+                if this._buffer.getAt(start + j) != needle[j] {
                     matches = false;
                     break;
                 }
             }
-
             if matches {
                 return true;
             }
         }
-
         return false;
     }
 
+    // A copy of bytes [start, end); negative positions count from the end.
     fn cloneSlice(start: int, end?: int): str {
         if !end {
             end = this.length();
@@ -245,43 +172,18 @@ export opaque ref struct String {
             e = s;
         }
 
-        let bytes = this.bytes();
         let result = ByteBuffer(e - s);
-
         for (let i = s; i < e; i++) {
-            result.push(Bytes(bytes.getAt(i)));
+            result.push(this._buffer.getAt(i));
         }
-
         result.commit();
         return result.string();
     }
-
-    // Here we cannot actually return Bytes, because there is no immutable buffer we can point to. Instead we have to
-    // return a ByteBuffer
-    fn bytes(): ByteBuffer {
-        if this._data is mut ByteBuffer {
-            return this._data;
-        }
-        else {
-            return ByteBuffer(this._data);
-        }
-    }
-
-    mut fn _getBuffer(): mut ByteBuffer {
-        assert(!this._committed, "Tried to mutate a String which was already committed and made immutable");
-        if this._data is mut ByteBuffer {
-            return this._data;
-        }
-        else {
-            let buffer = ByteBuffer(this._data);
-            buffer.reserve(this._reserve);
-            this._data = buffer;
-            return buffer;
-        }
-    }
 }
 
-export ref struct StringByteRef {
+// One byte of a String, from `text[index]`. A value holding the String's
+// reference: it allocates nothing.
+export struct StringByteRef {
     string: mut String;
     index: int;
 
@@ -295,7 +197,7 @@ export ref struct StringByteRef {
 }
 
 namespace fmt {
-    export fn format_to(writer: mut stackref StringWriter, value: String, args: FormatArgs) {
+    export fn format_to(writer: mut stackref ByteBuffer, value: String, args: FormatArgs) {
         // Read a COPY rather than committing. Committing would freeze the
         // String's buffer permanently, so merely interpolating a String
         // (f"{line}") would make every later edit to it panic with

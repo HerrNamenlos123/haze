@@ -162,8 +162,8 @@ export namespace parse {
 }
 
 namespace fmt {
-    export fn format_to(writer: mut stackref StringWriter, value: parse.Error, args: FormatArgs) {
-        writer.write(parse.message(value));
+    export fn format_to(writer: mut stackref ByteBuffer, value: parse.Error, args: FormatArgs) {
+        writer.push(parse.message(value));
     }
 }
 

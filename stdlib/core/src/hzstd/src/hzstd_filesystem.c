@@ -894,20 +894,25 @@ hzstd_fs_copy_dir_internal(const char* src, const char* dst, const hzstd_fs_copy
 }
 
 // --- Public API ---
+// The internals take C strings. A str is pointer + length and not
+// NUL-terminated (a slice ends inside other bytes), so every path is copied by
+// its length first; handing over the raw pointer read past the end of the path.
 hzstd_fs_error_t hzstd_fs_copy_file(hzstd_str_t src, hzstd_str_t dst, const hzstd_fs_copy_options_t* opts)
 {
-  return hzstd_fs_copy_file_internal(src.data, dst.data, opts);
+  return hzstd_fs_copy_file_internal(HZSTD_CSTR(src), HZSTD_CSTR(dst), opts);
 }
 
 hzstd_fs_error_t hzstd_fs_copy_dir(hzstd_str_t src, hzstd_str_t dst, const hzstd_fs_copy_options_t* opts)
 {
-  return hzstd_fs_copy_dir_internal(src.data, dst.data, opts);
+  return hzstd_fs_copy_dir_internal(HZSTD_CSTR(src), HZSTD_CSTR(dst), opts);
 }
 
 hzstd_fs_error_t hzstd_fs_copy(hzstd_str_t src, hzstd_str_t dst, const hzstd_fs_copy_options_t* opts)
 {
+  const char* srcPath = HZSTD_CSTR(src);
+  const char* dstPath = HZSTD_CSTR(dst);
   struct STAT st;
-  if (STAT(src.data, &st) != 0) {
+  if (STAT(srcPath, &st) != 0) {
 #if defined(HAZE_PLATFORM_LINUX)
     return (hzstd_fs_error_t) { .code = hzstd_fs_error_from_errno(errno),
                                 .message = hzstd_fs_strdup_msg(strerror(errno)) };
@@ -919,10 +924,10 @@ hzstd_fs_error_t hzstd_fs_copy(hzstd_str_t src, hzstd_str_t dst, const hzstd_fs_
   }
 
   if (IS_DIR(st.st_mode)) {
-    return hzstd_fs_copy_dir_internal(src.data, dst.data, opts);
+    return hzstd_fs_copy_dir_internal(srcPath, dstPath, opts);
   }
   else {
-    return hzstd_fs_copy_file_internal(src.data, dst.data, opts);
+    return hzstd_fs_copy_file_internal(srcPath, dstPath, opts);
   }
 }
 
@@ -974,29 +979,29 @@ hzstd_fs_error_t hzstd_fs_move(hzstd_str_t src, hzstd_str_t dst, const hzstd_fs_
 
 #if defined(HAZE_PLATFORM_LINUX)
   struct STAT st;
-  if (STAT(src.data, &st) != 0) {
+  if (STAT(srcPath, &st) != 0) {
     return (hzstd_fs_error_t) { .code = hzstd_fs_error_from_errno(errno),
                                 .message = hzstd_fs_strdup_msg(strerror(errno)) };
   }
 
   if (IS_DIR(st.st_mode)) {
-    if (rmdir(src.data) != 0) {
+    if (rmdir(srcPath) != 0) {
       return (hzstd_fs_error_t) { .code = hzstd_fs_error_from_errno(errno),
                                   .message = hzstd_fs_strdup_msg(strerror(errno)) };
     }
   }
   else {
-    if (unlink(src.data) != 0) {
+    if (unlink(srcPath) != 0) {
       return (hzstd_fs_error_t) { .code = hzstd_fs_error_from_errno(errno),
                                   .message = hzstd_fs_strdup_msg(strerror(errno)) };
     }
   }
 #elif defined(HAZE_PLATFORM_WIN32)
-  if (IS_DIR(GetFileAttributesA(src.data))) {
-    RemoveDirectoryA(src.data);
+  if (IS_DIR(GetFileAttributesA(srcPath))) {
+    RemoveDirectoryA(srcPath);
   }
   else {
-    DeleteFileA(src.data);
+    DeleteFileA(srcPath);
   }
 #endif
 

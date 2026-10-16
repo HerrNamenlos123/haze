@@ -15,407 +15,522 @@ export namespace Alloc {
     }
 }
 
-// This is one of the most important invariants in Haze:
-// 'str' is a string slice and what it points to, must always and forever be deeply immutable, must never move,
-// change length or be mutated in-place.
-// 'str' are fixed by definition.
-// Making a binary buffer, making a 'str' that points into the buffer, and mutating the buffer afterwards
-// is strictly forbidden. This deeply breaks low level compatibility of the slice.
-// In order to keep the language 100% memory safe by design, we must not allow this.
-// We may only create a 'str' into a buffer if we can guarantee, that this buffer is 100% frozen and will never ever
-// be mutated or worse, change its length. The easiest way is to just clone the string.
-// But that is expensive and we don't want that for string formatting.
-// This container exists for this purpose: To dynamically create a buffer, then commit it, and then
-// interpret it as a byte slice or utf-8 'str'.
-// Any attempt to create a 'str' that does not clone a buffer or ensures the buffer cannot be altered by anyone,
-// is strictly forbidden in Haze.
-export opaque ref struct ByteBuffer {
-    committed: bool = false;
+// ByteBuffer: the standard way to build binary data, and the only way to turn
+// built bytes into a `str` or `Bytes` without copying them.
+//
+// One of the most important invariants in Haze: what a `str` (or `Bytes`)
+// points to never changes, never moves and never changes length. So a slice
+// may only point into a buffer that can no longer be written. Without a
+// borrow checker the compiler cannot see who writes after a slice was taken,
+// so the user states it instead, in two phases:
+//
+//   build    push / insert / remove / setAt / resize / reserve ... The buffer
+//            grows and changes; no view of it can exist.
+//   commit() ends the build phase for good.
+//   read     bytes() / string() are views into the buffer's own storage, with
+//            no copy. Nothing changes any more.
+//
+// Crossing the line (a write after commit, a view before it) panics. What a
+// buffer does never depends on how it is stored at the moment: a buffer that
+// still borrows the `str` it was built from behaves exactly like one that
+// copied it.
+//
+// Why this is sound:
+//   * The buffer is `nocopy`: no second binding of it, and so no second
+//     writer over the same storage, can exist. (Its fields are only private by
+//     convention. `opaque` stops literals and spreads; private fields, once
+//     Haze has them, are what will stop code outside this file from reaching
+//     into `_data` and friends.)
+//   * Before commit no view exists, so the storage may be reallocated, and
+//     the old block freed at once (GC_realloc does), without anyone noticing.
+//   * After commit nothing writes, reallocates or frees it. The GC keeps it
+//     alive for as long as any view points into it.
+//
+// Storage, chosen at construction:
+//   growable  ByteBuffer() / ByteBuffer(capacity) / ByteBuffer(source): one
+//             contiguous heap block the GC does not scan (it holds no
+//             pointers), grown with GC_realloc. `reserve(total)` and ordinary
+//             growth are geometric (at least double), so growing in a loop
+//             stays amortised O(1); `reserveExact(total)` and the capacity
+//             constructor allocate exactly.
+//   fixed     ByteBuffer.fixed(capacity, allocator): allocated once, from any
+//             allocator (an arena included), and never moved. Writing past the
+//             capacity panics.
+//   measuring ByteBuffer.measuring(): stores nothing and only counts. Run the
+//             same code twice, measure then write into ByteBuffer(exact), and
+//             the whole thing is one allocation (this is how fmt.format works).
+//
+// Built from a `str` or `Bytes`, a buffer borrows it (copy-on-write): nothing
+// is allocated until the first write, and a buffer committed without writes
+// is the source itself.
+export nocopy opaque struct ByteBuffer {
+    _data: cptr = none;        // the storage; see _owned / _fixed for whose
+    _length: int = 0;
+    _capacity: int = 0;        // bytes usable at _data
+    _owned: bool = false;      // _data is our own growable heap block
+    _fixed: bool = false;      // allocated once, never moved
+    _measuring: bool = false;  // no storage at all, only _length
+    _committed: bool = false;
 
-    // If the array is empty, it can also be absent, to optimize a redundant heap allocation
-    data?: []u8;
+    // Methods are `final` with explicit types throughout: assert() and every
+    // panic format through this type (fmt.format), so nothing here may depend
+    // on inference that would recurse back into fmt, and its own panics use
+    // plain strings.
 
-    // Set when this buffer was constructed from a 'str' or 'Bytes' and hasn't been mutated since.
-    // While set, reads (getAt/length/cloneString) and even commit() can be served directly from it
-    // with zero allocation, because Bytes always points into memory that is already permanently
-    // immutable (a 'str', or another committed ByteBuffer's frozen bytes). The moment a mutation is
-    // attempted, _getMutableData() clones it into 'data' and clears this field -- the copy-on-write.
-    borrowed?: Bytes;
-
-    frozenPtr: cptr = none;
-    frozenLen: int = 0;
-
-    fn constructor() {
+    // Empty and growable. Nothing is allocated until the first write.
+    fn constructor(): ByteBuffer :: final {
         return ByteBuffer {};
     }
 
-    fn constructor(reserve: int) {
-        let buffer = ByteBuffer {};
-        // The frozen buffer is GC managed. Nothing ever needs to be freed.
-        buffer.reserve(reserve);
-        return buffer;
-    }
-
-    fn constructor(value: str) {
-        return ByteBuffer { borrowed: Bytes(value) };
-    }
-
-    fn constructor(value: Bytes) {
-        return ByteBuffer { borrowed: value };
-    }
-
-    ref fn operator[](index: int): ByteBufferRef {
-        let len = this.length();
-
-        if index < 0 || index >= len {
-            sys.panic("Out of bounds access in ByteBuffer");
+    // Growable, with exactly `capacity` bytes allocated up front.
+    fn constructor(capacity: int): ByteBuffer :: final {
+        if capacity < 0 {
+            sys.panic("ByteBuffer: negative capacity");
         }
-
-        return { buffer: this, index: index };
+        let data = none as cptr;
+        if capacity > 0 {
+            __c__("data = hzstd_heap_allocate_atomic((size_t)capacity, \"ByteBuffer\");");
+        }
+        return ByteBuffer { _data: data, _capacity: capacity, _owned: capacity > 0 };
     }
 
-    fn reserve(newCapacity: int) {
-        this._getMutableData().reserve(newCapacity);
+    // Borrows `source` until the first write (copy-on-write). A `str` never
+    // changes, so the buffer means the same thing either way.
+    fn constructor(source: str): ByteBuffer :: final {
+        let data = none as cptr;
+        let length = source.length;
+        if length > 0 {
+            __c__("data = (void*)source.data;");
+        }
+        return ByteBuffer { _data: data, _length: length, _capacity: length };
     }
 
-    // Read-only access to the plain backing array (does not resolve 'borrowed' -- callers must
-    // check that first). Auto-vivifies an empty array so callers never have to juggle the optional.
-    fn _getData(): []u8 :: final {
-        this.assertNotCommitted();
-        if !this.data {
-            this.data = [];
+    // Borrows `source` like the `str` constructor. A single-byte Bytes holds
+    // its byte inline and has no memory to borrow, so that one byte is copied.
+    fn constructor(source: Bytes): ByteBuffer :: final {
+        if let single = source.singleByte {
+            let byte: u8 = single;
+            let data = none as cptr;
+            __c__("data = hzstd_heap_allocate_atomic(1, \"ByteBuffer\"); ((hzstd_u8_t*)data)[0] = byte;");
+            return ByteBuffer { _data: data, _length: 1, _capacity: 1, _owned: true };
         }
-        // TODO: Remove this assertion when compiler bug is fixed
-        assert(this.data);
-        return this.data;
+        let data = none as cptr;
+        let length = source.length;
+        if length > 0 {
+            __c__("data = (hzstd_u8_t*)source.basePtr + source.offset;");
+        }
+        return ByteBuffer { _data: data, _length: length, _capacity: length };
     }
 
-    // Mutating access: this is the copy-on-write trigger. If we're still just borrowing a str/Bytes,
-    // clone it into a real owned array now, then hand that back for the caller to mutate.
-    fn _getMutableData(): []u8 :: final {
-        this.assertNotCommitted();
-        if this.borrowed {
-            let source = this.borrowed;
-            let cloned: []u8 = [];
-            if let byte = source.singleByte {
-                cloned.push(byte);
-            } else if source.length > 0 {
-                let ok = false;
-                __c__("""
-                    ok = hzstd_dynamic_array_resize_zeroed(cloned, (size_t)source.length) == hzstd_dynamic_array_result_ok
-                        && hzstd_dynamic_array_write(cloned, 0, (const char *)source.basePtr + source.offset, (size_t)source.length) == hzstd_dynamic_array_result_ok;
-                """);
-                if !ok {
-                    sys.panic("ByteBuffer: out of memory");
-                }
-            }
-            this.data = cloned;
-            this.borrowed = none;
+    // `capacity` bytes from `allocator`, allocated now and never moved: the
+    // buffer cannot grow, and writing past the capacity panics. With an arena
+    // allocator the views live as long as the arena.
+    static fn fixed(capacity: int, allocator: Allocator): ByteBuffer :: final {
+        if capacity < 0 {
+            sys.panic("ByteBuffer: negative capacity");
         }
-        return this._getData();
+        let data = none as cptr;
+        if capacity > 0 {
+            __c__("data = hzstd_allocate_atomic(allocator, (size_t)capacity, \"ByteBuffer\");");
+        }
+        return ByteBuffer { _data: data, _capacity: capacity, _fixed: true };
     }
 
-    fn getAt(index: int): u8 {
-        if this.committed {
-            if index < 0 || index >= this.frozenLen {
-                sys.panic("Out of bounds access in ByteBuffer");
-            }
-
-            let result: u8 = 0;
-            __c__("result = ((hzstd_u8_t*)this->frozenPtr)[index];");
-            return result;
-        }
-        else if this.borrowed {
-            if index < 0 || index >= this.borrowed.length {
-                sys.panic("Out of bounds access in ByteBuffer");
-            }
-            return this.borrowed.getAt(index);
-        }
-        else {
-            if index < 0 || index >= this._getData().length {
-                sys.panic("Out of bounds access in ByteBuffer");
-            }
-            return this._getData()[index];
-        }
+    // Stores nothing, only counts: every write adds to length(), and nothing
+    // can be read back. For sizing a second, real pass exactly.
+    static fn measuring(): ByteBuffer :: final {
+        return ByteBuffer { _measuring: true };
     }
 
-    fn commit() {
-        if this.committed { return; }
-
-        if this.borrowed {
-            let source = this.borrowed;
-            if source.singleByte {
-                // A bare byte value has no addressable pointer to borrow -- one tiny allocation
-                // is unavoidable here.
-                do unsafe {
-                    let ptr: cptr = none as cptr;
-                    let byte = source.singleByte;
-                    __c__("ptr = hzstd_heap_allocate_atomic(1, \"ByteBuffer frozen bytes\");");
-                    __c__("((hzstd_u8_t*)ptr)[0] = byte;");
-                    this.frozenPtr = ptr;
-                };
-                this.frozenLen = 1;
-            }
-            else {
-                // Zero-copy: adopt the borrowed pointer directly instead of cloning. Safe because
-                // 'borrowed' only ever points into memory that is already permanently immutable.
-                do unsafe {
-                    let ptr: cptr = none as cptr;
-                    if source.length > 0 {
-                        __c__("ptr = (hzstd_u8_t*)source.basePtr + source.offset;");
-                    }
-                    this.frozenPtr = ptr;
-                };
-                this.frozenLen = source.length;
-            }
-            this.borrowed = none;
-            this.committed = true;
-            return;
-        }
-
-        let len = this._getData().length;
-
-        do unsafe {
-            let ptr: cptr = none as cptr;
-            let data = this._getData();
-
-            if len > 0 {
-                __c__("ptr = hzstd_heap_allocate_atomic(len, \"ByteBuffer frozen bytes\");");
-                __c__("memcpy(ptr, hzstd_dynamic_array_raw_buffer(data), len);");
-            }
-
-            this.frozenPtr = ptr;
-            this.frozenLen = len;
-        };
-
-        this.data = none;        // release dynamic array for the GC, we don't need it anymore
-        this.committed = true;
-    }
-
-    fn resize(newSize: int) :: final {
-        if newSize < 0 {
-            sys.panic("ByteBuffer.resize() to a negative size");
-        }
-        let data = this._getMutableData();
-        // One call, not a push per byte: this is under every push(), so a
-        // byte-at-a-time loop made building a large string or file O(bytes)
-        // interpreted steps.
-        let ok = false;
-        __c__("ok = hzstd_dynamic_array_resize_zeroed(data, (size_t)newSize) == hzstd_dynamic_array_result_ok;");
-        if !ok {
-            sys.panic("ByteBuffer.resize(): out of memory");
-        }
-    }
+    // --- Reading (any phase) -------------------------------------------------
 
     fn length(): int :: final {
-        if this.committed { return this.frozenLen; }
-        if this.borrowed { return this.borrowed.length; }
-        return this._getData().length;
+        return this._length;
     }
 
-    fn assertNotCommitted() :: final {
-        if (this.committed) {
-            sys.panic("A mutation was attempted on a ByteBuffer that was already committed. Mutation is no longer allowed, it is now deeply immutable.");
-        }
+    fn capacity(): int :: final {
+        return this._capacity;
     }
 
-    fn setAt(index: int, value: u8) {
-        let data = this._getMutableData();
-        if (index < 0 || index >= data.length) {
-            sys.panic("Out of bounds access in ByteBuffer");
-        }
-        data[index] = value;
+    fn isCommitted(): bool :: final {
+        return this._committed;
     }
 
-    mut fn push(value: str) {
-        this.push(Bytes(value));
+    fn getAt(index: int): u8 :: final {
+        if this._measuring {
+            sys.panic("ByteBuffer: a measuring buffer has no contents to read");
+        }
+        if index < 0 || index >= this._length {
+            sys.panic("ByteBuffer: index out of bounds");
+        }
+        let result: u8 = 0;
+        __c__("result = ((hzstd_u8_t*)this->_data)[index];");
+        return result;
     }
 
-    mut fn push(value: Bytes) {
-        let len = this.length();
-        // Always resize to this size, it will strictly grow the buffer
-        this.resize(len + value.length);
-        this.writeAt(len, value);
+    // `buffer[i] := v` writes a byte, `buffer[i].get()` reads one. The index
+    // is a value holding a checked reference to this buffer, so it allocates
+    // nothing and cannot write into a buffer that is gone. That reference
+    // needs a buffer that can be referenced: a `let stackref` or a stackref
+    // parameter. getAt()/setAt() work on any buffer.
+    mut stackref fn operator[](index: int): ByteBufferIndex :: final {
+        return ByteBufferIndex { buffer: this, index: index };
     }
 
-    mut fn push(value: ByteBuffer) {
-        let len = this.length();
-        // Always resize to this size, it will strictly grow the buffer
-        this.resize(len + value.length());
-        this.writeAt(len, value);
-    }
-
-    mut fn writeAt(startIndex: int, value: str) {
-        this.writeAt(startIndex, Bytes(value));
-    }
-
-    mut fn writeAt(startIndex: int, value: Bytes) {
-        let data = this._getMutableData();
-        if (startIndex < 0 || startIndex + value.length > data.length) {
-            sys.panic("Out of bounds access in ByteBuffer");
+    // A copy of the current contents as a `str`, in either phase: later
+    // writes do not change it. Committed (or still borrowing an immutable
+    // source), the contents can no longer change, so it is a view, no copy.
+    fn cloneString(): str :: final {
+        let result = "";
+        if this._measuring {
+            sys.panic("ByteBuffer: a measuring buffer has no contents to read");
         }
-
-        if let byte = value.singleByte {
-            data[startIndex] = byte;
-            return;
-        }
-        // One memcpy (bounds checked above).
-        __c__("hzstd_dynamic_array_write(data, (size_t)startIndex, (const char *)value.basePtr + value.offset, (size_t)value.length);");
-    }
-
-    mut fn writeAt(startIndex: int, value: ByteBuffer) {
-        let data = this._getMutableData();
-        if (startIndex < 0 || startIndex + value.length() > data.length) {
-            sys.panic("Out of bounds access in ByteBuffer");
-        }
-
-        // Do the dumb, trivial loop, we can optimize bounds checking away later
-        for (let i = 0; i < value.length(); i++) {
-            data[startIndex + i] = value.getAt(i);
-        }
-    }
-
-    mut fn writeZero(startIndex: int, length: int) {
-        let data = this._getMutableData();
-        if (startIndex < 0 || startIndex + length > data.length) {
-            sys.panic("Out of bounds access in ByteBuffer");
-        }
-
-        // Do the dumb, trivial loop, we can optimize bounds checking away later
-        for (let i = 0; i < length; i++) {
-            data[startIndex + i] = 0;
-        }
-    }
-
-    mut fn insert(index: int, byte: u8) {
-        this.insert(index, Bytes(byte));
-    }
-
-    mut fn insert(index: int, string: str) {
-        this.insert(index, Bytes(string));
-    }
-
-    mut fn insert(index: int, bytes: Bytes) {
-        let data = this._getMutableData();
-
-        if index < 0 || index > data.length {
-            sys.panic("Out of bounds access in ByteBuffer");
-        }
-
-        if bytes.length == 0 {
-            return;
-        }
-
-        let oldLength = data.length;
-        let insertLength = bytes.length;
-
-        this.resize(oldLength + insertLength);
-
-        // Move existing bytes backwards.
-        for (let i = oldLength - 1; i >= index; i--) {
-            data[i + insertLength] = data[i];
-        }
-
-        // Write inserted bytes.
-        for (let i = 0; i < insertLength; i++) {
-            data[index + i] = bytes[i];
-        }
-    }
-
-    mut fn remove(index: int, count: int) {
-        let data = this._getMutableData();
-
-        if index < 0 || count < 0 || index + count > data.length {
-            sys.panic("Out of bounds access in ByteBuffer");
-        }
-
-        if count == 0 {
-            return;
-        }
-
-        let oldLength = data.length;
-
-        // Move remaining bytes forwards.
-        for (let i = index + count; i < oldLength; i++) {
-            data[i - count] = data[i];
-        }
-
-        this.resize(oldLength - count);
-    }
-
-    // Todo: Clone Buffer
-
-    // This function is critical for language semantics as it must only be allowed when we can guarantee
-    // the buffer is frozen and cannot ever change again.
-    fn bytes(): Bytes {
-        if !this.committed {
-            sys.panic("Attempted to call .bytes() on a ByteBuffer that was not committed yet. Call .commit() to ensure deep immutability and enable byte slices");
-        }
-
-        do unsafe {
-            // We cannot use a conventional ref struct literal because Bytes is OPAQUE!!!
-            // And we cannot make it non-opaque because that would mean people can create Bytes objects themselves,
-            // inject raw C pointers, and cause random memory corruption.
-            let bytes = Bytes(); 
-            if (this.frozenLen > 0) {
-                // This is ONLY safe because we make sure the array cannot be mutated anymore
-                __c__("bytes.basePtr = this->frozenPtr;");
-                __c__("bytes.offset = 0;");
-                __c__("bytes.length = this->frozenLen;");
-            }
-            return bytes;
-        };
-    }
-
-    fn cloneString(): str {
-        if this.committed {
-            return this.string();
-        }
-        else if this.borrowed {
-            // 'borrowed' always points into memory that is already permanently immutable, so this
-            // can safely be a zero-copy slice instead of an actual clone.
-            return this.borrowed.string();
-        }
-        else {
-            let data = this._getData();
-            let result = "";
-            if (data.length > 0) {
-                // This does create a hzstd_str_t, but it points into the raw dynamic array, which means it is unsafe
-                // and by definition violates one of the core Haze invariants. We must make sure
-                // it is immediately cloned and then thrown away and does not escape this function.
-                __c__("result = hzstd_str_dup(HZSTD_STRING((const char*)hzstd_dynamic_array_raw_buffer(data), hzstd_dynamic_array_size(data)));");
-            }
+        if this._length == 0 {
             return result;
         }
+        if this._committed || this._isBorrowing() {
+            __c__("result = HZSTD_STRING((const char*)this->_data, this->_length);");
+            return result;
+        }
+        __c__("""
+            char* copy = (char*)hzstd_heap_allocate_atomic((size_t)this->_length, "str");
+            memcpy(copy, this->_data, (size_t)this->_length);
+            result = HZSTD_STRING(copy, this->_length);
+        """);
+        return result;
     }
 
-    // This function is critical for language semantics as it must only be allowed when we can guarantee
-    // the buffer is frozen and cannot ever change again.
-    fn string(): str {
-        if !this.committed {
-            sys.panic("Attempted to call .string() on a ByteBuffer that was not committed yet. Call .commit() to ensure deep immutability and enable string slices");
+    // As cloneString(), as Bytes.
+    fn cloneBytes(): Bytes :: final {
+        if this._measuring {
+            sys.panic("ByteBuffer: a measuring buffer has no contents to read");
         }
+        let result = Bytes();
+        if this._length == 0 {
+            return result;
+        }
+        if this._committed || this._isBorrowing() {
+            __c__("result.basePtr = this->_data; result.offset = 0; result.length = this->_length;");
+            return result;
+        }
+        __c__("""
+            void* copy = hzstd_heap_allocate_atomic((size_t)this->_length, "Bytes");
+            memcpy(copy, this->_data, (size_t)this->_length);
+            result.basePtr = copy;
+            result.offset = 0;
+            result.length = this->_length;
+        """);
+        return result;
+    }
 
-        // TODO: Perform utf-8 validation once we have actual unicode support
+    // --- Phase change and the read phase -------------------------------------
 
-        let result = "";
-        if (this.frozenLen > 0) {
-            __c__("result = HZSTD_STRING((const char*)this->frozenPtr, this->frozenLen);");
+    // Ends the build phase for good. Nothing is copied: from now on the
+    // storage is read-only, and bytes()/string() are views into it.
+    // Committing twice is harmless.
+    mut fn commit(): void :: final {
+        if this._measuring {
+            sys.panic("ByteBuffer: a measuring buffer has no contents to commit");
+        }
+        this._committed = true;
+    }
+
+    // The committed contents, without a copy.
+    fn bytes(): Bytes :: final {
+        if !this._committed {
+            sys.panic("ByteBuffer: bytes() needs a committed buffer; call commit() first, or use cloneBytes() for a copy");
+        }
+        let result = Bytes();
+        if this._length > 0 {
+            __c__("result.basePtr = this->_data; result.offset = 0; result.length = this->_length;");
         }
         return result;
     }
 
-    ref struct ByteBufferRef {
-        buffer: ByteBuffer;
-        index: int;
-
-        fn get(): u8 {
-            return this.buffer.getAt(this.index);
+    // The committed contents as a `str`, without a copy.
+    // TODO: UTF-8 validation once Haze has real unicode support.
+    fn string(): str :: final {
+        if !this._committed {
+            sys.panic("ByteBuffer: string() needs a committed buffer; call commit() first, or use cloneString() for a copy");
         }
-
-        fn operator:=(value: u8) {
-            this.buffer.setAt(this.index, value);
+        let result = "";
+        if this._length > 0 {
+            __c__("result = HZSTD_STRING((const char*)this->_data, this->_length);");
         }
+        return result;
+    }
+
+    // --- Writing (build phase) -----------------------------------------------
+
+    mut fn push(value: str): void :: final {
+        this._assertBuilding();
+        let n = value.length;
+        if this._measuring {
+            this._length += n;
+            return;
+        }
+        if n == 0 {
+            return;
+        }
+        this._makeWritable(this._length + n, false);
+        __c__("memcpy((hzstd_u8_t*)this->_data + this->_length, value.data, (size_t)n);");
+        this._length += n;
+    }
+
+    mut fn push(value: Bytes): void :: final {
+        this._assertBuilding();
+        let n = value.length;
+        if this._measuring {
+            this._length += n;
+            return;
+        }
+        if n == 0 {
+            return;
+        }
+        this._makeWritable(this._length + n, false);
+        this._copyIn(this._length, value);
+        this._length += n;
+    }
+
+    mut fn push(value: u8): void :: final {
+        this._assertBuilding();
+        if this._measuring {
+            this._length += 1;
+            return;
+        }
+        this._makeWritable(this._length + 1, false);
+        __c__("((hzstd_u8_t*)this->_data)[this->_length] = value;");
+        this._length += 1;
+    }
+
+    mut fn insert(index: int, value: str): void :: final {
+        this.insert(index, Bytes(value));
+    }
+
+    mut fn insert(index: int, value: u8): void :: final {
+        this.insert(index, Bytes(value));
+    }
+
+    mut fn insert(index: int, value: Bytes): void :: final {
+        this._assertBuilding();
+        if index < 0 || index > this._length {
+            sys.panic("ByteBuffer: insert position out of bounds");
+        }
+        let n = value.length;
+        if this._measuring {
+            this._length += n;
+            return;
+        }
+        if n == 0 {
+            return;
+        }
+        this._makeWritable(this._length + n, false);
+        let tail = this._length - index;
+        __c__("memmove((hzstd_u8_t*)this->_data + index + n, (hzstd_u8_t*)this->_data + index, (size_t)tail);");
+        this._copyIn(index, value);
+        this._length += n;
+    }
+
+    mut fn remove(index: int, count: int): void :: final {
+        this._assertBuilding();
+        if index < 0 || count < 0 || index + count > this._length {
+            sys.panic("ByteBuffer: remove range out of bounds");
+        }
+        if count == 0 {
+            return;
+        }
+        // Dropping the end needs no write, so a borrowed source stays borrowed.
+        if this._measuring || index + count == this._length {
+            this._length = index;
+            return;
+        }
+        this._makeWritable(this._length, true);
+        let tail = this._length - index - count;
+        __c__("memmove((hzstd_u8_t*)this->_data + index, (hzstd_u8_t*)this->_data + index + count, (size_t)tail);");
+        this._length -= count;
+    }
+
+    mut fn setAt(index: int, value: u8): void :: final {
+        this._assertBuilding();
+        if index < 0 || index >= this._length {
+            sys.panic("ByteBuffer: index out of bounds");
+        }
+        if this._measuring {
+            return;
+        }
+        this._makeWritable(this._length, true);
+        __c__("((hzstd_u8_t*)this->_data)[index] = value;");
+    }
+
+    // Grows with zero bytes, or drops the end.
+    mut fn resize(length: int): void :: final {
+        this._assertBuilding();
+        if length < 0 {
+            sys.panic("ByteBuffer: negative length");
+        }
+        if length <= this._length {
+            this._length = length;
+            return;
+        }
+        if this._measuring {
+            this._length = length;
+            return;
+        }
+        this._makeWritable(length, false);
+        let added = length - this._length;
+        __c__("memset((hzstd_u8_t*)this->_data + this->_length, 0, (size_t)added);");
+        this._length = length;
+    }
+
+    // Drops everything from `length` on. Never allocates.
+    mut fn truncate(length: int): void :: final {
+        this._assertBuilding();
+        if length < 0 || length > this._length {
+            sys.panic("ByteBuffer: truncate length out of bounds");
+        }
+        this._length = length;
+    }
+
+    // Empties the buffer and keeps its own storage for reuse.
+    mut fn clear(): void :: final {
+        this._assertBuilding();
+        this._length = 0;
+        if this._isBorrowing() {
+            this._data = none;
+            this._capacity = 0;
+        }
+    }
+
+    // Room for `total` bytes in all, so writes up to that size do not
+    // reallocate. When it has to grow, it grows geometrically (to at least
+    // double the capacity), so calling it in a loop stays amortised O(1).
+    mut fn reserve(total: int): void :: final {
+        this._reserve(total, false);
+    }
+
+    // As reserve(), but allocates exactly `total` bytes: for when the final
+    // size is known. In a loop this reallocates every time; use reserve().
+    mut fn reserveExact(total: int): void :: final {
+        this._reserve(total, true);
+    }
+
+    // --- Internal --------------------------------------------------------------
+
+    // `count` bytes appended without being initialised, for code that fills
+    // them itself (reading a file straight into the buffer). Returns where
+    // they start; the caller must write all of them before anything reads
+    // them, and the pointer is only valid until the next write. Not for
+    // general use: private methods are what would keep it in this library.
+    mut fn _appendUninitialized(count: int): cptr :: final {
+        this._assertBuilding();
+        if this._measuring {
+            sys.panic("ByteBuffer: a measuring buffer has no storage to write into");
+        }
+        if count < 0 {
+            sys.panic("ByteBuffer: negative count");
+        }
+        this._makeWritable(this._length + count, false);
+        let start = none as cptr;
+        __c__("start = (hzstd_u8_t*)this->_data + this->_length;");
+        this._length += count;
+        return start;
+    }
+
+    fn _assertBuilding(): void :: final {
+        if this._committed {
+            sys.panic("ByteBuffer: the buffer is committed and read-only; it cannot be written any more");
+        }
+    }
+
+    // Still pointing at the immutable source it was built from (or at nothing).
+    fn _isBorrowing(): bool :: final {
+        return !this._owned && !this._fixed;
+    }
+
+    mut fn _reserve(total: int, exact: bool): void :: final {
+        this._assertBuilding();
+        if total < 0 {
+            sys.panic("ByteBuffer: negative capacity");
+        }
+        if this._measuring || total <= this._capacity && !this._isBorrowing() {
+            return;
+        }
+        if total <= this._length {
+            return;
+        }
+        this._makeWritable(total, exact);
+    }
+
+    // Ensures storage this buffer may write for `total` bytes: its own block,
+    // or its fixed one. A borrowed source is copied out here (the only
+    // copy-on-write point), and growth happens here. `exact` sizes the block
+    // to exactly `total`; otherwise it grows to at least double, so that
+    // growing step by step stays amortised O(1).
+    mut fn _makeWritable(total: int, exact: bool): void :: final {
+        if total <= this._capacity && !this._isBorrowing() {
+            return;
+        }
+        if this._fixed {
+            sys.panic("ByteBuffer: this write exceeds the fixed capacity");
+        }
+        let newCapacity = total;
+        if newCapacity < this._length {
+            newCapacity = this._length;
+        }
+        if !exact {
+            if newCapacity < this._capacity * 2 {
+                newCapacity = this._capacity * 2;
+            }
+            if newCapacity < 8 {
+                newCapacity = 8;
+            }
+        }
+        if newCapacity == 0 {
+            return;
+        }
+        if this._owned {
+            // Nothing can point into an owned block before commit, so the old
+            // block may move and be freed (GC_realloc frees it).
+            __c__("this->_data = hzstd_heap_realloc(this->_data, (size_t)newCapacity, \"ByteBuffer\");");
+        }
+        else {
+            // Borrowing (or empty): copy what there is into a block of our own.
+            let length = this._length;
+            __c__("""
+                void* fresh = hzstd_heap_allocate_atomic((size_t)newCapacity, "ByteBuffer");
+                if (length > 0) { memcpy(fresh, this->_data, (size_t)length); }
+                this->_data = fresh;
+            """);
+            this._owned = true;
+        }
+        this._capacity = newCapacity;
+    }
+
+    // Copies `value` to `at`; the room has been made already.
+    mut fn _copyIn(at: int, value: Bytes): void :: final {
+        if let single = value.singleByte {
+            let byte: u8 = single;
+            __c__("((hzstd_u8_t*)this->_data)[at] = byte;");
+            return;
+        }
+        let n = value.length;
+        __c__("memcpy((hzstd_u8_t*)this->_data + at, (const hzstd_u8_t*)value.basePtr + value.offset, (size_t)n);");
+    }
+}
+
+// One byte of a ByteBuffer, from `buffer[index]`: `buffer[i] := v` writes it,
+// `buffer[i].get()` reads it. A value holding a checked reference: it
+// allocates nothing, and using it after the buffer is gone panics.
+export struct ByteBufferIndex {
+    buffer: mut stackref ByteBuffer;
+    index: int;
+
+    fn get(): u8 :: final {
+        return this.buffer.getAt(this.index);
+    }
+
+    fn operator:=(value: u8): void :: final {
+        this.buffer.setAt(this.index, value);
     }
 }
 
@@ -442,10 +557,6 @@ export opaque struct Bytes {
             length: 0,
             singleByte: none,
         };
-    }
-
-    fn constructor(buffer: ByteBuffer) {
-        return buffer.bytes();
     }
 
     fn constructor(value: u8) {

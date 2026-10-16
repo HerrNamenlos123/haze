@@ -115,7 +115,7 @@ fn tenDigits(value: int): str {
 export ref struct Writer {
     options: WriterOptions;
     file?: mut fs.FileWriter;
-    memory: mut ByteBuffer;
+    memory: ByteBuffer;
     // Bytes written so far: where the next object starts.
     position: int = 0;
     // Where each object starts, by object number - 1; -1 until it is

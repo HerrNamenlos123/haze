@@ -1043,6 +1043,16 @@ implementation refined or extended the design; each is normative from here on.
   `mut stackref Writer`; `StringWriter` remains as an alias. Two passes over the same arguments:
   measure, then write into a buffer allocated once at the exact size; `string()` wraps it without
   copying. Its methods are `final` because assertions and panics format through it.
+- **Superseded 2026-10-15: `fmt.Writer` and `StringWriter` are gone; formatting writes into
+  `ByteBuffer`.** ByteBuffer itself became what `Writer` was, generalised: a `nocopy` value with
+  a build phase and a read phase (`commit()` freezes it in place, `bytes()`/`string()` are views
+  without a copy), growable (geometric `GC_realloc`, `reserve` geometric and `reserveExact`
+  exact, both taking the total) or fixed (allocated once from any allocator, never moved), plus
+  a measuring mode that only counts. `fmt.format` measures into `ByteBuffer.measuring()`, then
+  writes into `ByteBuffer(exact)` (`formatWithAllocator`: `ByteBuffer.fixed`), and formatters
+  take `mut stackref ByteBuffer`. `String` is a `ref` wrapper around one ByteBuffer with the same
+  phases. The model and its safety argument are in the comment at the top of ByteBuffer
+  (stdlib/core/src/memory.hz); tests in `testsuite/src/cases_bytebuffer.hz`.
 
 **Migration as performed**
 - One-shot script: `inline struct` → `struct`, every other `struct` → `ref struct` (except extern

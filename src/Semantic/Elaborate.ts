@@ -262,6 +262,55 @@ export class SemanticElaborator {
     return false;
   }
 
+  /**
+   * The hidden receiver type for calling an operator overload on `receiver`,
+   * after checking the receiver class the method requires (§12.3). Operator
+   * calls build their callable by hand instead of going through member
+   * access, which is where ordinary method calls get this check; without it
+   * a `stackref fn operator[]` on a value receiver compiled to invalid C.
+   */
+  operatorReceiverType(
+    methodId: Semantic.SymbolId,
+    receiverTypeUseId: Semantic.TypeUseId,
+    sourceloc: SourceLoc
+  ): Semantic.TypeUseId {
+    const method = this.sr.symbolNodes.get(methodId);
+    assert(method.variant === Semantic.ENode.FunctionSymbol);
+    const receiverUse = this.sr.typeUseNodes.get(
+      this.resolveAlias(receiverTypeUseId)
+    );
+    const required = method.methodReceiverStorage;
+    if (
+      required === EStorageClass.Stackref &&
+      receiverUse.storage === EStorageClass.Value
+    ) {
+      throw new CompilerError(
+        `Operator ${Semantic.serializeFullSymbolName(this.sr, methodId)}() is a 'stackref fn' and requires a 'stackref' (or 'ref') receiver, but it is used on a value. Declare the receiver with 'let stackref'.`,
+        sourceloc,
+        HazeErrorCode.ReceiverStorageTooWeak
+      );
+    }
+    if (
+      required === EStorageClass.Ref &&
+      receiverUse.storage !== EStorageClass.Ref
+    ) {
+      throw new CompilerError(
+        `Operator ${Semantic.serializeFullSymbolName(this.sr, methodId)}() is a 'ref fn' and requires a 'ref' receiver, but it is used on a ${receiverUse.storage === EStorageClass.Value ? "value" : "stackref"}.`,
+        sourceloc,
+        HazeErrorCode.ReceiverStorageTooWeak
+      );
+    }
+    return makeTypeUse(
+      this.sr,
+      receiverUse.type,
+      EDatatypeMutability.Mut,
+      required === EStorageClass.Stackref
+        ? EStorageClass.Stackref
+        : EStorageClass.Ref,
+      sourceloc
+    )[1];
+  }
+
   isTrackedCallableParam(variableId: Semantic.SymbolId): boolean {
     const v = this.sr.symbolNodes.get(variableId);
     return (
@@ -20267,13 +20316,11 @@ export class SemanticElaborator {
             exactMatchId,
             {
               type: "method",
-              thisExprType: makeTypeUse(
-                this.sr,
-                this.sr.typeUseNodes.get(value.type).type,
-                EDatatypeMutability.Mut,
-                EStorageClass.Ref,
+              thisExprType: this.operatorReceiverType(
+                exactMatchId,
+                value.type,
                 arraySubscript.sourceloc
-              )[1],
+              ),
             },
             {
               type: "method",

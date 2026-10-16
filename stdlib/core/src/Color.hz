@@ -204,12 +204,12 @@ export extern C noemit struct hzstd_colorf_t {
 export type Colorf = hzstd_colorf_t;
 
 namespace fmt {
-    export fn format_to(writer: mut stackref StringWriter, value: Color, args: FormatArgs) {
+    export fn format_to(writer: mut stackref ByteBuffer, value: Color, args: FormatArgs) {
         format_to(writer, "#", {});
         format_to(writer, value.hex(), {});
     }
 
-    export fn format_to(writer: mut stackref StringWriter, value: Colorf, args: FormatArgs) {
+    export fn format_to(writer: mut stackref ByteBuffer, value: Colorf, args: FormatArgs) {
         format_to(writer, value as Color, {});
     }
 }

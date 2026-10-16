@@ -38,14 +38,14 @@ fn hexRun(s: str, start: int, count: int): int {
 
 // Append a single raw byte. `\x` and octal escapes below 0x100 denote raw bytes
 // (String.fromCharCode in the reference), not code points.
-fn appendByte(out: mut ByteBuffer, v: int) {
+fn appendByte(out: mut stackref ByteBuffer, v: int) {
     if v >= 0 && v <= 255 {
-        out.insert(out.length(), v as u8);
+        out.push(v as u8);
     }
 }
 
 // Append a Unicode code point as UTF-8.
-fn appendCodepoint(out: mut ByteBuffer, cp: int) {
+fn appendCodepoint(out: mut stackref ByteBuffer, cp: int) {
     if cp < 0x80 {
         appendByte(out, cp);
         return;
@@ -97,8 +97,7 @@ export fn unescapeString(raw: str): str {
     }
     if !hasEscape { return s; }
 
-    let out = ByteBuffer();
-    out.reserve(s.length);
+    let stackref out = ByteBuffer(s.length);
 
     let i = 0;
     let chunkStart = 0;
@@ -156,7 +155,8 @@ export fn unescapeString(raw: str): str {
     }
 
     if s.length > chunkStart { out.push(s.slice(chunkStart, s.length)); }
-    return out.cloneString();
+    out.commit();
+    return out.string();
 }
 
 // Strip `count` delimiter characters from both ends, then unescape.

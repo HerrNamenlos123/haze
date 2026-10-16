@@ -11,68 +11,11 @@ namespace fmt {
         formatSpecifier: str = "";
     }
 
-    // The formatting controller (R&D/Storage Classes and References.md §10).
-    //
-    // A value that lives in the formatting function's own frame and is handed
-    // to every formatter as `mut stackref Writer`: no heap object for the
-    // controller, no buffer growth, no frozen copy. It runs in two passes over
-    // the same arguments -- first measuring (no buffer), then writing into a
-    // buffer allocated once at exactly the measured size -- so the only heap
-    // allocation in the whole pipeline is the returned string's bytes.
-    //
-    // It is `nocopy`: it carries a write cursor into shared storage, and two
-    // cursors over one buffer would silently overwrite each other (§9.3).
-    export nocopy struct Writer {
-        data: cptr = none;      // null while measuring; else the exact-size buffer
-        capacity: int = 0;      // byte length of `data`; 0 = measuring pass
-        measuring: bool = true;
-        written: int = 0;       // bytes written (pass 2) or measured (pass 1)
-
-        // A measuring writer: counts bytes, writes nothing.
-        // (`final` + explicit types throughout: assert() and panics format
-        // through this very type, so nothing here may depend on inference
-        // that would recurse back into fmt.)
-        fn constructor(): Writer :: final {
-            return Writer {};
-        }
-
-        // A writing writer over a fresh buffer of exactly `capacity` bytes.
-        fn constructor(allocator: Allocator, capacity: int): Writer :: final {
-            let data = none as cptr;
-            if capacity > 0 {
-                do unsafe {
-                    __c__("data = hzstd_allocate(allocator, capacity, \"fmt string\");");
-                };
-            }
-            return Writer { data: data, capacity: capacity, measuring: false, written: 0 };
-        }
-
-        mut fn write(value: str): void :: final {
-            if !this.measuring {
-                if this.written + value.length > this.capacity {
-                    __c__("hzstd_panic(\"fmt.Writer: write exceeds the measured size\");");
-                }
-                do unsafe {
-                    __c__("memcpy((char*)this->data + this->written, value.data, value.length);");
-                };
-            }
-            this.written += value.length;
-        }
-
-        // The finished string: wraps the buffer without copying.
-        fn string(): str :: final {
-            if this.measuring || this.written == 0 {
-                return "";
-            }
-            let result = "";
-            do unsafe {
-                __c__("result = HZSTD_STRING((const char*)this->data, this->written);");
-            };
-            return result;
-        }
-    }
-
-    export type StringWriter = Writer;
+    // Formatting writes into a ByteBuffer (memory.hz), passed to every
+    // formatter as `mut stackref ByteBuffer`. format() runs the formatters
+    // twice over the same arguments: into a measuring buffer, which only
+    // counts, then into a buffer of exactly that size. The returned string is
+    // the only allocation (R&D/Storage Classes and References.md §10).
 
     export fn format(values: ...): str :: final {
         // Very essential short-circuit because without it, fmt.format(str) always heap-allocates and clones 
@@ -81,28 +24,32 @@ namespace fmt {
             return values[0];
         }
         else {
-            let stackref reader = Writer();
+            let stackref measure = ByteBuffer.measuring();
             for comptime value, i in values {
-                format_to_proxy(reader, value, {});
+                format_to_proxy(measure, value, {});
             }
-            let stackref writer = Writer(hzstd_make_heap_allocator(), reader.written);
+            let stackref out = ByteBuffer(measure.length());
             for comptime value, i in values {
-                format_to_proxy(writer, value, {});
+                format_to_proxy(out, value, {});
             }
-            return writer.string();
+            out.commit();
+            return out.string();
         }
     }
 
     export fn formatWithAllocator(allocator: Allocator, values: ...) {
-        let stackref reader = Writer();
+        let stackref measure = ByteBuffer.measuring();
         for comptime value, i in values {
-            format_to_proxy(reader, value, {});
+            format_to_proxy(measure, value, {});
         }
-        let stackref writer = Writer(allocator, reader.written);
+        // Allocated once from `allocator` and never moved: with an arena the
+        // string lives as long as the arena.
+        let stackref out = ByteBuffer.fixed(measure.length(), allocator);
         for comptime value, i in values {
-            format_to_proxy(writer, value, {});
+            format_to_proxy(out, value, {});
         }
-        return writer.string();
+        out.commit();
+        return out.string();
     }
 
     // Shared body of print()/println(): the arguments are forwarded as a
@@ -129,27 +76,28 @@ namespace fmt {
     }
 
     export fn printFormatted(newline: bool, args: ...) :: final {
-        let stackref reader = Writer();
+        let stackref measure = ByteBuffer.measuring();
         for comptime arg, i in args {
-            format_to_proxy(reader, arg, {});
+            format_to_proxy(measure, arg, {});
             if comptime i != args.length - 1 {
-                reader.write(" ");
+                measure.push(" ");
             }
         }
         if newline {
-            reader.write("\n");
+            measure.push("\n");
         }
-        let stackref writer = Writer(hzstd_make_heap_allocator(), reader.written);
+        let stackref out = ByteBuffer(measure.length());
         for comptime arg, i in args {
-            format_to_proxy(writer, arg, {});
+            format_to_proxy(out, arg, {});
             if comptime i != args.length - 1 {
-                writer.write(" ");
+                out.push(" ");
             }
         }
         if newline {
-            writer.write("\n");
+            out.push("\n");
         }
-        ffi.hzstd_print_str_stdout(writer.string(), false);
+        out.commit();
+        ffi.hzstd_print_str_stdout(out.string(), false);
     }
 
     export fn print(args: ...) {
@@ -160,7 +108,7 @@ namespace fmt {
         printImpl(true, ...args);
     }
 
-    export fn format_to_proxy<T>(writer: mut stackref Writer, value: T, args: FormatArgs) :: final {
+    export fn format_to_proxy<T>(writer: mut stackref ByteBuffer, value: T, args: FormatArgs) :: final {
         if comptime T.category == meta.TypeCategory.Reactive {
             format_to_proxy<rx.UnwrapReactive<T>>(writer, rx.get(value), args);
         }
@@ -203,67 +151,67 @@ namespace fmt {
         }
     }
 
-    export fn format_to<T>(writer: mut stackref Writer, value: T, args: FormatArgs) {
+    export fn format_to<T>(writer: mut stackref ByteBuffer, value: T, args: FormatArgs) {
         static_assert(false, f"No formatter is known for type '{T.prettyName}'. To format this type, define a matching overload for fmt.format_to().");
     }
 
-    export fn format_to(writer: mut stackref Writer, value: i8, args: FormatArgs) {
+    export fn format_to(writer: mut stackref ByteBuffer, value: i8, args: FormatArgs) {
         format_to_sprintf<64, "\"%\" PRIi8", typeof(value)>(writer, value);
     }
 
-    export fn format_to(writer: mut stackref Writer, value: i16, args: FormatArgs) {
+    export fn format_to(writer: mut stackref ByteBuffer, value: i16, args: FormatArgs) {
         format_to_sprintf<64, "\"%\" PRIi16", typeof(value)>(writer, value);
     }
 
-    export fn format_to(writer: mut stackref Writer, value: i32, args: FormatArgs) {
+    export fn format_to(writer: mut stackref ByteBuffer, value: i32, args: FormatArgs) {
         format_to_sprintf<64, "\"%\" PRIi32", typeof(value)>(writer, value);
     }
 
-    export fn format_to(writer: mut stackref Writer, value: i64, args: FormatArgs) {
+    export fn format_to(writer: mut stackref ByteBuffer, value: i64, args: FormatArgs) {
         format_to_sprintf<64, "\"%\" PRIi64", typeof(value)>(writer, value);
     }
 
-    export fn format_to(writer: mut stackref Writer, value: int, args: FormatArgs) {
+    export fn format_to(writer: mut stackref ByteBuffer, value: int, args: FormatArgs) {
         format_to_sprintf<64, "\"%\" PRIi64", typeof(value)>(writer, value);
     }
 
-    export fn format_to(writer: mut stackref Writer, value: str, args: FormatArgs) {
-        writer.write(value);
+    export fn format_to(writer: mut stackref ByteBuffer, value: str, args: FormatArgs) {
+        writer.push(value);
     }
     
-    export fn format_to(writer: mut stackref Writer, value: u8, args: FormatArgs) {
+    export fn format_to(writer: mut stackref ByteBuffer, value: u8, args: FormatArgs) {
         format_to_sprintf<64, "\"%\" PRIu8", typeof(value)>(writer, value);
     }
 
-    export fn format_to(writer: mut stackref Writer, value: u16, args: FormatArgs) {
+    export fn format_to(writer: mut stackref ByteBuffer, value: u16, args: FormatArgs) {
         format_to_sprintf<64, "\"%\" PRIu16", typeof(value)>(writer, value);
     }
 
-    export fn format_to(writer: mut stackref Writer, value: u32, args: FormatArgs) {
+    export fn format_to(writer: mut stackref ByteBuffer, value: u32, args: FormatArgs) {
         format_to_sprintf<64, "\"%\" PRIu32", typeof(value)>(writer, value);
     }
 
-    export fn format_to(writer: mut stackref Writer, value: u64, args: FormatArgs) {
+    export fn format_to(writer: mut stackref ByteBuffer, value: u64, args: FormatArgs) {
         format_to_sprintf<64, "\"%\" PRIu64", typeof(value)>(writer, value);
     }
 
-    export fn format_to(writer: mut stackref Writer, value: usize, args: FormatArgs) {
+    export fn format_to(writer: mut stackref ByteBuffer, value: usize, args: FormatArgs) {
         format_to_sprintf<64, "\"%\" PRIu64", typeof(value)>(writer, value);
     }
 
-    export fn format_to(writer: mut stackref Writer, value: f32, args: FormatArgs) {
+    export fn format_to(writer: mut stackref ByteBuffer, value: f32, args: FormatArgs) {
         format_to_sprintf<64, "\"%.9g\"", typeof(value)>(writer, value);
     }
 
-    export fn format_to(writer: mut stackref Writer, value: f64, args: FormatArgs) {
+    export fn format_to(writer: mut stackref ByteBuffer, value: f64, args: FormatArgs) {
         format_to_sprintf<64, "\"%.17g\"", typeof(value)>(writer, value);
     }
 
-    export fn format_to(writer: mut stackref Writer, value: real, args: FormatArgs) {
+    export fn format_to(writer: mut stackref ByteBuffer, value: real, args: FormatArgs) {
         format_to(writer, value as f64, args);
     }
 
-    export fn format_to(writer: mut stackref Writer, value: bool, args: FormatArgs) {
+    export fn format_to(writer: mut stackref ByteBuffer, value: bool, args: FormatArgs) {
         if value {
             format_to(writer, "true", args);
         }
@@ -272,21 +220,21 @@ namespace fmt {
         }
     }
 
-    export fn format_to(writer: mut stackref Writer, value: fs.Error, args: FormatArgs) {
+    export fn format_to(writer: mut stackref ByteBuffer, value: fs.Error, args: FormatArgs) {
         let num = 0;
         __c__("num = value;");
         format_to(writer, num, args);
     }
 
-    export fn format_to(writer: mut stackref Writer, value: none, args: FormatArgs) {
+    export fn format_to(writer: mut stackref ByteBuffer, value: none, args: FormatArgs) {
         format_to(writer, "none", args);
     }
 
-    export fn format_to(writer: mut stackref Writer, value: null, args: FormatArgs) {
+    export fn format_to(writer: mut stackref ByteBuffer, value: null, args: FormatArgs) {
         format_to(writer, "null", args);
     }
 
-    export fn format_to_sprintf<BufferSize, Fmt, T>(writer: mut stackref Writer, value: T) {
+    export fn format_to_sprintf<BufferSize, Fmt, T>(writer: mut stackref ByteBuffer, value: T) {
         let n = 0;
         let string = "";
         __c__(f"""
@@ -295,29 +243,29 @@ n = hzstd_snprintf(buf, sizeof(buf), {Fmt}, value);
 string = HZSTD_STRING_FROM_CSTR(buf);
         """);
         if n > 0 && n < BufferSize {
-            writer.write(string);
+            writer.push(string);
         }
     }
 
-    export fn format_to(writer: mut stackref Writer, value: SourceLocation, args: FormatArgs) {
+    export fn format_to(writer: mut stackref ByteBuffer, value: SourceLocation, args: FormatArgs) {
         let f = value.filename();
         if f {
             let l = value.line();
             if l {
                 let c = value.column();
                 if c {
-                    writer.write(f"{f}:{l}:{c}");
+                    writer.push(f"{f}:{l}:{c}");
                 }
                 else {
-                    writer.write(f"{f}:{l}");
+                    writer.push(f"{f}:{l}");
                 }
             }
             else {
-                writer.write(f"{f}");
+                writer.push(f"{f}");
             }
         }
         else {
-            writer.write("<no location>");
+            writer.push("<no location>");
         }
     }
 }
