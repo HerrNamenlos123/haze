@@ -427,6 +427,120 @@ class CodeGenerator {
     return tablePath;
   }
 
+  /** Byte b's spelling inside a C string literal is at [b * 4]; see embeddedCSource. */
+  private static embedEscapes:
+    | { spelling: Uint8Array; length: Uint8Array }
+    | undefined;
+
+  /**
+   * One embedded file's whole C source: `head`, then `content` as adjacent
+   * string literals, then `tail`.
+   *
+   * A string literal, not a `{ 0x.., ... }` list: every list element is an
+   * initializer expression clang has to parse, which was 11% of haze-notes'
+   * clang time. Inside the literal, printable ASCII stands for itself except
+   * `"`, `\` and `?` (`??=` and friends are trigraphs under -std=c11); \n \t \r
+   * are spelled by name; every other byte is a 3-digit octal escape. Never \x:
+   * it is greedy and would swallow a following hex digit. Literals are split
+   * after each \n byte and before a line would pass 120 columns; adjacent
+   * literals are joined after escapes are read, so a split is always safe.
+   * The array gets one trailing NUL that nothing reads (the size is separate).
+   *
+   * Built in one Buffer rather than a string per byte: embedded fonts and
+   * images are megabytes.
+   */
+  private static embeddedCSource(
+    head: string,
+    content: Buffer,
+    tail: string
+  ): Buffer {
+    let escapes = CodeGenerator.embedEscapes;
+    if (!escapes) {
+      escapes = {
+        spelling: new Uint8Array(256 * 4),
+        length: new Uint8Array(256),
+      };
+      const named = new Map([
+        ['"', '\\"'],
+        ["\\", "\\\\"],
+        ["?", "\\?"],
+        ["\n", "\\n"],
+        ["\t", "\\t"],
+        ["\r", "\\r"],
+      ]);
+      for (let b = 0; b < 256; b++) {
+        const c = String.fromCharCode(b);
+        const s =
+          named.get(c) ??
+          (b >= 0x20 && b <= 0x7e ? c : `\\${b.toString(8).padStart(3, "0")}`);
+        for (let k = 0; k < s.length; k++) {
+          escapes.spelling[b * 4 + k] = s.charCodeAt(k);
+        }
+        escapes.length[b] = s.length;
+      }
+      CodeGenerator.embedEscapes = escapes;
+    }
+    const { spelling, length } = escapes;
+
+    const maxColumns = 120;
+    const indent = 4;
+    const tailBytes = Buffer.byteLength(tail);
+    // Room that must be free before a line is opened: the newline, indent,
+    // both quotes and up to maxColumns of text, and the tail after it.
+    const lineRoom = maxColumns + 8 + tailBytes;
+
+    // Mostly 4-byte escapes plus a few percent of line overhead; a file of
+    // many short lines grows below.
+    let out = Buffer.allocUnsafe(
+      Buffer.byteLength(head) + Math.ceil(content.length * 4.3) + lineRoom + 8
+    );
+    let pos = out.write(head, 0, "utf8");
+
+    if (content.length === 0) {
+      pos += out.write(' ""', pos, "latin1");
+    }
+
+    // The current line's column, or 0 while no literal is open.
+    let column = 0;
+    for (let i = 0; i < content.length; i++) {
+      const b = content[i];
+      const n = length[b];
+      if (column !== 0 && column + n + 1 > maxColumns) {
+        out[pos++] = 0x22; // "
+        column = 0;
+      }
+      if (column === 0) {
+        if (out.length - pos < lineRoom) {
+          const bigger = Buffer.allocUnsafe(
+            Math.max(out.length * 2, pos + lineRoom)
+          );
+          out.copy(bigger, 0, 0, pos);
+          out = bigger;
+        }
+        out[pos++] = 0x0a; // newline
+        out.fill(0x20, pos, pos + indent);
+        pos += indent;
+        out[pos++] = 0x22; // "
+        column = indent + 1;
+      }
+      const from = b * 4;
+      for (let k = 0; k < n; k++) {
+        out[pos++] = spelling[from + k];
+      }
+      column += n;
+      if (b === 0x0a) {
+        out[pos++] = 0x22; // "
+        column = 0;
+      }
+    }
+    if (column !== 0) {
+      out[pos++] = 0x22; // "
+    }
+
+    pos += out.write(tail, pos, "utf8");
+    return out.subarray(0, pos);
+  }
+
   compileEmbeddedFile(embeddedFile: Semantic.EmbeddedFileData) {
     const typeName = embeddedFile.isBinary ? "binary" : "text";
     const symbol = `__hz_${this.modulePrefix()}_embedded_${typeName}_${embeddedFile.id}`;
@@ -438,40 +552,24 @@ class CodeGenerator {
     const rawContent = readFileSync(embeddedFile.absolutePath);
     const fileContent = this.normalizeCRLF(rawContent, embeddedFile.isBinary);
 
-    // Generate C code as byte array
-    let c =
+    let head =
       "// ------------------------------------------------------------------\n";
-    c += "// GENERATED FILE — DO NOT EDIT\n";
-    c += `// Embedded file: ${embeddedFile.filePath} as ${embeddedFile.isBinary ? "binary" : "text"}\n`;
-    c +=
+    head += "// GENERATED FILE — DO NOT EDIT\n";
+    head += `// Embedded file: ${embeddedFile.filePath} as ${embeddedFile.isBinary ? "binary" : "text"}\n`;
+    head +=
       "// ------------------------------------------------------------------\n\n";
 
-    c += "#include <stdint.h>\n";
-    c += "#include <stddef.h>\n\n";
+    head += "#include <stdint.h>\n";
+    head += "#include <stddef.h>\n\n";
 
-    c += `const uint8_t ${symbol}_data[] = {\n`;
+    head += `const uint8_t ${symbol}_data[] =`;
 
-    // Write bytes in groups of 16 for readability
-    for (let i = 0; i < fileContent.length; i++) {
-      if (i % 16 === 0) {
-        c += "    ";
-      }
-      c += `0x${fileContent[i].toString(16).padStart(2, "0")}`;
-      if (i < fileContent.length - 1) {
-        c += ", ";
-      }
-      if ((i + 1) % 16 === 0) {
-        c += "\n";
-      }
-    }
-    if (fileContent.length % 16 !== 0) {
-      c += "\n";
-    }
-    c += "};\n\n";
+    const tail = `;\n\nconst size_t ${symbol}_size = ${fileContent.length};\n`;
 
-    c += `const size_t ${symbol}_size = ${fileContent.length};\n`;
-
-    writeFileSync(cFilePath, c);
+    writeFileSync(
+      cFilePath,
+      CodeGenerator.embeddedCSource(head, fileContent, tail)
+    );
   }
 
   compileEmbeddedFiles() {

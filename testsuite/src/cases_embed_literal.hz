@@ -1,0 +1,224 @@
+// ============================================================================
+// REGRESSION TEST: embedded files are emitted as C string literals.
+//
+// embed.binary() and embed.text() data used to be a `{ 0x.., ... }` array, in
+// which every element is an initializer expression clang has to parse. It is
+// now a run of adjacent string literals (CodeGenerator.embeddedCSource), and
+// a string literal has traps an array never had:
+//   - `??=`, `??/` and the other trigraphs, which -std=c11 turns on;
+//   - `"` and `\`, and a backslash right before a newline;
+//   - an octal escape followed by a digit: NUL then `1` must not read as `\01`;
+//   - \x is greedy: 0xFF then `a` must not read as `\xffa`;
+//   - a NUL in the middle and at the end (the size is not the literal's);
+//   - CR and LF, and the line splits every 120 columns, mid-run.
+//
+// The files below hold every byte value and each of those traps. The program
+// checks the length and every byte against a hex spelling of what was
+// written, which shares nothing with C escaping. embed.text must turn CRLF and
+// a lone CR into LF, embed.binary must keep them, and an empty file must still
+// compile and read back empty. A dependency embeds the same bytes too.
+// ============================================================================
+
+namespace cases_embed_literal {
+
+    // Every byte value as a u8, indexed by value: lets an []int be written
+    // out without an int-to-u8 conversion.
+    export fn byteTable(): []u8 {
+        let table: []u8 = [];
+        let b: u8 = 0;
+        for (let i = 0; i < 256; i++) {
+            table.push(b);
+            if i < 255 {
+                b = b + (1 as u8);
+            }
+        }
+        return table;
+    }
+
+    // The bytes, as a str the framework writes to disk unchanged.
+    export fn bytesOf(values: []int): str {
+        let table = byteTable();
+        let buffer = ByteBuffer();
+        for v in values {
+            buffer.push(table[v]);
+        }
+        buffer.commit();
+        return buffer.cloneString();
+    }
+
+    // Two lowercase hex digits per byte: the program's expected value.
+    export fn hexOf(values: []int): str {
+        let digits = "0123456789abcdef";
+        let buffer = ByteBuffer();
+        for v in values {
+            buffer.push(digits[v / 16]);
+            buffer.push(digits[v % 16]);
+        }
+        buffer.commit();
+        return buffer.cloneString();
+    }
+
+    export fn quoted(text: str): str {
+        return "\"" + text + "\"";
+    }
+
+    // Every byte value in order, then each C string-literal trap, then long
+    // runs that are split across literals, then a trailing NUL.
+    export fn riskyBytes(): []int {
+        let out: []int = [];
+        for (let i = 0; i < 256; i++) {
+            out.push(i);
+        }
+        let traps: []int = [
+            // The nine trigraphs ??= ??/ ??' ??( ??) ??! ??< ??> ??-, then ???=.
+            63, 63, 61, 63, 63, 47, 63, 63, 39, 63, 63, 40, 63, 63, 41,
+            63, 63, 33, 63, 63, 60, 63, 63, 62, 63, 63, 45, 63, 63, 63, 61,
+            // Quotes and backslashes; a backslash before `n` and before a newline.
+            34, 92, 92, 34, 92, 92, 34, 34, 92, 110, 92, 10,
+            // NUL followed by digits: not \01, \012, \0123, \07, \077.
+            0, 49, 50, 51, 0, 55, 55,
+            // Octal-looking bytes followed by `7` or `0`.
+            1, 55, 7, 55, 55, 200, 55, 127, 48,
+            // Non-printable bytes followed by hex digits.
+            255, 97, 98, 70, 27, 48, 120, 49,
+            // A NUL in the middle.
+            97, 0, 98,
+            // CRLF, a lone CR, LF LF, CR CR LF, a tab.
+            13, 10, 13, 120, 10, 10, 13, 13, 10, 9,
+            // Comment delimiters.
+            47, 42, 42, 47, 47, 47,
+        ];
+        for t in traps {
+            out.push(t);
+        }
+        // Long runs of one-column, two-column (`\?`) and four-column (octal)
+        // spellings, so literal lines are split in the middle of each.
+        for (let i = 0; i < 300; i++) {
+            out.push(65 + i % 26);
+        }
+        for (let i = 0; i < 250; i++) {
+            out.push(63);
+        }
+        for (let i = 0; i < 250; i++) {
+            out.push(128 + i % 128);
+        }
+        out.push(0);
+        return out;
+    }
+
+    // A UTF-8 text file with CRLF, a lone CR, CR CR LF and a trailing lone CR,
+    // plus the characters C escaping cares about and two multi-byte characters.
+    export fn crlfRaw(): []int {
+        return [
+            111, 110, 101, 13, 10,              // one CRLF
+            116, 119, 111, 13,                  // two CR
+            116, 104, 114, 101, 101, 10,        // three LF
+            63, 63, 61, 63, 63, 47, 34, 92, 9,  // ??=??/"\ TAB
+            195, 164, 226, 130, 172, 13, 10,    // a-umlaut, euro sign, CRLF
+            13, 13, 10,                         // CR CR LF
+            101, 110, 100, 13,                  // end CR
+        ];
+    }
+
+    // crlfRaw as embed.text reads it: CRLF and every lone CR become LF.
+    export fn crlfText(): []int {
+        return [
+            111, 110, 101, 10,
+            116, 119, 111, 10,
+            116, 104, 114, 101, 101, 10,
+            63, 63, 61, 63, 63, 47, 34, 92, 9,
+            195, 164, 226, 130, 172, 10,
+            10, 10,
+            101, 110, 100, 10,
+        ];
+    }
+
+    export fn program(riskyHex: str, crlfRawHex: str, crlfTextHex: str): str {
+        return """
+import embedlit;
+
+fn hexValue(c: u8): int {
+    if c >= b"a" {
+        return int(c) - int(b"a") + 10;
+    }
+    return int(c) - int(b"0");
+}
+
+// Prints the first difference, so a failure says where it is.
+fn same(what: str, got: Bytes, expectedHex: str): bool {
+    if got.length * 2 != expectedHex.length {
+        fmt.println(f"{what}: {got.length} bytes, expected {expectedHex.length / 2}");
+        return false;
+    }
+    for (let i = 0; i < got.length; i++) {
+        let expected = hexValue(expectedHex[2 * i]) * 16 + hexValue(expectedHex[2 * i + 1]);
+        if int(got[i]) != expected {
+            fmt.println(f"{what}: byte {i} is {int(got[i])}, expected {expected}");
+            return false;
+        }
+    }
+    return true;
+}
+
+fn main(): int {
+    let riskyHex = """ + quoted(riskyHex) + """;
+    let ok = true;
+    if !same("risky.bin", embed.binary("src/risky.bin"), riskyHex) {
+        ok = false;
+    }
+    if !same("risky.bin in a dependency", embedlit.risky(), riskyHex) {
+        ok = false;
+    }
+    if !same("crlf.txt as binary", embed.binary("src/crlf.txt"), """ + quoted(crlfRawHex) + """) {
+        ok = false;
+    }
+    if !same("crlf.txt as text", Bytes(embed.text("src/crlf.txt")), """ + quoted(crlfTextHex) + """) {
+        ok = false;
+    }
+    if !same("newline.bin", embed.binary("src/newline.bin"), "610a") {
+        ok = false;
+    }
+    if !same("empty.bin as binary", embed.binary("src/empty.bin"), "") {
+        ok = false;
+    }
+    if !same("empty.bin as text", Bytes(embed.text("src/empty.bin")), "") {
+        ok = false;
+    }
+    if !ok {
+        return 1;
+    }
+    fmt.println("ok");
+    return 0;
+}
+""";
+    }
+
+    export fn register(s: mut testsuite.Suite) {
+        let risky = bytesOf(riskyBytes());
+
+        s.runWithFiles(
+            "embed literal: every byte value and every C string-literal trap reads back exactly",
+            [
+                testsuite.TestModule {
+                    name: "embedlit",
+                    source: """
+export fn risky(): Bytes {
+    return embed.binary("src/risky.bin");
+}
+""",
+                    extraFiles: [
+                        testsuite.TestFile { name: "risky.bin", source: risky },
+                    ],
+                },
+            ],
+            program(hexOf(riskyBytes()), hexOf(crlfRaw()), hexOf(crlfText())),
+            [
+                testsuite.TestFile { name: "risky.bin", source: risky },
+                testsuite.TestFile { name: "crlf.txt", source: bytesOf(crlfRaw()) },
+                testsuite.TestFile { name: "newline.bin", source: "a\n" },
+                testsuite.TestFile { name: "empty.bin", source: "" },
+            ],
+            "ok\n",
+        );
+    }
+}
