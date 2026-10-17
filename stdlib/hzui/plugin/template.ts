@@ -780,11 +780,16 @@ export function lowerTemplate(
 ): string {
   const nodes = new Parser(lex(body, startLine)).parseNodes(false);
   const em = new Emitter(baseIndent);
-  lowerNodes(nodes, em, ctx, { counter: 0, inLoop: false });
+  lowerNodes(nodes, em, ctx, { counter: 0, inLoop: false, loopKeys: [] });
   return em.lines.join("\n");
 }
 
-type Scope = { counter: number; inLoop: boolean };
+// `loopKeys`: the key expressions of every loop iteration this node is nested
+// in, outermost first, within the current component's template. Elements do
+// not need them (an element's id is scoped by its parent element, which is
+// already keyed), but a component's id goes into the enclosing COMPONENT's
+// flat child list, so without them every iteration would share one instance.
+type Scope = { counter: number; inLoop: boolean; loopKeys: string[] };
 
 function lowerNodes(
   nodes: Node[],
@@ -890,7 +895,11 @@ function lowerElement(
   if (node.forExpr !== null) {
     em.emit(`for ${ctx.rewriteExpr(node.forExpr)} {`);
     em.indented(() =>
-      lowerElementInner(node, em, ctx, { counter: scope.counter, inLoop: true })
+      lowerElementInner(node, em, ctx, {
+        counter: scope.counter,
+        inLoop: true,
+        loopKeys: scope.loopKeys,
+      })
     );
     em.emit(`}`);
     scope.counter++; // the for-element consumes one static id slot
@@ -910,6 +919,7 @@ function lowerElementInner(
   // id from the per-block element counter.
   const staticId = isComponent ? ctx.nextComponentId() : ++scope.counter;
   let idExpr = `${staticId}`;
+  let loopKeys = scope.loopKeys;
   if (scope.inLoop || node.forExpr !== null) {
     if (node.keyExpr === null) {
       throw new TemplateError(
@@ -917,7 +927,13 @@ function lowerElementInner(
         node.line
       );
     }
-    idExpr = `keyId(${staticId}, ${ctx.rewriteExpr(node.keyExpr)})`;
+    const key = ctx.rewriteExpr(node.keyExpr);
+    idExpr = `keyId(${staticId}, ${key})`;
+    loopKeys = [...loopKeys, key];
+  }
+  if (isComponent && loopKeys.length > 0) {
+    const folded = loopKeys.reduce((outer, inner) => `mixKeys(${outer}, ${inner})`);
+    idExpr = `keyId(${staticId}, ${folded})`;
   }
 
   const rw = ctx.rewriteExpr;
@@ -999,7 +1015,7 @@ function lowerElementInner(
             `${sp.name}: (${slotParamBinding(node.tag, sp.name, sp.params, node.line)}) => {`
           );
           em.indented(() =>
-            lowerNodes(sp.children, em, ctx, { counter: 0, inLoop: false })
+            lowerNodes(sp.children, em, ctx, { counter: 0, inLoop: false, loopKeys: [] })
           );
           em.emit(`},`);
         }
@@ -1045,7 +1061,7 @@ function lowerElementInner(
   em.emit(`ui.${node.tag}({ ${props.join(", ")} }, (): void => {`);
   em.indented(() => {
     if (node.children) {
-      lowerNodes(node.children, em, ctx, { counter: 0, inLoop: false });
+      lowerNodes(node.children, em, ctx, { counter: 0, inLoop: false, loopKeys });
     }
   });
   if (presetCalls.length === 0) {

@@ -93,6 +93,7 @@ namespace process {
   extern C noemit fn hzstd_process_write_stdin(handle: cptr, data: str): bool :: final;
   extern C noemit fn hzstd_process_close_stdin(handle: cptr) :: final;
   extern C noemit fn hzstd_process_is_alive(handle: cptr): bool :: final;
+  extern C noemit fn hzstd_process_kill(handle: cptr) :: final;
   extern C noemit fn hzstd_process_join(handle: cptr): int :: final;
   extern C noemit fn hzstd_process_release(handle: cptr) :: final;
 
@@ -142,6 +143,13 @@ namespace process {
 
     // Blocks until the process exits and returns its exit code. Releases the
     // underlying OS resources, so the Process must not be used afterwards.
+    // Ask the process to stop (SIGTERM / TerminateProcess) without waiting
+    // for it. It still has to be reaped: poll isAlive(), then join().
+    fn kill() {
+      assert(!this.released, "process.Process used after join() released it");
+      hzstd_process_kill(this.handle);
+    }
+
     fn join(): int {
       assert(!this.released, "process.Process.join() called twice");
       this.released = true;

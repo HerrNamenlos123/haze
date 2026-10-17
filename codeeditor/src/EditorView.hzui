@@ -25,11 +25,85 @@ ref struct SelectionBand {
     width: real;
 }
 
+ref struct FindBand {
+    top: real;
+    left: real;
+    width: real;
+    current: bool;
+}
+
 ref struct CaretBox {
     left: real;
     top: real;
     width: real;
     height: real;
+}
+
+// One stretch of a red (or yellow) line under a problem, per screen line.
+ref struct DiagnosticBand {
+    top: real;
+    left: real;
+    width: real;
+    color: str;
+}
+
+// What this editor shows of the servers' errors and warnings.
+ref struct DiagnosticsState {
+    fromTsServer: []Diagnostic = [];
+    published: []Diagnostic = [];
+    // One geterr at a time: tsserver abandons a check when another starts.
+    pending: bool = false;
+    // The bridge's editCount() when the shown answer was asked for.
+    requestedEdits: int = -1;
+    publishedRevisionSeen: int = -1;
+}
+
+// The suggest list's state. Plain fields rather than reactives: it changes per
+// keystroke and per reply, and the template only needs one revision bump for
+// all of it.
+ref struct CompletionSession {
+    // From the keystroke that raised it until the caret leaves the word.
+    active: bool = false;
+    line: int = 0;
+    // Byte column where the typed word starts; for a `.`, right after it.
+    anchor: int = 0;
+    // Bumped per request and on close, so a late answer is dropped.
+    serial: int = 0;
+    entries: []CompletionEntry = [];
+    incomplete: bool = false;
+    // The word the list was last ranked for, as order[] into entries.
+    query: str = "";
+    order: []int = [];
+    // Set when a reply lands: re-rank even though nothing was typed.
+    dirty: bool = false;
+    // What the last check saw, so an idle frame does no work.
+    checkedVersion: int = -1;
+    checkedColumn: int = -1;
+    // Positions in order[], not indices into entries.
+    selected: int = 0;
+    firstVisible: int = 0;
+}
+
+// An accepted auto-import, waiting for tsserver's edits.
+ref struct PendingImport {
+    active: bool = false;
+    entry: CompletionEntry | none = none;
+    // Ask (again) on the next frame: nothing asked yet, or the document
+    // moved on before the answer came.
+    needsRequest: bool = false;
+    requestedVersion: int = -1;
+    serial: int = 0;
+    since: real = 0.0;
+}
+
+ref struct CompletionRow {
+    // Position in the ranked list, which is what accepting takes.
+    position: int;
+    glyph: str;
+    glyphColor: str;
+    runs: []CompletionRun;
+    description: str;
+    background: str;
 }
 
 @props
@@ -90,6 +164,19 @@ texteditBehavior.useSystemClipboard = true;
 let vim = vim_behavior.Vim(texteditBehavior);
 let vimOn = reactive<bool>(true);
 
+// One jump list for all tabs, so <C-o> goes back across files -- see
+// JumpState in navigation.hz.
+vim.jumpList = jumps().list;
+vim.document = filePath;
+let jumpToDocument: vim_behavior.JumpToDocumentHook = (document: str, pos: Vec2i) => {
+    if !pathExists(document) {
+        return;
+    }
+    jumps().leavingKey = args.tabKey;
+    requestRevealMatch(document, pos.y, pos.x, pos.x, false);
+};
+vim.onJumpToDocument = jumpToDocument;
+
 let applyVimMode = (enabled: bool) => {
     if enabled {
         vim.install();
@@ -122,7 +209,11 @@ let restoreCaretAfterReload: DocAction = () => {
 };
 buffer.onReloaded = restoreCaretAfterReload;
 
-let requestSave = (): bool => { return buffer.requestSave(); };
+// Saving keeps a preview tab, as in VS Code.
+let requestSave = (): bool => {
+    pinTab(args.tabKey);
+    return buffer.requestSave();
+};
 let checkDisk = () => { buffer.checkDisk(); };
 let resolveOverwrite = () => {
     buffer.resolveOverwrite();
@@ -450,6 +541,89 @@ let drainHighlights = () => {
     }
 };
 
+// --- Diagnostics -------------------------------------------------
+//
+// Errors and warnings from both servers, drawn as a line under what they
+// cover. tsserver is asked again once typing pauses after an edit to ANY file
+// (an edit elsewhere can fix or break this one; see pumpLsp); until it
+// answers, the lines already shown ride along with the text they are on.
+
+const comptime DIAGNOSTICS_QUIET_SECONDS = 0.2;
+const comptime DIAGNOSTIC_LINE_HEIGHT = 2.0;
+
+let problems = DiagnosticsState {};
+let diagnosticsRevision = reactive<int>(0);
+let bumpDiagnostics = () => { diagnosticsRevision := rx.get(diagnosticsRevision) + 1; };
+
+// The servers' positions in this document's bytes. Lines are clamped: an
+// answer can describe a slightly older, longer text.
+let toDiagnostics = (bridge: VueLspBridge, raw: []ServerDiagnostic): []Diagnostic => {
+    let out: []Diagnostic = [];
+    let lastLine = doc.lineCount() - 1;
+    for item in raw {
+        let startLine = vim_behavior.clampInt(item.startLine, 0, lastLine);
+        let endLine = vim_behavior.clampInt(item.endLine, startLine, lastLine);
+        out.push(Diagnostic {
+            startLine: startLine,
+            startColumn: bridge.byteColumn(item, doc.lineText(startLine), item.startCharacter),
+            endLine: endLine,
+            endColumn: bridge.byteColumn(item, doc.lineText(endLine), item.endCharacter),
+            severity: item.severity,
+            message: item.message,
+        });
+    }
+    return out;
+};
+
+// Only the visible lines, like the text itself. A problem reported at a
+// position rather than over characters still gets one cell.
+let diagnosticBands = computed((): []DiagnosticBand => {
+    let out: []DiagnosticBand = [];
+    let lineHeight = rx.get(charHeight);
+    let cellWidth = rx.get(charWidth);
+    if lineHeight <= 0.0 {
+        return out;
+    }
+    rx.get(diagnosticsRevision);
+    rx.get(docVersion);
+    let range = scroll.visibleRange(lineHeight, doc.lineCount(), 2);
+    let scrollY = rx.get(scroll.scrollTop);
+    let visible: []Diagnostic = [];
+    for diagnostic in problems.fromTsServer {
+        if diagnostic.endLine >= range.x && diagnostic.startLine < range.y {
+            visible.push(diagnostic);
+        }
+    }
+    for diagnostic in problems.published {
+        if diagnostic.endLine >= range.x && diagnostic.startLine < range.y {
+            visible.push(diagnostic);
+        }
+    }
+    if visible.length == 0 {
+        return out;
+    }
+    for (let i = range.x; i < range.y; i++) {
+        let lineLength = doc.lineLength(i);
+        for diagnostic in visible {
+            let span = diagnosticSpanOnLine(diagnostic, i, lineLength);
+            if span {
+                let startCell = texteditBehavior.displayColumnAt(i, span.start);
+                let cells = texteditBehavior.displayColumnAt(i, span.end) - startCell;
+                if cells < 1 {
+                    cells = 1;
+                }
+                out.push(DiagnosticBand {
+                    top: (i + 1) as real * lineHeight - scrollY - DIAGNOSTIC_LINE_HEIGHT,
+                    left: startCell as real * cellWidth,
+                    width: cells as real * cellWidth,
+                    color: diagnosticColor(diagnostic.severity),
+                });
+            }
+        }
+    }
+    return out;
+});
+
 // --- Document changes --------------------------------------------
 
 buffer.load();
@@ -515,10 +689,392 @@ doc.addChangeListener((change: text_document.ChangeSet) => {
         }, doc.version);
     }
 
+    if problems.fromTsServer.length > 0 || problems.published.length > 0 {
+        shiftDiagnostics(problems.fromTsServer, change.startLine, change.removedCount,
+            change.insertedCount);
+        shiftDiagnostics(problems.published, change.startLine, change.removedCount,
+            change.insertedCount);
+        bumpDiagnostics();
+    }
+
     tokens.noteEdit(change.startLine, change.removedCount, change.insertedCount,
         doc.version);
     getState().highlightEngine.sendDocumentChange(highlightUri, change.startLine,
         change.removedCount, newLines, doc.version);
+});
+
+// --- Completion --------------------------------------------------
+//
+// VS Code's suggest widget. Typing a word, or a `.`, asks tsserver once what
+// can go there; every later keystroke only re-ranks that answer, unless
+// tsserver said it was incomplete. The session is anchored at the start of the
+// typed word and ends when the caret leaves the word, the line or insert mode
+// -- checked per frame by pumpCompletion, so every way of moving the caret
+// (keys, mouse, undo, vim motions) closes it without each one having to know.
+
+const comptime COMPLETION_VISIBLE_ROWS = 12;
+// An import whose edits have not arrived by then is given up, rather than
+// holding the undo group open indefinitely.
+const comptime COMPLETION_IMPORT_TIMEOUT_SECONDS = 3.0;
+
+let completion = CompletionSession {};
+let pendingImport = PendingImport {};
+let completionRevision = reactive<int>(0);
+// Every change to the list goes through here, so this is also where the
+// keymap learns whether it is up. An inactive editor may only ever clear it:
+// its list closes as it loses the tab, while the active one's may be open.
+let bumpCompletion = () => {
+    completionRevision := rx.get(completionRevision) + 1;
+    let visible = completion.active && completion.order.length > 0;
+    if props.active || !visible {
+        keybindings().context.setBool(ctxSuggestWidgetVisible(), visible);
+    }
+};
+
+// Insert mode only: in vim's normal mode a letter is a command, not text.
+let completionAllowed = (): bool => {
+    if lspLanguageId.length == 0 || !props.active {
+        return false;
+    }
+    if !rx.get(vimOn) {
+        return true;
+    }
+    return rx.get(texteditBehavior.mode) == textedit_behavior.Mode.Insert && !vim.commandLineOpen();
+};
+
+let completionVisible = (): bool => completion.active && completion.order.length > 0;
+
+let closeCompletion = () => {
+    if !completion.active {
+        return;
+    }
+    completion.active = false;
+    completion.serial = completion.serial + 1;
+    completion.entries = [];
+    completion.order = [];
+    completion.query = "";
+    bumpCompletion();
+};
+
+// `trigger` is "." when one was just typed. `retrigger` re-asks for the same
+// word because the previous answer was incomplete; the list on screen stays
+// until the new one replaces it.
+let startCompletion = (trigger: str, retrigger: bool) => {
+    let bridge = getState().lspBridge;
+    if !bridge {
+        return;
+    }
+    if !rx.get(lspDocumentOpened) {
+        return;
+    }
+    let caret = rx.get(texteditBehavior.cursorPosition);
+    let lineText = doc.lineText(caret.y);
+    let anchor = identifierStartBefore(lineText, caret.x);
+    // A number being typed, not a name.
+    if trigger.length == 0 && anchor < caret.x && lineText[anchor] >= b"0" && lineText[anchor] <= b"9" {
+        return;
+    }
+    if !retrigger {
+        completion.entries = [];
+        completion.order = [];
+        completion.query = "";
+        completion.selected = 0;
+        completion.firstVisible = 0;
+    }
+    completion.active = true;
+    completion.line = caret.y;
+    completion.anchor = anchor;
+    completion.incomplete = false;
+    completion.serial = completion.serial + 1;
+    let serial = completion.serial;
+    bridge.completions(filePath, caret.y, caret.x, lineText, trigger, retrigger,
+        (list: CompletionList) => {
+            if !completion.active || completion.serial != serial {
+                return;
+            }
+            completion.entries = list.entries;
+            completion.incomplete = list.isIncomplete;
+            completion.dirty = true;
+        });
+    bumpCompletion();
+};
+
+let moveCompletionSelection = (delta: int) => {
+    let count = completion.order.length;
+    if count == 0 {
+        return;
+    }
+    // A single step wraps around the ends, as VS Code's does; a page stops at them.
+    let next = completion.selected + delta;
+    if delta == 1 || delta == -1 {
+        next = (next + count) % count;
+    }
+    next = vim_behavior.clampInt(next, 0, count - 1);
+    completion.selected = next;
+    if next < completion.firstVisible {
+        completion.firstVisible = next;
+    }
+    if next >= completion.firstVisible + COMPLETION_VISIBLE_ROWS {
+        completion.firstVisible = next - COMPLETION_VISIBLE_ROWS + 1;
+    }
+    bumpCompletion();
+};
+
+// tsserver's extra edits for an accepted entry -- the import. Its coordinates
+// describe the document as it was when it answered, so they are applied last
+// first: each one then still finds the text before it untouched. The caret is
+// carried along, since an import line above it pushes it down.
+let applyServerEdits = (edits: []TextEditUtf16) => {
+    let sorted: []TextEditUtf16 = [];
+    for edit in edits {
+        sorted.push(edit);
+    }
+    array.sort<TextEditUtf16>(sorted, (a: TextEditUtf16, b: TextEditUtf16): int => {
+        if a.startLine != b.startLine {
+            return a.startLine > b.startLine ? -1 : 1;
+        }
+        if a.startUtf16 != b.startUtf16 {
+            return a.startUtf16 > b.startUtf16 ? -1 : 1;
+        }
+        return 0;
+    });
+    let caret = rx.get(texteditBehavior.cursorPosition);
+    let landing: Vec2i = { x: caret.x, y: caret.y };
+    for edit in sorted {
+        let lastLine = doc.lineCount() - 1;
+        let startLine = vim_behavior.clampInt(edit.startLine, 0, lastLine);
+        let endLine = vim_behavior.clampInt(edit.endLine, startLine, lastLine);
+        let start: Vec2i = {
+            x: unicode.offsetFromUtf16Units(doc.lineText(startLine), edit.startUtf16),
+            y: startLine,
+        };
+        let end: Vec2i = {
+            x: unicode.offsetFromUtf16Units(doc.lineText(endLine), edit.endUtf16),
+            y: endLine,
+        };
+        texteditBehavior.replaceRangeWith(textedit_behavior.Range { start: start, end: end },
+            String(edit.newText));
+        landing = positionAfterEdit(landing, start, end, edit.newText);
+    }
+    texteditBehavior.moveTo(landing, true, false);
+};
+
+let finishImport = () => {
+    if !pendingImport.active {
+        return;
+    }
+    pendingImport.active = false;
+    pendingImport.entry = none;
+    pendingImport.serial = pendingImport.serial + 1;
+    texteditBehavior.endUndoGroup();
+};
+
+let requestImportEdits = () => {
+    pendingImport.needsRequest = false;
+    let bridge = getState().lspBridge;
+    let entry = pendingImport.entry;
+    if !bridge {
+        finishImport();
+        return;
+    }
+    if !entry {
+        finishImport();
+        return;
+    }
+    let caret = rx.get(texteditBehavior.cursorPosition);
+    pendingImport.requestedVersion = doc.version;
+    pendingImport.serial = pendingImport.serial + 1;
+    let serial = pendingImport.serial;
+    bridge.completionEdits(filePath, caret.y, caret.x, doc.lineText(caret.y), entry,
+        (edits: []TextEditUtf16) => {
+            if !pendingImport.active || pendingImport.serial != serial {
+                return;
+            }
+            // Typed on before the answer came: its coordinates describe a
+            // document that no longer exists. Ask again for this one.
+            if doc.version != pendingImport.requestedVersion {
+                pendingImport.needsRequest = true;
+                return;
+            }
+            applyServerEdits(edits);
+            finishImport();
+        });
+};
+
+// Replace the typed word with the entry, then, for an auto-import, add the
+// import once tsserver says how. One undo group around both, so a single undo
+// takes back the word and its import together, as in VS Code.
+let acceptCompletion = (position: int) => {
+    if position < 0 || position >= completion.order.length {
+        return;
+    }
+    let entry = completion.entries[completion.order[position]];
+    let caret = rx.get(texteditBehavior.cursorPosition);
+    let start = completion.anchor;
+    // A member of a possibly-undefined object replaces the dot with "?.".
+    if entry.replaceStartUtf16 >= 0 {
+        let spanStart = unicode.offsetFromUtf16Units(doc.lineText(caret.y), entry.replaceStartUtf16);
+        if spanStart < start {
+            start = spanStart;
+        }
+    }
+    closeCompletion();
+    // An import still pending from an earlier accept is abandoned: only one
+    // undo group is ever held open by this.
+    finishImport();
+
+    texteditBehavior.beginUndoGroup();
+    let range = textedit_behavior.Range {
+        start: { x: start, y: caret.y },
+        end: { x: caret.x, y: caret.y },
+    };
+    texteditBehavior.replaceRangeWith(range, String(entry.insertText));
+    let after: Vec2i = { x: start + entry.insertText.length, y: caret.y };
+    texteditBehavior.moveTo(after, true, false);
+
+    if !entry.hasAction {
+        texteditBehavior.endUndoGroup();
+        return;
+    }
+    pendingImport.active = true;
+    pendingImport.entry = entry;
+    pendingImport.since = ui.now();
+    requestImportEdits();
+};
+
+// The keys reach these through the keymap (suggest_keymap.hz), which runs
+// before vim and the editor see the key at all.
+let suggestCommands = SuggestCommands {
+    selectNext: () => { moveCompletionSelection(1); },
+    selectPrevious: () => { moveCompletionSelection(-1); },
+    selectNextPage: () => { moveCompletionSelection(COMPLETION_VISIBLE_ROWS); },
+    selectPreviousPage: () => { moveCompletionSelection(-COMPLETION_VISIBLE_ROWS); },
+    accept: () => { acceptCompletion(completion.selected); },
+    hide: () => { closeCompletion(); },
+    trigger: () => {
+        if completionAllowed() {
+            startCompletion("", false);
+        }
+    },
+};
+// Whether this editor holds the suggest commands, re-claimed whenever it
+// becomes the active one -- another tab may have claimed them meanwhile.
+let suggestCommandsClaimed: ref Box<bool> = { value: false };
+
+// Per frame. Closes the session when the caret has left the word, re-ranks it
+// when the word changed or a reply landed, and re-asks an incomplete answer.
+let pumpCompletion = (now: real) => {
+    if props.active != suggestCommandsClaimed.value {
+        suggestCommandsClaimed.value = props.active;
+        if props.active {
+            registerSuggestCommands(keybindings(), suggestCommands);
+        }
+    }
+    if pendingImport.active {
+        if now - pendingImport.since > COMPLETION_IMPORT_TIMEOUT_SECONDS {
+            finishImport();
+        } else if pendingImport.needsRequest {
+            requestImportEdits();
+        }
+    }
+    if !completion.active {
+        return;
+    }
+    if !getState().lspBridge || !completionAllowed() {
+        closeCompletion();
+        return;
+    }
+    let caret = rx.get(texteditBehavior.cursorPosition);
+    if !completion.dirty && caret.y == completion.line && caret.x == completion.checkedColumn
+        && doc.version == completion.checkedVersion {
+        return;
+    }
+    let lineText = doc.lineText(caret.y);
+    if caret.y != completion.line || caret.x < completion.anchor
+        || !isIdentifierRange(lineText, completion.anchor, caret.x) {
+        closeCompletion();
+        return;
+    }
+    completion.checkedVersion = doc.version;
+    completion.checkedColumn = caret.x;
+    let query = lineText.slice(completion.anchor, caret.x);
+    let changed = query != completion.query;
+    if !changed && !completion.dirty {
+        return;
+    }
+    completion.dirty = false;
+    completion.query = query;
+    completion.order = rankCompletions(completion.entries, query);
+    completion.selected = 0;
+    completion.firstVisible = 0;
+    bumpCompletion();
+    if changed && completion.incomplete {
+        startCompletion("", true);
+    }
+};
+
+let completionRows = computed((): []CompletionRow => {
+    rx.get(completionRevision);
+    let out: []CompletionRow = [];
+    if !completion.active {
+        return out;
+    }
+    let end = completion.firstVisible + COMPLETION_VISIBLE_ROWS;
+    if end > completion.order.length {
+        end = completion.order.length;
+    }
+    for (let i = completion.firstVisible; i < end; i++) {
+        let entry = completion.entries[completion.order[i]];
+        let selected = i == completion.selected;
+        out.push(CompletionRow {
+            position: i,
+            glyph: completionKindGlyph(entry.kind),
+            glyphColor: completionKindColor(entry.kind),
+            runs: completionLabelRuns(completion.query, entry.name,
+                selected ? "#FFFFFF" : "#CCCCCC", "#2AAAFF"),
+            description: entry.description,
+            background: selected ? "#04395E" : "#00000000",
+        });
+    }
+    return out;
+});
+
+let completionShown = computed((): bool => {
+    rx.get(completionRevision);
+    return completionVisible();
+});
+
+let completionRowHeight = computed((): real => rx.get(charHeight) + 4.0);
+
+// Under the typed word, its icon column hanging left of it as in VS Code, and
+// above the line instead when below does not fit but above does.
+let completionBox = computed((): CaretBox => {
+    rx.get(completionRevision);
+    rx.get(docVersion);
+    let lineHeight = rx.get(charHeight);
+    let cellWidth = rx.get(charWidth);
+    let shown = completion.order.length < COMPLETION_VISIBLE_ROWS
+        ? completion.order.length : COMPLETION_VISIBLE_ROWS;
+    let height = shown as real * rx.get(completionRowHeight) + 2.0;
+    let width = cellWidth * 60.0;
+    let textWidth = rx.get(viewWidth) - (scroll.showsVerticalBar() ? scroll.style.size : 0.0);
+    if width > textWidth - 8.0 {
+        width = textWidth - 8.0;
+    }
+    let left = texteditBehavior.displayColumnAt(completion.line, completion.anchor) as real * cellWidth
+        - cellWidth * 2.0;
+    if left + width > textWidth {
+        left = textWidth - width;
+    }
+    if left < 0.0 {
+        left = 0.0;
+    }
+    let lineTop = completion.line as real * lineHeight - rx.get(scroll.scrollTop);
+    let top = lineTop + lineHeight;
+    if top + height > rx.get(viewHeight) && lineTop - height >= 0.0 {
+        top = lineTop - height;
+    }
+    return CaretBox { left: left, top: top, width: width, height: height };
 });
 
 // --- Input -------------------------------------------------------
@@ -629,7 +1185,26 @@ let onLongPress = (event: ui_components.PointerEvent) => {
     selectFromPointer(event, 2, true);
 };
 
+// Whether a keystroke that inserted `typed` opens the suggest list: a `.`
+// always asks anew, the first character of a word starts a session, and later
+// ones are left to pumpCompletion, which re-ranks or closes.
+let completeAfterTyping = (typed: str) => {
+    if typed.length == 0 || !completionAllowed() {
+        return;
+    }
+    if typed == "." {
+        startCompletion(".", false);
+        return;
+    }
+    if !completion.active && isIdentifierByte(typed[typed.length - 1]) {
+        startCompletion("", false);
+    }
+};
+
 let onTextInput = (event: ui_components.TextInputEvent) => {
+    // Decided before the keystroke runs: in vim the `i` that enters insert
+    // mode is a command, not the first letter of a word.
+    let wasTyping = completionAllowed();
     if rx.get(vimOn) {
         // The one hover binding: vim has no mouse dwell to raise it with.
         if event.text == "L" && rx.get(texteditBehavior.mode) != textedit_behavior.Mode.Insert
@@ -640,6 +1215,9 @@ let onTextInput = (event: ui_components.TextInputEvent) => {
         texteditBehavior.handleTextInput(event.text);
     } else {
         texteditBehavior.insertText(event.text);
+    }
+    if wasTyping {
+        completeAfterTyping(event.text);
     }
     caretFollow := true;
     noteKeyboardActivity();
@@ -733,6 +1311,26 @@ let followActiveFocus = computed(() => {
     return active;
 });
 
+// Leaving this tab for another file is a jump, as in VS Code: <C-o> over
+// there comes back to this caret. Not when a <C-o>/<C-i> is what left it.
+let activeSeen = reactive<bool>(args.active);
+let recordJumpOnLeave = computed((): bool => {
+    let active = props.active;
+    if active == rx.get(activeSeen) {
+        return active;
+    }
+    activeSeen := active;
+    if !active {
+        let state = jumps();
+        if state.leavingKey == args.tabKey {
+            state.leavingKey = -1;
+        } else {
+            vim.pushJump();
+        }
+    }
+    return active;
+});
+
 let publishEditorContext = computed(() => {
     if !props.active {
         return false;
@@ -743,6 +1341,310 @@ let publishEditorContext = computed(() => {
     context.setStr(ctxVimMode(), on ? vimModeContextName(rx.get(texteditBehavior.mode)) : "");
     context.setBool(ctxEditorHasSelection(),
         rx.get(texteditBehavior.selectionAnchor) ? true : false);
+    return true;
+});
+
+// ── Find (Ctrl+F) ────────────────────────────────────────────────────────
+//
+// The query is the shared findState(); the matches are this document's. The
+// scan runs a slice per frame while the widget is open (pumpFind), and
+// stepping with Enter, F3 or vim's n/N works with or without it -- see
+// findAdjacent.
+let findOpen = reactive<bool>(false);
+let findFocusSerial = reactive<int>(0);
+let findScan = FindScan {};
+// Bumped whenever findScan's matches change: the highlights and the count are
+// drawn from it.
+let findRevision = reactive<int>(0);
+// Find-as-you-type: retyping moves to the first match at or after where the
+// search started, which stepping then moves along.
+let findOrigin = shallowReactive<Vec2i>({ x: 0, y: 0 });
+let findPendingJump = reactive<bool>(false);
+let findKeySeen = reactive<str>("");
+let findRef = elementRef<DivElement>();
+// The widget's laid-out width, measured each frame (see onFrame); 0 before
+// its first layout.
+let findWidth = reactive<real>(0.0);
+// Everything in the widget but its input, measured alongside findWidth. The
+// input takes what is left of the editor's width, as VS Code's does, between
+// a usable minimum and its full width.
+let findChrome = reactive<real>(240.0);
+let findInputSeen: ref Box<real> = { value: -1.0 };
+let findInputWidth = computed((): real => {
+    let available = rx.get(viewWidth) - scroll.style.size - 12.0 - rx.get(findChrome);
+    if available > 260.0 { return 260.0; }
+    return available < 60.0 ? 60.0 : available;
+});
+
+// The selected text when the selection is on one line, else "".
+let singleLineSelection = (): str => {
+    let anchor = rx.get(texteditBehavior.selectionAnchor);
+    let pos = rx.get(texteditBehavior.cursorPosition);
+    if !anchor || anchor.y != pos.y {
+        return "";
+    }
+    let selection = texteditBehavior.selectionRangeForLine(pos.y);
+    if !selection {
+        return "";
+    }
+    let text = doc.lineText(pos.y);
+    let end = selection.endCol < text.length ? selection.endCol : text.length;
+    return end > selection.startCol ? text.slice(selection.startCol, end) : "";
+};
+
+// A match becomes the selection (vim: the caret moves onto its start, in
+// normal mode, the way `n` lands), scrolled to the middle when off screen.
+let revealMatch = (m: FindMatch) => {
+    let start: Vec2i = { x: m.start, y: m.line };
+    if rx.get(vimOn) && textedit_behavior.modeIsVisual(rx.get(texteditBehavior.mode)) {
+        texteditBehavior.setMode(textedit_behavior.Mode.Normal);
+    }
+    texteditBehavior.clearSelection();
+    texteditBehavior.moveTo(start, true, false);
+    if !rx.get(vimOn) {
+        texteditBehavior.setSelectionAnchor(start);
+        texteditBehavior.moveTo({ x: m.end, y: m.line }, true, true);
+    }
+    let lineHeight = rx.get(charHeight);
+    let visible = lineHeight > 0.0 ? scroll.visibleRange(lineHeight, doc.lineCount(), 0) : { x: 0, y: 0 } as Vec2i;
+    if m.line < visible.x || m.line >= visible.y - 1 {
+        texteditBehavior.requestScroll(textedit_behavior.ScrollIntent.Center);
+    }
+};
+
+// Ctrl+F seeds the query from a one-line selection, else from the word under
+// the caret (VS Code's seedSearchStringFromSelection), and starts the search
+// at that text so it is the current match. `/` and `?` open it unseeded.
+let openFind = (seed: bool) => {
+    let state = findState();
+    let cursor = rx.get(texteditBehavior.cursorPosition);
+    findOrigin := { x: cursor.x, y: cursor.y } as Vec2i;
+    if seed {
+        let pos = rx.get(texteditBehavior.cursorPosition);
+        let anchor = rx.get(texteditBehavior.selectionAnchor);
+        let text = singleLineSelection();
+        let origin: Vec2i = { x: pos.x, y: pos.y };
+        if text.length > 0 && anchor && anchor.x < pos.x {
+            origin = { x: anchor.x, y: pos.y };
+        }
+        if text.length == 0 && !anchor {
+            let line = doc.lineText(pos.y);
+            let word = wordRangeAt(line, pos.x);
+            text = line.slice(word.x, word.y);
+            origin = { x: word.x, y: pos.y };
+        }
+        if text.length > 0 {
+            state.query := rx.get(state.regex) ? escapeRegex(text) : text;
+            findOrigin := origin;
+            findPendingJump := true;
+        }
+    }
+    findKeySeen := findKey();
+    findOpen := true;
+    findFocusSerial := rx.get(findFocusSerial) + 1;
+};
+
+let closeFind = () => {
+    findOpen := false;
+    findPendingJump := false;
+    documents().requestEditorFocus();
+};
+
+// Every search key ends up in the same widget: n N * # and F3 show it, with
+// its highlights and count, but leave the keyboard in the editor -- only
+// Ctrl+F, `/` and `?` move focus into the input (openFind).
+let showFindResults = (origin: Vec2i) => {
+    findKeySeen := findKey();
+    findOrigin := origin;
+    findPendingJump := false;
+    findOpen := true;
+};
+
+// Enter / F3 and Shift+Enter / Shift+F3. Without vim the next match is looked
+// for from the END of the selection, so a selected match is stepped past and
+// one starting right where it ends is still found.
+let findStep = (forward: bool) => {
+    let pos = rx.get(texteditBehavior.cursorPosition);
+    let start: Vec2i = { x: pos.x, y: pos.y };
+    let anchor = rx.get(texteditBehavior.selectionAnchor);
+    if anchor && !rx.get(vimOn) {
+        let anchorFirst = findBefore(anchor.y, anchor.x, pos.y, pos.x);
+        if anchorFirst != forward {
+            start = { x: anchor.x, y: anchor.y };
+        }
+    }
+    let found = findAdjacent(doc, findScan, start, forward, forward && !rx.get(vimOn));
+    if !found {
+        showFindResults(start);
+        return;
+    }
+    if rx.get(vimOn) {
+        vim.pushJump();
+    }
+    revealMatch(found);
+    showFindResults({ x: found.start, y: found.line });
+};
+
+// n N * #. The engine applies the answer as a motion, so the caret is not
+// moved here.
+let searchMotion: vim_behavior.SearchMotionHook = (key: str, start: Vec2i, count: int): Vec2i | none => {
+    let state = findState();
+    let at: Vec2i = { x: start.x, y: start.y };
+    let forward = true;
+    if key == "*" || key == "#" {
+        let line = doc.lineText(start.y);
+        let word = wordRangeAt(line, start.x);
+        if word.y <= word.x {
+            return none;
+        }
+        state.query := line.slice(word.x, word.y);
+        state.regex := false;
+        state.wholeWord := true;
+        state.backward := key == "#";
+        at = { x: word.x, y: start.y };
+        forward = key == "*";
+    } else {
+        let backward = rx.get(state.backward);
+        forward = key == "n" ? !backward : backward;
+    }
+    let steps = count > 0 ? count : 1;
+    for (let i = 0; i < steps; i++) {
+        let next = findAdjacent(doc, findScan, at, forward, false);
+        if !next {
+            showFindResults(at);
+            return none;
+        }
+        at = { x: next.start, y: next.line };
+    }
+    showFindResults(at);
+    return at;
+};
+vim.onSearchMotion = searchMotion;
+let searchPrompt: vim_behavior.SearchPromptHook = (backward: bool) => {
+    findState().backward := backward;
+    openFind(false);
+};
+vim.onSearchPrompt = searchPrompt;
+
+let pumpFind = () => {
+    if !rx.get(findOpen) {
+        return;
+    }
+    let key = findKey();
+    if key != rx.get(findKeySeen) {
+        findKeySeen := key;
+        let query: str = rx.get(findState().query);
+        findPendingJump := query.length > 0;
+    }
+    if key != findScan.key || doc.version != findScan.version {
+        findScan.reset(key, doc.version);
+        findRevision := rx.get(findRevision) + 1;
+    }
+    if findScan.step(doc, 2000) {
+        findRevision := rx.get(findRevision) + 1;
+    }
+    if rx.get(findPendingJump) {
+        let origin = rx.get(findOrigin);
+        let i = findScan.lowerBound(origin.y, origin.x);
+        if i < findScan.matches.length {
+            findPendingJump := false;
+            let m = findScan.matches[i];
+            revealMatch(m);
+        } else if findScan.done {
+            findPendingJump := false;
+            if findScan.matches.length > 0 {
+                let m = findScan.matches[0];
+                revealMatch(m);
+            }
+        }
+    }
+};
+
+// The match the selection (vim: the caret) sits on, -1 for none.
+let findCurrent = computed((): int => {
+    rx.get(findRevision);
+    let pos = rx.get(texteditBehavior.cursorPosition);
+    let anchor = rx.get(texteditBehavior.selectionAnchor);
+    if anchor && !rx.get(vimOn) && findBefore(anchor.y, anchor.x, pos.y, pos.x) {
+        return findScan.indexAt(anchor.y, anchor.x);
+    }
+    return findScan.indexAt(pos.y, pos.x);
+});
+
+let findCountLabel = computed((): str => {
+    rx.get(findRevision);
+    let query: str = rx.get(findState().query);
+    let total = findScan.matches.length;
+    if query.length == 0 || findScan.error.length > 0 || (total == 0 && findScan.done) {
+        return "No results";
+    }
+    let totalText = findScan.done ? f"{total}" : f"{total}+";
+    let current = rx.get(findCurrent);
+    return current >= 0 ? f"{current + 1} of {totalText}" : f"? of {totalText}";
+});
+let findNoResults = computed((): bool => {
+    rx.get(findRevision);
+    let query: str = rx.get(findState().query);
+    return query.length > 0 && findScan.done && findScan.matches.length == 0;
+});
+let findInvalid = computed((): bool => {
+    rx.get(findRevision);
+    return findScan.error.length > 0;
+});
+
+let findBands = computed((): []FindBand => {
+    let out: []FindBand = [];
+    let lineHeight = rx.get(charHeight);
+    let cellWidth = rx.get(charWidth);
+    if !rx.get(findOpen) || lineHeight <= 0.0 {
+        return out;
+    }
+    rx.get(findRevision);
+    rx.get(docVersion);
+    let current = rx.get(findCurrent);
+    let range = scroll.visibleRange(lineHeight, doc.lineCount(), 2);
+    let scrollY = rx.get(scroll.scrollTop);
+    let i = findScan.lowerBound(range.x, 0);
+    while i < findScan.matches.length && findScan.matches[i].line < range.y {
+        let m = findScan.matches[i];
+        let startCell = texteditBehavior.displayColumnAt(m.line, m.start);
+        let endCell = texteditBehavior.displayColumnAt(m.line, m.end);
+        out.push(FindBand {
+            top: m.line as real * lineHeight - scrollY,
+            left: startCell as real * cellWidth,
+            width: (endCell - startCell) as real * cellWidth,
+            current: i == current,
+        });
+        i = i + 1;
+    }
+    return out;
+});
+
+// Right-aligned over the text, clear of the scrollbar. The widget's own width
+// is only known once it has been laid out, so the first frame estimates it.
+let findLeft = computed((): real => {
+    let measured = rx.get(findWidth);
+    let width = measured > 0.0 ? measured : 540.0;
+    let left = rx.get(viewWidth) - width - scroll.style.size - 6.0;
+    return left > 0.0 ? left : 0.0;
+});
+
+// Escape closes the widget only while it is up (see editor_keymap.hz).
+let publishFindContext = computed(() => {
+    if !props.active {
+        return false;
+    }
+    keybindings().context.setBool(ctxFindWidgetVisible(), rx.get(findOpen));
+    return true;
+});
+
+// What Ctrl+Shift+F seeds the workspace search with.
+let publishSearchSeed = computed(() => {
+    if !props.active {
+        return false;
+    }
+    rx.get(docVersion);
+    searchState().editorSelection = singleLineSelection();
     return true;
 });
 
@@ -757,6 +1659,19 @@ let editorCommands = EditorCommands {
         }
         goToDefinition();
     },
+    find: () => {
+        findState().backward := false;
+        openFind(true);
+    },
+    findNext: () => {
+        if !rx.get(findOpen) && rx.get(findState().query).length == 0 {
+            openFind(true);
+            return;
+        }
+        findStep(true);
+    },
+    findPrevious: () => { findStep(false); },
+    closeFind: () => { closeFind(); },
 };
 
 let ownEditorCommands = computed(() => {
@@ -782,14 +1697,22 @@ let applyPendingReveal = computed(() => {
     }
     revealSerialSeen := serial;
     let line = vim_behavior.clampInt(rx.get(nav.line), 0, doc.lineCount() - 1);
-    let byteColumn = unicode.offsetFromUtf16Units(doc.lineText(line),
-        rx.get(nav.utf16Offset));
+    let byteStart = rx.get(nav.byteStart);
+    let byteColumn = byteStart >= 0
+        ? vim_behavior.clampInt(byteStart, 0, doc.lineLength(line))
+        : unicode.offsetFromUtf16Units(doc.lineText(line), rx.get(nav.utf16Offset));
     let target: Vec2i = { x: byteColumn, y: line };
+    let byteEnd = vim_behavior.clampInt(rx.get(nav.byteEnd), 0, doc.lineLength(line));
     if rx.get(vimOn) {
         texteditBehavior.setMode(textedit_behavior.Mode.Normal);
     }
     texteditBehavior.clearSelection();
     texteditBehavior.moveTo(target, true, false);
+    // A search result is selected, as in VS Code; vim lands on its start.
+    if byteStart >= 0 && byteEnd > byteColumn && !rx.get(vimOn) {
+        texteditBehavior.setSelectionAnchor(target);
+        texteditBehavior.moveTo({ x: byteEnd, y: line }, true, true);
+    }
     texteditBehavior.requestScroll(textedit_behavior.ScrollIntent.Center);
     return serial;
 });
@@ -1093,11 +2016,18 @@ let pumpHover = (now: real) => {
 };
 
 let pumpLsp = (now: real) => {
+    // First: it must also run, and close the list, when the bridge is gone.
+    pumpCompletion(now);
+
     let generation = rx.get(workspace().lspGeneration);
     if rx.get(lspGenerationSeen) != generation {
         lspGenerationSeen := generation;
         lspDocumentOpened := false;
         semanticRequestedVersion := -1;
+        // The old bridge will never answer what it was asked.
+        problems.pending = false;
+        problems.requestedEdits = -1;
+        problems.publishedRevisionSeen = -1;
     }
 
     let bridge = getState().lspBridge;
@@ -1127,6 +2057,41 @@ let pumpLsp = (now: real) => {
         let requestVersion = doc.version;
         bridge.semanticTokens(filePath, 0, documentByteLength(doc),
             (spans: []SemanticSpan) => { tokens.applySemanticSpans(spans, requestVersion); });
+    }
+
+    // Errors: once typing pauses, and only when something changed in any
+    // file since the last ask. A check cut short (complete false) is not
+    // re-asked as such -- whatever cut it short was an edit, which already
+    // makes the next ask due.
+    if props.active && rx.get(lspDocumentOpened) && !problems.pending
+        && problems.requestedEdits != bridge.editCount()
+        && now - rx.get(lastEditAt) >= DIAGNOSTICS_QUIET_SECONDS {
+        let edits = bridge.editCount();
+        problems.requestedEdits = edits;
+        problems.pending = true;
+        let sent = bridge.diagnostics(filePath, (raw: []ServerDiagnostic, complete: bool) => {
+            problems.pending = false;
+            let current = getState().lspBridge;
+            if !current {
+                return;
+            }
+            // Positions from before a later edit would land on the wrong text.
+            if !complete || current.editCount() != edits {
+                return;
+            }
+            problems.fromTsServer = toDiagnostics(current, raw);
+            bumpDiagnostics();
+        });
+        if !sent {
+            problems.pending = false;
+            problems.requestedEdits = -1;
+        }
+    }
+    let publishedRevision = bridge.publishedRevision();
+    if publishedRevision != problems.publishedRevisionSeen {
+        problems.publishedRevisionSeen = publishedRevision;
+        problems.published = toDiagnostics(bridge, bridge.publishedDiagnostics(filePath));
+        bumpDiagnostics();
     }
 
     pumpHover(now);
@@ -1202,11 +2167,32 @@ ui.onFrame(() => {
     // Cached computeds with side effects: reading one costs nothing unless
     // something it depends on actually moved.
     rx.get(followActiveFocus);
+    rx.get(recordJumpOnLeave);
     rx.get(publishEditorContext);
     rx.get(ownEditorCommands);
     rx.get(trackCommentString);
     rx.get(trackIndentUnit);
     rx.get(applyPendingReveal);
+    pumpFind();
+    let findElement = rx.get(findOpen) ? rx.get(findRef) : none;
+    let findSize = findElement ? findElement.size() : none;
+    if findSize && findSize.x != rx.get(findWidth) {
+        findWidth := findSize.x;
+    }
+    // Only from a layout that used the current input width: the size read
+    // here can be a frame older than findInputWidth, and subtracting the
+    // newer width would make the chrome drift on every resize.
+    let inputNow = rx.get(findInputWidth);
+    if findSize && inputNow == findInputSeen.value {
+        let chrome = findSize.x - inputNow;
+        let delta = chrome - rx.get(findChrome);
+        if chrome > 0.0 && (delta > 0.5 || delta < -0.5) {
+            findChrome := chrome;
+        }
+    }
+    findInputSeen.value = inputNow;
+    rx.get(publishFindContext);
+    rx.get(publishSearchSeed);
 });
 
 // An inactive tab hides ITSELF rather than being wrapped in a hidden div: it
@@ -1221,6 +2207,10 @@ EditorStatusBar [] fps=[fpsText] mode=[modeLabel] modeColor=[modeColor]
 // Lines are absolutely positioned at a scroll offset, so this box has to clip
 // them. The I-beam sits here rather than on each line so it also covers the
 // space past the last line, which is still text you can click into.
+// overflow-hidden: the find widget is positioned inside this box and must be
+// clipped to the editor, never spill over a neighbouring panel (which would
+// draw under it and still take its clicks).
+div [relative col w-grow h-grow overflow-hidden] {
 div [
         relative col w-grow h-grow overflow-hidden cursor-text
         font-family-[editorFontFamily()] font-size-[editorFontSize()]
@@ -1238,6 +2228,13 @@ div [
 {
     // Behind the text: an absolute element always paints above its in-flow
     // siblings, so the bands have to be declared first.
+    // VS Code's editor.findMatchHighlightBackground and, for the current
+    // match, editor.findMatchBackground. Under the selection and the text.
+    div for=[band, index in findBands] key=[index] [
+        absolute top-[band.top] left-[band.left]
+        w-[band.width]px h-[charHeight]px bg-[band.current ? "#9E6A03" : "#EA5C0055"]
+    ] {}
+
     div for=[band, index in selectionBands] key=[index] [
         absolute top-[band.top] left-[band.left]
         w-[band.width]px h-[charHeight]px bg-["#3391FF55"]
@@ -1254,6 +2251,13 @@ div [
         text for=[run, runIndex in line.runs] key=[runIndex]
             [text-nowrap text-color-[run.color]] [run.text]
     }
+
+    // Under the text and above nothing else: a straight line for now, at the
+    // bottom of the line box.
+    div for=[band, index in diagnosticBands] key=[index] [
+        absolute top-[band.top] left-[band.left]
+        w-[band.width]px h-[DIAGNOSTIC_LINE_HEIGHT]px bg-[band.color]
+    ] {}
 
     div [absolute top-[caret.top] left-[caret.left]
         w-[caret.width]px h-[caret.height]px bg-[caretColor]] {}
@@ -1276,4 +2280,46 @@ div [
         revision=[hoverRevision] placeholder=[hoverPlaceholder]
         anchorX=[hoverAnchorX] anchorY=[hoverAnchorY]
         viewWidth=[viewWidth] viewHeight=[viewHeight] lineHeight=[charHeight] {}
+
+    // The suggest list: icon, label with the typed characters highlighted, and
+    // on the right the module an auto-import would come from. A press accepts
+    // the row, and must not also reach the editor, which would move the caret.
+    div if=[completionShown] [
+            absolute col top-[completionBox.top] left-[completionBox.left]
+            w-[completionBox.width]px h-fit cursor-default
+            bg-["#202020"] border-1 border-color-["#454545"] rounded-[3]px
+        ]
+    {
+        div for=[row in completionRows] key=[row.position] [
+                row no-wrap w-grow h-[completionRowHeight]px px-1 gap-1 overflow-hidden
+                bg-[row.background]
+            ]
+            @pointerdown=[(event: ui_components.PointerEvent) => {
+                event.stopPropagation();
+                acceptCompletion(row.position);
+            }]
+        {
+            text [text-nowrap text-color-[row.glyphColor]] [row.glyph]
+            // Its own row: the outer one's gap would split the label at
+            // every highlighted run.
+            div [row no-wrap w-fit h-fit] {
+                text for=[run, runIndex in row.runs] key=[runIndex]
+                    [text-nowrap text-color-[run.color]] [run.text]
+            }
+            div [w-grow] {}
+            text [text-nowrap text-color-["#8B8B8B"]] [row.description]
+        }
+    }
+}
+
+// A sibling of the text area rather than a child, so the keys and text typed
+// into it never bubble into the editor's own handlers.
+// Hidden rather than unmounted when closed, so showing it again (n, F3) does
+// not count as a fresh widget wanting the keyboard -- see FindWidget.
+div [absolute top-[0] left-[findLeft] w-fit h-fit show-[rx.get(findOpen)]] ref=findRef {
+    FindWidget [] focusSerial=[findFocusSerial] countLabel=[findCountLabel] inputWidth=[findInputWidth]
+        noResults=[findNoResults] invalid=[findInvalid]
+        @next=[() => { findStep(true); }] @previous=[() => { findStep(false); }]
+        @close=closeFind {}
+}
 }

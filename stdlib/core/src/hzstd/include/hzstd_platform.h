@@ -92,6 +92,7 @@ void hzstd_process_close_stdin(void *proc);
 
 /* Non-blocking: reaps the child if it has already exited. */
 bool hzstd_process_is_alive(void *proc);
+void hzstd_process_kill(void *proc);
 
 /* Blocks until the child exits and returns its exit code. */
 int hzstd_process_join(void *proc);

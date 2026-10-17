@@ -1,0 +1,117 @@
+// ═══ Diagnostics: spans, shifting across edits, then a real tsserver ═════
+
+fn diagnosticAt(startLine: int, startColumn: int, endLine: int, endColumn: int): Diagnostic {
+    return Diagnostic { startLine: startLine, startColumn: startColumn, endLine: endLine, endColumn: endColumn };
+}
+
+fn spanText(span: ColumnSpan | none): str {
+    if !span {
+        return "none";
+    }
+    return f"{span.start}-{span.end}";
+}
+
+fn linesText(diagnostics: []Diagnostic): str {
+    let out = "";
+    for diagnostic in diagnostics {
+        out = f"{out}{diagnostic.startLine}-{diagnostic.endLine};";
+    }
+    return out;
+}
+
+fn runDiagnosticsSelfTest(run: mut KeyTestRun): void {
+    // ── Which columns of which line ──────────────────────────────────────
+    let one = diagnosticAt(2, 4, 2, 9);
+    run.check("on its own line", spanText(diagnosticSpanOnLine(one, 2, 20)), "4-9");
+    run.check("not on another line", spanText(diagnosticSpanOnLine(one, 3, 20)), "none");
+    run.check("pulled back to a shorter line", spanText(diagnosticSpanOnLine(one, 2, 6)), "4-6");
+    run.check("a position is an empty span", spanText(diagnosticSpanOnLine(diagnosticAt(1, 3, 1, 3), 1, 10)), "3-3");
+    let multi = diagnosticAt(1, 5, 3, 2);
+    run.check("multi-line: first line to its end", spanText(diagnosticSpanOnLine(multi, 1, 12)), "5-12");
+    run.check("multi-line: a middle line whole", spanText(diagnosticSpanOnLine(multi, 2, 7)), "0-7");
+    run.check("multi-line: the last line up to its end", spanText(diagnosticSpanOnLine(multi, 3, 9)), "0-2");
+    run.check("an empty middle line is not marked", spanText(diagnosticSpanOnLine(multi, 2, 0)), "none");
+    run.check("ending at column 0 marks nothing on that line",
+        spanText(diagnosticSpanOnLine(diagnosticAt(1, 5, 2, 0), 2, 9)), "none");
+
+    // ── Riding along with edits ──────────────────────────────────────────
+    let list: []Diagnostic = [diagnosticAt(1, 0, 1, 3), diagnosticAt(5, 0, 5, 3), diagnosticAt(9, 0, 10, 3)];
+    shiftDiagnostics(list, 3, 0, 2);
+    run.check("two lines inserted above move what is below", linesText(list), "1-1;7-7;11-12;");
+    shiftDiagnostics(list, 0, 1, 0);
+    run.check("a line deleted above moves everything up", linesText(list), "0-0;6-6;10-11;");
+    shiftDiagnostics(list, 6, 1, 1);
+    run.check("typing on a marked line keeps it there", linesText(list), "0-0;6-6;10-11;");
+    shiftDiagnostics(list, 5, 3, 1);
+    run.check("a marked line inside a deleted block stays on what replaced it", linesText(list), "0-0;5-5;8-9;");
+
+    // ── URIs as servers echo them ────────────────────────────────────────
+    run.check("plain file uri", pathFromFileUri("file:///home/a/x.vue"), "/home/a/x.vue");
+    run.check("percent-decoded", pathFromFileUri("file:///home/a%20b/c%3A.vue"), "/home/a b/c:.vue");
+    run.check("a stray percent is kept", pathFromFileUri("file:///x/100%"), "/x/100%");
+
+    run.check("errors are red", diagnosticColor(1), "#F14C4C");
+    run.check("warnings are yellow", diagnosticColor(2), "#CCA700");
+}
+
+// ═══ Diagnostics against a real tsserver ════════════════════════════════
+fn runDiagnosticsLspSelfTest(run: mut KeyTestRun): void {
+    let dir = f"{getCwdAbsolute()}/__haze__/codeeditor/completion-probe";
+    fs.createDirectory(dir);
+    let path = f"{dir}/problems.ts";
+    let source = "const a: number = \"x\";
+let b = undefinedName;
+";
+    if !fs.writeText(path, source) {
+        run.check("could write the diagnostics probe", "no", "yes");
+        return;
+    }
+    workspace().path := dir;
+    workspace().name := folderNameOf(dir);
+    restartLanguageServers();
+    let bridge = getState().lspBridge;
+    if !bridge {
+        run.check("servers started for the diagnostics probe", "no bridge", "a bridge");
+        return;
+    }
+    let ready = 0;
+    while !bridge.isReady() && ready < 400 {
+        bridge.loop();
+        time.sleep(0.05);
+        ready = ready + 1;
+    }
+    let editsBefore = bridge.editCount();
+    bridge.openDocument(path, "typescript", 1, source);
+    run.checkBool("opening a file counts as an edit", bridge.editCount() > editsBefore, true);
+
+    let stackref answered = Box<bool>(false);
+    let stackref wasComplete = Box<bool>(false);
+    let stackref found = Box<str>("");
+    let sent = bridge.diagnostics(path, (raw: []ServerDiagnostic, complete: bool) => {
+        answered.value = true;
+        wasComplete.value = complete;
+        for item in raw {
+            found.value = f"{found.value}{item.startLine}:{item.startCharacter}-{item.endLine}:{item.endCharacter} {item.severity} {item.fromTsServer} {item.message}|";
+        }
+    });
+    run.checkBool("geterr was sent", sent, true);
+    let waited = 0;
+    while !answered.value && waited < 400 {
+        bridge.loop();
+        time.sleep(0.05);
+        waited = waited + 1;
+    }
+    run.checkBool("geterr completed", answered.value, true);
+    run.checkBool("the check ran to the end", wasComplete.value, true);
+    run.check("both errors, positioned and worded",
+        found.value,
+        "0:6-0:7 1 true Type 'string' is not assignable to type 'number'.|1:8-1:21 1 true Cannot find name 'undefinedName'. Did you mean 'undefined'?|");
+    run.check("a file never opened is not checked",
+        bridge.diagnostics(f"{dir}/never-opened.ts", (raw: []ServerDiagnostic, complete: bool) => {}) ? "sent" : "not sent",
+        "not sent");
+
+    let last = getState().lspBridge;
+    if last {
+        last.shutdown();
+    }
+}

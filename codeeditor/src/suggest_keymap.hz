@@ -1,0 +1,59 @@
+// ═══ The suggest list's keys ═════════════════════════════════════════════
+//
+// While the suggest list is showing it owns the keys that drive it, ahead of
+// vim, of the editor and of every other default rule: ctrl+p is quick-open
+// anywhere else and vim keeps its own up/down/enter, but with the list up
+// they move through it and accept from it, exactly as in VS Code. Ids and
+// conditions are VS Code's, so a keybindings.json written for VS Code means
+// the same thing here.
+//
+// Priority comes from order: the keymap resolves LATER rules first, and these
+// are installed last of all the defaults (see installDefaultKeymap), so while
+// suggestWidgetVisible holds they outrank everything above them. A rule added
+// after this block, or a user's own keybindings layered on top, can still
+// override them deliberately -- the same layering VS Code has.
+
+// The focused editor's suggest list is on screen with something in it.
+fn ctxSuggestWidgetVisible(): str { return "suggestWidgetVisible"; }
+
+fn installSuggestKeymap(keys: mut Keybindings): void {
+    let visible = "editorTextFocus && suggestWidgetVisible";
+    keys.keymap.bindAll([
+        { key: "down", command: "selectNextSuggestion", when: visible },
+        { key: "ctrl+n", command: "selectNextSuggestion", when: visible },
+        { key: "up", command: "selectPrevSuggestion", when: visible },
+        { key: "ctrl+p", command: "selectPrevSuggestion", when: visible },
+        { key: "pagedown", command: "selectNextPageSuggestion", when: visible },
+        { key: "pageup", command: "selectPrevPageSuggestion", when: visible },
+        { key: "enter", command: "acceptSelectedSuggestion", when: visible },
+        { key: "tab", command: "acceptSelectedSuggestion", when: visible },
+        // Only the list: in vim a second escape then leaves insert mode.
+        { key: "escape", command: "hideSuggestWidget", when: visible },
+        // Asking explicitly, where text is being typed: anywhere without
+        // vim, and in vim's insert mode only.
+        { key: "ctrl+space", command: "editor.action.triggerSuggest",
+          when: "editorTextFocus && (!vimActive || vimMode == 'insert')" },
+    ]);
+}
+
+// Claimed by whichever editor is active, like EditorCommands: the list
+// belongs to one document.
+struct SuggestCommands {
+    selectNext: CommandFn;
+    selectPrevious: CommandFn;
+    selectNextPage: CommandFn;
+    selectPreviousPage: CommandFn;
+    accept: CommandFn;
+    hide: CommandFn;
+    trigger: CommandFn;
+}
+
+fn registerSuggestCommands(keys: mut Keybindings, handlers: SuggestCommands): void {
+    keys.commands.register("selectNextSuggestion", handlers.selectNext);
+    keys.commands.register("selectPrevSuggestion", handlers.selectPrevious);
+    keys.commands.register("selectNextPageSuggestion", handlers.selectNextPage);
+    keys.commands.register("selectPrevPageSuggestion", handlers.selectPreviousPage);
+    keys.commands.register("acceptSelectedSuggestion", handlers.accept);
+    keys.commands.register("hideSuggestWidget", handlers.hide);
+    keys.commands.register("editor.action.triggerSuggest", handlers.trigger);
+}

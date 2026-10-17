@@ -1,3 +1,5 @@
+import vim_behavior
+
 // ═══ "Go to this place in this file" ═════════════════════════════════════
 //
 // One shell-owned request that any editor tab can raise and that the shell
@@ -35,6 +37,16 @@ ref struct NavigationState {
     // Bumped on every request. What actually makes a component act, so that
     // jumping twice to the same position fires twice.
     serial: rx.Reactive<int>;
+    // A search result names its target in BYTES and selects it: byteStart
+    // replaces utf16Offset when it is >= 0, and byteEnd ends the selection.
+    byteStart: rx.Reactive<int>;
+    byteEnd: rx.Reactive<int>;
+    // Open the target in the preview tab rather than a kept one.
+    preview: rx.Reactive<bool>;
+    // VS Code's preview tab: the one tab that the next preview replaces, -1
+    // for none. It stops being one (is pinned) when it is double-clicked,
+    // edited or saved, or opened again without `preview`.
+    previewKey: rx.Reactive<int>;
 
     fn constructor(): mut NavigationState {
         let state = NavigationState {
@@ -42,6 +54,10 @@ ref struct NavigationState {
             line: rx.reactive<int>(0),
             utf16Offset: rx.reactive<int>(0),
             serial: rx.reactive<int>(0),
+            byteStart: rx.reactive<int>(-1),
+            byteEnd: rx.reactive<int>(-1),
+            preview: rx.reactive<bool>(false),
+            previewKey: rx.reactive<int>(-1),
         };
         return state;
     }
@@ -69,5 +85,58 @@ fn requestReveal(path: str, line: int, utf16Offset: int) {
     nav.path := path;
     nav.line := line;
     nav.utf16Offset := utf16Offset;
+    nav.byteStart := -1;
+    nav.byteEnd := -1;
+    nav.preview := false;
     nav.serial := rx.get(nav.serial) + 1;
+}
+
+// Open `path`, put the caret on bytes [start, end) of `line` and select them.
+fn requestRevealMatch(path: str, line: int, start: int, end: int, preview: bool) {
+    if path.length == 0 {
+        return;
+    }
+    let nav = navigation();
+    nav.path := path;
+    nav.line := line;
+    nav.utf16Offset := 0;
+    nav.byteStart := start;
+    nav.byteEnd := end;
+    nav.preview := preview;
+    nav.serial := rx.get(nav.serial) + 1;
+}
+
+// The preview tab stops being one: it is kept when something else opens.
+fn pinTab(key: int) {
+    if rx.get(navigation().previewKey) == key {
+        navigation().previewKey := -1;
+    }
+}
+
+// ═══ The jump list behind <C-o>/<C-i> ════════════════════════════════════
+//
+// ONE list for every tab, like VS Code's navigation history and vim's own
+// per-window jump list: <C-o> goes back across files. Each tab's Vim names
+// its entries by the tab's path (Vim.document), and an entry in another file
+// comes back through requestRevealMatch, the same path a search result takes.
+//
+// Leaving a tab for another file records a jump in the tab being left, so
+// <C-o> in the new file comes back. Except when the switch IS a <C-o>/<C-i>:
+// `leavingKey` names the tab such a traversal is leaving, which must not
+// record one, or every step back would push a new entry.
+ref struct JumpState {
+    list: mut vim_behavior.JumpList;
+    leavingKey: int = -1;
+}
+
+extern C let g_jumps: mut JumpState | none = none;
+
+fn jumps(): mut JumpState {
+    let existing = g_jumps;
+    if existing {
+        return existing;
+    }
+    let created = JumpState { list: vim_behavior.JumpList {} };
+    g_jumps = created;
+    return created;
 }

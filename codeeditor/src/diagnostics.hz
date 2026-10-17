@@ -1,0 +1,117 @@
+// --- Diagnostics: the problems the language servers report --------------
+//
+// Two servers report problems for a file: tsserver (asked with `geterr`) for
+// everything TypeScript knows, and vue-language-server (which pushes
+// publishDiagnostics on its own) for what only Vue's compiler sees. Both
+// arrive in their own column units; by the time they get here they are the
+// editor's: 0-based lines and BYTE columns.
+//
+// Pure, so diagnostics_selftest.hz checks it without a window or a server.
+
+export ref struct Diagnostic {
+    startLine: int = 0;
+    startColumn: int = 0;
+    endLine: int = 0;
+    endColumn: int = 0;
+    // LSP's DiagnosticSeverity numbering: 1 error, 2 warning. Nothing else
+    // is ever stored -- suggestions and hints are not drawn.
+    severity: int = 1;
+    message: str = "";
+}
+
+// VS Code's dark theme editorError / editorWarning foregrounds.
+fn diagnosticColor(severity: int): str {
+    return severity == 2 ? "#CCA700" : "#F14C4C";
+}
+
+export ref struct ColumnSpan {
+    start: int;
+    end: int;
+}
+
+// The byte columns a diagnostic covers on `line`, or none when it covers
+// nothing there. Columns past the end of the line are pulled back to it: a
+// server's answer can describe a slightly older text. A span may come back
+// EMPTY (a missing `}` is reported at a position, not over characters); the
+// caller still draws one cell there, as VS Code does.
+fn diagnosticSpanOnLine(diagnostic: Diagnostic, line: int, lineLength: int): ColumnSpan | none {
+    if line < diagnostic.startLine || line > diagnostic.endLine {
+        return none;
+    }
+    let start = line == diagnostic.startLine ? diagnostic.startColumn : 0;
+    let end = line == diagnostic.endLine ? diagnostic.endColumn : lineLength;
+    if start > lineLength { start = lineLength; }
+    if end > lineLength { end = lineLength; }
+    if start < 0 { start = 0; }
+    if end < start { end = start; }
+    // A range that only reaches into a later line's column 0, or crosses an
+    // empty line, covers nothing on it.
+    if line > diagnostic.startLine && end == start {
+        return none;
+    }
+    return ColumnSpan { start: start, end: end };
+}
+
+// Carry diagnostics across an edit until the servers answer for the new
+// text: `removed` lines starting at `startLine` were replaced by `inserted`
+// lines. Everything below moves with its lines; anything on the replaced
+// lines stays on what replaced them.
+fn shiftDiagnostics(diagnostics: []Diagnostic, startLine: int, removed: int, inserted: int): void {
+    let delta = inserted - removed;
+    let editEnd = startLine + removed;
+    let lastNewLine = startLine + (inserted > 0 ? inserted : 1) - 1;
+    for diagnostic in diagnostics {
+        if diagnostic.endLine < startLine {
+            continue;
+        }
+        if diagnostic.startLine >= editEnd {
+            diagnostic.startLine = diagnostic.startLine + delta;
+            diagnostic.endLine = diagnostic.endLine + delta;
+            continue;
+        }
+        if diagnostic.startLine > lastNewLine {
+            diagnostic.startLine = lastNewLine;
+        }
+        if diagnostic.endLine >= editEnd {
+            diagnostic.endLine = diagnostic.endLine + delta;
+        }
+        else if diagnostic.endLine > lastNewLine {
+            diagnostic.endLine = lastNewLine;
+        }
+        if diagnostic.endLine < diagnostic.startLine {
+            diagnostic.endLine = diagnostic.startLine;
+        }
+    }
+}
+
+fn hexDigitValue(byte: u8): int {
+    if byte >= b"0" && byte <= b"9" { return (byte - b"0") as int; }
+    if byte >= b"a" && byte <= b"f" { return (byte - b"a") as int + 10; }
+    if byte >= b"A" && byte <= b"F" { return (byte - b"A") as int + 10; }
+    return -1;
+}
+
+// "file:///home/a%20b/x.vue" -> "/home/a b/x.vue". The editor sends bare
+// paths after file://, but a server echoes them back the way vscode-uri
+// prints them, with anything unusual percent-encoded.
+fn pathFromFileUri(uri: str): str {
+    let prefix = "file://";
+    let path = uri.startsWith(prefix) ? uri.slice(prefix.length, uri.length) : uri;
+    let out = String("");
+    let i = 0;
+    while i < path.length {
+        if path[i] == b"%" && i + 2 < path.length {
+            let high = hexDigitValue(path[i + 1]);
+            let low = hexDigitValue(path[i + 2]);
+            let value = high * 16 + low;
+            if high >= 0 && low >= 0 && value >= 0 && value <= 255 {
+                out.append(value as u8);
+                i = i + 3;
+                continue;
+            }
+        }
+        out.append(path[i]);
+        i = i + 1;
+    }
+    return out.cloneString();
+}

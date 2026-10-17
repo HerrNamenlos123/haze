@@ -102,6 +102,8 @@ ref struct TsServerResponseMessage {
     command?: str;
     body?: json.Node;
     message?: str;
+    // Set on a "type": "event" message: "syntaxDiag", "requestCompleted", ...
+    event?: str;
 }
 
 // tsserver's `exit` command takes no arguments; this exists only so an
@@ -153,6 +155,182 @@ ref struct QuickInfoArgs {
 ref struct QuickInfoBody {
     displayString?: str;
     documentation?: str;
+}
+
+// --- Completion ---------------------------------------------------------
+//
+// tsserver's `configure` preferences, sent once before anything else. These
+// are the switches VS Code's TypeScript extension turns on for its suggest
+// list; without includeCompletionsForModuleExports tsserver offers nothing
+// that is not already imported, which is the whole point of auto-import.
+// Snippets stay off: an entry's insertText is then plain text, never "$1".
+ref struct TsPreferences {
+    includeCompletionsForModuleExports: bool = true;
+    includeCompletionsForImportStatements: bool = true;
+    includeCompletionsWithInsertText: bool = true;
+    includeAutomaticOptionalChainCompletions: bool = true;
+    includeCompletionsWithSnippetText: bool = false;
+    allowIncompleteCompletions: bool = true;
+    useLabelDetailsInCompletionEntries: bool = true;
+    importModuleSpecifierPreference: str = "shortest";
+    quotePreference: str = "auto";
+}
+
+ref struct ConfigureArgs {
+    preferences: TsPreferences;
+}
+
+ref struct CompletionInfoArgs {
+    file: str;
+    line: int;    // 1-based
+    offset: int;  // 1-based UTF-16
+    triggerCharacter?: str;
+    // 1 typed or explicitly invoked, 2 trigger character, 3 re-asked because
+    // the previous answer was incomplete.
+    triggerKind: int;
+}
+
+ref struct TsTextSpan {
+    start: TsServerLocation = {};
+    end: TsServerLocation = {};
+}
+
+ref struct TsDisplayPart {
+    text: str = "";
+}
+
+ref struct TsLabelDetails {
+    description?: str;
+}
+
+// Subset of tsserver's CompletionEntry.
+ref struct TsCompletionEntry {
+    name: str = "";
+    kind: str = "";
+    sortText: str = "";
+    insertText?: str;
+    filterText?: str;
+    replacementSpan?: TsTextSpan;
+    hasAction?: bool;
+    source?: str;
+    sourceDisplay?: []TsDisplayPart;
+    labelDetails?: TsLabelDetails;
+    data?: json.Node;
+}
+
+ref struct CompletionInfoBody {
+    entries?: []TsCompletionEntry;
+    isIncomplete?: bool;
+}
+
+// What a list of completions is, for the editor.
+export struct CompletionList {
+    entries: []CompletionEntry;
+    // tsserver cut the list short (auto-imports are capped), so a longer
+    // typed word may have answers this list does not: ask again rather than
+    // only re-filtering.
+    isIncomplete: bool;
+}
+
+// Names one entry back to tsserver. `source` and `data` are exactly what
+// completionInfo sent, or the entry is not found again.
+ref struct CompletionEntryIdentifier {
+    name: str;
+    source?: str;
+    data?: json.Node;
+}
+
+ref struct CompletionDetailsArgs {
+    file: str;
+    line: int;
+    offset: int;
+    entryNames: []CompletionEntryIdentifier;
+}
+
+ref struct TsCodeAction {
+    description: str = "";
+    changes: []TsServerFileCodeEdits = [];
+}
+
+ref struct TsCompletionEntryDetails {
+    codeActions?: []TsCodeAction;
+}
+
+// One edit of the document, in tsserver's terms converted to 0-based lines.
+// Columns stay UTF-16 code units: only the editor holds the line text a byte
+// column has to be counted in.
+export ref struct TextEditUtf16 {
+    startLine: int;
+    startUtf16: int;
+    endLine: int;
+    endUtf16: int;
+    newText: str;
+}
+
+// --- Diagnostics --------------------------------------------------------
+//
+// tsserver's `geterr` has no reply of its own. It answers with one event per
+// kind of check -- syntaxDiag, semanticDiag, suggestionDiag -- and then a
+// requestCompleted carrying the request's seq. It stops early, still sending
+// requestCompleted, when a document changes or another geterr arrives, so
+// only a request that saw both syntaxDiag and semanticDiag describes the file.
+ref struct GeterrArgs {
+    files: []str;
+    delay: int;
+}
+
+ref struct TsDiagnostic {
+    start: TsServerLocation = {};
+    end: TsServerLocation = {};
+    text: str = "";
+    // "error", "warning", "suggestion" or "message".
+    category: str = "";
+}
+
+ref struct TsDiagnosticEventBody {
+    file: str = "";
+    diagnostics: []TsDiagnostic = [];
+}
+
+ref struct TsRequestCompletedBody {
+    request_seq: int = -1;
+}
+
+ref struct LspPosition {
+    line: int = 0;
+    character: int = 0;
+}
+
+ref struct LspRange {
+    start: LspPosition = {};
+    end: LspPosition = {};
+}
+
+ref struct LspDiagnostic {
+    range: LspRange = {};
+    severity?: int;
+    message: str = "";
+}
+
+ref struct LspPublishDiagnosticsParams {
+    uri: str = "";
+    diagnostics: []LspDiagnostic = [];
+}
+
+// A problem as a server reported it. Lines are 0-based; the columns are still
+// in the server's own unit, which only the line's text can turn into bytes --
+// see byteColumn().
+export ref struct ServerDiagnostic {
+    startLine: int;
+    startCharacter: int;
+    endLine: int;
+    endCharacter: int;
+    // 1 error, 2 warning.
+    severity: int;
+    message: str;
+    // tsserver counts UTF-16 code units; vue-language-server counts whatever
+    // position encoding it accepted at initialize.
+    fromTsServer: bool;
 }
 
 // --- Incremental document sync ----------------------------------------
@@ -323,6 +501,56 @@ fn decodeSemanticSpans(body: json.Node | none): []SemanticSpan {
     return spans;
 }
 
+// tsserver's entry in the editor's terms. `line` is the 0-based line the
+// request was made on: a replacement span on any other line is not one the
+// editor can apply to the typed word, so it is ignored.
+fn completionEntryFromTs(raw: TsCompletionEntry, line: int): CompletionEntry {
+    let entry = CompletionEntry {
+        name: raw.name,
+        kind: raw.kind,
+        sortText: raw.sortText,
+        insertText: raw.name,
+        filterText: raw.name,
+        hasAction: raw.hasAction ? true : false,
+    };
+    let insertText = raw.insertText;
+    if insertText {
+        entry.insertText = insertText;
+    }
+    let filterText = raw.filterText;
+    if filterText {
+        entry.filterText = filterText;
+    }
+    let source = raw.source;
+    if source {
+        entry.source = source;
+    }
+    entry.data = raw.data;
+    let span = raw.replacementSpan;
+    if span && span.start.line - 1 == line {
+        entry.replaceStartUtf16 = span.start.offset - 1;
+    }
+    // Where it would be imported from, as it would be written: VS Code shows
+    // labelDetails.description, which tsserver fills only on request, and
+    // sourceDisplay otherwise.
+    let labelDetails = raw.labelDetails;
+    let description = labelDetails ? labelDetails.description : none;
+    if description {
+        entry.description = description;
+    }
+    else {
+        let parts = raw.sourceDisplay;
+        if parts {
+            let joined = "";
+            for part in parts {
+                joined = joined + part.text;
+            }
+            entry.description = joined;
+        }
+    }
+    return entry;
+}
+
 ref struct OpenArgs {
     file: str;
     fileContent: str;
@@ -473,6 +701,37 @@ export opaque ref struct VueLspBridge {
     }
     _definitionPendingRequests: []PendingDefinitionRequest = [];
 
+    // Requests that decode their own reply. One list for any number of
+    // commands, rather than one list and one matching loop per command.
+    ref struct PendingTsCallback {
+        seq: int;
+        callback: (response: TsServerResponseMessage) => none;
+    }
+    _tsCallbacks: []PendingTsCallback = [];
+
+    // One geterr in flight, collecting its events until requestCompleted.
+    ref struct PendingDiagnostics {
+        seq: int;
+        filepath: str;
+        sawSyntax: bool = false;
+        sawSemantic: bool = false;
+        diagnostics: []ServerDiagnostic = [];
+        callback: (diagnostics: []ServerDiagnostic, complete: bool) => none;
+    }
+    _diagnosticsPending: []PendingDiagnostics = [];
+
+    // vue-language-server's latest publishDiagnostics, per file. It pushes
+    // them whenever it likes, so they are kept here for the editor to poll.
+    ref struct PublishedDiagnostics {
+        filepath: str;
+        diagnostics: []ServerDiagnostic;
+    }
+    _published: []PublishedDiagnostics = [];
+    _publishedRevision: int = 0;
+    // Bumped by every edit and open, of any file: an edit to one file can
+    // change another's errors (fix an export, and its importers are fine).
+    _editCount: int = 0;
+
     // One file registered with both servers. `sent` distinguishes a
     // document that has actually been announced from one that is still
     // waiting for the LSP handshake to finish -- openDocument() is allowed
@@ -572,6 +831,14 @@ export opaque ref struct VueLspBridge {
         lsp.onNotification = (method: str, params: json.Node) => {
             bridge._handleNotification(method, params);
         };
+
+        // First, so it is in force before any file is opened or asked about.
+        let configureNode = json.encodeToJsonNode<ConfigureArgs>({ preferences: {} });
+        if !configureNode {
+            sys.panic("vue_lsp_bridge: failed to encode tsserver 'configure' arguments");
+        }
+        bridge._tsserverNextSeq = bridge._tsserverNextSeq + 1;
+        bridge._sendTsServerCommand(bridge._tsserverNextSeq, "configure", configureNode);
 
         return bridge;
     }
@@ -729,6 +996,7 @@ export opaque ref struct VueLspBridge {
         }
         this._tsserverNextSeq = this._tsserverNextSeq + 1;
         this._sendTsServerCommand(this._tsserverNextSeq, "open", argsNode);
+        this._editCount = this._editCount + 1;
 
         this._documentReady := true;
     }
@@ -772,6 +1040,7 @@ export opaque ref struct VueLspBridge {
             return;
         }
         doc.version = version;
+        this._editCount = this._editCount + 1;
 
         this._lsp.sendDocumentChangeNotification(filepath, version, {
             start: { line: change.startLine, character: 0 },
@@ -975,6 +1244,285 @@ export opaque ref struct VueLspBridge {
         this._sendTsServerCommand(seq, "definition", argsNode);
     }
 
+    // Whether `filepath` has actually been announced to both servers -- the
+    // gate every position-based request needs (see hover()).
+    fn _documentSent(filepath: str): bool {
+        if this._shutdown || !rx.get(this._documentReady) {
+            return false;
+        }
+        let doc = this._findOpenDocument(filepath);
+        return doc ? doc.sent : false;
+    }
+
+    fn _sendTsRequest(command: str, arguments: json.Node, callback: (response: TsServerResponseMessage) => none) {
+        this._tsserverNextSeq = this._tsserverNextSeq + 1;
+        let seq = this._tsserverNextSeq;
+        this._tsCallbacks.push({ seq: seq, callback: callback });
+        this._sendTsServerCommand(seq, command, arguments);
+    }
+
+    // What can be typed at `byteColumn` on `line`: tsserver's completionInfo,
+    // including exports of modules the file does not import yet.
+    //
+    // `triggerCharacter` is "." when the request was raised by typing one, and
+    // empty otherwise. `retrigger` re-asks for a word whose previous answer was
+    // incomplete. Same contract as hover(): no callback at all while the
+    // servers are not up or the file was never opened; an empty list when
+    // there is genuinely nothing (inside a comment, say) or the command failed.
+    fn completions(filepath: str, line: int, byteColumn: int, lineText: str, triggerCharacter: str,
+        retrigger: bool, callback: (list: CompletionList) => none) {
+        if !this._documentSent(filepath) {
+            return;
+        }
+        let args = CompletionInfoArgs {
+            file: filepath,
+            line: line + 1,
+            offset: unicode.utf16UnitsBefore(lineText, byteColumn) + 1,
+            triggerKind: retrigger ? 3 : (triggerCharacter.length > 0 ? 2 : 1),
+        };
+        if triggerCharacter.length > 0 {
+            args.triggerCharacter = triggerCharacter;
+        }
+        let argsNode = json.encodeToJsonNode<CompletionInfoArgs>(args);
+        if !argsNode {
+            sys.panic("vue_lsp_bridge: failed to encode tsserver 'completionInfo' arguments");
+        }
+        this._sendTsRequest("completionInfo", argsNode, (response: TsServerResponseMessage) => {
+            let entries: []CompletionEntry = [];
+            let incomplete = false;
+            let bodyNode = response.body;
+            if bodyNode {
+                let body = json.parse<CompletionInfoBody>(bodyNode);
+                if body {
+                    incomplete = body.isIncomplete ? true : false;
+                    let received = body.entries;
+                    if received {
+                        for raw in received {
+                            entries.push(completionEntryFromTs(raw, line));
+                        }
+                    }
+                }
+            }
+            callback({ entries: entries, isIncomplete: incomplete });
+        });
+    }
+
+    // The edits accepting `entry` takes beyond inserting its text -- for an
+    // auto-import, adding the import or extending an existing import list.
+    // Asked at the position the entry was inserted at, AFTER inserting it:
+    // tsserver only reads the identifier there to pick the import's form.
+    //
+    // Edits come back for this file only, in the coordinates of the document
+    // as tsserver knew it when it answered. An empty list means there is
+    // nothing more to do, or the command failed.
+    fn completionEdits(filepath: str, line: int, byteColumn: int, lineText: str, entry: CompletionEntry,
+        callback: (edits: []TextEditUtf16) => none) {
+        if !this._documentSent(filepath) {
+            return;
+        }
+        let identifier = CompletionEntryIdentifier { name: entry.name };
+        if entry.source.length > 0 {
+            identifier.source = entry.source;
+        }
+        let data = entry.data;
+        if data {
+            identifier.data = data;
+        }
+        let argsNode = json.encodeToJsonNode<CompletionDetailsArgs>({
+            file: filepath,
+            line: line + 1,
+            offset: unicode.utf16UnitsBefore(lineText, byteColumn) + 1,
+            entryNames: [identifier],
+        });
+        if !argsNode {
+            sys.panic("vue_lsp_bridge: failed to encode tsserver 'completionEntryDetails' arguments");
+        }
+        this._sendTsRequest("completionEntryDetails", argsNode, (response: TsServerResponseMessage) => {
+            let edits: []TextEditUtf16 = [];
+            let bodyNode = response.body;
+            if bodyNode {
+                let details = json.parse<[]TsCompletionEntryDetails>(bodyNode);
+                if details {
+                    for detail in details {
+                        let actions = detail.codeActions;
+                        if actions {
+                            for action in actions {
+                                for change in action.changes {
+                                    if change.fileName == filepath {
+                                        for edit in change.textChanges {
+                                            edits.push(TextEditUtf16 {
+                                                startLine: edit.start.line - 1,
+                                                startUtf16: edit.start.offset - 1,
+                                                endLine: edit.end.line - 1,
+                                                endUtf16: edit.end.offset - 1,
+                                                newText: edit.newText,
+                                            });
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            callback(edits);
+        });
+    }
+
+    // Ask tsserver for every error and warning in `filepath`. The callback
+    // gets them with `complete` true when the check ran to the end; false
+    // means tsserver stopped early because the text changed or another check
+    // was asked for, and the list is only part of the answer. Returns false,
+    // and never calls back, when the file is not open with the servers yet.
+    fn diagnostics(filepath: str, callback: (diagnostics: []ServerDiagnostic, complete: bool) => none): bool {
+        if !this._documentSent(filepath) {
+            return false;
+        }
+        let files: []str = [filepath];
+        let argsNode = json.encodeToJsonNode<GeterrArgs>({ files: files, delay: 0 });
+        if !argsNode {
+            sys.panic("vue_lsp_bridge: failed to encode tsserver 'geterr' arguments");
+        }
+        this._tsserverNextSeq = this._tsserverNextSeq + 1;
+        let seq = this._tsserverNextSeq;
+        this._diagnosticsPending.push({ seq: seq, filepath: filepath, callback: callback });
+        this._sendTsServerCommand(seq, "geterr", argsNode);
+        return true;
+    }
+
+    // What vue-language-server last published for `filepath`; empty when
+    // nothing was.
+    fn publishedDiagnostics(filepath: str): []ServerDiagnostic {
+        for entry in this._published {
+            if entry.filepath == filepath {
+                return entry.diagnostics;
+            }
+        }
+        let empty: []ServerDiagnostic = [];
+        return empty;
+    }
+
+    // Changes whenever anything was published, for any file.
+    fn publishedRevision(): int {
+        return this._publishedRevision;
+    }
+
+    // Changes with every edit or open of any file; see _editCount.
+    fn editCount(): int {
+        return this._editCount;
+    }
+
+    // A diagnostic's column in bytes, given the text of its line.
+    fn byteColumn(diagnostic: ServerDiagnostic, lineText: str, character: int): int {
+        if diagnostic.fromTsServer {
+            return unicode.offsetFromUtf16Units(lineText, character);
+        }
+        return this._lsp.byteOffsetFromCharacter(lineText, character);
+    }
+
+    fn _handleTsServerEvent(message: TsServerResponseMessage) {
+        let event = message.event;
+        let bodyNode = message.body;
+        if !event {
+            return;
+        }
+        if !bodyNode {
+            return;
+        }
+        if event == "syntaxDiag" || event == "semanticDiag" {
+            let body = json.parse<TsDiagnosticEventBody>(bodyNode);
+            if !body {
+                return;
+            }
+            // Only one check per file is ever in flight (see the editor's
+            // pump), so the newest pending entry for the file is this one's.
+            let pending: PendingDiagnostics | none = none;
+            for entry in this._diagnosticsPending {
+                if entry.filepath == body.file {
+                    pending = entry;
+                }
+            }
+            if !pending {
+                return;
+            }
+            if event == "syntaxDiag" {
+                pending.sawSyntax = true;
+            } else {
+                pending.sawSemantic = true;
+            }
+            for raw in body.diagnostics {
+                let severity = raw.category == "error" ? 1 : (raw.category == "warning" ? 2 : 0);
+                if severity > 0 {
+                    pending.diagnostics.push(ServerDiagnostic {
+                        startLine: raw.start.line - 1,
+                        startCharacter: raw.start.offset - 1,
+                        endLine: raw.end.line - 1,
+                        endCharacter: raw.end.offset - 1,
+                        severity: severity,
+                        message: raw.text,
+                        fromTsServer: true,
+                    });
+                }
+            }
+            return;
+        }
+        if event == "requestCompleted" {
+            let body = json.parse<TsRequestCompletedBody>(bodyNode);
+            if !body {
+                return;
+            }
+            let matched: PendingDiagnostics | none = none;
+            let remaining: []PendingDiagnostics = [];
+            for entry in this._diagnosticsPending {
+                if entry.seq == body.request_seq {
+                    matched = entry;
+                } else {
+                    remaining.push(entry);
+                }
+            }
+            if matched {
+                this._diagnosticsPending = remaining;
+                matched.callback(matched.diagnostics, matched.sawSyntax && matched.sawSemantic);
+            }
+        }
+    }
+
+    fn _handlePublishedDiagnostics(params: json.Node) {
+        let parsed = json.parse<LspPublishDiagnosticsParams>(params);
+        if !parsed {
+            return;
+        }
+        let diagnostics: []ServerDiagnostic = [];
+        for raw in parsed.diagnostics {
+            // LSP: 1 error, 2 warning, 3 information, 4 hint; absent means
+            // the client decides, and an unlabelled problem reads as an error.
+            let severity = raw.severity ? raw.severity as int : 1;
+            if severity <= 2 {
+                diagnostics.push(ServerDiagnostic {
+                    startLine: raw.range.start.line,
+                    startCharacter: raw.range.start.character,
+                    endLine: raw.range.end.line,
+                    endCharacter: raw.range.end.character,
+                    severity: severity,
+                    message: raw.message,
+                    fromTsServer: false,
+                });
+            }
+        }
+        let filepath = pathFromFileUri(parsed.uri);
+        let replaced = false;
+        for entry in this._published {
+            if entry.filepath == filepath {
+                entry.diagnostics = diagnostics;
+                replaced = true;
+            }
+        }
+        if !replaced {
+            this._published.push({ filepath: filepath, diagnostics: diagnostics });
+        }
+        this._publishedRevision = this._publishedRevision + 1;
+    }
+
     // Asks tsserver directly for hover info at a position, bypassing
     // vue-language-server entirely -- see the module doc comment (channel
     // 3) for why this works. Not the same thing as the "tsserver/request"
@@ -999,6 +1547,10 @@ export opaque ref struct VueLspBridge {
     // arrives as `[[requestId, command, args]]` -- vscode-jsonrpc wraps a
     // single positional array argument in another array.
     fn _handleNotification(method: str, params: json.Node) {
+        if method == "textDocument/publishDiagnostics" {
+            this._handlePublishedDiagnostics(params);
+            return;
+        }
         if method != "tsserver/request" {
             fmt.println(f"vue_lsp_bridge: unsupported notification '{method}'");
             return;
@@ -1092,8 +1644,11 @@ export opaque ref struct VueLspBridge {
             fmt.println(f"vue_lsp_bridge: failed to parse tsserver message: {result.error()}");
             return;
         }
+        if result.type == "event" {
+            this._handleTsServerEvent(result);
+            return;
+        }
         if result.type != "response" {
-            // Events (e.g. "requestCompleted", telemetry) aren't relevant to the bridge.
             return;
         }
         // A failed command (e.g. quickinfo on a position tsserver's project
@@ -1107,6 +1662,22 @@ export opaque ref struct VueLspBridge {
         }
         let requestSeq = result.request_seq;
         if !requestSeq {
+            return;
+        }
+
+        let matchedCallback: ((response: TsServerResponseMessage) => none) | none = none;
+        let remainingCallbacks: []PendingTsCallback = [];
+        for entry in this._tsCallbacks {
+            if entry.seq == requestSeq {
+                matchedCallback = entry.callback;
+            }
+            else {
+                remainingCallbacks.push(entry);
+            }
+        }
+        if matchedCallback is not none {
+            this._tsCallbacks = remainingCallbacks;
+            matchedCallback(result);
             return;
         }
 

@@ -1,0 +1,158 @@
+import textedit_behavior
+import vim_behavior
+
+// <C-o>/<C-i> across documents: two Vims share one JumpList, as an editor
+// with several tabs shares it, and an entry in the other document goes
+// through onJumpToDocument. Run like the other tests here: copy into a
+// throwaway exe project (deps textedit_behavior, vim_behavior) as main.hz.
+
+ref struct Doc {
+    lines: []String = [];
+}
+
+ref struct Host {
+    current: str = "A";
+    failures: int = 0;
+
+    mut fn check(name: str, got: int, want: int) {
+        if got != want {
+            fmt.println(f"FAIL {name}: got {got}, want {want}");
+            this.failures = this.failures + 1;
+        } else {
+            fmt.println(f"ok   {name} = {got}");
+        }
+    }
+
+    mut fn checkDoc(name: str, want: str) {
+        if this.current != want {
+            fmt.println(f"FAIL {name}: in {this.current}, want {want}");
+            this.failures = this.failures + 1;
+        } else {
+            fmt.println(f"ok   {name} in {want}");
+        }
+    }
+}
+
+fn makeDoc(prefix: str): mut Doc {
+    let doc = Doc {};
+    for (let i = 0; i < 30; i++) {
+        doc.lines.push(String(f"{prefix} line {i}"));
+    }
+    return doc;
+}
+
+fn makeContext(doc: mut Doc): mut textedit_behavior.Context {
+    return textedit_behavior.Context({
+        getLineLength: (lineIndex: int) => { return doc.lines[lineIndex].length(); },
+        getLine: (lineIndex: int) => { return doc.lines[lineIndex]; },
+        getLineCount: () => { return doc.lines.length; },
+        getTimeInSeconds: () => { return 0.0; },
+        replaceRange: (start: Vec2i, end: Vec2i, text: String) => {},
+    });
+}
+
+fn main(): int {
+    let host = Host {};
+    let list = vim_behavior.JumpList {};
+    let ctxA = makeContext(makeDoc("a"));
+    let ctxB = makeContext(makeDoc("b"));
+    let vimA = vim_behavior.Vim(ctxA);
+    let vimB = vim_behavior.Vim(ctxB);
+    vimA.install();
+    vimB.install();
+
+    // What codeeditor does: make the document current, put its caret there.
+    let hook: vim_behavior.JumpToDocumentHook = (document: str, pos: Vec2i) => {
+        host.current = document;
+        if document == "A" {
+            ctxA.moveTo(pos, true, false);
+        } else {
+            ctxB.moveTo(pos, true, false);
+        }
+    };
+    vimA.jumpList = list;
+    vimA.document = "A";
+    vimA.onJumpToDocument = hook;
+    vimB.jumpList = list;
+    vimB.document = "B";
+    vimB.onJumpToDocument = hook;
+
+    let press = (key: str) => {
+        if host.current == "A" {
+            vimA.handleKey(key);
+        } else {
+            vimB.handleKey(key);
+        }
+    };
+
+    // A: G from line 0. Then the user switches to B, which records A's caret.
+    press("G");
+    vimA.pushJump();
+    host.current = "B";
+    // B: 5G from line 0.
+    press("5");
+    press("G");
+    host.check("B after 5G", ctxB.cursor().y, 4);
+
+    press("<C-o>");
+    host.checkDoc("<C-o> 1 stays", "B");
+    host.check("<C-o> 1 line", ctxB.cursor().y, 0);
+    press("<C-o>");
+    host.checkDoc("<C-o> 2 crosses to A", "A");
+    host.check("<C-o> 2 line", ctxA.cursor().y, 29);
+    press("<C-o>");
+    host.checkDoc("<C-o> 3 stays", "A");
+    host.check("<C-o> 3 line", ctxA.cursor().y, 0);
+    press("<C-o>");
+    host.check("<C-o> past the start is a no-op", ctxA.cursor().y, 0);
+
+    press("<C-i>");
+    host.check("<C-i> 1 line", ctxA.cursor().y, 29);
+    press("<C-i>");
+    host.checkDoc("<C-i> 2 crosses to B", "B");
+    host.check("<C-i> 2 line", ctxB.cursor().y, 0);
+    press("<C-i>");
+    host.check("<C-i> 3 line", ctxB.cursor().y, 4);
+    press("<C-i>");
+    host.checkDoc("<C-i> past the end is a no-op", "B");
+    host.check("<C-i> past the end line", ctxB.cursor().y, 4);
+
+    // A count crosses documents too.
+    press("2");
+    press("<C-o>");
+    host.checkDoc("2<C-o> crosses to A", "A");
+    host.check("2<C-o> line", ctxA.cursor().y, 29);
+
+    // Same line, other document: neither de-duplicated against each other
+    // nor dropped by the "you are already there" rule.
+    let fresh = vim_behavior.JumpList {};
+    vimA.jumpList = fresh;
+    vimB.jumpList = fresh;
+    ctxA.moveTo({ x: 0, y: 3 }, true, false);
+    host.current = "A";
+    vimA.pushJump();
+    host.current = "B";
+    ctxB.moveTo({ x: 0, y: 3 }, true, false);
+    press("<C-o>");
+    host.checkDoc("same line in another document is a real entry", "A");
+    host.check("entries kept", fresh.jumps.length, 2);
+
+    // No hook: an entry in another document is never moved to.
+    let lone = vim_behavior.JumpList {};
+    vimB.jumpList = lone;
+    vimB.onJumpToDocument = none;
+    lone.jumps.push(vim_behavior.Jump { pos: { x: 0, y: 20 }, document: "A" });
+    lone.index = 1;
+    host.current = "B";
+    ctxB.moveTo({ x: 0, y: 7 }, true, false);
+    press("<C-o>");
+    host.checkDoc("no hook stays", "B");
+    host.check("no hook does not move", ctxB.cursor().y, 7);
+
+    if host.failures > 0 {
+        fmt.println(f"{host.failures} FAILED");
+        return 1;
+    }
+    fmt.println("all passed");
+    return 0;
+}

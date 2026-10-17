@@ -1,0 +1,87 @@
+from ui_widgets import TextInput, TextInputComponent, ButtonComponent, ButtonSlotContent
+
+// VS Code's find widget: the query, its three options, "3 of 12", previous,
+// next and close. The query and options are the shared findState(); what the
+// count says and where Enter goes belong to the editor that owns the widget.
+//
+// Keys, as in VS Code: Enter / F3 next, Shift+Enter / Shift+F3 previous,
+// Escape closes, Alt+C / Alt+W / Alt+R toggle case, whole word and regex.
+
+@props
+// Bumped by the editor to focus the input and select its text (Ctrl+F again,
+// or `/`).
+focusSerial: int = 0;
+countLabel: str = "";
+noResults: bool = false;
+invalid: bool = false;
+// The query box's width; the editor shrinks it to keep the widget inside.
+inputWidth: real = 260.0;
+
+@emit
+next: ();
+previous: ();
+close: ();
+
+@setup
+let state = findState();
+let inputRef = ui.componentRef<TextInput>();
+// Starts at the current serial: the widget lives as long as its editor and
+// takes the keyboard only when asked to again.
+let focusedSerial = reactive<int>(props.focusSerial);
+
+ui.onFrame(() => {
+    if rx.get(focusedSerial) == props.focusSerial { return; }
+    let input = rx.get(inputRef);
+    if !input { return; }
+    input.focus();
+    input.selectAll();
+    focusedSerial := props.focusSerial;
+});
+
+let toggleCase = () => { state.matchCase := !rx.get(state.matchCase); };
+let toggleWord = () => { state.wholeWord := !rx.get(state.wholeWord); };
+let toggleRegex = () => { state.regex := !rx.get(state.regex); };
+let goNext = () => { emits.next(); };
+let goPrevious = () => { emits.previous(); };
+let dismiss = () => { emits.close(); };
+
+let onKey = (event: KeyboardEvent) => {
+    let shift = hasModifier(event.modifiers, KeyModifiers.Shift);
+    let alt = hasModifier(event.modifiers, KeyModifiers.Alt);
+    if event.key == Key.Return || event.key == Key.F3 {
+        if shift { emits.previous(); } else { emits.next(); }
+    }
+    else if event.key == Key.Escape { emits.close(); }
+    else if alt && event.key == Key.C { toggleCase(); }
+    else if alt && event.key == Key.W { toggleWord(); }
+    else if alt && event.key == Key.R { toggleRegex(); }
+    else { return; }
+    event.preventDefault();
+    event.stopPropagation();
+};
+
+// The widget floats over the text: a press on it must not reach the editor
+// underneath and move the caret.
+let swallow = (event: PointerEvent) => { event.stopPropagation(); };
+
+@template [row items-center gap-1 px-2 py-1 w-fit h-fit bg-["#252526"] rounded-[4] cursor-default
+    font-size-13]
+    @keydowncapture=onKey
+    @pointerdown=swallow
+
+div [w-[props.inputWidth]px h-fit] {
+    TextInput [] ref=inputRef text=[state.query] placeholder="Find" backgroundColor="#313131"
+        borderColor=[props.invalid ? "#BE1100" : "#3C3C3C"] focusRing=[0] {}
+}
+Button [] icon="case-sensitive" selected=[rx.get(state.matchCase)] bgSelected="#264F78"
+    paddingX=[3] paddingY=[3] focusRing=[0] @click=toggleCase {}
+Button [] icon="whole-word" selected=[rx.get(state.wholeWord)] bgSelected="#264F78"
+    paddingX=[3] paddingY=[3] focusRing=[0] @click=toggleWord {}
+Button [] icon="regex" selected=[rx.get(state.regex)] bgSelected="#264F78"
+    paddingX=[3] paddingY=[3] focusRing=[0] @click=toggleRegex {}
+div [w-[86]px h-fit px-1] {
+    text [text-nowrap text-color-[props.noResults ? "#F48771" : "#CCCCCC"]] [props.countLabel]
+}
+Button [] icon="arrow-up" paddingX=[3] paddingY=[3] focusRing=[0] @click=goPrevious {}
+Button [] icon="arrow-down" paddingX=[3] paddingY=[3] focusRing=[0] @click=goNext {}
+Button [] icon="close" paddingX=[3] paddingY=[3] focusRing=[0] @click=dismiss {}

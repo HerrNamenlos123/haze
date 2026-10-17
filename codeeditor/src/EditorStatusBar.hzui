@@ -23,16 +23,20 @@ let chord = computed((): str => {
     return hint.length > 0 ? f"{hint} ..." : "";
 });
 
-@template [row w-grow h-fit items-center gap-2 p-1]
+// One line at any width: nothing wraps, and the memory stats, last, give way
+// first and are clipped.
+@template [row w-grow h-fit items-center gap-2 p-1 overflow-hidden]
 
-text [] [props.fps]
-text [text-color-[props.modeColor]] [props.mode]
+text [text-nowrap] [props.fps]
+text [text-nowrap text-color-[props.modeColor]] [props.mode]
 
-text if=[props.commandLine.length > 0] [text-color-["#FFFFFF"]] [props.commandLine]
-text else-if=[props.message.length > 0] [text-color-["#9ECE6A"]] [props.message]
+text if=[props.commandLine.length > 0] [text-nowrap text-color-["#FFFFFF"]] [props.commandLine]
+text else-if=[props.message.length > 0] [text-nowrap text-color-["#9ECE6A"]] [props.message]
 
 Button [] label=[indentLabel()] paddingX=[6] paddingY=[0] focusRing=[0]
     @click=toggleIndent {}
 
-text if=[chord.length > 0] [text-color-["#D9B87F"]] [chord]
-text if=[props.stats.length > 0] [] [props.stats]
+text if=[chord.length > 0] [text-nowrap text-color-["#D9B87F"]] [chord]
+div if=[props.stats.length > 0] [w-grow h-fit overflow-hidden] {
+    text [text-nowrap] [props.stats]
+}

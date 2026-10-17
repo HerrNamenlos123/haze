@@ -40,6 +40,10 @@ fn ctxVimMode(): str { return "vimMode"; }
 // The focused editor has a non-empty selection.
 fn ctxEditorHasSelection(): str { return "editorHasSelection"; }
 
+fn ctxFindWidgetVisible(): str { return "findWidgetVisible"; }
+
+fn ctxHasSearchResults(): str { return "hasSearchResults"; }
+
 // ── The rule table ───────────────────────────────────────────────────────
 
 fn installDefaultKeymap(keys: mut Keybindings): void {
@@ -88,6 +92,19 @@ fn installDefaultKeymap(keys: mut Keybindings): void {
         // from inside vim -- see Vim.onGoToDefinition.
         { key: "f12", command: "editor.action.revealDefinition", when: "editorTextFocus" },
 
+        // Find. Ctrl+F wins over vim's page-down, as asked; `/` `?` `n` `N`
+        // `*` `#` are the vim side of the same search (see EditorView).
+        { key: "ctrl+f", command: "actions.find", when: "hasOpenTabs" },
+        { key: "f3", command: "editor.action.nextMatchFindAction", when: "hasOpenTabs" },
+        { key: "shift+f3", command: "editor.action.previousMatchFindAction", when: "hasOpenTabs" },
+        { key: "escape", command: "closeFindWidget",
+          when: "editorTextFocus && findWidgetVisible && (!vimActive || vimMode == 'normal')" },
+
+        { key: "ctrl+shift+f", command: "workbench.action.findInFiles" },
+        { key: "ctrl+shift+e", command: "workbench.view.explorer" },
+        { key: "f4", command: "search.action.focusNextSearchResult", when: "hasSearchResults" },
+        { key: "shift+f4", command: "search.action.focusPreviousSearchResult", when: "hasSearchResults" },
+
         // NOTE on the jump list: <C-o> and <C-i> are deliberately NOT bound
         // here. They belong to the editing engine, which implements the
         // real jump list with counts and vim's own append/de-duplicate
@@ -96,6 +113,10 @@ fn installDefaultKeymap(keys: mut Keybindings): void {
         // so a menu or command palette can reach them, but no key routes
         // through them -- a key that did would arrive without its count.
     ]);
+
+    // LAST, so that while the suggest list is up its keys outrank every
+    // rule above. See suggest_keymap.hz.
+    installSuggestKeymap(keys);
 }
 
 // ── The one instance ─────────────────────────────────────────────────────
@@ -140,6 +161,10 @@ struct WorkbenchCommands {
     // EditorCommands below); saving ALL of them belongs here, because only
     // the shell knows how many there are.
     saveAll: CommandFn;
+    findInFiles: CommandFn;
+    showExplorer: CommandFn;
+    nextSearchResult: CommandFn;
+    previousSearchResult: CommandFn;
 }
 
 fn registerWorkbenchCommands(keys: mut Keybindings, handlers: WorkbenchCommands): void {
@@ -155,6 +180,10 @@ fn registerWorkbenchCommands(keys: mut Keybindings, handlers: WorkbenchCommands)
     keys.commands.register("workbench.action.files.saveAll", handlers.saveAll);
     keys.commands.register("workbench.action.nextEditor", handlers.nextEditor);
     keys.commands.register("workbench.action.previousEditor", handlers.previousEditor);
+    keys.commands.register("workbench.action.findInFiles", handlers.findInFiles);
+    keys.commands.register("workbench.view.explorer", handlers.showExplorer);
+    keys.commands.register("search.action.focusNextSearchResult", handlers.nextSearchResult);
+    keys.commands.register("search.action.focusPreviousSearchResult", handlers.previousSearchResult);
 }
 
 // ── Commands owned by whichever editor is active ─────────────────────────
@@ -174,6 +203,10 @@ struct EditorCommands {
     vimNavigateBack: CommandFn;
     vimNavigateForward: CommandFn;
     goToDefinition: CommandFn;
+    find: CommandFn;
+    findNext: CommandFn;
+    findPrevious: CommandFn;
+    closeFind: CommandFn;
 }
 
 fn registerEditorCommands(keys: mut Keybindings, handlers: EditorCommands): void {
@@ -182,4 +215,8 @@ fn registerEditorCommands(keys: mut Keybindings, handlers: EditorCommands): void
     keys.commands.register("vim.navigateBack", handlers.vimNavigateBack);
     keys.commands.register("vim.navigateForward", handlers.vimNavigateForward);
     keys.commands.register("editor.action.revealDefinition", handlers.goToDefinition);
+    keys.commands.register("actions.find", handlers.find);
+    keys.commands.register("editor.action.nextMatchFindAction", handlers.findNext);
+    keys.commands.register("editor.action.previousMatchFindAction", handlers.findPrevious);
+    keys.commands.register("closeFindWidget", handlers.closeFind);
 }

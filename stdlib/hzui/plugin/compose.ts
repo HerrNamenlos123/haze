@@ -176,6 +176,7 @@ export const DIALECT_IMPORTS: string[] = [
 
   // hzui's own runtime helpers, named by generated code.
   "keyId",
+  "mixKeys",
 ];
 
 /** The single import line every generated file opens with. */

@@ -1401,6 +1401,18 @@ bool hzstd_process_is_alive(void *proc_)
   return false;
 }
 
+// Asks the child to stop (SIGTERM) and returns at once; reap it with
+// is_alive()/join() as usual. A child that already exited is left alone, so
+// a recycled pid is never signalled.
+void hzstd_process_kill(void *proc_)
+{
+  hzstd_process_t *proc = (hzstd_process_t *)proc_;
+  if (!proc || proc->exited || !hzstd_process_is_alive(proc_)) {
+    return;
+  }
+  kill(proc->pid, SIGTERM);
+}
+
 int hzstd_process_join(void *proc_)
 {
   hzstd_process_t *proc = (hzstd_process_t *)proc_;

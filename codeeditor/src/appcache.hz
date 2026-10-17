@@ -51,6 +51,14 @@ ref struct Cache {
     treeOpen: bool | none = none;
     treeWidth: real | none = none;
     agentWidth: real | none = none;
+
+    // The open tabs of every workspace that is NOT the open one, so switching
+    // folders swaps the tabs the way VS Code does. One line per workspace:
+    // its path, the active file, then the open files, tab-separated (a tab in
+    // a path is not supported). `openFiles` above is the open workspace's.
+    sessions: str | none = none;
+    // The sidebar's view: "explorer" or "search".
+    sidebarView: str | none = none;
 }
 
 extern C let g_cache: json.CacheFile<Cache> | none = none;

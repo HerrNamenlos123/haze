@@ -66,6 +66,10 @@ fn testKeybindings(run: mut KeyTestRun): mut Keybindings {
         nextEditor: () => { run.record("next"); },
         previousEditor: () => { run.record("prev"); },
         saveAll: () => { run.record("saveAll"); },
+        findInFiles: () => { run.record("findInFiles"); },
+        showExplorer: () => { run.record("showExplorer"); },
+        nextSearchResult: () => { run.record("nextSearchResult"); },
+        previousSearchResult: () => { run.record("previousSearchResult"); },
     });
     registerEditorCommands(keys, EditorCommands {
         save: () => { run.record("save"); },
@@ -73,6 +77,10 @@ fn testKeybindings(run: mut KeyTestRun): mut Keybindings {
         vimNavigateBack: () => { run.record("back"); },
         vimNavigateForward: () => { run.record("forward"); },
         goToDefinition: () => { run.record("gotoDef"); },
+        find: () => { run.record("find"); },
+        findNext: () => { run.record("findNext"); },
+        findPrevious: () => { run.record("findPrevious"); },
+        closeFind: () => { run.record("closeFind"); },
     });
     return keys;
 }
@@ -265,6 +273,8 @@ fn runEditorSelfTest(mode: str): int {
 
     runWorkspaceSelfTest(run);
     runSaveSelfTest(run);
+    runCompletionSelfTest(run);
+    runDiagnosticsSelfTest(run);
 
     if mode == "lsp" {
         // Needs the shared State, because restarting the language servers
@@ -279,6 +289,8 @@ fn runEditorSelfTest(mode: str): int {
             });
             runLspRestartSelfTest(run);
             runDefinitionSelfTest(run);
+            runCompletionLspSelfTest(run);
+            runDiagnosticsLspSelfTest(run);
             // Deliberately NOT engine.stop(): that joins the syntax engine,
             // which blocks until it exits, and it has not been asked to.
             // The process ends with this one.

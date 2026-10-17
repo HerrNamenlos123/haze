@@ -1,0 +1,504 @@
+// ═══ Search across the workspace (Ctrl+Shift+F) ══════════════════════════
+//
+// What VS Code does, and with the same tool: ripgrep. `rg --json` streams one
+// object per matched line with exact byte spans, so nothing is re-matched
+// here. The process is pumped from the shell's frame loop and its output is
+// parsed a bounded slice per frame, so a search that hits every line of a big
+// repository never freezes the UI.
+//
+// Defaults follow VS Code's: case-insensitive, .gitignore respected, hidden
+// files searched, node_modules and bower_components excluded, and at most
+// 20000 results.
+
+// Plain text search terms, in rg's JSON. A path or line that is not valid
+// UTF-8 comes as {"bytes": ...} instead and fails to parse; that line is
+// skipped.
+struct RgText {
+    text: str;
+}
+
+struct RgSubmatch {
+    start: int;
+    end: int;
+}
+
+struct RgMatchData {
+    path: RgText;
+    lines: RgText;
+    line_number: int;
+    submatches: []RgSubmatch;
+}
+
+ref struct SearchMatch {
+    // 0-based line and byte columns, in the file.
+    line: int;
+    start: int;
+    end: int;
+    // The preview: the text before, of and after the match.
+    before: str;
+    hit: str;
+    after: str;
+}
+
+ref struct SearchFile {
+    path: str;
+    // Workspace-relative, for sorting and for the dimmed folder part.
+    rel: str;
+    name: str;
+    dir: str;
+    matches: []SearchMatch = [];
+    collapsed: bool = false;
+}
+
+// One row of the flattened results list: a file, or match `match` of it.
+struct SearchRow {
+    file: int = 0;
+    match: int = -1;
+}
+
+fn searchResultLimit(): int { return 20000; }
+
+ref struct SearchState {
+    query: rx.Reactive<str>;
+    matchCase: rx.Reactive<bool>;
+    wholeWord: rx.Reactive<bool>;
+    regex: rx.Reactive<bool>;
+    includes: rx.Reactive<str>;
+    excludes: rx.Reactive<str>;
+    showDetails: rx.Reactive<bool>;
+
+    files: []SearchFile = [];
+    // Bumped whenever `files`, or a file's collapsed flag, changes.
+    revision: rx.Reactive<int>;
+    message: rx.Reactive<str>;
+    running: rx.Reactive<bool>;
+    // The selected row of the results list, -1 for none.
+    selected: rx.Reactive<int>;
+    // Bumped to make the view focus its input (Ctrl+Shift+F).
+    focusSerial: rx.Reactive<int>;
+    // The active editor's single-line selection, kept current by EditorView:
+    // what Ctrl+Shift+F seeds the query with.
+    editorSelection: str = "";
+
+    root: str = "";
+    proc: process.Process | none = none;
+    // The running search's results, collected apart from `files` so that
+    // typing never blanks the list: they replace `files` only once the search
+    // is done, or once it has run long enough that showing progress beats
+    // showing the old answer (see publishSearch).
+    building: []SearchFile = [];
+    buildTotal: int = 0;
+    published: bool = true;
+    startedAt: real = 0.0;
+    // rg's unparsed output and how far into it parsing has got.
+    pending: str = "";
+    pendingAt: int = 0;
+    total: int = 0;
+    capped: bool = false;
+    // When a debounced search is due, in ui.now() seconds; -1 for none.
+    dueAt: real = -1.0;
+
+    fn constructor(): mut SearchState {
+        let state = SearchState {
+            query: rx.reactive<str>(""),
+            matchCase: rx.reactive<bool>(false),
+            wholeWord: rx.reactive<bool>(false),
+            regex: rx.reactive<bool>(false),
+            includes: rx.reactive<str>(""),
+            excludes: rx.reactive<str>(""),
+            showDetails: rx.reactive<bool>(true),
+            revision: rx.reactive<int>(0),
+            message: rx.reactive<str>(""),
+            running: rx.reactive<bool>(false),
+            selected: rx.reactive<int>(-1),
+            focusSerial: rx.reactive<int>(0),
+        };
+        return state;
+    }
+}
+
+extern C let g_search: mut SearchState | none = none;
+
+fn searchState(): mut SearchState {
+    let existing = g_search;
+    if existing {
+        return existing;
+    }
+    let created = SearchState();
+    g_search = created;
+    return created;
+}
+
+// VS Code's reading of "files to include/exclude": comma-separated globs,
+// relative to the workspace. `./src` is anchored at the root; a bare `src` or
+// `*.ts` matches at any depth. A folder pattern also covers what is inside it.
+fn searchGlobs(patterns: str, exclude: bool, out: mut []str) {
+    for raw in patterns.split(",") {
+        let p = raw.trim();
+        if p.length == 0 {
+            continue;
+        }
+        if p.startsWith("./") {
+            p = p.slice(2, p.length);
+        } else if !p.startsWith("**/") && !p.startsWith("/") {
+            p = "**/" + p;
+        }
+        while p.length > 1 && p.endsWith("/") {
+            p = p.slice(0, p.length - 1);
+        }
+        let prefix = exclude ? "!" : "";
+        out.push("-g");
+        out.push(prefix + p);
+        if !p.endsWith("/**") {
+            out.push("-g");
+            out.push(prefix + p + "/**");
+        }
+    }
+}
+
+fn searchArgs(s: SearchState, query: str): []str {
+    let args: mut []str = ["--json", "--hidden", "--no-require-git", "--no-config"];
+    args.push(rx.get(s.matchCase) ? "--case-sensitive" : "--ignore-case");
+    if !rx.get(s.regex) {
+        args.push("--fixed-strings");
+    }
+    if rx.get(s.wholeWord) {
+        args.push("--word-regexp");
+    }
+    let includes: str = rx.get(s.includes);
+    searchGlobs(includes, false, args);
+    // Later globs win in rg, so the exclusions go last and beat an include.
+    searchGlobs("./.git,node_modules,bower_components,*.code-search", true, args);
+    let excludes: str = rx.get(s.excludes);
+    searchGlobs(excludes, true, args);
+    args.push("-e");
+    args.push(query);
+    args.push("--");
+    args.push(".");
+    return args;
+}
+
+fn stopSearch(s: mut SearchState) {
+    let proc = s.proc;
+    if proc {
+        proc.kill();
+        // Reaped from the frame loop with the language servers' leftovers.
+        retireProcess(proc);
+    }
+    s.proc = none;
+    s.pending = "";
+    s.pendingAt = 0;
+    s.running := false;
+}
+
+fn clearSearchResults(s: mut SearchState) {
+    stopSearch(s);
+    s.files = [];
+    s.building = [];
+    s.buildTotal = 0;
+    s.published = true;
+    s.total = 0;
+    s.capped = false;
+    s.selected := -1;
+    s.message := "";
+    s.revision := rx.get(s.revision) + 1;
+}
+
+fn startSearch(s: mut SearchState, now: real) {
+    let query: str = rx.get(s.query);
+    let root: str = rx.get(workspace().path);
+    if query.length == 0 {
+        clearSearchResults(s);
+        return;
+    }
+    if root.length == 0 {
+        clearSearchResults(s);
+        s.message := "Open a folder to search in it.";
+        return;
+    }
+    // The previous results stay on screen; see `building`.
+    stopSearch(s);
+    s.building = [];
+    s.buildTotal = 0;
+    s.capped = false;
+    s.published = false;
+    s.startedAt = now;
+    s.root = root;
+    let spawned = process.spawn("rg", searchArgs(s, query), process.SpawnOptions { cwd: root });
+    if !spawned {
+        s.message := "Could not run rg (ripgrep). Is it installed?";
+        return;
+    }
+    let proc: process.Process = spawned;
+    s.proc = proc;
+    s.running := true;
+}
+
+// How long a search may run before its partial results replace the old ones.
+fn searchSwapDelay(): real { return 0.4; }
+
+// Show the running search's results in place of the previous ones.
+fn publishSearch(s: mut SearchState) {
+    s.files = s.building;
+    s.total = s.buildTotal;
+    if !s.published {
+        s.published = true;
+        s.selected := -1;
+    }
+    s.revision := rx.get(s.revision) + 1;
+    s.message := searchSummary(s);
+}
+
+// Debounced, like VS Code's search-on-type: retyping restarts the clock.
+fn scheduleSearch(s: mut SearchState, now: real, delay: real) {
+    s.dueAt = now + delay;
+}
+
+// Back to a UTF-8 character boundary, so a cut never splits a character.
+fn charStart(text: str, at: int): int {
+    let i = at;
+    while i > 0 && i < text.length && text[i] >= 128 && text[i] < 192 {
+        i = i - 1;
+    }
+    return i;
+}
+
+fn previewMatch(text: str, line: int, start: int, end: int): SearchMatch {
+    // VS Code's preview: no leading indentation, a bounded run-up to the
+    // match, and the rest of the line cut short.
+    let lead = 0;
+    while lead < start && (text[lead] == b" " || text[lead] == b"\t") {
+        lead = lead + 1;
+    }
+    let cut = lead;
+    let ellipsis = "";
+    if start - cut > 40 {
+        cut = charStart(text, start - 30);
+        ellipsis = "...";
+    }
+    let to = end + 200;
+    if to >= text.length { to = text.length; } else { to = charStart(text, to); }
+    return SearchMatch {
+        line: line,
+        start: start,
+        end: end,
+        before: ellipsis + text.slice(cut, start),
+        hit: text.slice(start, end),
+        after: text.slice(end, to),
+    };
+}
+
+fn baseNameOf(path: str): str {
+    for (let i = path.length - 1; i >= 0; i--) {
+        if path[i] == b"/" {
+            return path.slice(i + 1, path.length);
+        }
+    }
+    return path;
+}
+
+// Plain byte order, which is what a sorted path list wants here.
+fn bytesBefore(a: str, b: str): bool {
+    let n = a.length < b.length ? a.length : b.length;
+    for (let i = 0; i < n; i++) {
+        if a[i] != b[i] {
+            return a[i] < b[i];
+        }
+    }
+    return a.length < b.length;
+}
+
+// The file's entry, created in path order. rg reports all of one file's
+// matches together, so the last file touched is checked first.
+fn searchFileFor(s: mut SearchState, rel: str, lastIndex: int): int {
+    if lastIndex >= 0 && lastIndex < s.building.length && s.building[lastIndex].rel == rel {
+        return lastIndex;
+    }
+    let low = 0;
+    let high = s.building.length;
+    while low < high {
+        let mid = (low + high) / 2;
+        let probe = s.building[mid];
+        if probe.rel == rel {
+            return mid;
+        }
+        if bytesBefore(probe.rel, rel) {
+            low = mid + 1;
+        } else {
+            high = mid;
+        }
+    }
+    let name = baseNameOf(rel);
+    let dir = rel.length > name.length ? rel.slice(0, rel.length - name.length - 1) : "";
+    s.building.insert(low, SearchFile {
+        path: s.root + "/" + rel,
+        rel: rel,
+        name: name,
+        dir: dir,
+    });
+    return low;
+}
+
+fn acceptSearchLine(s: mut SearchState, line: str, lastIndex: int): int {
+    let prefix = "{\"type\":\"match\",\"data\":";
+    if !line.startsWith(prefix) || line.length < prefix.length + 1 {
+        return lastIndex;
+    }
+    let parsed = json.parse<RgMatchData>(line.slice(prefix.length, line.length - 1));
+    if !parsed {
+        return lastIndex;
+    }
+    let data: RgMatchData = parsed;
+    let rel = data.path.text;
+    if rel.startsWith("./") {
+        rel = rel.slice(2, rel.length);
+    }
+    let text = data.lines.text;
+    while text.endsWith("\n") || text.endsWith("\r") {
+        text = text.slice(0, text.length - 1);
+    }
+    let index = searchFileFor(s, rel, lastIndex);
+    let file = s.building[index];
+    for sub in data.submatches {
+        if s.buildTotal >= searchResultLimit() {
+            s.capped = true;
+            return index;
+        }
+        let end = sub.end < text.length ? sub.end : text.length;
+        if end <= sub.start {
+            continue;
+        }
+        file.matches.push(previewMatch(text, data.line_number - 1, sub.start, end));
+        s.buildTotal = s.buildTotal + 1;
+    }
+    return index;
+}
+
+fn searchSummary(s: SearchState): str {
+    if s.total == 0 {
+        return "No results found. Review your exclusions and check your gitignore files.";
+    }
+    let results = s.total == 1 ? "1 result" : f"{s.total} results";
+    let files = s.files.length == 1 ? "1 file" : f"{s.files.length} files";
+    let text = f"{results} in {files}";
+    if s.capped {
+        return "The result set only contains a subset of all matches. Be more specific in your search to narrow down the results. " + text;
+    }
+    return text;
+}
+
+// Once per frame, from the shell. Starts a debounced search when it is due,
+// then reads and parses at most `byteBudget` bytes of rg's output.
+fn pumpSearch(now: real, byteBudget: int) {
+    let s = searchState();
+    if s.dueAt >= 0.0 && now >= s.dueAt {
+        s.dueAt = -1.0;
+        startSearch(s, now);
+    }
+    let proc = s.proc;
+    if !proc {
+        return;
+    }
+    let alive = proc.isAlive();
+    // Only read more while little is waiting, so a fast rg is held back by
+    // its pipe instead of filling memory faster than this can parse.
+    if s.pending.length - s.pendingAt < 1048576 {
+        let chunk = proc.readStdout();
+        if chunk.length > 0 {
+            s.pending = s.pending.slice(s.pendingAt, s.pending.length) + chunk;
+            s.pendingAt = 0;
+        }
+    }
+
+    let buffer = s.pending;
+    let at = s.pendingAt;
+    let stop = at + byteBudget;
+    let lastIndex = -1;
+    let before = s.buildTotal;
+    let filesBefore = s.building.length;
+    let i = at;
+    while i < buffer.length && at < stop && !s.capped {
+        if buffer[i] == b"\n" {
+            lastIndex = acceptSearchLine(s, buffer.slice(at, i), lastIndex);
+            at = i + 1;
+        }
+        i = i + 1;
+    }
+    s.pendingAt = at;
+    let grew = s.buildTotal != before || s.building.length != filesBefore;
+    if grew && (s.published || now - s.startedAt >= searchSwapDelay()) {
+        publishSearch(s);
+    }
+
+    let drained = s.pendingAt >= s.pending.length;
+    if s.capped || (!alive && drained) {
+        let errors = s.capped ? "" : proc.readStderr();
+        stopSearch(s);
+        publishSearch(s);
+        let summary = searchSummary(s);
+        if s.total == 0 && errors.length > 0 {
+            // rg's own complaint, e.g. a regex that does not parse: its
+            // first line says what failed and its last one why.
+            let first = "";
+            let last = "";
+            for line in errors.split("\n") {
+                let trimmed = line.trim();
+                if trimmed.length == 0 { continue; }
+                if first.length == 0 { first = trimmed; }
+                last = trimmed;
+            }
+            summary = last != first ? first + " " + last : first;
+        }
+        s.message := summary;
+    }
+}
+
+fn searchRows(s: SearchState): []SearchRow {
+    let rows: []SearchRow = [];
+    for (let f = 0; f < s.files.length; f++) {
+        rows.push(SearchRow { file: f, match: -1 });
+        let file = s.files[f];
+        if file.collapsed {
+            continue;
+        }
+        for (let m = 0; m < file.matches.length; m++) {
+            rows.push(SearchRow { file: f, match: m });
+        }
+    }
+    return rows;
+}
+
+// Show match row `index`: in a preview tab, or a kept one when `pin`.
+fn openSearchRow(s: SearchState, rows: []SearchRow, index: int, pin: bool) {
+    if index < 0 || index >= rows.length {
+        return;
+    }
+    let row = rows[index];
+    if row.match < 0 {
+        return;
+    }
+    let file = s.files[row.file];
+    let m = file.matches[row.match];
+    requestRevealMatch(file.path, m.line, m.start, m.end, !pin);
+}
+
+// F4 / Shift+F4: the next or previous match row, opened as a preview.
+fn stepSearchResult(delta: int) {
+    let s = searchState();
+    let rows = searchRows(s);
+    if rows.length == 0 {
+        return;
+    }
+    let i: int = rx.get(s.selected);
+    for (let n = 0; n < rows.length; n++) {
+        i = i + delta;
+        if i < 0 { i = rows.length - 1; }
+        if i >= rows.length { i = 0; }
+        let row = rows[i];
+        if row.match >= 0 {
+            s.selected := i;
+            openSearchRow(s, rows, i, false);
+            return;
+        }
+    }
+}

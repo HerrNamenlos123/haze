@@ -1,0 +1,272 @@
+// ═══ Completion: filtering, ranking and edits, then a real tsserver ══════
+//
+// The pure half runs with every self-test. The tsserver half needs
+// CODEEDITOR_SELFTEST=lsp, like go-to-definition: it writes a two-file
+// project, asks a real tsserver what can be typed, and accepts an auto-import
+// the way the editor does.
+
+fn completionTestEntry(name: str, sortText: str): CompletionEntry {
+    return CompletionEntry { name: name, sortText: sortText, insertText: name, filterText: name };
+}
+
+fn joinInts(values: []int): str {
+    let out = "";
+    for value, i in values {
+        out = i == 0 ? f"{value}" : f"{out},{value}";
+    }
+    return out;
+}
+
+fn runCompletionSelfTest(run: mut KeyTestRun): void {
+    // ── The typed word ───────────────────────────────────────────────────
+    run.check("word start after a dot", f"{identifierStartBefore("  foo.barBaz", 12)}", "6");
+    run.check("word start after a space", f"{identifierStartBefore("x = useSt", 9)}", "4");
+    run.check("no word before a dot", f"{identifierStartBefore("obj.", 4)}", "4");
+    run.check("$ and _ are identifier characters", f"{identifierStartBefore("a $_x9", 6)}", "2");
+    run.checkBool("identifier range", isIdentifierRange("obj.alpha", 4, 9), true);
+    run.checkBool("a dot breaks the range", isIdentifierRange("obj.alpha", 2, 9), false);
+    run.checkBool("an empty range is fine", isIdentifierRange("obj.", 4, 4), true);
+    run.checkBool("a range past the line is not", isIdentifierRange("obj", 2, 9), false);
+
+    // ── Matching ─────────────────────────────────────────────────────────
+    run.checkBool("a camelCase hump starts a match", completionScore("st", "useState") >= 0, true);
+    run.checkBool("the middle of a word does not", completionScore("se", "base") >= 0, false);
+    run.checkBool("after an underscore does", completionScore("v", "my_value") >= 0, true);
+    run.checkBool("every character must appear", completionScore("stx", "useState") >= 0, false);
+    run.checkBool("an empty word matches anything", completionScore("", "anything") >= 0, true);
+    run.checkBool("a prefix beats a hump",
+        completionScore("st", "stack") > completionScore("st", "useState"), true);
+    run.checkBool("the typed case wins a tie",
+        completionScore("St", "State") > completionScore("St", "state"), true);
+    run.checkBool("contiguous beats scattered",
+        completionScore("ab", "abc") > completionScore("ab", "axb"), true);
+    run.check("highlight follows the hump", joinInts(completionMatchPositions("uS", "useState")), "0,3");
+    run.check("highlight of a prefix", joinInts(completionMatchPositions("he", "helper")), "0,1");
+    run.check("a lower-case word stays a prefix", joinInts(completionMatchPositions("us", "useState")), "0,1");
+    let runsText = (runs: []CompletionRun): str => {
+        let out = "";
+        for part in runs {
+            out = f"{out}[{part.text}:{part.color}]";
+        }
+        return out;
+    };
+    run.check("label runs split at the matches",
+        runsText(completionLabelRuns("uS", "useState", "p", "m")), "[u:m][se:p][S:m][tate:p]");
+    run.check("a label with no match is one noMods run", runsText(completionLabelRuns("", "obj", "p", "m")), "[obj:p]");
+    run.check("nothing to highlight for no match", joinInts(completionMatchPositions("zz", "helper")), "");
+
+    // ── Ranking: score, then sortText, then name ─────────────────────────
+    let entries: []CompletionEntry = [];
+    entries.push(completionTestEntry("useState", "16"));
+    entries.push(completionTestEntry("stack", "16"));
+    entries.push(completionTestEntry("string", "15"));
+    entries.push(completionTestEntry("best", "11"));
+    entries.push(completionTestEntry("start", "16"));
+    run.check("ranked: prefix by sortText and name, then hump; mid-word dropped",
+        joinInts(rankCompletions(entries, "st")), "2,1,4,0");
+    run.check("an empty word lists everything by sortText", joinInts(rankCompletions(entries, "")), "3,2,1,4,0");
+    run.check("the order is by bytes", f"{compareBytes("a", "b")},{compareBytes("b", "a")},{compareBytes("ab", "a")},{compareBytes("x", "x")}", "-1,1,1,0");
+
+    // ── Where the caret goes when an edit lands elsewhere ────────────────
+    let at = (x: int, y: int): Vec2i => { let v: Vec2i = { x: x, y: y }; return v; };
+    let show = (v: Vec2i): str => f"{v.x}:{v.y}";
+    run.check("an import line above pushes the caret down",
+        show(positionAfterEdit(at(5, 3), at(0, 0), at(0, 0), "import x;\n")), "5:4");
+    run.check("an insertion before the caret on its line shifts it",
+        show(positionAfterEdit(at(30, 0), at(20, 0), at(20, 0), ", helperFunction")), "46:0");
+    run.check("an edit after the caret leaves it",
+        show(positionAfterEdit(at(3, 0), at(20, 0), at(20, 0), "xyz")), "3:0");
+    run.check("a multi-line insertion before the caret on its line",
+        show(positionAfterEdit(at(30, 0), at(24, 0), at(24, 0), "\nimport a;\n")), "6:2");
+    run.check("a replaced range that spanned lines",
+        show(positionAfterEdit(at(4, 5), at(0, 1), at(0, 3), "x")), "4:3");
+    run.check("a caret inside the replaced range lands at its start",
+        show(positionAfterEdit(at(3, 0), at(1, 0), at(5, 0), "x")), "1:0");
+
+    // ── The suggest list's keys, through the real default keymap ─────────
+    let keys = Keybindings();
+    installDefaultKeymap(keys);
+    run.check("the default keymap has no bad rules", f"{keys.keymap.problems.length}", "0");
+    keys.commands.register("workbench.action.quickOpen", () => { run.record("quickOpen"); });
+    registerSuggestCommands(keys, SuggestCommands {
+        selectNext: () => { run.record("next"); },
+        selectPrevious: () => { run.record("prev"); },
+        selectNextPage: () => { run.record("pageNext"); },
+        selectPreviousPage: () => { run.record("pagePrev"); },
+        accept: () => { run.record("accept"); },
+        hide: () => { run.record("hide"); },
+        trigger: () => { run.record("trigger"); },
+    });
+    let noMods: KeyModifiers = KeyModifiers.None;
+    let ctrlKey: KeyModifiers = KeyModifiers.Ctrl;
+    keys.context.setBool(ctxEditorTextFocus(), true);
+    keys.context.setBool(ctxVimActive(), true);
+    keys.context.setStr(ctxVimMode(), "insert");
+    keys.context.setBool(ctxSuggestWidgetVisible(), true);
+    keys.dispatch(keyEvent(ui_components.Key.N, ctrlKey));
+    keys.dispatch(keyEvent(ui_components.Key.P, ctrlKey));
+    keys.dispatch(keyEvent(ui_components.Key.Down, noMods));
+    keys.dispatch(keyEvent(ui_components.Key.Up, noMods));
+    keys.dispatch(keyEvent(ui_components.Key.PageDown, noMods));
+    keys.dispatch(keyEvent(ui_components.Key.PageUp, noMods));
+    keys.dispatch(keyEvent(ui_components.Key.Return, noMods));
+    keys.dispatch(keyEvent(ui_components.Key.Tab, noMods));
+    keys.dispatch(keyEvent(ui_components.Key.Escape, noMods));
+    run.check("with the list up its keys drive it, ctrl+p included",
+        run.takeRan(), "next;prev;next;prev;pageNext;pagePrev;accept;accept;hide;");
+
+    keys.context.setBool(ctxSuggestWidgetVisible(), false);
+    keys.dispatch(keyEvent(ui_components.Key.P, ctrlKey));
+    run.check("without it ctrl+p is quick open again", run.takeRan(), "quickOpen;");
+    run.checkBool("down falls through to vim", keys.dispatch(keyEvent(ui_components.Key.Down, noMods)).handled(), false);
+    run.checkBool("enter falls through to vim", keys.dispatch(keyEvent(ui_components.Key.Return, noMods)).handled(), false);
+    run.checkBool("ctrl+n falls through to vim", keys.dispatch(keyEvent(ui_components.Key.N, ctrlKey)).handled(), false);
+
+    keys.dispatch(keyEvent(ui_components.Key.Space, ctrlKey));
+    run.check("ctrl+space asks in insert mode", run.takeRan(), "trigger;");
+    keys.context.setStr(ctxVimMode(), "normal");
+    run.checkBool("but not in normal mode", keys.dispatch(keyEvent(ui_components.Key.Space, ctrlKey)).handled(), false);
+    keys.context.setBool(ctxVimActive(), false);
+    keys.context.setStr(ctxVimMode(), "");
+    keys.dispatch(keyEvent(ui_components.Key.Space, ctrlKey));
+    run.check("and always without vim", run.takeRan(), "trigger;");
+
+    keys.context.setBool(ctxSuggestWidgetVisible(), true);
+    keys.context.setBool(ctxEditorTextFocus(), false);
+    keys.dispatch(keyEvent(ui_components.Key.P, ctrlKey));
+    run.check("a list in an unfocused editor does not take keys", run.takeRan(), "quickOpen;");
+
+    // ── How rows look ────────────────────────────────────────────────────
+    run.checkBool("functions and properties look different",
+        completionKindGlyph("function") != completionKindGlyph("property"), true);
+    run.checkBool("an unknown kind still has an icon", completionKindGlyph("nonsense").length > 0, true);
+    run.check("methods are purple", completionKindColor("method"), "#B180D7");
+}
+
+// ═══ Completion against a real tsserver ═════════════════════════════════
+//
+// A configured project this time: auto-import only offers what the program
+// contains, and a lone inferred file contains nothing else.
+fn runCompletionLspSelfTest(run: mut KeyTestRun): void {
+    let dir = f"{getCwdAbsolute()}/__haze__/codeeditor/completion-probe";
+    // Already there on a second run, which is fine.
+    fs.createDirectory(dir);
+    let mainPath = f"{dir}/main.ts";
+    let mainSource = "import { helperConst } from \"./util\";
+const obj = { alpha: 1, beta: \"x\" };
+help
+obj.
+";
+    let files: []str = [
+        f"{dir}/tsconfig.json",
+        "{ \"compilerOptions\": { \"strict\": true, \"module\": \"ESNext\", \"moduleResolution\": \"Bundler\" }, \"include\": [\"*.ts\"] }",
+        f"{dir}/util.ts",
+        "export function helperFunction(a: number): number { return a; }\nexport const helperConst = 3;\n",
+        mainPath,
+        mainSource,
+    ];
+    let wrote = true;
+    for (let i = 0; i < files.length; i = i + 2) {
+        if !fs.writeText(files[i], files[i + 1]) {
+            wrote = false;
+        }
+    }
+    if !wrote {
+        run.check("could write the completion probe", "no", "yes");
+        return;
+    }
+
+    workspace().path := dir;
+    workspace().name := folderNameOf(dir);
+    restartLanguageServers();
+    let bridge = getState().lspBridge;
+    if !bridge {
+        run.check("servers started for the completion probe", "no bridge", "a bridge");
+        return;
+    }
+    let ready = 0;
+    while !bridge.isReady() && ready < 400 {
+        bridge.loop();
+        time.sleep(0.05);
+        ready = ready + 1;
+    }
+    run.checkBool("servers came up for completion", bridge.isReady(), true);
+    bridge.openDocument(mainPath, "typescript", 1, mainSource);
+
+    // `help|` on line 2: a word the file has not imported yet.
+    let stackref listed = Box<bool>(false);
+    let stackref helperFunction = Box<str>("missing");
+    let stackref helperConst = Box<str>("missing");
+    let stackref firstEntry = Box<CompletionEntry | none>(none);
+    bridge.completions(mainPath, 2, 4, "help", "", false, (list: CompletionList) => {
+        listed.value = true;
+        for entry in list.entries {
+            // Only util.ts's: a same-named export elsewhere is a separate entry.
+            if entry.name == "helperFunction" && entry.description == "./util" {
+                helperFunction.value = f"{entry.kind}|{entry.hasAction}|{entry.description}";
+                firstEntry.value = entry;
+            }
+            if entry.name == "helperConst" {
+                helperConst.value = f"{entry.kind}|{entry.hasAction}|{entry.description}";
+            }
+        }
+    });
+    let waited = 0;
+    while !listed.value && waited < 400 {
+        bridge.loop();
+        time.sleep(0.05);
+        waited = waited + 1;
+    }
+    run.checkBool("completionInfo was answered", listed.value, true);
+    run.check("an export of a module not imported yet is offered for auto-import",
+        helperFunction.value, "function|true|./util");
+    run.check("an imported binding is offered as it is", helperConst.value, "alias|false|");
+
+    // Accepting it extends the existing import list, as VS Code does.
+    let picked = firstEntry.value;
+    let stackref edited = Box<bool>(false);
+    let stackref editText = Box<str>("none");
+    if picked {
+        let typed = "helperFunction";
+        bridge.changeDocument(mainPath, { startLine: 2, endLine: 3, newText: f"{typed}\n" }, 2);
+        bridge.completionEdits(mainPath, 2, typed.length, typed, picked, (edits: []TextEditUtf16) => {
+            edited.value = true;
+            let out = "";
+            for edit in edits {
+                out = f"{out}{edit.startLine}:{edit.startUtf16}-{edit.endLine}:{edit.endUtf16}={edit.newText};";
+            }
+            editText.value = out;
+        });
+        waited = 0;
+        while !edited.value && waited < 400 {
+            bridge.loop();
+            time.sleep(0.05);
+            waited = waited + 1;
+        }
+    }
+    run.checkBool("completionEntryDetails was answered", edited.value, true);
+    run.check("the import list is extended in place", editText.value, "0:20-0:20=, helperFunction;");
+
+    // `obj.|` on line 3: the members of the object, and nothing else.
+    let stackref membersListed = Box<bool>(false);
+    let stackref members = Box<str>("");
+    bridge.completions(mainPath, 3, 4, "obj.", ".", false, (list: CompletionList) => {
+        membersListed.value = true;
+        let order = rankCompletions(list.entries, "");
+        for index in order {
+            members.value = f"{members.value}{list.entries[index].name};";
+        }
+    });
+    waited = 0;
+    while !membersListed.value && waited < 400 {
+        bridge.loop();
+        time.sleep(0.05);
+        waited = waited + 1;
+    }
+    run.check("member completion lists the object's members", members.value, "alpha;beta;");
+
+    let last = getState().lspBridge;
+    if last {
+        last.shutdown();
+    }
+}

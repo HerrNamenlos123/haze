@@ -92,9 +92,36 @@ export type GoToDefinitionHook = () => void;
 // literal does not convert into a `| none` union.
 export type ExCommandHook = (command: str) => void;
 
+// `n` `N` `*` `#`: the host owns the search (pattern, options, highlights) and
+// answers where the motion lands, or none when nothing matches. `cursor` is the
+// cursor and `count` the motion's count. The engine treats the answer as an
+// exclusive, jump-setting motion like vim's, so `dn` and `vn` work too.
+export type SearchMotionHook = (key: str, cursor: Vec2i, count: int) => Vec2i | none;
+// `/` and `?`: the host opens its search input; `backward` is true for `?`.
+export type SearchPromptHook = (backward: bool) => void;
+
 export ref struct Jump {
     pos: Vec2i = {};
+    // The document the position is in, as the host names it (Vim.document).
+    // "" for a host that never names its documents.
+    document: str = "";
 }
+
+// The jump list behind <C-o>/<C-i>. Its own object so that a host editing
+// several documents can hand ONE list to every Vim it creates: vim's jump
+// list belongs to the window, not the buffer, so <C-o> goes back across
+// files. An entry in another document is not moved to by the engine (it
+// cannot reach that document); it asks the host through
+// Vim.onJumpToDocument.
+export ref struct JumpList {
+    jumps: []Jump = [];
+    // Past the end (== jumps.length) when not part-way through a traversal.
+    index: int = 0;
+}
+
+// <C-o>/<C-i> landed in another document: the host makes `document` the
+// current one and puts its cursor at `pos`.
+export type JumpToDocumentHook = (document: str, pos: Vec2i) => void;
 
 export ref struct Vim {
     ctx: mut textedit_behavior.Context;
@@ -112,9 +139,14 @@ export ref struct Vim {
     lastFind: LastFind = {};
 
     // Jump list for <C-o>. Only the positions we push explicitly
-    // (gg, G, searches, large motions), which is what vim does too.
-    jumps: []Jump = [];
-    jumpIndex: int = 0;
+    // (gg, G, searches, large motions), which is what vim does too. Owned
+    // by this Vim unless the host shares one -- see JumpList.
+    jumpList: mut JumpList;
+    // This Vim's document in the jump list (see Jump.document).
+    document: str = "";
+    // Where <C-o>/<C-i> go when the entry is in another document. With no
+    // hook such an entry is never moved to.
+    onJumpToDocument: JumpToDocumentHook | none = none;
 
     // Keymaps, keyed by "<mode>\x00<lhs>" so one flat map serves every
     // mode without nesting maps.
@@ -234,10 +266,13 @@ export ref struct Vim {
     // paid only while one is open.
     commandLineBuffer: str = "";
     onExCommand: ExCommandHook | none = none;
+    onSearchMotion: SearchMotionHook | none = none;
+    onSearchPrompt: SearchPromptHook | none = none;
 
     fn constructor(ctx: mut textedit_behavior.Context): mut Vim {
         let vim = Vim {
             ctx: ctx,
+            jumpList: JumpList {},
             remaps: LinearMap<str, Remap>(),
         };
         return vim;
@@ -1012,6 +1047,16 @@ export ref struct Vim {
                 target: { x: len > 0 ? this.ctx.previousColumn(y, len) : 0, y: y },
                 inclusive: true,
             };
+            return result;
+        }
+        if key == "n" || key == "N" || key == "*" || key == "#" {
+            let hook = this.onSearchMotion;
+            if hook {
+                let found = hook(key, pos, count);
+                if found {
+                    result = Motion { valid: true, target: found, setsJump: true };
+                }
+            }
             return result;
         }
         if key == "G" {
@@ -2460,6 +2505,14 @@ export ref struct Vim {
             this.toggleVisual(textedit_behavior.Mode.VisualBlock);
             return;
         }
+        if key == "/" || key == "?" {
+            let hook = this.onSearchPrompt;
+            this.resetPending();
+            if hook {
+                hook(key == "?");
+            }
+            return;
+        }
         if key == "x" {
             this.resetPending();
             this.deleteCharsForward(count);
@@ -3002,17 +3055,18 @@ export ref struct Vim {
     // and park the index past the end. Callers run this BEFORE moving, so
     // the list stores where you came from.
     mut fn pushJump() {
+        let list = this.jumpList;
         let pos = this.ctx.cursor();
-        this.jumps.push(Jump { pos: pos });
+        list.jumps.push(Jump { pos: pos, document: this.document });
         // Full list: the OLDEST entry falls off, not the newest.
-        if this.jumps.length > this.jumpListLimit() {
+        if list.jumps.length > this.jumpListLimit() {
             let kept: []Jump = [];
-            for (let i = this.jumps.length - this.jumpListLimit(); i < this.jumps.length; i++) {
-                kept.push(this.jumps[i]);
+            for (let i = list.jumps.length - this.jumpListLimit(); i < list.jumps.length; i++) {
+                kept.push(list.jumps[i]);
             }
-            this.jumps = kept;
+            list.jumps = kept;
         }
-        this.jumpIndex = this.jumps.length;
+        list.index = list.jumps.length;
     }
 
     // vim's cleanup_jumplist(): drop every entry whose line number occurs
@@ -3020,35 +3074,38 @@ export ref struct Vim {
     // the compacted list. Deduplication is by LINE ONLY -- two jumps to
     // different columns of the same line are one entry, which is why
     // jumping back to a line you have already visited does not leave a
-    // trail of near-identical stops.
+    // trail of near-identical stops. Lines of different documents are
+    // different lines (vim compares the buffer number too).
     mut fn cleanupJumpList() {
+        let list = this.jumpList;
         let kept: []Jump = [];
         let newIndex = -1;
         // `source` rather than vim's `from`: `from` is a reserved word here.
-        for (let source = 0; source < this.jumps.length; source++) {
+        for (let source = 0; source < list.jumps.length; source++) {
             // The index is remapped to wherever the compacted list has got
             // to, exactly as vim does it -- including when the entry the
             // index points at is itself a duplicate about to be dropped.
-            if this.jumpIndex == source {
+            if list.index == source {
                 newIndex = kept.length;
             }
             let duplicate = false;
-            for (let i = source + 1; i < this.jumps.length; i++) {
-                if this.jumps[i].pos.y == this.jumps[source].pos.y {
+            for (let i = source + 1; i < list.jumps.length; i++) {
+                if list.jumps[i].pos.y == list.jumps[source].pos.y
+                    && list.jumps[i].document == list.jumps[source].document {
                     duplicate = true;
                     break;
                 }
             }
             if !duplicate {
-                kept.push(this.jumps[source]);
+                kept.push(list.jumps[source]);
             }
         }
         // Index parked past the end stays past the end.
-        if this.jumpIndex >= this.jumps.length {
+        if list.index >= list.jumps.length {
             newIndex = kept.length;
         }
-        this.jumps = kept;
-        this.jumpIndex = newIndex >= 0 ? newIndex : kept.length;
+        list.jumps = kept;
+        list.index = newIndex >= 0 ? newIndex : kept.length;
 
         // "You are already there." When the index sits at the END of the
         // list -- i.e. you are not part-way through a traversal -- an entry
@@ -3064,43 +3121,52 @@ export ref struct Vim {
         // Deliberately NOT applied mid-traversal: with the index inside the
         // list, walking back onto a line that is also an entry is exactly
         // what <C-o> is for, and removing it would strand the traversal.
-        if this.jumpIndex == this.jumps.length {
+        if list.index == list.jumps.length {
             let here = this.ctx.cursor();
             let survivors: []Jump = [];
-            for entry in this.jumps {
-                if entry.pos.y != here.y {
+            for entry in list.jumps {
+                if entry.pos.y != here.y || entry.document != this.document {
                     survivors.push(entry);
                 }
             }
-            this.jumps = survivors;
-            this.jumpIndex = survivors.length;
+            list.jumps = survivors;
+            list.index = survivors.length;
         }
     }
 
     // vim's movemark(): negative count for <C-o>, positive for <C-i>.
     mut fn moveThroughJumpList(count: int) {
+        let list = this.jumpList;
         this.cleanupJumpList();
-        if this.jumps.length == 0 {
+        if list.jumps.length == 0 {
             return;
         }
         // Off either end is a no-op -- no wrap, no bell, and crucially no
         // partial move: `3<C-o>` with only two entries behind you does
         // NOTHING rather than going back as far as it can.
-        if this.jumpIndex + count < 0 || this.jumpIndex + count >= this.jumps.length {
+        if list.index + count < 0 || list.index + count >= list.jumps.length {
             return;
         }
-        if this.jumpIndex == this.jumps.length {
+        if list.index == list.jumps.length {
             // First step off the end of the list: record where we are now,
             // so <C-i> has somewhere to come back to, then step onto that
             // new entry before applying the count.
             this.pushJump();
-            this.jumpIndex = this.jumpIndex - 1;
-            if this.jumpIndex + count < 0 {
+            list.index = list.index - 1;
+            if list.index + count < 0 {
                 return;
             }
         }
-        this.jumpIndex = this.jumpIndex + count;
-        let target = this.jumps[this.jumpIndex];
+        list.index = list.index + count;
+        let target = list.jumps[list.index];
+        if target.document != this.document {
+            // The host switches documents; the Vim there places its cursor.
+            let hook = this.onJumpToDocument;
+            if hook {
+                hook(target.document, target.pos);
+            }
+            return;
+        }
         this.ctx.moveTo(target.pos, true, false);
         this.clampCursorToMode();
     }
@@ -3366,6 +3432,7 @@ export fn isMotionKey(key: str): bool {
     if key == "e" || key == "E" { return true; }
     if key == "0" || key == "^" || key == "$" || key == "G" { return true; }
     if key == "{" || key == "}" || key == ";" || key == "," { return true; }
+    if key == "n" || key == "N" || key == "*" || key == "#" { return true; }
     if key == " " { return true; }
     if key == "<Left>" || key == "<Right>" || key == "<Up>" || key == "<Down>" { return true; }
     if key == "<CR>" || key == "<BS>" { return true; }

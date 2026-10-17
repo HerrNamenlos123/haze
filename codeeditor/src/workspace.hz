@@ -310,3 +310,55 @@ fn promptForWorkspace() {
         openWorkspace(picked.path);
     }
 }
+
+// ── Per-workspace sessions ──────────────────────────────────────────────
+
+ref struct WorkspaceSession {
+    active: str = "";
+    files: []str = [];
+}
+
+fn maxRememberedSessions(): int {
+    return 20;
+}
+
+fn loadWorkspaceSession(path: str): WorkspaceSession {
+    let session = WorkspaceSession {};
+    let saved = appCache().data.sessions;
+    if !saved {
+        return session;
+    }
+    for line in (saved as str).split("\n") {
+        let fields = line.split("\t");
+        if fields.length >= 2 && fields[0] == path {
+            session.active = fields[1];
+            for (let i = 2; i < fields.length; i++) {
+                if fields[i].length > 0 {
+                    session.files.push(fields[i]);
+                }
+            }
+            return session;
+        }
+    }
+    return session;
+}
+
+// Most recent first; the oldest fall off past the cap.
+fn storeWorkspaceSession(path: str, files: []str, active: str) {
+    let cache = appCache();
+    let line = path + "\t" + active;
+    for file in files {
+        line = line + "\t" + file;
+    }
+    let lines: []str = [line];
+    let saved = cache.data.sessions;
+    if saved {
+        for other in (saved as str).split("\n") {
+            let fields = other.split("\t");
+            if other.length > 0 && fields[0] != path && lines.length < maxRememberedSessions() {
+                lines.push(other);
+            }
+        }
+    }
+    cache.data.sessions := joinLines(lines);
+}

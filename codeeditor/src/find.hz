@@ -1,0 +1,281 @@
+import text_document
+
+// ═══ Find in the current file (Ctrl+F) ═══════════════════════════════════
+//
+// The query and its three options are ONE process-wide state, like VS Code's:
+// open the widget in another tab and it already holds the last term. What is
+// per editor is everything that depends on that editor's text -- the match
+// list, the scan over it and the widget being open -- see EditorView.
+//
+// Every query is a PCRE2 regex underneath. A literal search is escaped, whole
+// word wraps it in \b...\b and match case decides the `i` flag, so the three
+// options cannot disagree about what a match is.
+
+ref struct FindState {
+    query: rx.Reactive<str>;
+    matchCase: rx.Reactive<bool>;
+    wholeWord: rx.Reactive<bool>;
+    regex: rx.Reactive<bool>;
+    // vim's `?` searches backward, and then `n` keeps going backward and `N`
+    // forward. Ctrl+F and `/` reset it.
+    backward: rx.Reactive<bool>;
+
+    fn constructor(): mut FindState {
+        let state = FindState {
+            query: rx.reactive<str>(""),
+            matchCase: rx.reactive<bool>(false),
+            wholeWord: rx.reactive<bool>(false),
+            regex: rx.reactive<bool>(false),
+            backward: rx.reactive<bool>(false),
+        };
+        return state;
+    }
+}
+
+extern C let g_find: mut FindState | none = none;
+
+fn findState(): mut FindState {
+    let existing = g_find;
+    if existing {
+        return existing;
+    }
+    let created = FindState();
+    g_find = created;
+    return created;
+}
+
+// Everything that changes what matches, as one comparable value.
+fn findKey(): str {
+    let s = findState();
+    let query: str = rx.get(s.query);
+    let flags = (rx.get(s.matchCase) ? "c" : "-") + (rx.get(s.wholeWord) ? "w" : "-")
+        + (rx.get(s.regex) ? "r" : "-");
+    return flags + query;
+}
+
+// One match, in byte columns of its line. A value struct: a scan of a large
+// file holds tens of thousands of them.
+struct FindMatch {
+    line: int = 0;
+    start: int = 0;
+    end: int = 0;
+}
+
+fn isRegexMeta(c: u8): bool {
+    let meta = "\\^$.|?*+()[]{}/";
+    for (let i = 0; i < meta.length; i++) {
+        if meta[i] == c {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn escapeRegex(text: str): str {
+    let out = "";
+    let at = 0;
+    for (let i = 0; i < text.length; i++) {
+        if isRegexMeta(text[i]) {
+            out = out + text.slice(at, i) + "\\" + text.slice(i, i + 1);
+            at = i + 1;
+        }
+    }
+    return out + text.slice(at, text.length);
+}
+
+fn compileFind(query: str, matchCase: bool, wholeWord: bool, isRegex: bool): Result<Regex, str> {
+    let pattern = isRegex ? query : escapeRegex(query);
+    if wholeWord {
+        pattern = "\\b(?:" + pattern + ")\\b";
+    }
+    return regex.runtime(pattern, matchCase ? "u" : "iu");
+}
+
+// Empty matches (`^`, `a*`) are dropped: there is nothing to highlight or
+// select, and stepping onto one would never move.
+fn collectLineMatches(re: Regex, text: str, line: int, out: []FindMatch) {
+    for m in regex.findAll(re, text) {
+        if m.span.end > m.span.start {
+            out.push(FindMatch { line: line, start: m.span.start, end: m.span.end });
+        }
+    }
+}
+
+// (line, column) ordering.
+fn findBefore(aLine: int, aCol: int, bLine: int, bCol: int): bool {
+    return aLine < bLine || (aLine == bLine && aCol < bCol);
+}
+
+// The incremental scan behind the highlights and the "3 of 12" count. A
+// large file is scanned a slice per frame (see step), so typing a query never
+// freezes the editor; `done` says whether `matches` is the whole answer.
+ref struct FindScan {
+    matches: []FindMatch = [];
+    nextLine: int = 0;
+    done: bool = true;
+    // The findKey() and document version this scan is for.
+    key: str = "";
+    version: int = -1;
+    error: str = "";
+    compiled: Regex | none = none;
+
+    mut fn reset(key: str, version: int) {
+        this.key = key;
+        this.version = version;
+        this.matches = [];
+        this.nextLine = 0;
+        this.error = "";
+        this.compiled = none;
+        let s = findState();
+        let query: str = rx.get(s.query);
+        if query.length == 0 {
+            this.done = true;
+            return;
+        }
+        let compiled = compileFind(query, rx.get(s.matchCase), rx.get(s.wholeWord), rx.get(s.regex));
+        if !compiled {
+            this.error = compiled;
+            this.done = true;
+            return;
+        }
+        let re: Regex = compiled;
+        this.compiled = re;
+        this.done = false;
+    }
+
+    // Scans up to `lineBudget` more lines. True when matches were added or the
+    // scan finished, i.e. when anything drawn from it is stale.
+    mut fn step(doc: text_document.Document, lineBudget: int): bool {
+        if this.done {
+            return false;
+        }
+        let re = this.compiled;
+        if !re {
+            this.done = true;
+            return true;
+        }
+        let count = doc.lineCount();
+        let stop = this.nextLine + lineBudget;
+        if stop > count { stop = count; }
+        let before = this.matches.length;
+        for (let i = this.nextLine; i < stop; i++) {
+            collectLineMatches(re, doc.lineText(i), i, this.matches);
+        }
+        this.nextLine = stop;
+        if stop >= count {
+            this.done = true;
+            return true;
+        }
+        return this.matches.length != before;
+    }
+
+    // Index of the first match at or after (line, col), or matches.length.
+    fn lowerBound(line: int, col: int): int {
+        let low = 0;
+        let high = this.matches.length;
+        while low < high {
+            let mid = (low + high) / 2;
+            let m = this.matches[mid];
+            if findBefore(m.line, m.start, line, col) {
+                low = mid + 1;
+            } else {
+                high = mid;
+            }
+        }
+        return low;
+    }
+
+    // The match starting exactly at (line, col), or -1.
+    fn indexAt(line: int, col: int): int {
+        let i = this.lowerBound(line, col);
+        if i < this.matches.length && this.matches[i].line == line && this.matches[i].start == col {
+            return i;
+        }
+        return -1;
+    }
+}
+
+// The next match after `from` (or the previous one before it), wrapping
+// around the document. `inclusive` lets a match starting exactly at `from`
+// count, which is what find-as-you-type wants and stepping does not.
+//
+// Uses a finished scan when there is one; otherwise searches the text
+// directly, line by line from `from`, and stops at the first hit -- the same
+// cost as vim's `n`, paid once per keypress rather than per frame.
+fn findAdjacent(doc: text_document.Document, scan: FindScan, origin: Vec2i, forward: bool, inclusive: bool): FindMatch | none {
+    let key = findKey();
+    if scan.done && scan.key == key && scan.version == doc.version {
+        let list = scan.matches;
+        if list.length == 0 {
+            return none;
+        }
+        if forward {
+            let i = scan.lowerBound(origin.y, inclusive ? origin.x : origin.x + 1);
+            return list[i < list.length ? i : 0];
+        }
+        let i = scan.lowerBound(origin.y, inclusive ? origin.x + 1 : origin.x) - 1;
+        return list[i >= 0 ? i : list.length - 1];
+    }
+
+    let s = findState();
+    let query: str = rx.get(s.query);
+    if query.length == 0 {
+        return none;
+    }
+    let compiled = compileFind(query, rx.get(s.matchCase), rx.get(s.wholeWord), rx.get(s.regex));
+    if !compiled {
+        return none;
+    }
+    let re: Regex = compiled;
+    let count = doc.lineCount();
+    let lineMatches: []FindMatch = [];
+    // count + 1 lines: the cursor's own line is visited twice, once for the
+    // part on the near side of the cursor and once, after wrapping, for the
+    // rest.
+    for (let step = 0; step <= count; step++) {
+        let offset = forward ? step : -step;
+        let line = ((origin.y + offset) % count + count) % count;
+        lineMatches.clear();
+        collectLineMatches(re, doc.lineText(line), line, lineMatches);
+        if forward {
+            for m in lineMatches {
+                if step > 0 && step < count { return m; }
+                let after = inclusive ? m.start >= origin.x : m.start > origin.x;
+                if step == 0 && after { return m; }
+                if step == count && !after { return m; }
+            }
+        } else {
+            for (let i = lineMatches.length - 1; i >= 0; i--) {
+                let m = lineMatches[i];
+                if step > 0 && step < count { return m; }
+                let ahead = inclusive ? m.start <= origin.x : m.start < origin.x;
+                if step == 0 && ahead { return m; }
+                if step == count && !ahead { return m; }
+            }
+        }
+    }
+    return none;
+}
+
+fn isWordByte(c: u8): bool {
+    return (c >= b"a" && c <= b"z") || (c >= b"A" && c <= b"Z") || (c >= b"0" && c <= b"9")
+        || c == b"_" || c >= 128;
+}
+
+// The word under byte column `x`, as (start, end); start == end when the
+// column is not on a word. UTF-8 continuation and lead bytes count as word
+// characters, so a word never splits inside a character.
+fn wordRangeAt(text: str, x: int): Vec2i {
+    if x < 0 || x >= text.length || !isWordByte(text[x]) {
+        return { x: x, y: x };
+    }
+    let start = x;
+    while start > 0 && isWordByte(text[start - 1]) {
+        start = start - 1;
+    }
+    let end = x;
+    while end < text.length && isWordByte(text[end]) {
+        end = end + 1;
+    }
+    return { x: start, y: end };
+}

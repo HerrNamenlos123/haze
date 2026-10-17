@@ -915,6 +915,16 @@ bool hzstd_process_is_alive(void* proc_)
   return false;
 }
 
+// Same contract as the POSIX one: returns at once, reap with is_alive()/join().
+void hzstd_process_kill(void* proc_)
+{
+  hzstd_process_t* proc = (hzstd_process_t*)proc_;
+  if (!proc || proc->exited || !hzstd_process_is_alive(proc_)) {
+    return;
+  }
+  TerminateProcess(proc->process_handle, 1);
+}
+
 int hzstd_process_join(void* proc_)
 {
   hzstd_process_t* proc = (hzstd_process_t*)proc_;

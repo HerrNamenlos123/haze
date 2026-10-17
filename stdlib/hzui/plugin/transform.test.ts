@@ -466,6 +466,50 @@ describe("slots", () => {
   });
 });
 
+describe("components inside loop bodies", () => {
+  // A component's id lives in its enclosing COMPONENT's flat child list, not
+  // under its parent element, so a component nested anywhere inside a loop
+  // iteration must carry that iteration's key -- or every iteration shares one
+  // instance (each tab's close Button drew the last tab's dirty dot).
+  const out = gen(`import ui_components
+@template
+div for=[row in rows] key=[row.id] [] {
+    div [] {
+        Btn [] label=[row.name] {}
+    }
+    div for=[cell in row.cells] key=[cell.id] [] {
+        Btn [] label=[cell.name] {}
+    }
+    Btn for=[cell in row.cells] key=[cell.id] [] {
+        #body {
+            Inner [] {}
+        }
+    }
+}
+Btn [] {}
+`);
+
+  test("a component nested in an iteration is keyed by it", () => {
+    expect(out).toContain("BtnComponent(ui, { id: keyId(-2, row.id), label: row.name });");
+  });
+
+  test("nested loops key a component by every enclosing iteration", () => {
+    expect(out).toContain(
+      "BtnComponent(ui, { id: keyId(-3, mixKeys(row.id, cell.id)), label: cell.name });"
+    );
+    expect(out).toContain("id: keyId(-4, mixKeys(row.id, cell.id)),");
+  });
+
+  test("elements, slot providers and components outside loops are unchanged", () => {
+    expect(out).toContain("ui.div({ id: keyId(1, row.id) }");
+    expect(out).toContain("ui.div({ id: 1 }");
+    expect(out).toContain("ui.div({ id: keyId(2, cell.id) }");
+    // Registered against the per-iteration Btn that renders the slot.
+    expect(out).toContain("InnerComponent(ui, { id: -5 });");
+    expect(out).toContain("BtnComponent(ui, { id: -6 });");
+  });
+});
+
 describe("the dialect import", () => {
   const setup = (body: string) => gen(`@setup\n${body}\n@template\n`);
 
@@ -526,6 +570,7 @@ describe("the dialect import", () => {
       "Rem",
       "presets",
       "keyId",
+      "mixKeys",
       "computed",
       "reactive",
       "shallowReactive",

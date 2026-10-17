@@ -1,0 +1,395 @@
+// --- Completion: the editor's half of IntelliSense -----------------------
+//
+// tsserver answers WHAT can go at a position. Which of those to show for what
+// has been typed since, in what order, and how each one looks is the editor's
+// job -- the same split VS Code has, where the server is asked once per word
+// and every later keystroke only re-filters the list it already has.
+//
+// Everything here is pure (strings in, numbers out), so completion_selftest.hz
+// checks it without a window or a language server.
+
+// One suggestion, as tsserver's completionInfo described it.
+export ref struct CompletionEntry {
+    name: str = "";
+    // tsserver's ScriptElementKind: "function", "property", "keyword", ...
+    kind: str = "";
+    // tsserver's own ranking: locals "11", members "11", globals "15",
+    // auto-imports "16". Compared as bytes, lowest first.
+    sortText: str = "";
+    // What replaces the typed word. Usually the name, but a member of a
+    // possibly-undefined object inserts "?.name" over the dot.
+    insertText: str = "";
+    // What the typed word is matched against.
+    filterText: str = "";
+    // The module an auto-import comes from ("vue", "./util"), shown on the
+    // right of the row so same-named exports of different modules can be told
+    // apart. Empty for everything already in scope.
+    description: str = "";
+    // Accepting it needs a follow-up completionEntryDetails request, whose
+    // code actions add or extend the import.
+    hasAction: bool = false;
+    // Both handed back verbatim on that request. `data` is opaque -- for a
+    // .vue file it carries @vue/typescript-plugin's own routing.
+    source: str = "";
+    data: json.Node | none = none;
+    // Where this entry's own replacement starts, as a 0-based UTF-16 column on
+    // the requested line, or -1 for "where the typed word starts".
+    replaceStartUtf16: int = -1;
+}
+
+fn isIdentifierByte(byte: u8): bool {
+    if byte >= b"a" && byte <= b"z" { return true; }
+    if byte >= b"A" && byte <= b"Z" { return true; }
+    if byte >= b"0" && byte <= b"9" { return true; }
+    if byte == b"_" || byte == b"$" { return true; }
+    // Any byte of a multi-byte character: JavaScript identifiers may be
+    // non-ASCII, and cutting one in half would be worse than over-including.
+    return byte >= 0x80;
+}
+
+// Byte column where the identifier that ends at `column` starts -- `column`
+// itself when the character before it is not part of one.
+fn identifierStartBefore(lineText: str, column: int): int {
+    let start = column;
+    while start > 0 && isIdentifierByte(lineText[start - 1]) {
+        start = start - 1;
+    }
+    return start;
+}
+
+// Whether every byte of lineText[first, end) belongs to an identifier.
+fn isIdentifierRange(lineText: str, first: int, end: int): bool {
+    if first < 0 || end > lineText.length || first > end {
+        return false;
+    }
+    for (let i = first; i < end; i++) {
+        if !isIdentifierByte(lineText[i]) {
+            return false;
+        }
+    }
+    return true;
+}
+
+fn lowerAscii(byte: u8): u8 {
+    if byte >= b"A" && byte <= b"Z" {
+        return byte + 32 as u8;
+    }
+    return byte;
+}
+
+fn isUpperAscii(byte: u8): bool {
+    return byte >= b"A" && byte <= b"Z";
+}
+
+// Where a typed word may begin matching: the first character, a camelCase
+// hump ("S" in useState), or the character after an `_` or `$`.
+fn isWordStartAt(candidate: str, i: int): bool {
+    if i == 0 {
+        return true;
+    }
+    let previous = candidate[i - 1];
+    if previous == b"_" || previous == b"$" {
+        return true;
+    }
+    return isUpperAscii(candidate[i]) && !isUpperAscii(previous);
+}
+
+// Whether query[q..] can still be matched, in order, from candidate[at].
+fn completionRestMatches(query: str, q: int, candidate: str, at: int): bool {
+    let position = at;
+    for (let i = q; i < query.length; i++) {
+        let wanted = lowerAscii(query[i]);
+        while position < candidate.length && lowerAscii(candidate[position]) != wanted {
+            position = position + 1;
+        }
+        if position >= candidate.length {
+            return false;
+        }
+        position = position + 1;
+    }
+    return true;
+}
+
+// Where query[q] matches, searching from candidate[at]; -1 when it does not.
+//
+// The nearest occurrence, unless a better one keeps the rest matchable: an
+// upper-case character typed means a camelCase hump in that case ("uS" is
+// useState's u and S, not its "us"), and a match that has to skip ahead
+// anyway lands on a word start rather than in the middle of a word.
+fn completionNextMatch(query: str, q: int, candidate: str, at: int): int {
+    let wanted = lowerAscii(query[q]);
+    let nearest = at;
+    while nearest < candidate.length && lowerAscii(candidate[nearest]) != wanted {
+        nearest = nearest + 1;
+    }
+    if nearest >= candidate.length {
+        return -1;
+    }
+    let typedUpper = isUpperAscii(query[q]);
+    if nearest == at && (!typedUpper || candidate[nearest] == query[q]) {
+        return nearest;
+    }
+    for (let i = nearest; i < candidate.length; i++) {
+        let fits = typedUpper ? candidate[i] == query[q] : lowerAscii(candidate[i]) == wanted;
+        if fits && isWordStartAt(candidate, i) && completionRestMatches(query, q + 1, candidate, i + 1) {
+            return i;
+        }
+    }
+    return nearest;
+}
+
+// Every query character in order, case-insensitively, the first one at
+// candidate[start]. -1 when that does not work out.
+//
+// Each match earns a point; matching the case typed, landing on a word start
+// and continuing the previous match earn more, and starting at the very first
+// character earns the most -- so a plain prefix beats a scattered match, which
+// beats a hump match, the order VS Code's suggest list comes out in.
+fn completionScoreFrom(query: str, candidate: str, start: int): int {
+    if query.length == 0 {
+        return start == 0 ? 8 : 0;
+    }
+    if lowerAscii(candidate[start]) != lowerAscii(query[0]) {
+        return -1;
+    }
+    let score = 0;
+    let at = start;
+    let previousMatch = -2;
+    for (let q = 0; q < query.length; q++) {
+        at = q == 0 ? start : completionNextMatch(query, q, candidate, at);
+        if at < 0 {
+            return -1;
+        }
+        score = score + 1;
+        if candidate[at] == query[q] { score = score + 1; }
+        if isWordStartAt(candidate, at) { score = score + 3; }
+        if at == previousMatch + 1 { score = score + 5; }
+        previousMatch = at;
+        at = at + 1;
+    }
+    if start == 0 {
+        score = score + 8;
+    }
+    return score;
+}
+
+// The best start for `query` in `candidate`, or -1 when nothing matches. The
+// first query character has to land on a word start: "st" finds useState,
+// "se" does not find "base".
+fn completionBestStart(query: str, candidate: str): int {
+    if query.length == 0 {
+        return 0;
+    }
+    let first = lowerAscii(query[0]);
+    let best = -1;
+    let bestScore = -1;
+    for (let i = 0; i < candidate.length; i++) {
+        if lowerAscii(candidate[i]) == first && isWordStartAt(candidate, i) {
+            let score = completionScoreFrom(query, candidate, i);
+            if score > bestScore {
+                bestScore = score;
+                best = i;
+            }
+        }
+    }
+    return best;
+}
+
+// How well `query` matches `candidate`: -1 for not at all, higher is better.
+// An empty query matches everything equally -- right after a `.`, every
+// member is a candidate.
+fn completionScore(query: str, candidate: str): int {
+    let start = completionBestStart(query, candidate);
+    if start < 0 {
+        return -1;
+    }
+    return completionScoreFrom(query, candidate, start);
+}
+
+// Which bytes of `candidate` the query matched, for highlighting. The same
+// walk completionScore made, so the highlight never disagrees with the order.
+fn completionMatchPositions(query: str, candidate: str): []int {
+    let positions: []int = [];
+    let start = completionBestStart(query, candidate);
+    if start < 0 || query.length == 0 {
+        return positions;
+    }
+    let at = start;
+    for (let q = 0; q < query.length; q++) {
+        at = q == 0 ? start : completionNextMatch(query, q, candidate, at);
+        if at < 0 {
+            return positions;
+        }
+        positions.push(at);
+        at = at + 1;
+    }
+    return positions;
+}
+
+// Byte-wise ordering, for sortText and names: -1, 0 or 1.
+fn compareBytes(a: str, b: str): int {
+    let shorter = a.length < b.length ? a.length : b.length;
+    for (let i = 0; i < shorter; i++) {
+        if a[i] != b[i] {
+            return a[i] < b[i] ? -1 : 1;
+        }
+    }
+    if a.length == b.length {
+        return 0;
+    }
+    return a.length < b.length ? -1 : 1;
+}
+
+ref struct RankedCompletion {
+    index: int;
+    score: int;
+}
+
+// The entries `query` matches, best first, as indices into `entries`: by
+// match score, then by tsserver's sortText, then by name -- VS Code's order.
+fn rankCompletions(entries: []CompletionEntry, query: str): []int {
+    let ranked: []RankedCompletion = [];
+    for entry, index in entries {
+        let score = completionScore(query, entry.filterText);
+        if score >= 0 {
+            ranked.push(RankedCompletion { index: index, score: score });
+        }
+    }
+    array.sort<RankedCompletion>(ranked, (a: RankedCompletion, b: RankedCompletion): int => {
+        if a.score != b.score {
+            return a.score > b.score ? -1 : 1;
+        }
+        let entryA = entries[a.index];
+        let entryB = entries[b.index];
+        let bySort = compareBytes(entryA.sortText, entryB.sortText);
+        if bySort != 0 {
+            return bySort;
+        }
+        return compareBytes(entryA.name, entryB.name);
+    });
+    let order: []int = [];
+    for item in ranked {
+        order.push(item.index);
+    }
+    return order;
+}
+
+// A position after `start..end` was replaced by `newText`, where it was
+// `position` before. Positions before the edit stay put; the ones on or after
+// its end move with the text that followed them.
+fn positionAfterEdit(position: Vec2i, start: Vec2i, end: Vec2i, newText: str): Vec2i {
+    let beforeEnd = position.y < end.y || (position.y == end.y && position.x < end.x);
+    if beforeEnd {
+        let beforeStart = position.y < start.y || (position.y == start.y && position.x <= start.x);
+        if beforeStart {
+            return { x: position.x, y: position.y };
+        }
+        // Inside the replaced range: it is gone, so land where it was.
+        return { x: start.x, y: start.y };
+    }
+    let lines = newText.split("\n");
+    let addedLines = lines.length - 1;
+    let lineDelta = addedLines - (end.y - start.y);
+    if position.y != end.y {
+        return { x: position.x, y: position.y + lineDelta };
+    }
+    // On the edit's last line: the column now counts from where the new
+    // text ends.
+    let endColumn = addedLines == 0 ? start.x + newText.length : lines[addedLines].length;
+    return { x: endColumn + (position.x - end.x), y: position.y + lineDelta };
+}
+
+// --- How a suggestion looks ------------------------------------------------
+//
+// VS Code's suggest widget icons are codicons, which the editor's Nerd Font
+// carries at the same code points; the colours are VS Code's dark theme
+// symbolIcon.* foregrounds. The kinds are grouped the way VS Code's
+// TypeScript extension maps tsserver's kinds onto its own.
+
+fn completionKindGlyph(kind: str): str {
+    if kind == "function" || kind == "local function" || kind == "method"
+        || kind == "construct" || kind == "call" || kind == "index" || kind == "constructor" {
+        return ""; // symbol-method
+    }
+    if kind == "property" || kind == "getter" || kind == "setter" || kind == "accessor" {
+        return ""; // symbol-field
+    }
+    if kind == "class" || kind == "local class" || kind == "type" {
+        return ""; // symbol-class
+    }
+    if kind == "interface" {
+        return ""; // symbol-interface
+    }
+    if kind == "enum" {
+        return ""; // symbol-enum
+    }
+    if kind == "enum member" {
+        return ""; // symbol-enum-member
+    }
+    if kind == "module" || kind == "external module name" || kind == "directory" || kind == "script" {
+        return ""; // symbol-namespace
+    }
+    if kind == "keyword" || kind == "primitive type" {
+        return ""; // symbol-keyword
+    }
+    if kind == "type parameter" {
+        return ""; // symbol-parameter
+    }
+    if kind == "string" {
+        return ""; // symbol-string
+    }
+    if kind == "var" || kind == "local var" || kind == "let" || kind == "const"
+        || kind == "parameter" || kind == "alias" {
+        return ""; // symbol-variable
+    }
+    return ""; // symbol-misc
+}
+
+fn completionKindColor(kind: str): str {
+    if kind == "function" || kind == "local function" || kind == "method"
+        || kind == "construct" || kind == "call" || kind == "index" || kind == "constructor" {
+        return "#B180D7";
+    }
+    if kind == "class" || kind == "local class" || kind == "type" || kind == "enum" {
+        return "#EE9D28";
+    }
+    if kind == "property" || kind == "getter" || kind == "setter" || kind == "accessor"
+        || kind == "interface" || kind == "enum member" || kind == "var" || kind == "local var"
+        || kind == "let" || kind == "const" || kind == "parameter" || kind == "alias" {
+        return "#75BEFF";
+    }
+    return "#CCCCCC";
+}
+
+// One stretch of a suggestion's label, coloured as a whole.
+export ref struct CompletionRun {
+    text: str;
+    color: str;
+}
+
+// `label` cut into runs at the characters `query` matched, which VS Code
+// draws in its highlight colour so the reason a row is listed is visible.
+fn completionLabelRuns(query: str, label: str, plainColor: str, matchColor: str): []CompletionRun {
+    let runs: []CompletionRun = [];
+    let positions = completionMatchPositions(query, label);
+    let next = 0;
+    let runStart = 0;
+    let runMatched = positions.length > 0 && positions[0] == 0;
+    for (let i = 0; i <= label.length; i++) {
+        let matched = next < positions.length && positions[next] == i;
+        if i == label.length || matched != runMatched {
+            if i > runStart {
+                runs.push(CompletionRun {
+                    text: label.slice(runStart, i),
+                    color: runMatched ? matchColor : plainColor,
+                });
+            }
+            runStart = i;
+            runMatched = matched;
+        }
+        if matched {
+            next = next + 1;
+        }
+    }
+    return runs;
+}

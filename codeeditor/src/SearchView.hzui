@@ -1,0 +1,287 @@
+import ui_components
+from ui_widgets import TextInput, TextInputComponent, ButtonComponent, ButtonSlotContent
+from codicons import CodiconComponent
+
+// VS Code's Search view: the query with its three options, the include and
+// exclude globs behind "...", the summary line and the result tree. Rows are
+// windowed (only the visible ones exist), because a search can return 20000
+// matches and Clay holds 8192 elements.
+//
+// A click on a match opens its file in the preview tab with the match
+// selected; a double click keeps the tab. Up/Down move through the rows,
+// Enter opens, Left/Right collapse and expand a file. F4 / Shift+F4 step
+// through matches from anywhere (see search.hz).
+
+ref struct SearchLine {
+    index: int;
+    top: real;
+    isFile: bool;
+    collapsed: bool;
+    name: str;
+    dir: str;
+    count: str;
+    before: str;
+    hit: str;
+    after: str;
+    // Measured widths. Every text in a row gets a FIXED width: a row narrower
+    // than its text otherwise squeezes the text boxes, and the text then
+    // draws over its neighbours instead of being clipped at the row's end.
+    nameWidth: real;
+    beforeWidth: real;
+    hitWidth: real;
+    afterWidth: real;
+}
+
+@props
+bg: str = "#181818";
+
+@setup
+let state = searchState();
+let inputRef = ui.componentRef<TextInput>();
+let focusedSerial = reactive<int>(-1);
+let listRef = elementRef<DivElement>();
+let scroll = ui_components.ScrollState();
+let listWidth = reactive<real>(0.0);
+let rowHeight = 22.0;
+let fontSize = 13.0;
+let textWidth = (text: str): real => {
+    return text.length > 0 ? ui.measureText(text, "default", fontSize).x : 0.0;
+};
+
+let ink: Color = "#CCCCCC";
+let inkDim: Color = "#8A8A8A";
+
+ui.onFrame(() => {
+    let element = rx.get(listRef);
+    let viewport = element ? element.size() : none;
+    if viewport {
+        if viewport.x != rx.get(listWidth) { listWidth := viewport.x; }
+        let rows = searchRows(state);
+        scroll.setMetrics(viewport, Vec2(viewport.x, rows.length as real * rowHeight));
+    }
+    if rx.get(focusedSerial) == rx.get(state.focusSerial) { return; }
+    let input = rx.get(inputRef);
+    if !input { return; }
+    input.focus();
+    input.selectAll();
+    focusedSerial := rx.get(state.focusSerial);
+});
+
+let rows = computed((): []SearchRow => {
+    rx.get(state.revision);
+    return searchRows(state);
+});
+
+let lines = computed((): []SearchLine => {
+    let out: []SearchLine = [];
+    let list: []SearchRow = rx.get(rows);
+    let range = scroll.visibleRange(rowHeight, list.length, 2);
+    let scrollY = rx.get(scroll.scrollTop);
+    for (let i = range.x; i < range.y; i++) {
+        let row = list[i];
+        let file = state.files[row.file];
+        let line = SearchLine {
+            index: i,
+            top: i as real * rowHeight - scrollY,
+            isFile: row.match < 0,
+            collapsed: file.collapsed,
+            name: file.name,
+            dir: file.dir,
+            count: f"{file.matches.length}",
+            before: "",
+            hit: "",
+            after: "",
+            nameWidth: 0.0,
+            beforeWidth: 0.0,
+            hitWidth: 0.0,
+            afterWidth: 0.0,
+        };
+        if row.match >= 0 {
+            let m = file.matches[row.match];
+            line.before = m.before;
+            line.hit = m.hit;
+            line.after = m.after;
+            line.beforeWidth = textWidth(m.before);
+            line.hitWidth = textWidth(m.hit);
+            line.afterWidth = textWidth(m.after);
+        } else {
+            line.nameWidth = textWidth(file.name);
+        }
+        out.push(line);
+    }
+    return out;
+});
+
+let rerun = () => { scheduleSearch(state, ui.now(), 0.0); };
+let retyped = (text: str) => { scheduleSearch(state, ui.now(), 0.3); };
+let toggleCase = () => { state.matchCase := !rx.get(state.matchCase); rerun(); };
+let toggleWord = () => { state.wholeWord := !rx.get(state.wholeWord); rerun(); };
+let toggleRegex = () => { state.regex := !rx.get(state.regex); rerun(); };
+let toggleDetails = () => { state.showDetails := !rx.get(state.showDetails); };
+let clearAll = () => { state.query := ""; clearSearchResults(state); };
+let collapseAll = () => {
+    for file in state.files { file.collapsed = true; }
+    state.selected := -1;
+    state.revision := rx.get(state.revision) + 1;
+};
+
+let setCollapsed = (fileIndex: int, collapsed: bool) => {
+    if fileIndex < 0 || fileIndex >= state.files.length { return; }
+    let file = state.files[fileIndex];
+    file.collapsed = collapsed;
+    state.revision := rx.get(state.revision) + 1;
+};
+
+let revealRow = (index: int) => {
+    let top = index as real * rowHeight;
+    scroll.scrollIntoView(top, rowHeight);
+};
+
+let activate = (index: int, pin: bool) => {
+    let list: []SearchRow = rx.get(rows);
+    if index < 0 || index >= list.length { return; }
+    state.selected := index;
+    let row = list[index];
+    if row.match < 0 {
+        let file = state.files[row.file];
+        setCollapsed(row.file, !file.collapsed);
+        return;
+    }
+    openSearchRow(state, list, index, pin);
+    documents().requestEditorFocus();
+};
+
+let onRowClick = (index: int) => { activate(index, false); };
+let onRowDoubleClick = (index: int) => { activate(index, true); };
+
+let onListKey = (event: KeyboardEvent) => {
+    let list: []SearchRow = rx.get(rows);
+    let current: int = rx.get(state.selected);
+    if event.key == Key.Down {
+        let next = current + 1 < list.length ? current + 1 : current;
+        state.selected := next;
+        revealRow(next);
+    }
+    else if event.key == Key.Up {
+        let next = current > 0 ? current - 1 : 0;
+        state.selected := next;
+        revealRow(next);
+    }
+    else if event.key == Key.Return { activate(current, false); }
+    else if (event.key == Key.Left || event.key == Key.Right) && current >= 0 && current < list.length {
+        let row = list[current];
+        setCollapsed(row.file, event.key == Key.Left);
+        if row.match >= 0 && event.key == Key.Left {
+            // Collapsing from a match selects its file, like a tree does.
+            let at = current;
+            while at > 0 && list[at].match >= 0 { at = at - 1; }
+            state.selected := at;
+        }
+    }
+    else { return; }
+    event.preventDefault();
+    event.stopPropagation();
+};
+
+// Down from the query moves into the results, as in VS Code.
+let onInputKey = (event: KeyboardEvent) => {
+    if event.key == Key.Down && rx.get(rows).length > 0 {
+        let list = rx.get(listRef);
+        if list { list.focus(); }
+        if rx.get(state.selected) < 0 { state.selected := 0; }
+        event.preventDefault();
+        event.stopPropagation();
+    }
+};
+
+let onWheel = (event: ui_components.WheelEvent) => {
+    if scroll.handleWheelEvent(event) {
+        event.stopPropagation();
+    }
+};
+
+@template [col w-grow h-grow gap-1 bg-[props.bg] font-size-[fontSize] text-color-[ink]]
+
+div [row w-grow h-fit gap-1 items-center px-2 py-1] {
+    text [text-color-[inkDim] text-nowrap] ["SEARCH"]
+    div [w-grow h-fit]
+    Button [] icon="refresh" paddingX=[4.0] paddingY=[2.0] focusRing=[0.0] @click=rerun {}
+    Button [] icon="clear-all" paddingX=[4.0] paddingY=[2.0] focusRing=[0.0] @click=clearAll {}
+    Button [] icon="collapse-all" paddingX=[4.0] paddingY=[2.0] focusRing=[0.0] @click=collapseAll {}
+}
+
+div [row w-grow h-fit gap-1 items-center px-2] @keydowncapture=onInputKey {
+    div [w-grow h-fit] {
+        TextInput [] ref=inputRef text=[state.query] placeholder="Search" backgroundColor="#313131"
+            focusRing=[0.0] @change=retyped @submit=[(text: str) => { rerun(); }] {}
+    }
+    Button [] icon="case-sensitive" selected=[rx.get(state.matchCase)] bgSelected="#264F78"
+        paddingX=[3] paddingY=[3] focusRing=[0] @click=toggleCase {}
+    Button [] icon="whole-word" selected=[rx.get(state.wholeWord)] bgSelected="#264F78"
+        paddingX=[3] paddingY=[3] focusRing=[0] @click=toggleWord {}
+    Button [] icon="regex" selected=[rx.get(state.regex)] bgSelected="#264F78"
+        paddingX=[3] paddingY=[3] focusRing=[0] @click=toggleRegex {}
+}
+
+div [row w-grow h-fit px-2] {
+    div [w-grow h-fit]
+    Button [] icon="ellipsis" selected=[rx.get(state.showDetails)] paddingX=[3] paddingY=[1]
+        focusRing=[0] @click=toggleDetails {}
+}
+
+div if=[rx.get(state.showDetails)] [col w-grow h-fit gap-1 px-2] {
+    text [text-color-[inkDim] text-nowrap] ["files to include"]
+    TextInput [] text=[state.includes] placeholder="e.g. *.ts, src/**/include" backgroundColor="#313131"
+        focusRing=[0.0] @change=retyped @submit=[(text: str) => { rerun(); }] {}
+    text [text-color-[inkDim] text-nowrap] ["files to exclude"]
+    TextInput [] text=[state.excludes] placeholder="e.g. *.ts, src/**/exclude" backgroundColor="#313131"
+        focusRing=[0.0] @change=retyped @submit=[(text: str) => { rerun(); }] {}
+}
+
+div [w-grow h-fit px-2 py-1] {
+    text [text-color-[inkDim]] [rx.get(state.message)]
+}
+
+div [relative col w-grow h-grow overflow-hidden cursor-default]
+    ref=listRef
+    focusable=true
+    @keydown=onListKey
+    @wheel=onWheel
+{
+    div for=[line in lines] key=[line.index] [
+            absolute row no-wrap items-center gap-1 top-[line.top] left-[0]
+            w-[listWidth]px h-[rowHeight]px pr-2 overflow-hidden
+            bg-[line.index == rx.get(state.selected) ? "#04395E" : "#00000000"]
+        ]
+        @click=[(e: PointerEvent) => { onRowClick(line.index); }]
+        @dblclick=[(e: PointerEvent) => { onRowDoubleClick(line.index); }]
+    {
+        div if=[line.isFile] [row items-center gap-1 w-grow h-fit pl-1] {
+            Codicon [] icon=[line.collapsed ? "chevron-right" : "chevron-down"] {}
+            Codicon [] icon="file" {}
+            div [w-[line.nameWidth]px h-fit] {
+                text [text-nowrap] [line.name]
+            }
+            // The folder takes what is left and is clipped, so the count
+            // stays visible at the right edge.
+            div [w-grow h-fit overflow-hidden] {
+                text [text-nowrap text-color-[inkDim]] [line.dir]
+            }
+            div [w-fit h-fit px-1 rounded-[8] bg-["#616161"]] {
+                text [text-nowrap font-size-11] [line.count]
+            }
+        }
+        div if=[!line.isFile] [row items-center w-grow h-fit] {
+            div [w-[38]px h-fit]
+            div [w-[line.beforeWidth]px h-fit] {
+                text [text-nowrap] [line.before]
+            }
+            div [w-[line.hitWidth]px h-fit bg-["#EA5C0055"] rounded-[2]] {
+                text [text-nowrap] [line.hit]
+            }
+            div [w-[line.afterWidth]px h-fit] {
+                text [text-nowrap] [line.after]
+            }
+        }
+    }
+}

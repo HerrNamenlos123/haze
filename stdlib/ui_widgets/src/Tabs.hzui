@@ -15,6 +15,9 @@ export struct TabItem {
     icon?: str;
     // Draws the unsaved-changes dot in place of the close button.
     modified?: bool;
+    // A preview tab (VS Code's italic one): the next preview replaces it.
+    // Drawn in `previewFontFamily`; double-clicking it emits `pin`.
+    preview?: bool;
 }
 
 @props
@@ -31,6 +34,8 @@ tabBg: str = "#181818";
 tabBgActive: str = "#1F1F1F";
 textColor: str = "#8A8A8A";
 textColorActive: str = "#FFFFFF";
+// An italic face, for preview tabs. "default" when none is loaded.
+previewFontFamily: str = "default";
 
 @slot
 // Replaces a row's CONTENT only; the row, its highlight and its click stay.
@@ -42,6 +47,8 @@ tab: {
 @emit
 select: (int,);
 close: (int,);
+// A tab was double-clicked: the host keeps it (ends its preview state).
+pin: (int,);
 
 @setup
 let list = computed((): []TabItem => {
@@ -61,10 +68,12 @@ div for=[item in list] key=[item.key] [
     ]
     @pointerdown=[(e: PointerEvent) => { if e.activatesOnPress() { emits.select(item.key); } }]
     @click=[(e: PointerEvent) => { if !e.activatesOnPress() { emits.select(item.key); } }]
+    @dblclick=[(e: PointerEvent) => { emits.pin(item.key); }]
 {
     slot tab item=[item] active=[item.key == props.activeKey] {
         Codicon if=[item.icon] [] icon=[item.icon] {}
-        text [text-nowrap] [item.title ?? ""]
+        text if=[!(item.preview ?? false)] [text-nowrap] [item.title ?? ""]
+        text if=[item.preview ?? false] [text-nowrap font-family-[props.previewFontFamily]] [item.title ?? ""]
         Button if=[props.closable] [] icon=[item.modified ?? false ? "circle-filled" : "close"]
             paddingX=[2] paddingY=[2] rounded=[3]
             @click=[() => { emits.close(item.key); }]

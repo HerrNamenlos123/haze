@@ -1037,12 +1037,19 @@ void haze_sdl_requestWindowClose(SDL_Window *window) {
    For an application that draws its own titlebar that is all of GTK 3, its
    theme, its fonts and cairo brought up for nothing: about 40 MB. The hint has
    to be set before SDL_Init, and an SDL_VIDEO_WAYLAND_ALLOW_LIBDECOR in the
-   environment still wins over it. */
+   environment still wins over it.
+
+   Click-through: by default SDL drops the press that activates a window (on
+   Wayland, X11, Windows and macOS alike), so a click into an unfocused window
+   only focuses it and the button under the pointer needs a second click --
+   closing an unfocused window took two clicks on its X. A desktop
+   application focuses AND clicks in one go, so every haze window does. */
 bool haze_sdl_init(bool platform_decorations) {
   haze_sdl_should_close_all = false;
   if (!platform_decorations) {
     SDL_SetHint(SDL_HINT_VIDEO_WAYLAND_ALLOW_LIBDECOR, "0");
   }
+  SDL_SetHint(SDL_HINT_MOUSE_FOCUS_CLICKTHROUGH, "1");
   return SDL_Init(SDL_INIT_VIDEO);
 }
 

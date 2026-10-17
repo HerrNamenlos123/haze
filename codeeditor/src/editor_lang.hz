@@ -10,6 +10,12 @@ fn editorFontFamily(): str {
     return "JetBrainsMonoNerdFont-Regular";
 }
 
+// The italic UI face, for preview tabs. main.hz registers it under this name,
+// as the regular face when the system has no italic one.
+fn italicFontFamily(): str {
+    return "italic";
+}
+
 fn editorFontSize(): real {
     return 16.0;
 }

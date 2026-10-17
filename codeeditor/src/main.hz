@@ -119,6 +119,16 @@ fn main(): int {
             "codeeditor/resources/JetBrainsMonoNerdFont-Regular.ttf"
         );
 
+        // An italic face for preview tabs (see italicFontFamily), whichever
+        // the system's fontconfig picks; the regular face stands in without
+        // one.
+        let italicFont = font;
+        let italicMatch = process.runCaptured("fc-match", ["-f", "%{file}", "sans-serif:italic"]);
+        let italicPath = italicMatch.exitCode == 0 ? italicMatch.stdoutResult : "";
+        if italicPath.length > 0 && pathExists(italicPath) {
+            italicFont = a.gfx.fontRenderer.fs.addFont("italic", italicPath);
+        }
+
         // Reused every frame by the two edge-queue callbacks below, so the
         // per-frame translation costs no allocation after the first frame.
         let pointerEdgeScratch: mut []ui_components.PointerEdge = [];
@@ -137,6 +147,7 @@ fn main(): int {
             fonts: [
                 { name: "roboto", id: font },
                 { name: "JetBrainsMonoNerdFont-Regular", id: monoFont },
+                { name: italicFontFamily(), id: italicFont },
                 { name: "default", id: font },
             ],
             mousePos: () => a.mousePos(),

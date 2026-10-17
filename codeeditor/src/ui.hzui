@@ -2,7 +2,7 @@ import ui_widgets
 import ui_components
 import filedialog
 
-from ui_widgets import TabsComponent, SplitterComponent
+from ui_widgets import TabsComponent, SplitterComponent, ButtonComponent, ButtonSlotContent
 
 // The application shell: the tab list, and one editor per tab.
 
@@ -73,7 +73,9 @@ let persist = () => {
     cache.data.activeFile := pathForKey(rx.get(activeKey));
 };
 
-let openFile = (path: str) => {
+// `preview` opens it in VS Code's preview tab: the one tab the next preview
+// replaces, in place, until it is pinned (see pinTab in navigation.hz).
+let openFile = (path: str, preview: bool) => {
     if path.length == 0 {
         return;
     }
@@ -81,6 +83,9 @@ let openFile = (path: str) => {
     // fighting over the same uri.
     let existing = keyForPath(path);
     if existing >= 0 {
+        if !preview {
+            pinTab(existing);
+        }
         activeKey := existing;
         persist();
         return;
@@ -88,11 +93,26 @@ let openFile = (path: str) => {
     let key = rx.get(nextKey);
     nextKey := key + 1;
     let tabs: []OpenTab = rx.get(openTabs);
-    tabs.push(OpenTab { key: key, path: path });
+    let previous = rx.get(navigation().previewKey);
+    let at = preview && previous >= 0 ? indexOfKey(previous) : -1;
+    // The old preview makes way, in its place -- unless it cannot close (a
+    // conflict still waiting for an answer), and then it simply stays.
+    if at >= 0 && documents().requestClose(previous) {
+        tabs.remove(at);
+        documents().unregister(previous);
+        tabs.insert(at, OpenTab { key: key, path: path });
+    } else {
+        tabs.push(OpenTab { key: key, path: path });
+    }
     openTabs := tabs;
     activeKey := key;
+    if preview {
+        navigation().previewKey := key;
+    }
     persist();
 };
+let openPinned = (path: str) => { openFile(path, false); };
+let openPreview = (path: str) => { openFile(path, true); };
 
 let closeTab = (key: int) => {
     let index = indexOfKey(key);
@@ -110,6 +130,7 @@ let closeTab = (key: int) => {
     let tabs: []OpenTab = rx.get(openTabs);
     tabs.remove(index);
     openTabs := tabs;
+    pinTab(key);
     // There is no unmount hook, so the registry entry has to be dropped here or
     // it would keep handing out closures over a document nothing can see.
     documents().unregister(key);
@@ -127,6 +148,9 @@ let closeTab = (key: int) => {
     }
     persist();
 };
+
+// Double-clicking a tab keeps it.
+let keepTab = (key: int) => { pinTab(key); };
 
 let selectTab = (key: int) => {
     activeKey := key;
@@ -157,6 +181,32 @@ let toggleTree = () => {
     treeOpen := !rx.get(treeOpen);
     cache.data.treeOpen := rx.get(treeOpen);
 };
+
+// The sidebar shows one view at a time, picked from the activity bar. Picking
+// the one already showing hides the sidebar, as in VS Code.
+let sidebarView = reactive<str>((cache.data.sidebarView ?? "explorer") as str);
+let revealView = (view: str) => {
+    sidebarView := view;
+    cache.data.sidebarView := view;
+    if !rx.get(treeOpen) { toggleTree(); }
+};
+let clickView = (view: str) => {
+    if rx.get(treeOpen) && rx.get(sidebarView) == view {
+        toggleTree();
+        return;
+    }
+    revealView(view);
+};
+// Ctrl+Shift+F: seeded with the editor's one-line selection, if any.
+let openSearchView = () => {
+    revealView("search");
+    let s = searchState();
+    if s.editorSelection.length > 0 {
+        s.query := s.editorSelection;
+        scheduleSearch(s, ui.now(), 0.0);
+    }
+    s.focusSerial := rx.get(s.focusSerial) + 1;
+};
 let toggleAgent = () => {
     agentOpen := !rx.get(agentOpen);
     if rx.get(agentOpen) { agent().boot(rx.get(workspace().path)); }
@@ -176,16 +226,38 @@ let closeQuickOpen = () => {
 };
 let pickQuickOpen = (path: str) => {
     closeQuickOpen();
-    openFile(path);
+    openFile(path, false);
 };
+
+let recentOpen = reactive<bool>(false);
+let closeRecent = () => {
+    recentOpen := false;
+    documents().requestEditorFocus();
+};
+let pickRecent = (path: str) => {
+    closeRecent();
+    openWorkspace(path);
+};
+// Every remembered folder but the open one, for the welcome page.
+let otherRecents = computed((): []str => {
+    let current: str = rx.get(workspace().path);
+    let all: []str = rx.get(workspace().recents);
+    let out: []str = [];
+    for path in all {
+        if path != current { out.push(path); }
+    }
+    return out;
+});
 
 let pickWorkspace = () => { promptForWorkspace(); };
 
 let promptForFile = () => {
-    if let picked = filedialog.pickFile(); picked is filedialog.DialogSuccess {
-        openFile(picked.path);
+    let current: str = rx.get(workspace().path);
+    if let picked = filedialog.pickFile({ defaultPath: current }); picked is filedialog.DialogSuccess {
+        openFile(picked.path, false);
     }
 };
+let showQuickOpen = () => { quickOpen := true; };
 
 // +1 is the next tab, -1 the previous; both wrap.
 let cycleEditor = (delta: int) => {
@@ -226,7 +298,7 @@ registerWorkbenchCommands(keybindings(), WorkbenchCommands {
     openFile: () => { promptForFile(); },
     openFolder: () => { promptForWorkspace(); },
     closeFolder: () => { closeWorkspace(); },
-    openRecent: () => {},
+    openRecent: () => { recentOpen := true; },
     closeActiveEditor: () => { closeActiveEditor(); },
     closeAllEditors: () => { closeAllEditors(); },
     nextEditor: () => { cycleEditor(1); },
@@ -237,34 +309,69 @@ registerWorkbenchCommands(keybindings(), WorkbenchCommands {
     quickOpen: () => { quickOpen := true; },
     toggleFileTree: () => { toggleTree(); },
     toggleAgent: () => { toggleAgent(); },
+    findInFiles: () => { openSearchView(); },
+    showExplorer: () => { revealView("explorer"); },
+    nextSearchResult: () => { stepSearchResult(1); },
+    previousSearchResult: () => { stepSearchResult(-1); },
 });
 
-// Restore the previous session, falling back to asking for a file.
-let restored = false;
-let savedFiles = cache.data.openFiles as str;
-if savedFiles.length > 0 {
-    for path in savedFiles.split("\n") {
-        // A remembered file that has since been deleted or moved must not come
-        // back as a tab over a path that no longer reads.
+// Bring back a set of tabs. A remembered file that has since been deleted or
+// moved must not come back as a tab over a path that no longer reads.
+let restoreTabs = (files: []str, active: str) => {
+    for path in files {
         if path.length > 0 && pathExists(path) {
-            openFile(path);
-            restored = true;
+            openFile(path, false);
         }
     }
-}
-if cache.data.activeFile {
-    let key = keyForPath(cache.data.activeFile as str);
+    let key = keyForPath(active);
     if key >= 0 {
         activeKey := key;
+        persist();
     }
+};
+
+let openTabPaths = (): []str => {
+    let paths: []str = [];
+    let tabs: []OpenTab = rx.get(openTabs);
+    for tab in tabs {
+        paths.push(tab.path);
+    }
+    return paths;
+};
+
+// Restore the previous session. Nothing is ever asked for at startup: with no
+// tabs the welcome page offers the folder and file commands instead.
+let savedFiles = cache.data.openFiles as str;
+let savedActive = "";
+if cache.data.activeFile {
+    savedActive = cache.data.activeFile as str;
 }
-// A cache written by the single-file version, which knew nothing about tabs.
-if !restored && cache.data.file {
-    openFile(cache.data.file as str);
+if savedFiles.length > 0 {
+    restoreTabs(savedFiles.split("\n"), savedActive);
+} else if cache.data.file {
+    // A cache written by the single-file version, which knew nothing about tabs.
+    openFile(cache.data.file as str, false);
 }
-if rx.get(openTabs).length == 0 {
-    promptForFile();
-}
+
+// Switching folders swaps the tabs, as in VS Code: the old folder's tabs are
+// remembered for it, and the new one's come back.
+ui.watch(() => rx.get(workspace().path), (path: str, previous: str | none) => {
+    if previous is none {
+        return;
+    }
+    let old = previous as str;
+    if old == path {
+        return;
+    }
+    storeWorkspaceSession(old, openTabPaths(), pathForKey(rx.get(activeKey)));
+    closeAllEditors();
+    let session = loadWorkspaceSession(path);
+    restoreTabs(session.files, session.active);
+    persist();
+    if path.length > 0 {
+        revealView("explorer");
+    }
+});
 
 // The strip's own view of the tabs. A derived copy rather than a stored field,
 // because the shell has no idea whether a file has unsaved changes and should
@@ -278,6 +385,7 @@ let tabItems = computed((): []ui_widgets.TabItem => {
             key: tab.key,
             title: fileNameOf(tab.path),
             modified: documents().isDirty(tab.key),
+            preview: tab.key == rx.get(navigation().previewKey),
         });
     }
     return items;
@@ -289,16 +397,24 @@ let tabsFingerprint = computed((): int => {
     let items: []ui_widgets.TabItem = rx.get(tabItems);
     let sum = items.length;
     for item in items {
-        sum = sum * 31 + item.key * 2 + (item.modified ?? false ? 1 : 0);
+        sum = sum * 31 + item.key * 4 + (item.modified ?? false ? 1 : 0)
+            + (item.preview ?? false ? 2 : 0);
     }
     return sum;
 });
 
 let activeFilePath = computed((): str => pathForKey(rx.get(activeKey)));
 
+// VS Code's "file - folder - app".
 let windowTitle = computed((): str => {
     let name = fileNameOf(pathForKey(rx.get(activeKey)));
-    return name.length > 0 ? f"{name} - Haze CodeEditor" : "Haze CodeEditor";
+    let folder: str = rx.get(workspace().name);
+    let title = folder.length > 0 ? f"{folder} - Haze CodeEditor" : "Haze CodeEditor";
+    return name.length > 0 ? f"{name} - {title}" : title;
+});
+let welcomeTitle = computed((): str => {
+    let folder: str = rx.get(workspace().name);
+    return folder.length > 0 ? folder : "Haze CodeEditor";
 });
 
 // --- The conflict dialog -----------------------------------------
@@ -328,11 +444,14 @@ let onKeyDownCapture = (event: ui_components.KeyboardEvent) => {
     // What makes the dialog MODAL rather than merely on top: while it is up no
     // binding resolves, so ctrl+s cannot save the very file whose fate is being
     // asked about. The dialog has focus, so the keys it wants still reach it.
-    if modalIsOpen() || rx.get(quickOpen) {
+    if modalIsOpen() || rx.get(quickOpen) || rx.get(recentOpen) {
         return;
     }
     if keybindings().dispatch(event).handled() {
         event.stopPropagation();
+        // A key a rule consumed has no default action either: a bound tab
+        // (accepting a suggestion) must not also move focus out of the editor.
+        event.preventDefault();
     }
 };
 
@@ -348,7 +467,7 @@ let followNavigation = computed((): int => {
     navigationSerialSeen := serial;
     let path: str = rx.get(nav.path);
     if path.length > 0 {
-        openFile(path);
+        openFile(path, rx.get(nav.preview));
     }
     return serial;
 });
@@ -367,6 +486,15 @@ ui.onFrame(() => {
         agent().poll();
     }
     rx.get(followNavigation);
+
+    pumpSearch(ui.now(), 262144);
+    keybindings().context.setBool(ctxHasSearchResults(), searchState().total > 0);
+    // Editing a preview tab keeps it, as in VS Code: a buffer with unsaved
+    // changes must never be replaced by the next preview.
+    let previewKey = rx.get(navigation().previewKey);
+    if previewKey >= 0 && documents().isDirty(previewKey) {
+        pinTab(previewKey);
+    }
 
     let count = rx.get(openTabs).length;
     keybindings().context.setBool("hasOpenTabs", count > 0);
@@ -388,20 +516,42 @@ ui.onFrame(() => {
 TitleBar if=[!ui.window.hasNativeTitlebar()] [] title=[windowTitle] {}
 
 div [row w-grow h-grow gap-0] {
+    // The activity bar.
+    div [col h-grow w-[44]px items-center gap-1 py-1 bg-["#181818"]] {
+        Button [] icon="files" selected=[rx.get(treeOpen) && rx.get(sidebarView) != "search"]
+            paddingX=[10] paddingY=[8] focusRing=[0] @click=[() => { clickView("explorer"); }] {}
+        Button [] icon="search" selected=[rx.get(treeOpen) && rx.get(sidebarView) == "search"]
+            paddingX=[10] paddingY=[8] focusRing=[0] @click=[() => { clickView("search"); }] {}
+    }
     div if=[rx.get(treeOpen)] [col h-grow w-[rx.get(treeWidth)]px] {
-        FileTree [] root=[rx.get(workspace().path)] activePath=[activeFilePath]
-            @open=openFile @open-folder=pickWorkspace {}
+        FileTree if=[rx.get(sidebarView) != "search"] [] root=[rx.get(workspace().path)]
+            activePath=[activeFilePath] @open=openPreview @open-folder=pickWorkspace {}
+        SearchView if=[rx.get(sidebarView) == "search"] [] {}
     }
     Splitter if=[rx.get(treeOpen)] [] @drag=dragTree {}
 
     div [col w-grow h-grow gap-0] {
         Tabs if=[tabItems.length > 0] [] items=[tabItems] revision=[tabsFingerprint]
-            activeKey=[activeKey] @select=selectTab @close=closeTab {}
+            activeKey=[activeKey] previewFontFamily=[italicFontFamily()]
+            @select=selectTab @close=closeTab @pin=keepTab {}
 
-        div if=[tabItems.length == 0] [w-grow h-grow col items-center justify-center]
+        // The welcome page: what to open, never a dialog nobody asked for.
+        div if=[tabItems.length == 0] [w-grow h-grow col items-center justify-center gap-2]
             focusable=true autofocus=true
         {
-            text [text-color-["#7A7A7A"]] ["No file open  --  Ctrl+P to search, Ctrl+O to open one"]
+            text [font-size-20 text-color-["#CCCCCC"]] [welcomeTitle]
+            div [col w-fit h-fit gap-1 pt-2] {
+                Button [] icon="folder-opened" label="Open Folder...   Ctrl+K Ctrl+O" @click=pickWorkspace {}
+                Button [] icon="file" label="Open File...   Ctrl+O" @click=promptForFile {}
+                Button if=[hasWorkspace()] [] icon="search" label="Go to File...   Ctrl+P" @click=showQuickOpen {}
+                Button if=[otherRecents.length > 0] [] icon="history" label="Open Recent...   Ctrl+R"
+                    @click=[() => { recentOpen := true; }] {}
+            }
+            div if=[otherRecents.length > 0] [col w-fit h-fit gap-0 pt-2] {
+                text [text-color-["#7A7A7A"]] ["Recent"]
+                Button for=[path, index in otherRecents] key=[index] [] label=[path]
+                    @click=[() => { openWorkspace(path); }] {}
+            }
         }
 
         // Every tab stays MOUNTED and merely hides itself when it is not the
@@ -425,6 +575,7 @@ div [row w-grow h-grow gap-0] {
 }
 
 QuickOpen [] open=[rx.get(quickOpen)] root=[quickOpenRoot] @close=closeQuickOpen @pick=pickQuickOpen {}
+RecentPicker [] open=[rx.get(recentOpen)] @close=closeRecent @pick=pickRecent {}
 
 // Last, because hit-testing walks children in reverse declaration order and
 // ignores z-index: a modal declared earlier would be painted over the editor

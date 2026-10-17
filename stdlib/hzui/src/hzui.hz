@@ -36,6 +36,22 @@ export fn keyId(staticId: int, key: int): int {
     return staticId * SPAN + folded;
 }
 
+// One key from the keys of every loop iteration a COMPONENT is nested in,
+// outermost first, as the transformer lowers it: keyId(staticId,
+// mixKeys(outer, inner)). A component's id lives in its enclosing component's
+// flat child list, so it must tell apart every iteration of every loop around
+// it, not just the innermost one. Exact (no two pairs alike) for inner keys
+// below 1000003 and outer keys below 4294 -- far past any list a UI shows;
+// beyond that, wrapped into keyId's 32 bits, a collision is merely unlikely.
+export fn mixKeys(outer: int, inner: int): int {
+    const comptime SPAN = 2147483648;
+    let a = outer % SPAN;
+    if a < 0 { a = a + SPAN; }
+    let b = inner % SPAN;
+    if b < 0 { b = b + SPAN; }
+    return a * 1000003 + b;
+}
+
 // Here, re-export all the modules and symbols anyone would want to import from hzui
 
 export type Reactive = rx.Reactive;

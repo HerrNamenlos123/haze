@@ -126,6 +126,14 @@ difference is visible through `<C-o>`. Entries are capped at 100, and an
 entry for the line the cursor is already on is dropped when the index is at
 the end of the list.
 
+The list is its own object (`JumpList`), so a host editing several
+documents can give every `Vim` the same one, as Vim's own list belongs to
+the window: set `vim.jumpList`, name each Vim's buffer with `vim.document`,
+and set `vim.onJumpToDocument`. An entry in another document is not moved
+to by the engine; the hook makes that document current and places its
+cursor. "Same line" means same line of the same document throughout.
+Cross-document cases: `tests/jumplist-document-tests.hz`.
+
 ### Scrolling
 
 The engine cannot scroll — it has no idea how tall the viewport is. `zz`

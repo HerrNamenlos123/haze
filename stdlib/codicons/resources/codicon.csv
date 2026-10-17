@@ -97,6 +97,7 @@ symbol-method-arrow,,EC41
 symbol-keyword,,EB62
 symbol-interface,,EB61
 symbol-file,,EA7B
+file,,EA7B
 symbol-field,,EB5F
 symbol-event,,EA86
 symbol-enum,,EA95
