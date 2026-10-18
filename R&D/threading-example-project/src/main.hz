@@ -1,0 +1,196 @@
+
+const rootDirectory = "~/.";
+const queries = [
+    "mutex",
+    "channel lock",
+    "thread",
+];
+const workerThreadCount = 8;
+const workerTaskCount = 4;
+const timeout = 10;
+
+atomic ref struct Context {
+    private mutex: thread.Mutex;
+    private jobs: atomic []str;
+    private terminate: atomic bool;
+    private wordIndex: atomic [](str, int);
+    private filesIndexed: atomic int;
+
+    fn constructor() {
+        return Context {};
+    }
+
+    fn pushJob(job: str) {
+        this.mutex.lock(() => {
+            this.jobs.push(job);
+        });
+    }
+
+    fn getFileCount() {
+        return this.mutex.lock(() => {
+            return this.jobs.length;
+        });
+    }
+
+    fn addIndexedFileCount() {
+        this.mutex.lock(() => {
+            this.filesIndexed++;
+        });
+    }
+
+    fn getIndexedFileCount() {
+        return this.mutex.lock(() => {
+            return this.filesIndexed;
+        });
+    }
+
+    fn takeJob() {
+        return this.jobs.popFrontOrWait();
+    }
+
+    fn addOneToWordIndex(word: str) {
+        this.mutex.lock(() => {
+            for (indexWord, count), i in this.wordIndex {
+                if indexWord == word {
+                    this.wordIndex[i] = (indexWord, count + 1);
+                    return;
+                }
+            }
+
+            this.wordIndex.push((indexWord, 1));
+        });
+    }
+
+    fn terminate() {
+        this.mutex.lock(() => {
+            this.terminate = true;
+            this.jobs.close();
+        });
+    }
+
+    fn isTerminate() {
+        return this.mutex.lock(() => {
+            return this.terminate;
+        });
+    }
+
+    // Logging
+
+    // Logging only accesses this array and is unrelated from anything else, 
+    // which is why we do not need to lock the global mutex.
+    private logQueue: atomic []str;
+
+    fn log(msg: str) {
+        this.logQueue.push(msg);
+    }
+
+    fn takeLog(): str | none {
+        return this.logQueue.popFrontOrWait();
+    }
+}
+
+fn recursiveListDir(context: Context, startTime: real, dir: str): Result<none, fs.Error> {
+    if time.now() - startTime > timeout {
+        context.terminate();
+        return none;
+    }
+
+    for entry in fs.listDir(dir)?! {
+        if entry.isDirectory {
+            recursiveListDir(context, entry.path);
+        }
+        else {
+            if entry.name == "STOP" {
+                context.terminate();
+                return none;
+            }
+            context.pushJob(entry.path);
+        }
+    }
+    return none;
+}
+
+fn crawlTask(context: Context): Result<none, fs.Error> {
+    let startTime = time.now();
+    context.log("[crawl task] Running, crawling directory...");
+    recursiveListDir(context, startTime, rootDirectory)?!;
+    context.log("[crawl task] Done crawling directory, exiting now.");
+}
+
+fn performIndexJob(context: Context, workerId: int, job: str) {
+    if job.contains("poison") {
+        sys.panic("Unsupported file");
+    }
+
+    attempt {
+        let file = fs.readText(job)?!;
+
+        for c in file.slice(4095) {
+            if c == b"\0" {
+                raise;
+            }
+        }
+
+        for token in file.split(" ") {
+            let word = regex.replace(r"[^A-Za-z0-9_]", token, "").toLowerCase();
+            context.addOneToWordIndex(word);
+        }
+    }
+    else e {
+        context.log(f"[index worker #{workerId}] Failed job");
+        return;
+    }
+}
+
+fn indexWorker(context: Context, workerThreadId: int) {
+    context.log(f"[index thread #{workerThreadId}] Started, waiting for jobs...");
+    
+    // Spawn all worker tasks now
+    for (let i = 0; i < workerTaskCount; i++) {
+        task.spawn(() => {
+            while !context.isTerminate() {
+                if let job = context.takeJob() {
+                    attempt {
+                        performIndexJob(context, workerId, job);
+                    }
+                    recover {
+                        context.log(f"[index thread #{workerThreadId}] Worker panicked and recovered. Job is skipped, continuing with next job");
+                    }
+                }
+            }
+        });
+    }
+
+    // The main task of this worker thread exits, the spawned worker tasks will continue and keep the process alive
+}
+
+fn main() {
+    let context = Context();
+
+    // Logging
+    task.spawn(() => {
+        while !context.isTerminate() {
+            if let msg = context.takeLog() {
+                fmt.println(msg);
+            }
+        }
+    });
+    
+    // Crawl worker task
+    task.spawn(() => {
+        if !crawlTask(context) {
+            context.log("Crawling failed due to filesystem error");
+        }
+    });
+
+    for (let i = 0; i < workerThreadCount; i++) {
+        thread.spawn(() => {
+            indexWorker(context, i + 1);
+        });
+    }
+
+    while !context.isTerminate() {
+        context.log(f"Status Report: {context.getFileCount()} files found, {context.getIndexedFileCount()} files indexed.");
+        time.sleep(0.25);
+    }
+}
