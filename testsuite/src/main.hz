@@ -97,6 +97,8 @@ fn main(): int {
     cases_embed_literal.register(suite);
     cases_dead_closure_capture.register(suite);
     cases_if_chain_narrowing.register(suite);
+    cases_context.register(suite);
+    cases_extern_c_function_types.register(suite);
 
     return testsuite.runAll(config, suite);
 }
