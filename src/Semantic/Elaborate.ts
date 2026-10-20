@@ -8153,8 +8153,8 @@ export class SemanticElaborator {
   }
 
   // Does this collected symbol name the core `Context` type, directly or
-  // through aliases? Decided without elaborating anything, so it is safe to
-  // ask about any `X.init(...)` callee.
+  // through aliases? Decided on the collected symbols, without elaborating
+  // the callee, so it is safe to ask about any `X.init(...)`.
   isCoreContextCollectSymbol(symbolId: Collect.SymbolId): boolean {
     let symbol = this.sr.cc.symbolNodes.get(symbolId);
     if (symbol.variant !== Collect.ENode.TypeDefSymbol) {
