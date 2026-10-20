@@ -13,6 +13,8 @@ FILE *__cdecl __acrt_iob_func(unsigned);
 int __cdecl printf(const char *, ...);
 int __cdecl fprintf(FILE *, const char *, ...);
 int __cdecl vfprintf(FILE *, const char *, va_list);
+int __cdecl snprintf(char *, size_t, const char *, ...);
+int __cdecl vsnprintf(char *, size_t, const char *, va_list);
 int __cdecl puts(const char *);
 int __cdecl fputs(const char *, FILE *);
 int __cdecl fflush(FILE *);

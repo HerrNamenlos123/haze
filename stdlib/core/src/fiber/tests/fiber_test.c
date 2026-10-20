@@ -61,12 +61,30 @@ static void ft_fail(const char *file, int line, const char *fmt, ...)
 {
   va_list args;
   va_start(args, fmt);
+#if FIBER__WINDOWS
+  /*
+   * A failed TEB check runs on a stack the kernel cannot grow (its TEB bounds are what is wrong),
+   * and fprintf to unbuffered stderr needs a 4 KiB buffer on the stack: the report itself would die
+   * with STATUS_GUARD_PAGE_VIOLATION. So format into static memory and write it directly.
+   */
+  static _Thread_local char message[2048];
+  message[0] = '\0';
+  snprintf(message, sizeof(message) - 1, "FAIL [%s] %s:%d: ", g_test_name, file, line);
+  size_t n = strlen(message);
+  vsnprintf(message + n, sizeof(message) - 1 - n, fmt, args); /* one byte stays free for the newline */
+  n = strlen(message);
+  message[n++] = '\n';
+  fflush(stdout);
+  DWORD written;
+  WriteFile(GetStdHandle(STD_ERROR_HANDLE), message, (DWORD)n, &written, NULL);
+#else
   fprintf(stderr, "FAIL [%s] %s:%d: ", g_test_name, file, line);
   vfprintf(stderr, fmt, args);
   fprintf(stderr, "\n");
-  va_end(args);
   fflush(stderr);
   fflush(stdout);
+#endif
+  va_end(args);
   _Exit(1);
 }
 

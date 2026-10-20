@@ -25,7 +25,20 @@ void *fiber_test_switch(fiber_ctx *from, fiber_ctx *to, void *transfer, fiber_te
 void fiber_test_entry_probe(void *transfer, void *user);
 void fiber__trampoline(void); /* inside the implementation; tests check return addresses against it */
 void *fiber_test_switch_at(fiber_ctx *from, fiber_ctx *to, void *transfer, void *sp);
-int fiber_test_switch_holding(fiber_ctx *from, fiber_ctx *to, void *transfer, uintptr_t *slot, uintptr_t key);
+
+/*
+ * The GC test's "only in registers" case (regs.c). With `loop` NULL it switches once (transfer
+ * NULL). Otherwise it switches again and again, counting in loop->switches, until it is resumed
+ * with loop->stop set: the pointer stays in registers the whole time, never only in *slot.
+ * Must live in static memory. Layout is fixed: the assembly helpers address it by offset.
+ */
+typedef struct fiber_test_holding_loop {
+  volatile long long switches;
+  volatile long long stop;
+} fiber_test_holding_loop;
+_Static_assert(offsetof(fiber_test_holding_loop, stop) == 8, "layout used by regs.c");
+int fiber_test_switch_holding(fiber_ctx *from, fiber_ctx *to, fiber_test_holding_loop *loop, uintptr_t *slot,
+                              uintptr_t key);
 
 /* Written by fiber_test_entry_probe. */
 extern uint64_t fiber_test_probe_sp, fiber_test_probe_fp, fiber_test_probe_ret;

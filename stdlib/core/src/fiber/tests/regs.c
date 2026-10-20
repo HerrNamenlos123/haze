@@ -185,11 +185,12 @@ __asm__(".text\n"
         ".size fiber_test_switch_at, .-fiber_test_switch_at\n"
 
         /*
-         * fiber_test_switch_holding(from, to, transfer, slot, key): the GC test's "only in
+         * fiber_test_switch_holding(from, to, loop, slot, key): the GC test's "only in
          * registers" case. Puts p = *slot ^ key into every callee-saved register, zeroes *slot,
-         * switches with fiber_switch, and after the resume counts the registers that no longer
-         * hold p (returned), then stores p ^ key back. Only obfuscated copies of p exist outside
-         * the registers (and so, while suspended, outside the switch's saved registers).
+         * switches with fiber_switch (repeatedly while a loop is given and not stopped), and after
+         * every resume counts the registers that no longer hold p (the sum is returned), then
+         * stores p ^ key back. Only obfuscated copies of p exist outside the registers (and so,
+         * while suspended, outside the switch's saved registers).
          */
         ".p2align 4\n"
         ".globl fiber_test_switch_holding\n"
@@ -208,10 +209,15 @@ __asm__(".text\n"
         "  .cfi_adjust_cfa_offset 8\n"
         "  pushq %r15\n"
         "  .cfi_adjust_cfa_offset 8\n"
-        "  subq $24, %rsp\n"
-        "  .cfi_adjust_cfa_offset 24\n"
+        "  subq $56, %rsp\n"
+        "  .cfi_adjust_cfa_offset 56\n"
+        /* [0] slot, [8] key, [16] reference, [24] loop, [32] from, [40] to, [48] mismatches */
         "  movq %rcx, (%rsp)\n"
         "  movq %r8, 8(%rsp)\n"
+        "  movq %rdx, 24(%rsp)\n"
+        "  movq %rdi, 32(%rsp)\n"
+        "  movq %rsi, 40(%rsp)\n"
+        "  movq $0, 48(%rsp)\n"
         "  movq (%rcx), %rax\n"
         "  movq %rax, %r9\n"
         "  notq %r9\n"
@@ -227,6 +233,10 @@ __asm__(".text\n"
         "  xorl %eax, %eax\n"
         "  xorl %r8d, %r8d\n"
         "  xorl %r9d, %r9d\n"
+        "1:\n"
+        "  movq 32(%rsp), %rdi\n"
+        "  movq 40(%rsp), %rsi\n"
+        "  xorl %edx, %edx\n"
         "  callq fiber_switch@PLT\n"
         "  movq 16(%rsp), %rdx\n"
         "  notq %rdx\n"
@@ -250,11 +260,22 @@ __asm__(".text\n"
         "  cmpq %rdx, %r15\n"
         "  setne %cl\n"
         "  addb %cl, %al\n"
-        "  xorq 8(%rsp), %rdx\n"
+        "  addq %rax, 48(%rsp)\n"
+        "  xorl %edx, %edx\n"
+        "  movq 24(%rsp), %rcx\n"
+        "  testq %rcx, %rcx\n"
+        "  jz 2f\n"
+        "  incq (%rcx)\n"
+        "  cmpq $0, 8(%rcx)\n"
+        "  je 1b\n"
+        "2:\n"
+        "  movq 16(%rsp), %rdx\n"
+        "  notq %rdx\n" /* p ^ key */
         "  movq (%rsp), %rcx\n"
         "  movq %rdx, (%rcx)\n"
-        "  addq $24, %rsp\n"
-        "  .cfi_adjust_cfa_offset -24\n"
+        "  movq 48(%rsp), %rax\n"
+        "  addq $56, %rsp\n"
+        "  .cfi_adjust_cfa_offset -56\n"
         "  popq %r15\n"
         "  .cfi_adjust_cfa_offset -8\n"
         "  popq %r14\n"
@@ -428,7 +449,7 @@ __asm__(".text\n"
         "  movq %rcx, %rsp\n"
         "  ret\n"
 
-        /* fiber_test_switch_holding(from, to, transfer, slot, key): see the SysV version. */
+        /* fiber_test_switch_holding(from, to, loop, slot, key): see the SysV version. */
         ".def fiber_test_switch_holding; .scl 2; .type 32; .endef\n"
         ".globl fiber_test_switch_holding\n"
         ".p2align 4\n"
@@ -450,13 +471,18 @@ __asm__(".text\n"
         ".seh_pushreg %r14\n"
         "  pushq %r15\n"
         ".seh_pushreg %r15\n"
-        "  subq $56, %rsp\n"
-        ".seh_stackalloc 56\n"
+        "  subq $88, %rsp\n"
+        ".seh_stackalloc 88\n"
         ".seh_endprologue\n"
-        /* [rsp,32) shadow space, [32] slot, [40] key, [48] reference; the key arrived at [rsp+160]. */
+        /* [rsp,32) shadow space, [32] slot, [40] key, [48] reference, [56] loop, [64] from, [72] to,
+           [80] mismatches; the key arrived at [rsp+192]. */
         "  movq %r9, 32(%rsp)\n"
-        "  movq 160(%rsp), %r10\n"
+        "  movq 192(%rsp), %r10\n"
         "  movq %r10, 40(%rsp)\n"
+        "  movq %r8, 56(%rsp)\n"
+        "  movq %rcx, 64(%rsp)\n"
+        "  movq %rdx, 72(%rsp)\n"
+        "  movq $0, 80(%rsp)\n"
         "  movq (%r9), %rax\n"
         "  movq %rax, %r11\n"
         "  notq %r11\n"
@@ -475,6 +501,10 @@ __asm__(".text\n"
         "  xorl %r9d, %r9d\n"
         "  xorl %r10d, %r10d\n"
         "  xorl %r11d, %r11d\n"
+        "1:\n"
+        "  movq 64(%rsp), %rcx\n"
+        "  movq 72(%rsp), %rdx\n"
+        "  xorl %r8d, %r8d\n"
         "  callq fiber_switch\n"
         "  movq 48(%rsp), %rdx\n"
         "  notq %rdx\n"
@@ -504,10 +534,21 @@ __asm__(".text\n"
         "  cmpq %rdx, %r15\n"
         "  setne %cl\n"
         "  addb %cl, %al\n"
-        "  xorq 40(%rsp), %rdx\n"
+        "  addq %rax, 80(%rsp)\n"
+        "  xorl %edx, %edx\n"
+        "  movq 56(%rsp), %rcx\n"
+        "  testq %rcx, %rcx\n"
+        "  jz 2f\n"
+        "  incq (%rcx)\n"
+        "  cmpq $0, 8(%rcx)\n"
+        "  je 1b\n"
+        "2:\n"
+        "  movq 48(%rsp), %rdx\n"
+        "  notq %rdx\n" /* p ^ key */
         "  movq 32(%rsp), %rcx\n"
         "  movq %rdx, (%rcx)\n"
-        "  addq $56, %rsp\n"
+        "  movq 80(%rsp), %rax\n"
+        "  addq $88, %rsp\n"
         "  popq %r15\n"
         "  popq %r14\n"
         "  popq %r13\n"
@@ -640,18 +681,21 @@ __asm__(".text\n" FT_FUNC_BEGIN("fiber_test_switch") FT_SEH(".seh_proc fiber_tes
         "  bl fiber_test_entry_probe_body\n"
         "  brk #1\n" FT_FUNC_END("fiber_test_entry_probe")
 
-        /* fiber_test_switch_holding(from, to, transfer, slot, key): see the SysV version. */
+        /* fiber_test_switch_holding(from, to, loop, slot, key): see the SysV version. */
         FT_FUNC_BEGIN("fiber_test_switch_holding") FT_SEH(".seh_proc fiber_test_switch_holding")
-        "  sub sp, sp, #128\n" FT_SEH(".seh_stackalloc 128")
+        "  sub sp, sp, #160\n" FT_SEH(".seh_stackalloc 160")
         "  stp x19, x20, [sp, #0]\n" FT_SEH(".seh_save_regp x19, 0")
         "  stp x21, x22, [sp, #16]\n" FT_SEH(".seh_save_regp x21, 16")
         "  stp x23, x24, [sp, #32]\n" FT_SEH(".seh_save_regp x23, 32")
         "  stp x25, x26, [sp, #48]\n" FT_SEH(".seh_save_regp x25, 48")
         "  stp x27, x28, [sp, #64]\n" FT_SEH(".seh_save_regp x27, 64")
         "  stp x29, x30, [sp, #80]\n" FT_SEH(".seh_save_fplr 80") FT_SEH(".seh_endprologue")
-        /* [96] slot, [104] key, [112] reference */
+        /* [96] slot, [104] key, [112] reference, [120] loop, [128] from, [136] to, [144] mismatches */
         "  str x3, [sp, #96]\n"
         "  str x4, [sp, #104]\n"
+        "  str x2, [sp, #120]\n"
+        "  stp x0, x1, [sp, #128]\n"
+        "  str xzr, [sp, #144]\n"
         "  ldr x9, [x3]\n"
         "  mvn x10, x9\n"
         "  str x10, [sp, #112]\n"
@@ -672,6 +716,9 @@ __asm__(".text\n" FT_FUNC_BEGIN("fiber_test_switch") FT_SEH(".seh_proc fiber_tes
         "  mov x10, xzr\n"
         "  mov x3, xzr\n"
         "  mov x4, xzr\n"
+        "1:\n"
+        "  ldp x0, x1, [sp, #128]\n"
+        "  mov x2, xzr\n"
         "  bl fiber_switch\n"
         "  ldr x10, [sp, #112]\n"
         "  mvn x10, x10\n"
@@ -689,16 +736,30 @@ __asm__(".text\n" FT_FUNC_BEGIN("fiber_test_switch") FT_SEH(".seh_proc fiber_tes
         "  cmp x27, x10\n  cinc x0, x0, ne\n"
         "  cmp x28, x10\n  cinc x0, x0, ne\n"
         "  cmp x29, x10\n  cinc x0, x0, ne\n"
-        "  eor x10, x10, x11\n"
+        "  ldr x12, [sp, #144]\n"
+        "  add x12, x12, x0\n"
+        "  str x12, [sp, #144]\n"
+        "  mov x10, xzr\n"
+        "  ldr x12, [sp, #120]\n"
+        "  cbz x12, 2f\n"
+        "  ldr x13, [x12]\n"
+        "  add x13, x13, #1\n"
+        "  str x13, [x12]\n"
+        "  ldr x13, [x12, #8]\n"
+        "  cbz x13, 1b\n"
+        "2:\n"
+        "  ldr x10, [sp, #112]\n"
+        "  mvn x10, x10\n" /* p ^ key */
         "  ldr x12, [sp, #96]\n"
-        "  str x10, [x12]\n" FT_SEH(".seh_startepilogue")
+        "  str x10, [x12]\n"
+        "  ldr x0, [sp, #144]\n" FT_SEH(".seh_startepilogue")
         "  ldp x29, x30, [sp, #80]\n" FT_SEH(".seh_save_fplr 80")
         "  ldp x27, x28, [sp, #64]\n" FT_SEH(".seh_save_regp x27, 64")
         "  ldp x25, x26, [sp, #48]\n" FT_SEH(".seh_save_regp x25, 48")
         "  ldp x23, x24, [sp, #32]\n" FT_SEH(".seh_save_regp x23, 32")
         "  ldp x21, x22, [sp, #16]\n" FT_SEH(".seh_save_regp x21, 16")
         "  ldp x19, x20, [sp, #0]\n" FT_SEH(".seh_save_regp x19, 0")
-        "  add sp, sp, #128\n" FT_SEH(".seh_stackalloc 128") FT_SEH(".seh_endepilogue")
+        "  add sp, sp, #160\n" FT_SEH(".seh_stackalloc 160") FT_SEH(".seh_endepilogue")
         "  ret\n" FT_SEH(".seh_endproc") FT_FUNC_END("fiber_test_switch_holding")
 
         /* fiber_test_switch_at(from, to, transfer, sp): fiber__switch with sp moved to `sp`. */

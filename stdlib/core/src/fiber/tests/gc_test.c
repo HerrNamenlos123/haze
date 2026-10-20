@@ -446,12 +446,12 @@ static void s2_run(int thread, int ntasks, long iterations)
 /*
  * Two tasks on one thread hand control back and forth as fast as they can, each holding its object
  * only in callee-saved registers, while another thread collects without pause: the stops land at
- * every instruction of the switch.
+ * every instruction of the switch. The helper loops by itself, so there is no instant at which an
+ * object exists only obfuscated in its slot (a stop there would rightly collect it).
  */
 static uintptr_t s3_slots[2];
 static volatile int s3_finalized[2], s3_bad;
-static volatile bool s3_stop;
-static volatile long s3_switches;
+static fiber_test_holding_loop s3_loop; /* static memory, see fiber_test.h */
 static gthread *s3_thread;
 
 static void GC_CALLBACK s3_finalizer(void *obj, void *data)
@@ -474,10 +474,7 @@ static void s3_entry(void *transfer, void *user)
   obj = NULL;
   gtask *me = &s3_thread->tasks[self];
   gtask *other = &s3_thread->tasks[1 - self];
-  while (!s3_stop) {
-    s3_bad += fiber_test_switch_holding(&me->ctx, &other->ctx, NULL, &s3_slots[self], S1_KEY);
-    s3_switches++;
-  }
+  s3_bad += fiber_test_switch_holding(&me->ctx, &other->ctx, &s3_loop, &s3_slots[self], S1_KEY); /* until stopped */
   uint64_t *check = (uint64_t *)(s3_slots[self] ^ S1_KEY);
   for (int i = 0; i < 8; i++) {
     CHECK(check[i] == 0x51DE0000ull + (uint64_t)(self * 8 + i));
@@ -517,27 +514,35 @@ static void *s3_worker(void *p)
 static void s3_run(void)
 {
 #if FIBER__WINDOWS
-  HANDLE h = GC_CreateThread(NULL, 1 << 20, s3_worker, NULL, 0, NULL);
+  HANDLE h = GC_CreateThread(NULL, 1 << 20, s3_worker, NULL, STACK_SIZE_PARAM_IS_A_RESERVATION, NULL);
   CHECK(h != NULL);
 #else
   pthread_t id;
   CHECK(GC_pthread_create(&id, NULL, s3_worker, NULL) == 0);
 #endif
-  while (s3_switches < 1000) {
+  while (s3_loop.switches < 1000) {
     /* wait until the two tasks are handing control back and forth */
   }
   long before = g_mid_switch;
-  long switches_before = s3_switches;
+  long long switches_before = s3_loop.switches;
   /* At least 200 collections, and more until three of them stopped the thread mid-switch (how
      often that happens depends on the build and the machine; the cap keeps a run bounded). */
+#if FIBER__WINDOWS
+  /* SuspendThread stops a thread mostly right after slow instructions (stmxcsr, fnstcw, the %gs:
+     accesses); the few fast ones between publishing from->sp and the stack move were hit about
+     once in 5000 stops when measured on x64. */
+  const int cap = 40000;
+#else
+  const int cap = 5000;
+#endif
   int collections = 0;
-  while (collections < 200 * g_scale || (g_mid_switch - before < 3 && collections < 5000 * g_scale)) {
+  while (collections < 200 * g_scale || (g_mid_switch - before < 3 && collections < cap * g_scale)) {
     GC_gcollect();
     collections++;
   }
-  CHECK(s3_switches > switches_before + 1000); /* the switching really ran during the collections */
+  CHECK(s3_loop.switches > switches_before + 1000); /* the switching really ran during the collections */
   GC_invoke_finalizers();
-  s3_stop = true;
+  s3_loop.stop = 1;
 #if FIBER__WINDOWS
   WaitForSingleObject(h, INFINITE);
   CloseHandle(h);
@@ -546,7 +551,7 @@ static void s3_run(void)
 #endif
   CHECK(s3_bad == 0);
   CHECK(s3_finalized[0] == 0 && s3_finalized[1] == 0);
-  printf("ok mid-switch: %ld switches under %d collections, %ld stops caught a task mid-switch\n", s3_switches,
+  printf("ok mid-switch: %lld switches under %d collections, %ld stops caught a task mid-switch\n", s3_loop.switches,
          collections, g_mid_switch - before);
 }
 
@@ -635,7 +640,11 @@ int main(int argc, char **argv)
   for (int i = 0; i < NT; i++) {
     args[i] = (worker_arg){i + 1, 6 + i, 300L * g_scale};
 #if FIBER__WINDOWS
-    handles[i] = GC_CreateThread(NULL, 1 << 20, worker, &args[i], 0, NULL);
+    /* A reservation, like every hzstd thread: the committed stack needs its guard page below it. When
+       a thread runs on a task stack, BDWGC pushes its whole native stack, found by walking down to
+       that guard page; a fully committed 1 MiB stack has none, and the walk runs into whatever
+       allocation lies below (and later reads it after it was freed). */
+    handles[i] = GC_CreateThread(NULL, 1 << 20, worker, &args[i], STACK_SIZE_PARAM_IS_A_RESERVATION, NULL);
     CHECK(handles[i] != NULL);
 #else
     CHECK(GC_pthread_create(&ids[i], NULL, worker, &args[i]) == 0);

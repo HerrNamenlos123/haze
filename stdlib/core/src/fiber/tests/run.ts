@@ -699,7 +699,10 @@ function describe(r: RunResult) {
   if (r.signal) {
     return `killed by ${r.signal}`;
   }
-  return `exit ${r.code}`;
+  // An NTSTATUS reads better in hex (0xc000001d).
+  return r.code !== null && (r.code > 0xff || r.code < 0)
+    ? `exit 0x${(r.code < 0 ? r.code + 2 ** 32 : r.code).toString(16)}`
+    : `exit ${r.code}`;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -779,6 +782,65 @@ function trapped(tc: Toolchain, r: RunResult): boolean {
   return code !== null && [0xc0_00_00_1d, 0x80_00_00_03].includes(code);
 }
 
+/**
+ * Windows hosts: Bun reports only the low byte of a Windows exit code (0xC000001D arrives as 29),
+ * so commands whose NTSTATUS matters run under tests/exitcode.c, which prints the full code.
+ * Built once, on first use; resolves to the executable, or to the build log on failure.
+ */
+let exitcodeBuild: Promise<{ exe: string | null; log: string }> | null = null;
+function exitcodeLauncher(tc: Toolchain) {
+  exitcodeBuild ??= (async () => {
+    const exe = join(OUT, "exitcode.exe");
+    const triple =
+      HOST_ARCH === "x64" ? "x86_64-pc-windows-msvc" : "aarch64-pc-windows-msvc";
+    const r = await run([
+      tc.cc,
+      `--target=${triple}`,
+      "-fuse-ld=lld",
+      "-O2",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-D_CRT_SECURE_NO_WARNINGS",
+      join(TESTS_DIR, "exitcode.c"),
+      "-o",
+      exe,
+    ]);
+    return { exe: r.code === 0 ? exe : null, log: r.out };
+  })();
+  return exitcodeBuild;
+}
+
+/** Runs a test program; on a Windows host through the launcher, so `code` is the full NTSTATUS. */
+async function runFullExitCode(
+  tc: Toolchain,
+  cmd: string[],
+  opts: { env?: Record<string, string>; timeout?: number }
+): Promise<RunResult> {
+  if (!(HOST_OS === "win32" && tc.msvc)) {
+    return run(cmd, opts);
+  }
+  const launcher = await exitcodeLauncher(tc);
+  if (launcher.exe === null) {
+    return {
+      code: 255,
+      signal: null,
+      out: `could not build exitcode.c:\n${lastLines(launcher.log)}`,
+      ms: 0,
+      timedOut: false,
+    };
+  }
+  const r = await run([launcher.exe, ...cmd], opts);
+  // Not necessarily last: stdout and stderr are separate pipes, merged as the data arrives.
+  const m = [...r.out.matchAll(/\r?\nexitcode: 0x([0-9A-F]{8})\r?\n/g)].pop();
+  if (m) {
+    const at = m.index ?? 0;
+    r.code = Number.parseInt(m[1], 16);
+    r.out = r.out.slice(0, at) + r.out.slice(at + m[0].length);
+  }
+  return r;
+}
+
 async function deathProblems(
   tc: Toolchain,
   exe: string,
@@ -786,7 +848,7 @@ async function deathProblems(
 ): Promise<string[]> {
   const problems: string[] = [];
   for (const [scenario, message] of DEATHS) {
-    const r = await run(tc.runner!(exe, ["--death", scenario]), {
+    const r = await runFullExitCode(tc, tc.runner!(exe, ["--death", scenario]), {
       env: { ...tc.env, ...env },
       timeout: MUTANT_TIMEOUT,
     });
@@ -887,6 +949,10 @@ async function buildGc(
   ]);
   if (t.code !== 0) {
     return { ok: false, log: t.out, exe: exe, dir: dir, objs: {} };
+  }
+  if (tc.runner === null) {
+    // Compile-only target, as in buildFiberTest: its libraries need not be installed here.
+    return { ok: true, log: "", exe: exe, dir: dir, objs: {} };
   }
   const objs = [
     gcObj,
@@ -1552,6 +1618,25 @@ async function checkInsideStdlib() {
       /^-I.*[\\/]stdlib[\\/]core[\\/]src$/.test(a) ? `-I${stdlibSrc}` : a
     );
   const macro = `-D${MACRO[target]}`;
+  // The control: the generated file alone must compile against this checkout's hzstd headers.
+  // If it does not, it is older than they are (rebuild a Haze program), and nothing can be said
+  // about fiber.h.
+  const controlFiles: Record<string, string> = {
+    [copy]: cFile,
+    [out]: `${out}.control.o`,
+  };
+  const control = await run(cmd.map((a) => controlFiles[a] ?? a));
+  if (control.code !== 0) {
+    const firstError =
+      control.out.split("\n").find((l) => /error:/.test(l))?.trim() ?? "";
+    record(
+      target,
+      "compiles inside Haze's generated stdlib module",
+      "NOT RUN",
+      `the generated stdlib in __haze__ is stale: it does not compile against this checkout's headers even without fiber.h (build any Haze program in this checkout first): ${firstError}`
+    );
+    return;
+  }
   for (const opt of ["", "-O3"]) {
     const r = await run([
       ...cmd,
@@ -2172,25 +2257,32 @@ function writeMutant(tc: Toolchain, id: string): string {
     why: "",
   };
   const src = readFileSync(join(LIB_DIR, "fiber.h"), "utf8");
+  // A Windows checkout (core.autocrlf) has CRLF: edit the lines without their "\r".
+  const eol = src.includes("\r\n") ? "\r\n" : "\n";
   let changed = 0;
   const out = src
-    .split("\n")
+    .split(eol)
     .map((line) => {
       const marker = line.match(/MUT ([a-z0-9 -]+?) \*\//);
       if (!marker || !marker[1].split(" ").includes(id)) {
         return line;
       }
       changed++;
+      let edited: string;
       if (m.edit === null) {
         // Drop the statement or instruction on this line, keep the line's string-literal shape.
-        if (/^\s*"/.test(line)) {
-          return line.replace(/"[^"]*\\n"/, '""');
-        }
-        return line.replace(/^(\s*).*?(\/\*.*)$/, "$1$2");
+        edited = /^\s*"/.test(line)
+          ? line.replace(/"[^"]*\\n"/, '""')
+          : line.replace(/^(\s*).*?(\/\*.*)$/, "$1$2");
+      } else {
+        edited = m.edit(line);
       }
-      return m.edit(line);
+      if (edited === line) {
+        throw new Error(`mutant ${id}: the edit does not change its line: ${line}`);
+      }
+      return edited;
     })
-    .join("\n");
+    .join(eol);
   if (changed === 0) {
     throw new Error(`mutant ${id}: no line carries its marker`);
   }
@@ -2397,7 +2489,8 @@ async function checkMutants(tc: Toolchain, config: Config, base: Built) {
         gcFailure
       );
       if (m.focus && (killed || r.timedOut)) {
-        const f = await run(tc.runner!(exe, [...extra, m.focus.test]), {
+        // The full exit code: a crash must not pass for a test failure's exit 1.
+        const f = await runFullExitCode(tc, tc.runner!(exe, [...extra, m.focus.test]), {
           env: { ...tc.env, ...config.env },
           timeout: MUTANT_TIMEOUT,
         });

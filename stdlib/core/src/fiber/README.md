@@ -150,7 +150,12 @@ like `tests/gc_test.c`:
 * **Windows** (no corrector in BDWGC's win32 threads): when a thread's sp is on a task stack,
   BDWGC pushes the thread's whole committed stack and warns ("pushing everything"). Filter that
   warning with `GC_set_warn_proc`. The hook gets other threads' live sp with `GetThreadContext`
-  (they are suspended during marking), and its own from its frame.
+  (they are suspended during marking), and its own from its frame. BDWGC finds the bottom of that
+  committed stack by walking down to its guard page, so every such thread needs a normal stack:
+  never pass a commit size that fills the whole reservation (`CreateThread(NULL, 1 << 20, ...)`
+  without `STACK_SIZE_PARAM_IS_A_RESERVATION` commits all of it and leaves no guard page; the walk
+  then runs into the allocation below and crashes once that is freed). hzstd's threads use the
+  default size, which is fine.
 * Register and unregister tasks under `GC_call_with_alloc_lock`, so a collection never sees a
   half-updated registry. Register threads with BDWGC on their own stack.
 * Ended and pooled stacks are not pushed.
@@ -295,6 +300,10 @@ The runner prints one matrix:
 
 Exit status 0 means nothing failed.
 
+On a Windows host, Bun reports only the low byte of a process's exit code (0xC000001D arrives as
+29). Wherever the exact NTSTATUS matters (death tests, telling a crash from a failed check), the
+runner starts the program through `tests/exitcode.c`, which prints the full code.
+
 ### What runs where
 
 | Target | Linux x86-64 machine | Windows x64 machine |
@@ -350,8 +359,10 @@ The runner adds these checks:
   * A negative control without the task-stack hook shows they would be collected.
   * Four threads switch tasks constantly while all allocate.
   * Two tasks hand control back and forth millions of times, holding their objects only in
-    registers, while another thread collects without pause. It collects until three of the stops
-    caught a task in the middle of a switch (at least one is required).
+    registers (the helper loops itself, so no instant exists where an object is only in its
+    obfuscated slot), while another thread collects without pause. It collects until three of the
+    stops caught a task in the middle of a switch (at least one is required). Windows suspends
+    threads mostly right after slow instructions, so there the cap on collections is higher.
 * **Compile checks:**
   * These all fail with the library's message: no target macro, two of them, macros that
     contradict the compiler (wrong architecture or OS, macOS, 32-bit, x32, ARM64EC), shadow
