@@ -205,9 +205,11 @@ constrain the choice:
 
 The library is done and tested on its own; nothing in hzstd uses it yet. In order:
 
-1. **Verify Windows first.** Run `bun stdlib/core/src/fiber/tests/run.ts --deep` on a Windows x64
-   machine; it is the first time the Windows port executes. Windows ARM64 has never run (it needs an
-   ARM64 Windows machine, same command).
+1. **Windows x64: done** (a23e0f60). `--deep` passes on a real Windows x64 machine: 85 checks,
+   39 of them mutants. fiber.h needed no change; the fixes were in the runner and the tests.
+   Still open there: the check "compiles inside Haze's generated stdlib module" is NOT RUN until a
+   Haze program is built in that checkout (its `__haze__` stdlib was stale). Windows ARM64 has never
+   run (it needs an ARM64 Windows machine, same command).
 2. **Compile it into hzstd:** `#define FIBER_IMPLEMENTATION` + `#include "../fiber/fiber.h"` in
    `stdlib/core/src/hzstd/hzstd_main.c`. The compiler already passes `FIBER_TARGET_*`; the
    implementation is proven to compile inside the generated stdlib with Haze's flags.

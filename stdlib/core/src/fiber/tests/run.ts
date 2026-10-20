@@ -792,7 +792,9 @@ function exitcodeLauncher(tc: Toolchain) {
   exitcodeBuild ??= (async () => {
     const exe = join(OUT, "exitcode.exe");
     const triple =
-      HOST_ARCH === "x64" ? "x86_64-pc-windows-msvc" : "aarch64-pc-windows-msvc";
+      HOST_ARCH === "x64"
+        ? "x86_64-pc-windows-msvc"
+        : "aarch64-pc-windows-msvc";
     const r = await run([
       tc.cc,
       `--target=${triple}`,
@@ -848,10 +850,14 @@ async function deathProblems(
 ): Promise<string[]> {
   const problems: string[] = [];
   for (const [scenario, message] of DEATHS) {
-    const r = await runFullExitCode(tc, tc.runner!(exe, ["--death", scenario]), {
-      env: { ...tc.env, ...env },
-      timeout: MUTANT_TIMEOUT,
-    });
+    const r = await runFullExitCode(
+      tc,
+      tc.runner!(exe, ["--death", scenario]),
+      {
+        env: { ...tc.env, ...env },
+        timeout: MUTANT_TIMEOUT,
+      }
+    );
     if (
       r.code === 0 ||
       r.out.includes("survived") ||
@@ -1628,7 +1634,10 @@ async function checkInsideStdlib() {
   const control = await run(cmd.map((a) => controlFiles[a] ?? a));
   if (control.code !== 0) {
     const firstError =
-      control.out.split("\n").find((l) => /error:/.test(l))?.trim() ?? "";
+      control.out
+        .split("\n")
+        .find((l) => /error:/.test(l))
+        ?.trim() ?? "";
     record(
       target,
       "compiles inside Haze's generated stdlib module",
@@ -2278,7 +2287,9 @@ function writeMutant(tc: Toolchain, id: string): string {
         edited = m.edit(line);
       }
       if (edited === line) {
-        throw new Error(`mutant ${id}: the edit does not change its line: ${line}`);
+        throw new Error(
+          `mutant ${id}: the edit does not change its line: ${line}`
+        );
       }
       return edited;
     })
@@ -2490,10 +2501,14 @@ async function checkMutants(tc: Toolchain, config: Config, base: Built) {
       );
       if (m.focus && (killed || r.timedOut)) {
         // The full exit code: a crash must not pass for a test failure's exit 1.
-        const f = await runFullExitCode(tc, tc.runner!(exe, [...extra, m.focus.test]), {
-          env: { ...tc.env, ...config.env },
-          timeout: MUTANT_TIMEOUT,
-        });
+        const f = await runFullExitCode(
+          tc,
+          tc.runner!(exe, [...extra, m.focus.test]),
+          {
+            env: { ...tc.env, ...config.env },
+            timeout: MUTANT_TIMEOUT,
+          }
+        );
         const named = !passed(f) && m.focus.expect.test(f.out);
         const crashed =
           !passed(f) &&
