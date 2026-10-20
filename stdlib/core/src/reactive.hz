@@ -27,18 +27,14 @@ namespace rx {
     }
 
     // hzstd_computed_entry_t: runs a Thunk under the context C hands over
-    // (C401).
+    // (C401, C402).
     export extern C fn __hz_rx_run_thunk(ctx: Context, thunk: cptr): cptr {
-        let result = none as cptr;
-        do unsafe {
-            let box: Thunk = uninitialized;
-            __c__("box = thunk;");
-            // TEMPORARY bridge until Context.init exists: the closure is run
-            // under a copy of `ctx`, exactly what Context.init(ctx, ...) does,
-            // but by calling its `fn` from C. Replaced by Context.init.
-            __c__("{ hzstd_context_t __hz_entered = ctx; result = box->run.fn(&__hz_entered, box->run.env); }");
+        let box = do unsafe {
+            let b: Thunk = uninitialized;
+            __c__("b = thunk;");
+            b
         };
-        return result;
+        return Context.init(ctx, () => box.run());
     }
 
     // Shallow reactive is a dumb shell: whatever's inside is stored unchanged
