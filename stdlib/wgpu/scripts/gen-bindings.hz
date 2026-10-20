@@ -743,7 +743,9 @@ fn generateBindings(args: GenArgs): Result<none, fs.Error> {
                 params = params + ", ";
             }
         }
-        file = file + f"    export extern C type {f.name} = ({params}) -> {parseType(args, f.returnType)} :: final;\n";
+        // Every function type in the header is one C calls or hands out, so
+        // it is spelled as the C kind, with no Haze context.
+        file = file + f"    export extern C type {f.name} = extern C ({params}) -> {parseType(args, f.returnType)} :: final;\n";
     }
 
     for (let i = 0; i < args.structs.length; i++) {

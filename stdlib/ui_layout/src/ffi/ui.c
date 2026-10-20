@@ -92,8 +92,15 @@ void HandleClayErrors(Clay_ErrorData errorData)
 // ui_runtime, which points this at fontstash). This module only bridges
 // Clay's C callback convention to it, same as it does for render/bounding-box
 // callbacks elsewhere in this file.
-static hzstd_vec2_t (*g_measureText)(void* userdata, hzui_measure_text_request_t request) = NULL;
+static hzstd_vec2_t (*g_measureText)(hzstd_context_t ctx, void* userdata, hzui_measure_text_request_t request) = NULL;
 static void* g_measureTextUserdata = NULL;
+
+// The context the Haze measureText callback runs under. Clay calls MeasureText
+// with a signature of its own, which has no room for one, and only from inside
+// two calls: declaring a text element (hzui_clay_define_text_element) and
+// Clay_EndLayout (hzui_clay_end_layout). Each of those takes the context of the
+// Haze code that made it and keeps a copy here for exactly as long as it runs.
+static hzstd_context_t g_measureTextContext;
 
 static inline Clay_Dimensions MeasureText(Clay_StringSlice text, Clay_TextElementConfig* config, void* userData)
 {
@@ -104,7 +111,7 @@ static inline Clay_Dimensions MeasureText(Clay_StringSlice text, Clay_TextElemen
     .fontId = config->fontId,
     .fontSize = config->fontSize,
   };
-  hzstd_vec2_t dimensions = g_measureText(g_measureTextUserdata, request);
+  hzstd_vec2_t dimensions = g_measureText(g_measureTextContext, g_measureTextUserdata, request);
   return (Clay_Dimensions) { .width = (float)dimensions.x, .height = (float)dimensions.y };
 }
 
@@ -118,7 +125,7 @@ static inline Clay_Dimensions MeasureText(Clay_StringSlice text, Clay_TextElemen
 // one before touching Clay for a given instance.
 void* hzui_clay_init(hzstd_int_t width,
                       hzstd_int_t height,
-                      hzstd_vec2_t (*measureText)(void* userdata, hzui_measure_text_request_t request),
+                      hzstd_vec2_t (*measureText)(hzstd_context_t ctx, void* userdata, hzui_measure_text_request_t request),
                       void* measureTextUserdata)
 {
   uint64_t totalMemorySize = Clay_MinMemorySize();
@@ -140,6 +147,16 @@ void hzui_clay_activate_context(void* context)
 void hzui_clay_set_layout_dimensions(hzstd_int_t width, hzstd_int_t height)
 {
   Clay_SetLayoutDimensions((Clay_Dimensions) { width, height });
+}
+
+// Clay_EndLayout, which measures text while it wraps -- see g_measureTextContext.
+Clay_RenderCommandArray hzui_clay_end_layout(hzstd_context_t ctx)
+{
+  hzstd_context_t outer = g_measureTextContext;
+  g_measureTextContext = ctx;
+  Clay_RenderCommandArray commands = Clay_EndLayout();
+  g_measureTextContext = outer;
+  return commands;
 }
 
 Clay_ElementId make_id_int(hzstd_int_t id)
@@ -260,7 +277,15 @@ hzui_optional_bounding_box_t hzui_clay_get_element_bounding_box(hzstd_str_t elem
   }
 }
 
-void hzui_clay_define_div_element(void* (*fn)(void*), void* env, hzui_define_div_element_t config)
+// Clay declares an element's children inside the CLAY() block that opens it,
+// so they are declared by calling back into Haze from in there: `children` is
+// an extern C function defined in Haze, which finds them through `thunk` and
+// declares them under `ctx`, the context of the Haze code declaring this
+// element.
+void hzui_clay_define_div_element(hzstd_context_t ctx,
+                                  void (*children)(hzstd_context_t ctx, void* thunk),
+                                  void* thunk,
+                                  hzui_define_div_element_t config)
 {
   CLAY({ .id = make_id_with_offset(config.id, config.idOffset),
          .userData = config.elementPtr,
@@ -286,7 +311,7 @@ void hzui_clay_define_div_element(void* (*fn)(void*), void* env, hzui_define_div
          .backgroundColor = (Clay_Color) {
              .r = config.backgroundColor.r, .g = config.backgroundColor.g, .b = config.backgroundColor.b, .a = config.backgroundColor.a } })
   {
-    fn(env);
+    children(ctx, thunk);
   }
 }
 
@@ -311,8 +336,12 @@ void hzui_clay_define_canvas_element(hzui_define_canvas_element_t config)
          .custom = { .customData = config.elementPtr } });
 }
 
-void hzui_clay_define_text_element(hzui_define_text_element_t element)
+// Clay measures the text while declaring it -- see g_measureTextContext.
+void hzui_clay_define_text_element(hzstd_context_t ctx, hzui_define_text_element_t element)
 {
+  hzstd_context_t outer = g_measureTextContext;
+  g_measureTextContext = ctx;
+
   Clay_String clay_text = (Clay_String) { .chars = element.text.data, .length = element.text.length };
 
   Clay_TextElementConfigWrapMode clayWrapMode = CLAY_TEXT_WRAP_NONE;
@@ -341,4 +370,6 @@ void hzui_clay_define_text_element(hzui_define_text_element_t element)
                 .lineHeight = element.lineHeight,
                 .wrapMode = clayWrapMode,
             }));
+
+  g_measureTextContext = outer;
 }

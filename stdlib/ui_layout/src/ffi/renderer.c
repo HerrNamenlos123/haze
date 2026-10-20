@@ -17,8 +17,12 @@
 //   TTF_Font** fonts;
 // } Clay_SDL3RendererData;
 
+// Every callback is an extern C function defined in Haze (ui_layout.hz), and
+// each is handed the context Clay_RenderClayCommands was given, so it runs its
+// Haze code under the context of the code that is rendering.
 typedef struct {
-  void (*renderFilledRect)(void* userdata,
+  void (*renderFilledRect)(hzstd_context_t ctx,
+                           void* userdata,
                            double x,
                            double y,
                            double width,
@@ -26,13 +30,21 @@ typedef struct {
                            hzstd_color_t backgroundColor,
                            hzui_corner_radius_values_t cornerRadius);
   void* renderFilledRectUserdata;
-  void (*renderText)(void* userdata, hzui_draw_text_element_t element);
+  void (*renderText)(hzstd_context_t ctx, void* userdata, hzui_draw_text_element_t element);
   void* renderTextUserdata;
-  void (*renderCustom)(void* userdata, void* elementPtr, double x, double y, double w, double h);
+  void (*renderCustom)(hzstd_context_t ctx, void* userdata, void* elementPtr, double x, double y, double w, double h);
   void* renderCustomUserdata;
-  void (*applyBoundingBox)(void* userdata, hzui_element_kind_t elementKind, void* elementPtr, double x, double y, double w, double h);
+  void (*applyBoundingBox)(hzstd_context_t ctx,
+                           void* userdata,
+                           hzui_element_kind_t elementKind,
+                           void* elementPtr,
+                           double x,
+                           double y,
+                           double w,
+                           double h);
   void* applyBoundingBoxUserdata;
-  void (*renderBorder)(void* userdata,
+  void (*renderBorder)(hzstd_context_t ctx,
+                       void* userdata,
                        double x,
                        double y,
                        double width,
@@ -47,11 +59,11 @@ typedef struct {
   // before this dispatch started; this just selects the right one per
   // command, because Clay's command stream is flat and z-sorted and so
   // carries no subtree structure a clip stack could follow.
-  void (*setClip)(void* userdata, void* elementPtr);
+  void (*setClip)(hzstd_context_t ctx, void* userdata, void* elementPtr);
   void* setClipUserdata;
 } ClayCallbacks;
 
-void Clay_RenderClayCommands(ClayCallbacks callbacks, Clay_RenderCommandArray* rcommands)
+void Clay_RenderClayCommands(hzstd_context_t ctx, ClayCallbacks callbacks, Clay_RenderCommandArray* rcommands)
 {
   for (size_t i = 0; i < rcommands->length; i++) {
     Clay_RenderCommand* rcmd = Clay_RenderCommandArray_Get(rcommands, i);
@@ -66,14 +78,15 @@ void Clay_RenderClayCommands(ClayCallbacks callbacks, Clay_RenderCommandArray* r
 
     case CLAY_RENDER_COMMAND_TYPE_RECTANGLE: {
       if (callbacks.applyBoundingBox && rcmd->userData) {
-        callbacks.applyBoundingBox(callbacks.applyBoundingBoxUserdata, hzui_element_kind_div, rcmd->userData, x, y, w, h);
+        callbacks.applyBoundingBox(ctx, callbacks.applyBoundingBoxUserdata, hzui_element_kind_div, rcmd->userData, x, y, w, h);
       }
       if (callbacks.setClip) {
-        callbacks.setClip(callbacks.setClipUserdata, rcmd->userData);
+        callbacks.setClip(ctx, callbacks.setClipUserdata, rcmd->userData);
       }
       Clay_RectangleRenderData* config = &rcmd->renderData.rectangle;
       Clay_Color col = rcmd->renderData.rectangle.backgroundColor;
-      callbacks.renderFilledRect(callbacks.renderFilledRectUserdata,
+      callbacks.renderFilledRect(ctx,
+                                 callbacks.renderFilledRectUserdata,
                                  x,
                                  y,
                                  w,
@@ -89,12 +102,13 @@ void Clay_RenderClayCommands(ClayCallbacks callbacks, Clay_RenderCommandArray* r
 
     case CLAY_RENDER_COMMAND_TYPE_TEXT: {
       if (callbacks.applyBoundingBox && rcmd->userData) {
-        callbacks.applyBoundingBox(callbacks.applyBoundingBoxUserdata, hzui_element_kind_text, rcmd->userData, x, y, w, h);
+        callbacks.applyBoundingBox(ctx, callbacks.applyBoundingBoxUserdata, hzui_element_kind_text, rcmd->userData, x, y, w, h);
       }
       if (callbacks.setClip) {
-        callbacks.setClip(callbacks.setClipUserdata, rcmd->userData);
+        callbacks.setClip(ctx, callbacks.setClipUserdata, rcmd->userData);
       }
       callbacks.renderText(
+        ctx,
         callbacks.renderTextUserdata,
         (hzui_draw_text_element_t) {
           .text = HZSTD_STRING(rcmd->renderData.text.stringContents.chars, rcmd->renderData.text.stringContents.length),
@@ -178,11 +192,12 @@ void Clay_RenderClayCommands(ClayCallbacks callbacks, Clay_RenderCommandArray* r
       // other primitive and must be cut off by a clipping ancestor exactly
       // as the background would be.
       if (callbacks.setClip) {
-        callbacks.setClip(callbacks.setClipUserdata, rcmd->userData);
+        callbacks.setClip(ctx, callbacks.setClipUserdata, rcmd->userData);
       }
       Clay_BorderRenderData* config = &rcmd->renderData.border;
       Clay_Color col = config->color;
-      callbacks.renderBorder(callbacks.renderBorderUserdata,
+      callbacks.renderBorder(ctx,
+                              callbacks.renderBorderUserdata,
                               x,
                               y,
                               w,
@@ -217,12 +232,12 @@ void Clay_RenderClayCommands(ClayCallbacks callbacks, Clay_RenderCommandArray* r
     } break;
     case CLAY_RENDER_COMMAND_TYPE_CUSTOM: {
       if (callbacks.applyBoundingBox && rcmd->userData) {
-        callbacks.applyBoundingBox(callbacks.applyBoundingBoxUserdata, hzui_element_kind_canvas, rcmd->userData, x, y, w, h);
+        callbacks.applyBoundingBox(ctx, callbacks.applyBoundingBoxUserdata, hzui_element_kind_canvas, rcmd->userData, x, y, w, h);
       }
       if (callbacks.setClip) {
-        callbacks.setClip(callbacks.setClipUserdata, rcmd->userData);
+        callbacks.setClip(ctx, callbacks.setClipUserdata, rcmd->userData);
       }
-      callbacks.renderCustom(callbacks.renderCustomUserdata, rcmd->userData, x, y, w, h);
+      callbacks.renderCustom(ctx, callbacks.renderCustomUserdata, rcmd->userData, x, y, w, h);
     } break;
     default:
       printf("Unknown render command type: %d\n", rcmd->commandType);

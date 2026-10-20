@@ -25,7 +25,9 @@ namespace ffi {
 	extern C fn haze_sdl_destroyWindow(window: SDL_Window): void :: final;
 	extern C fn haze_sdl_windowShouldClose(window: SDL_Window): bool :: final;
 	extern C fn haze_sdl_setWindowShouldClose(window: SDL_Window, value: bool): void :: final;
-	extern C fn haze_sdl_pollEvents(): void :: final;
+	// Dispatches every queued event through the trampolines below, each under
+	// `ctx`: the context of the Haze code that polls.
+	extern C fn haze_sdl_pollEvents(ctx: Context): void :: final;
 	extern C fn haze_sdl_waitEventTimeout(timeoutMs: i32): void :: final;
 	extern C fn haze_sdl_makeContextCurrent(window: SDL_Window): bool :: final;
 	extern C fn haze_sdl_swapBuffers(window: SDL_Window): void :: final;
@@ -71,13 +73,13 @@ namespace ffi {
 	extern C fn haze_sdl_setCursor(index: i32): void :: final;
 
 	// Event trampoline registration (private to ffi namespace — SDL headers not available outside)
-	extern C type HazeSdlKeyFn = (userdata: cptr, scancode: i32, repeat: bool) -> void :: final;
-	extern C type HazeSdlResizeFn = (userdata: cptr, width: i32, height: i32) -> void :: final;
-	extern C type HazeSdlMouseMoveFn = (userdata: cptr, x: f32, y: f32) -> void :: final;
-	extern C type HazeSdlMouseButtonFn = (userdata: cptr, button: i32, x: f32, y: f32) -> void :: final;
-	extern C type HazeSdlMouseWheelFn = (userdata: cptr, x: f32, y: f32, mouseX: f32, mouseY: f32) -> void :: final;
-	extern C type HazeSdlTextInputFn = (userdata: cptr, text: ccstr) -> void :: final;
-	extern C type HazeSdlPointerFn = (userdata: cptr, kind: i32, device: i32, id: i64, x: f32, y: f32, pressure: f32, buttons: i32) -> void :: final;
+	extern C type HazeSdlKeyFn = extern C (ctx: Context, userdata: cptr, scancode: i32, repeat: bool) -> void :: final;
+	extern C type HazeSdlResizeFn = extern C (ctx: Context, userdata: cptr, width: i32, height: i32) -> void :: final;
+	extern C type HazeSdlMouseMoveFn = extern C (ctx: Context, userdata: cptr, x: f32, y: f32) -> void :: final;
+	extern C type HazeSdlMouseButtonFn = extern C (ctx: Context, userdata: cptr, button: i32, x: f32, y: f32) -> void :: final;
+	extern C type HazeSdlMouseWheelFn = extern C (ctx: Context, userdata: cptr, x: f32, y: f32, mouseX: f32, mouseY: f32) -> void :: final;
+	extern C type HazeSdlTextInputFn = extern C (ctx: Context, userdata: cptr, text: ccstr) -> void :: final;
+	extern C type HazeSdlPointerFn = extern C (ctx: Context, userdata: cptr, kind: i32, device: i32, id: i64, x: f32, y: f32, pressure: f32, buttons: i32) -> void :: final;
 
 	extern C noemit struct haze_sdl_trampolines_t {
 		keyDown: HazeSdlKeyFn;
@@ -166,7 +168,7 @@ namespace ffi {
 	}
 
 	export fn pollEvents() {
-		haze_sdl_pollEvents();
+		haze_sdl_pollEvents(context);
 	}
 
 	export fn waitEventTimeout(timeoutMs: i32) {
@@ -494,102 +496,126 @@ export fn setCursor(index: int): void {
 // ---------------------------------------------------------------------------
 // C-side event trampoline functions (called by sdl_impl.c)
 // ---------------------------------------------------------------------------
+//
+// `extern C`, because C calls them, and C carries no context: each is handed
+// the context of the Haze code polling events (haze_sdl_pollEvents) and runs
+// the window's handlers under it.
 
-fn hazeKeyDownDispatch(userdata: cptr, scancode: i32, repeat: bool): void :: final {
+extern C fn hazeKeyDownDispatch(ctx: Context, userdata: cptr, scancode: i32, repeat: bool): void :: final {
 	do unsafe {
 		let window: Window = uninitialized;
 		__c__("window = userdata;");
-		let e = KeyEvent { key: scancodeToKey(scancode), repeat: repeat, modifiers: getModifiers() };
-		window.dispatchKeyDown(e);
+		Context.init(ctx, () => {
+			let e = KeyEvent { key: scancodeToKey(scancode), repeat: repeat, modifiers: getModifiers() };
+			window.dispatchKeyDown(e);
+		});
 	};
 }
 
-fn hazeKeyUpDispatch(userdata: cptr, scancode: i32, repeat: bool): void :: final {
+extern C fn hazeKeyUpDispatch(ctx: Context, userdata: cptr, scancode: i32, repeat: bool): void :: final {
 	do unsafe {
 		let window: Window = uninitialized;
 		__c__("window = userdata;");
-		let e = KeyEvent { key: scancodeToKey(scancode), repeat: repeat, modifiers: getModifiers() };
-		window.dispatchKeyUp(e);
+		Context.init(ctx, () => {
+			let e = KeyEvent { key: scancodeToKey(scancode), repeat: repeat, modifiers: getModifiers() };
+			window.dispatchKeyUp(e);
+		});
 	};
 }
 
-fn hazeResizeDispatch(userdata: cptr, width: i32, height: i32): void :: final {
+extern C fn hazeResizeDispatch(ctx: Context, userdata: cptr, width: i32, height: i32): void :: final {
 	do unsafe {
 		let window: Window = uninitialized;
 		__c__("window = userdata;");
-		let e = ResizeEvent { width: width as int, height: height as int };
-		window.dispatchResize(e);
+		Context.init(ctx, () => {
+			let e = ResizeEvent { width: width as int, height: height as int };
+			window.dispatchResize(e);
+		});
 	};
 }
 
-fn hazeMouseMoveDispatch(userdata: cptr, x: f32, y: f32): void :: final {
+extern C fn hazeMouseMoveDispatch(ctx: Context, userdata: cptr, x: f32, y: f32): void :: final {
 	do unsafe {
 		let window: Window = uninitialized;
 		__c__("window = userdata;");
-		let e = MouseMoveEvent { pos: Vec2(x as real, y as real), modifiers: getModifiers() };
-		window.dispatchMouseMove(e);
+		Context.init(ctx, () => {
+			let e = MouseMoveEvent { pos: Vec2(x as real, y as real), modifiers: getModifiers() };
+			window.dispatchMouseMove(e);
+		});
 	};
 }
 
-fn hazeMouseDownDispatch(userdata: cptr, button: i32, x: f32, y: f32): void :: final {
+extern C fn hazeMouseDownDispatch(ctx: Context, userdata: cptr, button: i32, x: f32, y: f32): void :: final {
 	do unsafe {
 		let window: Window = uninitialized;
 		__c__("window = userdata;");
-		let e = MouseButtonEvent { button: button as int, pos: Vec2(x as real, y as real), modifiers: getModifiers() };
-		window.dispatchMouseDown(e);
+		Context.init(ctx, () => {
+			let e = MouseButtonEvent { button: button as int, pos: Vec2(x as real, y as real), modifiers: getModifiers() };
+			window.dispatchMouseDown(e);
+		});
 	};
 }
 
-fn hazeMouseUpDispatch(userdata: cptr, button: i32, x: f32, y: f32): void :: final {
+extern C fn hazeMouseUpDispatch(ctx: Context, userdata: cptr, button: i32, x: f32, y: f32): void :: final {
 	do unsafe {
 		let window: Window = uninitialized;
 		__c__("window = userdata;");
-		let e = MouseButtonEvent { button: button as int, pos: Vec2(x as real, y as real), modifiers: getModifiers() };
-		window.dispatchMouseUp(e);
+		Context.init(ctx, () => {
+			let e = MouseButtonEvent { button: button as int, pos: Vec2(x as real, y as real), modifiers: getModifiers() };
+			window.dispatchMouseUp(e);
+		});
 	};
 }
 
-fn hazeMouseWheelDispatch(userdata: cptr, x: f32, y: f32, mouseX: f32, mouseY: f32): void :: final {
+extern C fn hazeMouseWheelDispatch(ctx: Context, userdata: cptr, x: f32, y: f32, mouseX: f32, mouseY: f32): void :: final {
 	do unsafe {
 		let window: Window = uninitialized;
 		__c__("window = userdata;");
-		let e = MouseWheelEvent { delta: Vec2(x as real, y as real), pos: Vec2(mouseX as real, mouseY as real), modifiers: getModifiers() };
-		window.dispatchMouseWheel(e);
+		Context.init(ctx, () => {
+			let e = MouseWheelEvent { delta: Vec2(x as real, y as real), pos: Vec2(mouseX as real, mouseY as real), modifiers: getModifiers() };
+			window.dispatchMouseWheel(e);
+		});
 	};
 }
 
-fn hazePointerDispatch(userdata: cptr, kind: i32, device: i32, id: i64, x: f32, y: f32, pressure: f32, buttons: i32): void :: final {
+extern C fn hazePointerDispatch(ctx: Context, userdata: cptr, kind: i32, device: i32, id: i64, x: f32, y: f32, pressure: f32, buttons: i32): void :: final {
 	do unsafe {
 		let window: Window = uninitialized;
 		__c__("window = userdata;");
-		// Numbering fixed by the C side -- see haze_sdl_dispatch_pointer.
-		let eventKind = PointerEventKind.Move;
-		if kind == 0 { eventKind = PointerEventKind.Down; }
-		else if kind == 1 { eventKind = PointerEventKind.Up; }
-		else if kind == 3 { eventKind = PointerEventKind.Cancel; }
-		let e = PointerEvent {
-			kind: eventKind,
-			device: device == 1 ? PointerDevice.Pen : PointerDevice.Touch,
-			id: id as int,
-			pos: Vec2(x as real, y as real),
-			pressure: pressure as real,
-			buttons: buttons as int,
-			modifiers: getModifiers(),
-		};
-		window.dispatchPointer(e);
+		Context.init(ctx, () => {
+			// Numbering fixed by the C side -- see haze_sdl_dispatch_pointer.
+			let eventKind = PointerEventKind.Move;
+			if kind == 0 { eventKind = PointerEventKind.Down; }
+			else if kind == 1 { eventKind = PointerEventKind.Up; }
+			else if kind == 3 { eventKind = PointerEventKind.Cancel; }
+			let e = PointerEvent {
+				kind: eventKind,
+				device: device == 1 ? PointerDevice.Pen : PointerDevice.Touch,
+				id: id as int,
+				pos: Vec2(x as real, y as real),
+				pressure: pressure as real,
+				buttons: buttons as int,
+				modifiers: getModifiers(),
+			};
+			window.dispatchPointer(e);
+		});
 	};
 }
 
-fn hazeTextInputDispatch(userdata: cptr, text: ccstr): void :: final {
+extern C fn hazeTextInputDispatch(ctx: Context, userdata: cptr, text: ccstr): void :: final {
 	do unsafe {
 		let window: Window = uninitialized;
 		__c__("window = userdata;");
 		// hzstd_cstr_dup only reads its argument (to copy it) despite taking
-		// a non-const char* -- safe to drop the const here.
+		// a non-const char* -- safe to drop the const here. Copied out here,
+		// not inside the closure below: inline C cannot name a capture.
 		let mutableText: cstr = uninitialized;
 		__c__("mutableText = (char*)text;");
-		let e = TextInputEvent { text: ffi.hzstd_cstr_dup(mutableText) };
-		window.dispatchTextInput(e);
+		let copied = ffi.hzstd_cstr_dup(mutableText);
+		Context.init(ctx, () => {
+			let e = TextInputEvent { text: copied };
+			window.dispatchTextInput(e);
+		});
 	};
 }
 
@@ -828,15 +854,11 @@ export ref struct Window {
 		ffi.setTextInputActive(this.handle, active);
 	}
 
-	fn getProcAddress(): ((name: ccstr) -> cptr) {
+	// What gl.init loads OpenGL through: SDL_GL_GetProcAddress, a C function
+	// that never enters Haze, for this window's GL context.
+	fn getProcAddress(): (extern C (name: ccstr) -> cptr) {
 		this.makeContextCurrent();
-
-		do unsafe {
-			const rawProc = ffi.getProcAddress;
-			const castedProc: ((name: ccstr) -> cptr) = uninitialized;
-			__c__("castedProc = (void*)rawProc;");
-			return castedProc;
-		};
+		return ffi.haze_sdl_getProcAddress;
 	}
 
 	// --- Event handler registration ---

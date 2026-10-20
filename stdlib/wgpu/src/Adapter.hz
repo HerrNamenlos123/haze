@@ -80,15 +80,20 @@ export struct Adapter {
         }
 
         let callback: ref Box<RequestDeviceCallback> = { value: callbackInfo.callback };
+        // The callback runs under this call's context: wgpu calls back from C,
+        // which carries none, so it travels with the request.
+        let requester: ref Box<Context> = { value: context };
         let userdata1 = none as cptr;
+        let userdata2 = none as cptr;
         __c__("userdata1 = callback;");
+        __c__("userdata2 = requester;");
 
         let ffiCallbackInfo = {
             nextInChain: none,
             mode: toFFI(callbackInfo.mode),
-            callback: requestDeviceCallbackProxy,
+            callback: haze_wgpu_request_device_proxy,
             userdata1: userdata1,
-            userdata2: none,
+            userdata2: userdata2,
         } as ffi.WGPURequestDeviceCallbackInfo;
 
         return fromFFI(

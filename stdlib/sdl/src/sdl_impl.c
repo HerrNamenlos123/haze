@@ -388,19 +388,27 @@ static bool haze_sdl_owns_titlebar_press(void) {
 /* ---------- Trampoline function pointer types (must match Haze extern C type
  * declarations) ---------- */
 
-typedef void (*HazeSdlKeyFn)(void *userdata, int scancode, bool repeat);
-typedef void (*HazeSdlResizeFn)(void *userdata, int width, int height);
-typedef void (*HazeSdlMouseMoveFn)(void *userdata, float x, float y);
-typedef void (*HazeSdlMouseButtonFn)(void *userdata, int button, float x,
-                                     float y);
-typedef void (*HazeSdlMouseWheelFn)(void *userdata, float x, float y,
-                                    float mouseX, float mouseY);
-typedef void (*HazeSdlTextInputFn)(void *userdata, const char *text);
+/* Each trampoline is an extern C function defined in sdl.hz. The first
+   argument is the context of the Haze code that called haze_sdl_pollEvents,
+   handed on by value; the trampoline runs the window's handlers under it. */
+typedef void (*HazeSdlKeyFn)(hzstd_context_t ctx, void *userdata, int scancode,
+                             bool repeat);
+typedef void (*HazeSdlResizeFn)(hzstd_context_t ctx, void *userdata, int width,
+                                int height);
+typedef void (*HazeSdlMouseMoveFn)(hzstd_context_t ctx, void *userdata, float x,
+                                   float y);
+typedef void (*HazeSdlMouseButtonFn)(hzstd_context_t ctx, void *userdata,
+                                     int button, float x, float y);
+typedef void (*HazeSdlMouseWheelFn)(hzstd_context_t ctx, void *userdata,
+                                    float x, float y, float mouseX,
+                                    float mouseY);
+typedef void (*HazeSdlTextInputFn)(hzstd_context_t ctx, void *userdata,
+                                   const char *text);
 /* One trampoline for every pen and touch event -- see haze_sdl_dispatch_pen
    and haze_sdl_dispatch_finger for what each argument carries. */
-typedef void (*HazeSdlPointerFn)(void *userdata, int kind, int device,
-                                 int64_t id, float x, float y, float pressure,
-                                 int buttons);
+typedef void (*HazeSdlPointerFn)(hzstd_context_t ctx, void *userdata, int kind,
+                                 int device, int64_t id, float x, float y,
+                                 float pressure, int buttons);
 
 typedef struct {
   HazeSdlKeyFn keyDown;
@@ -1441,7 +1449,8 @@ static int haze_sdl_pen_buttons(SDL_PenInputFlags state) {
   return buttons;
 }
 
-static void haze_sdl_dispatch_pointer(SDL_WindowID windowID, int kind,
+static void haze_sdl_dispatch_pointer(hzstd_context_t ctx,
+                                      SDL_WindowID windowID, int kind,
                                       int device, int64_t id, float x, float y,
                                       float pressure, int buttons) {
   SDL_Window *window = SDL_GetWindowFromID(windowID);
@@ -1450,13 +1459,13 @@ static void haze_sdl_dispatch_pointer(SDL_WindowID windowID, int kind,
   }
   void *userdata = haze_sdl_get_window_event_userdata(window);
   if (userdata) {
-    g_haze_trampolines.pointer(userdata, kind, device, id, x, y, pressure,
+    g_haze_trampolines.pointer(ctx, userdata, kind, device, id, x, y, pressure,
                                buttons);
   }
 }
 
 /* Returns whether the event was a pen event (and so is fully handled). */
-static bool haze_sdl_dispatch_pen(const SDL_Event *event) {
+static bool haze_sdl_dispatch_pen(hzstd_context_t ctx, const SDL_Event *event) {
   switch (event->type) {
   case SDL_EVENT_PEN_AXIS:
     if (event->paxis.axis == SDL_PEN_AXIS_PRESSURE) {
@@ -1468,8 +1477,9 @@ static bool haze_sdl_dispatch_pen(const SDL_Event *event) {
     const SDL_PenMotionEvent *e = &event->pmotion;
     float pressure = *haze_sdl_pen_pressure_slot(e->which);
     int buttons = haze_sdl_pen_buttons(e->pen_state);
-    haze_sdl_dispatch_pointer(e->windowID, 2, 1, (int64_t)e->which, e->x, e->y,
-                              buttons & (1 | 32) ? pressure : 0.0f, buttons);
+    haze_sdl_dispatch_pointer(ctx, e->windowID, 2, 1, (int64_t)e->which, e->x,
+                              e->y, buttons & (1 | 32) ? pressure : 0.0f,
+                              buttons);
     return true;
   }
 
@@ -1484,7 +1494,7 @@ static bool haze_sdl_dispatch_pen(const SDL_Event *event) {
     if (e->down) {
       buttons |= e->eraser ? 32 : 1;
     }
-    haze_sdl_dispatch_pointer(e->windowID, e->down ? 0 : 1, 1,
+    haze_sdl_dispatch_pointer(ctx, e->windowID, e->down ? 0 : 1, 1,
                               (int64_t)e->which, e->x, e->y,
                               e->down ? pressure : 0.0f, buttons);
     return true;
@@ -1500,8 +1510,9 @@ static bool haze_sdl_dispatch_pen(const SDL_Event *event) {
     int buttons = haze_sdl_pen_buttons(e->pen_state);
     int bit = haze_sdl_pen_button_bit(e->button);
     buttons = e->down ? (buttons | bit) : (buttons & ~bit);
-    haze_sdl_dispatch_pointer(e->windowID, 2, 1, (int64_t)e->which, e->x, e->y,
-                              buttons & (1 | 32) ? pressure : 0.0f, buttons);
+    haze_sdl_dispatch_pointer(ctx, e->windowID, 2, 1, (int64_t)e->which, e->x,
+                              e->y, buttons & (1 | 32) ? pressure : 0.0f,
+                              buttons);
     return true;
   }
 
@@ -1515,7 +1526,8 @@ static bool haze_sdl_dispatch_pen(const SDL_Event *event) {
 }
 
 /* Returns whether the event was a touch event (and so is fully handled). */
-static bool haze_sdl_dispatch_finger(const SDL_Event *event) {
+static bool haze_sdl_dispatch_finger(hzstd_context_t ctx,
+                                     const SDL_Event *event) {
   int kind;
   switch (event->type) {
   case SDL_EVENT_FINGER_DOWN:
@@ -1566,7 +1578,7 @@ static bool haze_sdl_dispatch_finger(const SDL_Event *event) {
                                      e->y * (float)h)) {
     return true;
   }
-  haze_sdl_dispatch_pointer(e->windowID, kind, 2, (int64_t)e->fingerID,
+  haze_sdl_dispatch_pointer(ctx, e->windowID, kind, 2, (int64_t)e->fingerID,
                             e->x * (float)w, e->y * (float)h,
                             kind == 0 || kind == 2 ? e->pressure : 0.0f,
                             kind == 0 || kind == 2 ? 1 : 0);
@@ -1577,10 +1589,11 @@ static bool haze_sdl_is_synthesized_mouse(SDL_MouseID which) {
   return which == SDL_TOUCH_MOUSEID || which == SDL_PEN_MOUSEID;
 }
 
-void haze_sdl_pollEvents(void) {
+void haze_sdl_pollEvents(hzstd_context_t ctx) {
   SDL_Event event;
   while (SDL_PollEvent(&event)) {
-    if (haze_sdl_dispatch_pen(&event) || haze_sdl_dispatch_finger(&event)) {
+    if (haze_sdl_dispatch_pen(ctx, &event) ||
+        haze_sdl_dispatch_finger(ctx, &event)) {
       continue;
     }
 
@@ -1623,7 +1636,7 @@ void haze_sdl_pollEvents(void) {
           if (userdata) {
             int w = 0, h = 0;
             SDL_GetWindowSizeInPixels(window, &w, &h);
-            g_haze_trampolines.resize(userdata, w, h);
+            g_haze_trampolines.resize(ctx, userdata, w, h);
           }
         }
       }
@@ -1635,7 +1648,7 @@ void haze_sdl_pollEvents(void) {
       if (window && g_haze_trampolines.keyDown) {
         void *userdata = haze_sdl_get_window_event_userdata(window);
         if (userdata) {
-          g_haze_trampolines.keyDown(userdata, (int)event.key.scancode,
+          g_haze_trampolines.keyDown(ctx, userdata, (int)event.key.scancode,
                                      (bool)event.key.repeat);
         }
       }
@@ -1647,7 +1660,7 @@ void haze_sdl_pollEvents(void) {
       if (window && g_haze_trampolines.keyUp) {
         void *userdata = haze_sdl_get_window_event_userdata(window);
         if (userdata) {
-          g_haze_trampolines.keyUp(userdata, (int)event.key.scancode,
+          g_haze_trampolines.keyUp(ctx, userdata, (int)event.key.scancode,
                                    (bool)event.key.repeat);
         }
       }
@@ -1662,7 +1675,7 @@ void haze_sdl_pollEvents(void) {
       if (window && g_haze_trampolines.mouseMove) {
         void *userdata = haze_sdl_get_window_event_userdata(window);
         if (userdata) {
-          g_haze_trampolines.mouseMove(userdata, event.motion.x,
+          g_haze_trampolines.mouseMove(ctx, userdata, event.motion.x,
                                        event.motion.y);
         }
       }
@@ -1685,7 +1698,7 @@ void haze_sdl_pollEvents(void) {
         if (userdata) {
           /* SDL buttons: 1=left, 2=middle, 3=right → map to 0/1/2 */
           int btn = (int)event.button.button - 1;
-          g_haze_trampolines.mouseDown(userdata, btn, event.button.x,
+          g_haze_trampolines.mouseDown(ctx, userdata, btn, event.button.x,
                                        event.button.y);
         }
       }
@@ -1704,7 +1717,7 @@ void haze_sdl_pollEvents(void) {
         void *userdata = haze_sdl_get_window_event_userdata(window);
         if (userdata) {
           int btn = (int)event.button.button - 1;
-          g_haze_trampolines.mouseUp(userdata, btn, event.button.x,
+          g_haze_trampolines.mouseUp(ctx, userdata, btn, event.button.x,
                                      event.button.y);
         }
       }
@@ -1716,7 +1729,7 @@ void haze_sdl_pollEvents(void) {
       if (window && g_haze_trampolines.textInput) {
         void *userdata = haze_sdl_get_window_event_userdata(window);
         if (userdata) {
-          g_haze_trampolines.textInput(userdata, event.text.text);
+          g_haze_trampolines.textInput(ctx, userdata, event.text.text);
         }
       }
       continue;
@@ -1730,8 +1743,8 @@ void haze_sdl_pollEvents(void) {
       if (window && g_haze_trampolines.mouseWheel) {
         void *userdata = haze_sdl_get_window_event_userdata(window);
         if (userdata) {
-          g_haze_trampolines.mouseWheel(userdata, event.wheel.x, event.wheel.y,
-                                        event.wheel.mouse_x,
+          g_haze_trampolines.mouseWheel(ctx, userdata, event.wheel.x,
+                                        event.wheel.y, event.wheel.mouse_x,
                                         event.wheel.mouse_y);
         }
       }

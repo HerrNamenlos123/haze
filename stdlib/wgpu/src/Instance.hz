@@ -4,15 +4,20 @@ export struct Instance {
     fn requestAdapterAsync(adapterOpts: RequestAdapterOptions | none, callbackInfo: RequestAdapterCallbackInfo) {
 
         let callback: ref Box<RequestAdapterCallback> = { value: callbackInfo.callback };
+        // The callback runs under this call's context: wgpu calls back from C,
+        // which carries none, so it travels with the request.
+        let requester: ref Box<Context> = { value: context };
         let userdata1: cptr = none;
+        let userdata2: cptr = none;
         __c__("userdata1 = (void*)callback;"); // Pass the function pointer to the highlevel callback into the lowlevel hook
+        __c__("userdata2 = (void*)requester;");
 
         let ffiCallbackInfo = {
             nextInChain: none,
-            callback: requestAdapterCallbackProxy,
+            callback: haze_wgpu_request_adapter_proxy,
             mode: toFFI(callbackInfo.mode),
             userdata1: userdata1,
-            userdata2: none,
+            userdata2: userdata2,
         } as ffi.WGPURequestAdapterCallbackInfo;
 
         if adapterOpts {

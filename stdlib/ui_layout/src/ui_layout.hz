@@ -20,12 +20,14 @@ namespace ffi {
     // point at storage the GC neither manages nor keeps alive.
     //
     // Only sound when the callee cannot outlive the borrow. Every use here is
-    // Clay calling straight back into us, synchronously, from inside one
-    // Clay_RenderClayCommands call, with the storage owned by the frame that
-    // made that call -- see LayoutContext.render. The witness check catches a
-    // stackref whose scope is already gone at the moment of the borrow; it
-    // cannot follow the raw pointer afterwards, so the result must never be
-    // stored anywhere that outlives the call.
+    // Clay calling straight back into us, synchronously, from inside the one
+    // call that was handed the pointer (Clay_RenderClayCommands, or a
+    // hzui_clay_define_div_element declaring an element's children), with the
+    // storage owned by the frame that made that call -- see
+    // LayoutContext.render and processTreeElementInFlow. The witness check
+    // catches a stackref whose scope is already gone at the moment of the
+    // borrow; it cannot follow the raw pointer afterwards, so the result must
+    // never be stored anywhere that outlives the call.
     fn extractRawUnsafeStackrefPointer<T>(r: stackref T): cptr :: final {
         do unsafe {
             let p = none as cptr;
@@ -34,22 +36,31 @@ namespace ffi {
         };
     }
 
-    extern C noemit fn hzui_clay_define_div_element(_fn: cptr, env: cptr, config: hzui_define_div_element_t): void :: final;
-    extern C noemit fn hzui_clay_define_text_element(element: hzui_define_text_element_t): void :: final;
+    // Clay declares an element's children from inside the call that opens it,
+    // so `children` is called back from in there with the context this call
+    // was given and `thunk`, the pointer that says whose children they are --
+    // see hzui_declare_div_children.
+    extern C noemit fn hzui_clay_define_div_element(ctx: Context, children: extern C (ctx: Context, thunk: cptr) -> void, thunk: cptr, config: hzui_define_div_element_t): void :: final;
+    // Clay measures the text while declaring it, so this takes the context the
+    // measuring runs under -- see hzui_measure_text.
+    extern C noemit fn hzui_clay_define_text_element(ctx: Context, element: hzui_define_text_element_t): void :: final;
     extern C noemit fn hzui_clay_define_canvas_element(config: hzui_define_canvas_element_t): void :: final;
     extern C noemit fn hzui_clay_get_element_bounding_box(elementId: str): hzui_optional_bounding_box_t :: final;
 
     extern C noemit fn hzui_clay_init(
         width: int,
         height: int,
-        measureText: (userdata: cptr, request: hzui_measure_text_request_t) -> Vec2,
+        measureText: extern C (ctx: Context, userdata: cptr, request: hzui_measure_text_request_t) -> Vec2,
         measureTextUserdata: cptr,
     ): cptr :: final;
     extern C noemit fn hzui_clay_activate_context(clayContext: cptr): void :: final;
     extern C noemit fn hzui_clay_set_layout_dimensions(width: int, height: int): void :: final;
     extern C noemit fn Clay_BeginLayout(): void :: final;
-    extern C noemit fn Clay_EndLayout(): Clay_RenderCommandArray :: final;
-    extern C noemit fn Clay_RenderClayCommands(callbacks: ClayCallbacks, commands: ref Clay_RenderCommandArray): void :: final;
+    // Clay_EndLayout, which measures text too: `ctx` is the context the
+    // measuring runs under (see ui.c).
+    extern C noemit fn hzui_clay_end_layout(ctx: Context): Clay_RenderCommandArray :: final;
+    // Calls `callbacks` once per render command, each with `ctx`.
+    extern C noemit fn Clay_RenderClayCommands(ctx: Context, callbacks: ClayCallbacks, commands: ref Clay_RenderCommandArray): void :: final;
 
     // A C value returned by Clay_EndLayout; Clay_RenderClayCommands takes its address.
     extern C noemit struct Clay_RenderCommandArray {};
@@ -65,17 +76,17 @@ namespace ffi {
     }
 
     extern C noemit struct ClayCallbacks {
-        renderFilledRect: (userdata: cptr, x: real, y: real, width: real, height: real, backgroundColor: Color, cornerRadius: CornerRadiusValues) -> void;
+        renderFilledRect: extern C (ctx: Context, userdata: cptr, x: real, y: real, width: real, height: real, backgroundColor: Color, cornerRadius: CornerRadiusValues) -> void;
         renderFilledRectUserdata: cptr;
-        renderText: (userdata: cptr, element: hzui_draw_text_element_t) -> void;
+        renderText: extern C (ctx: Context, userdata: cptr, element: hzui_draw_text_element_t) -> void;
         renderTextUserdata: cptr;
-        renderCustom: (userdata: cptr, elementPtr: cptr, x: real, y: real, w: real, h: real) -> void;
+        renderCustom: extern C (ctx: Context, userdata: cptr, elementPtr: cptr, x: real, y: real, w: real, h: real) -> void;
         renderCustomUserdata: cptr;
-        applyBoundingBox: (userdata: cptr, elementKind: hzui_element_kind_t, elementPtr: cptr, x: real, y: real, w: real, h: real) -> void;
+        applyBoundingBox: extern C (ctx: Context, userdata: cptr, elementKind: hzui_element_kind_t, elementPtr: cptr, x: real, y: real, w: real, h: real) -> void;
         applyBoundingBoxUserdata: cptr;
-        renderBorder: (userdata: cptr, x: real, y: real, width: real, height: real, borderColor: Color, cornerRadius: CornerRadiusValues, borderWidth: hzui_border_widths_t) -> void;
+        renderBorder: extern C (ctx: Context, userdata: cptr, x: real, y: real, width: real, height: real, borderColor: Color, cornerRadius: CornerRadiusValues, borderWidth: hzui_border_widths_t) -> void;
         renderBorderUserdata: cptr;
-        setClip: (userdata: cptr, elementPtr: cptr) -> void;
+        setClip: extern C (ctx: Context, userdata: cptr, elementPtr: cptr) -> void;
         setClipUserdata: cptr;
     };
 
@@ -513,16 +524,10 @@ fn needsMarginBox(style: ui_styling.ComputedDivStyle): bool :: final {
 // `ownerId` is the id of the div whose children are being spaced and
 // `idOffset` says which of its spacers this is -- see ID_OFFSET_FIRST_SPACER.
 fn defineSpacer(ownerId: str, idOffset: int, mainAxisIsWidth: bool): void :: final {
-    let noop = (): void => {};
-    let func = none as cptr;
-    let env = none as cptr;
-    __c__("func = (void*)noop.fn;");
-    __c__("env = (void*)noop.env;");
-
     let growAxis: ffi.hzui_sizing_axis_t = { type: ffi.hzui_sizing_type_t.hzui_sizing_grow, value: 0.0 };
     let fitAxis: ffi.hzui_sizing_axis_t = { type: ffi.hzui_sizing_type_t.hzui_sizing_fit, value: 0.0 };
 
-    ffi.hzui_clay_define_div_element(func, env, {
+    ffi.hzui_clay_define_div_element(context, hzui_declare_no_children, none as cptr, {
         id: ownerId,
         idOffset: idOffset,
         backgroundColor: Color(0.0, 0.0, 0.0, 0.0),
@@ -606,7 +611,7 @@ export opaque ref struct LayoutContext {
         let measureTextUserdata = none as cptr;
         __c__("measureTextUserdata = measureTextBox;");
 
-        let clayContextPtr = ffi.hzui_clay_init(opts.width, opts.height, measureTextTrampoline, measureTextUserdata);
+        let clayContextPtr = ffi.hzui_clay_init(opts.width, opts.height, hzui_measure_text, measureTextUserdata);
         return LayoutContext {
             fonts: opts.fonts,
             getFontLineHeight: opts.getFontLineHeight,
@@ -873,19 +878,23 @@ export opaque ref struct LayoutContext {
     ): void :: final {
         let margin = style.margin;
 
-        // `let stackref` for the same reason as renderChildren below: Clay
-        // calls this back synchronously from inside the define call, so the
-        // env can live on this frame instead of costing an allocation per
-        // margined element per frame.
-        let stackref renderChild = () => {
-            this.processTreeElementInFlow(ctx, element, forceGrowWidth, forceGrowHeight);
+        // On this frame for the same reason as DivChildren below: Clay calls
+        // back synchronously from inside the define call, so the box's child
+        // can be described here instead of costing an allocation per margined
+        // element per frame.
+        let stackref child = MarginBoxChild {
+            layout: this,
+            traversal: ctx,
+            element: element,
+            forceGrowWidth: forceGrowWidth,
+            forceGrowHeight: forceGrowHeight,
         };
-        let func = none as cptr;
-        let env = none as cptr;
-        __c__("func = (void*)renderChild.fn;");
-        __c__("env = (void*)renderChild.env.ptr;");
+        let thunk = none as cptr;
+        do unsafe {
+            thunk = ffi.extractRawUnsafeStackrefPointer(child);
+        };
 
-        ffi.hzui_clay_define_div_element(func, env, {
+        ffi.hzui_clay_define_div_element(context, hzui_declare_margin_box_child, thunk, {
             id: elementId,
             idOffset: ID_OFFSET_MARGIN_BOX,
             backgroundColor: Color(0.0, 0.0, 0.0, 0.0),
@@ -915,7 +924,7 @@ export opaque ref struct LayoutContext {
         if element is ui_elements.DivElement {
             this.pushCascadingStack(ctx, element);
             // The raw pointer to this already-heap-allocated element --
-            // no boxing needed (see applyBoundingBoxTrampoline's own
+            // no boxing needed (see hzui_apply_bounding_box's own
             // comment): it's already kept alive for the tree's whole
             // lifetime by its parent's own child-element cache, so
             // there's nothing extra to allocate or keep alive here.
@@ -938,42 +947,34 @@ export opaque ref struct LayoutContext {
             let mainAxisIsWidth = style.direction == ui_styling.Direction.Row;
             let lastIndex = element.children.length - 1;
 
-            // `let stackref`, not a plain `let`: this closure captures nine
-            // values, and as an ordinary local its environment block was one
-            // heap allocation PER DIV PER FRAME -- measured as the single
-            // largest allocation source in the whole program (5,241 of
-            // "Closure env (72 bytes)" in a 3.7 s profiling session, more than
-            // twice the next entry). `let stackref` builds the env in place as
-            // a stack local of this scope instead, with the by-value captures
-            // copied straight into its fields: same captures, same semantics,
-            // zero allocations.
+            // `let stackref`, not a heap value: what the children need is nine
+            // values, and when they were a closure's captures its environment
+            // block was one heap allocation PER DIV PER FRAME -- measured as
+            // the single largest allocation source in the whole program (5,241
+            // of "Closure env (72 bytes)" in a 3.7 s profiling session, more
+            // than twice the next entry). On this frame they cost nothing.
             //
-            // Safe because the closure genuinely does not outlive this scope:
-            // hzui_clay_define_div_element calls it synchronously, from inside
-            // the call below, and Clay keeps nothing afterwards -- so the env
-            // is alive for exactly as long as anything can reach it. That is
-            // also the property `let stackref` itself enforces on the Haze side
-            // (every use is generation-checked), which is what makes this the
-            // right tool rather than hand-rolled pointer juggling.
-            let stackref renderChildren = () => {
-                let i = 0;
-                for child in divElement.children {
-                    this.processTreeElement(ctx, child, childForceGrowWidth, childForceGrowHeight);
-                    if spaceBetween && i < lastIndex {
-                        defineSpacer(elementId, ID_OFFSET_FIRST_SPACER + i, mainAxisIsWidth);
-                    }
-                    i = i + 1;
-                }
+            // Safe because they genuinely do not outlive this scope:
+            // hzui_clay_define_div_element calls hzui_declare_div_children
+            // synchronously, from inside the call below, and Clay keeps
+            // nothing afterwards -- so the storage is alive for exactly as long
+            // as anything can reach it. `let stackref` checks the scope is
+            // still alive at the one moment the raw pointer is taken.
+            let stackref children = DivChildren {
+                layout: this,
+                traversal: ctx,
+                element: divElement,
+                elementId: elementId,
+                forceGrowWidth: childForceGrowWidth,
+                forceGrowHeight: childForceGrowHeight,
+                spaceBetween: spaceBetween,
+                lastIndex: lastIndex,
+                mainAxisIsWidth: mainAxisIsWidth,
             };
-            let func = none as cptr;
-            let env = none as cptr;
-            __c__("func = (void*)renderChildren.fn;");
-            // A stackref callable's `env` is the checked reference
-            // (hzstd_stackref_t), not a bare pointer -- Clay wants the raw env
-            // the trampoline expects as its first argument, which is the
-            // reference's own `.ptr`. The trampoline is the same function
-            // either way; only where its env lives changed.
-            __c__("env = (void*)renderChildren.env.ptr;");
+            let thunk = none as cptr;
+            do unsafe {
+                thunk = ffi.extractRawUnsafeStackrefPointer(children);
+            };
 
             // Resolved against positioningContext's state *before* this
             // element pushes itself below -- an element's own placement
@@ -987,7 +988,7 @@ export opaque ref struct LayoutContext {
             }
 
             ffi.hzui_clay_define_div_element(
-                func, env,
+                context, hzui_declare_div_children, thunk,
                 {
                     id: elementId,
                     idOffset: ID_OFFSET_ELEMENT,
@@ -1049,6 +1050,7 @@ export opaque ref struct LayoutContext {
             }
 
             ffi.hzui_clay_define_text_element(
+                context,
                 {
                     text: element.text,
                     color: this.getCurrentTextColor(ctx),
@@ -1133,7 +1135,7 @@ export opaque ref struct LayoutContext {
 
         ctx.validateEmpty();
 
-        let clayRenderCommands = ffi.Clay_EndLayout();
+        let clayRenderCommands = ffi.hzui_clay_end_layout(context);
 
         // Raw pointer to the stack value above, taken in C: unsafe by construction and
         // only ever handed to Clay_RenderClayCommands below, within this frame.
@@ -1162,25 +1164,26 @@ export opaque ref struct LayoutContext {
 
         do unsafe {
             // One pointer, reinterpreted by each trampoline (see
-            // renderFilledRectTrampoline etc.) back into DispatchState and read
+            // hzui_render_filled_rect etc.) back into DispatchState and read
             // straight off the matching field, covers every registration below
             // -- no need to box each callback separately just to get something
             // cptr-sized. Clay keeps nothing after the call returns, and the
-            // storage it points at is this frame's own.
+            // storage it points at is this frame's own. The callbacks run under
+            // this call's context, which C hands to every trampoline.
             let callbacksPtr = ffi.extractRawUnsafeStackrefPointer(dispatch);
 
-            ffi.Clay_RenderClayCommands({
-                renderFilledRect: renderFilledRectTrampoline,
+            ffi.Clay_RenderClayCommands(context, {
+                renderFilledRect: hzui_render_filled_rect,
                 renderFilledRectUserdata: callbacksPtr,
-                renderText: renderTextTrampoline,
+                renderText: hzui_render_text,
                 renderTextUserdata: callbacksPtr,
-                renderCustom: renderCustomTrampoline,
+                renderCustom: hzui_render_custom,
                 renderCustomUserdata: callbacksPtr,
-                applyBoundingBox: applyBoundingBoxTrampoline,
+                applyBoundingBox: hzui_apply_bounding_box,
                 applyBoundingBoxUserdata: callbacksPtr,
-                renderBorder: renderBorderTrampoline,
+                renderBorder: hzui_render_border,
                 renderBorderUserdata: callbacksPtr,
-                setClip: setClipTrampoline,
+                setClip: hzui_set_clip,
                 setClipUserdata: callbacksPtr,
             }, clayRenderCommandsPtr);
         };
@@ -1525,52 +1528,71 @@ struct DispatchState {
     clips: []ClipEntry;
 }
 
-fn setClipTrampoline(userdata: cptr, elementPtr: cptr): void {
+// Every function from here down is called by C: Clay's render-command
+// dispatch (renderer.c), its text measuring and its children declarations
+// (ui.c). C carries no context, so each one is an `extern C` function that is
+// handed the context of the Haze code that made the Clay call -- the
+// LayoutContext.render or element declaration on the stack below it -- and
+// runs its Haze code under it.
+
+extern C fn hzui_set_clip(ctx: Context, userdata: cptr, elementPtr: cptr): void {
     do unsafe {
         let state: ref DispatchState = uninitialized;
         __c__("state = userdata;");
         // A command with no userData belongs to no element (e.g. a spacer)
         // and is never clipped; lookupClip returns an inactive clip for it.
-        state.callbacks.setClip(lookupClip(state.clips, elementPtr));
+        Context.init(ctx, () => {
+            state.callbacks.setClip(lookupClip(state.clips, elementPtr));
+        });
     };
 }
 
-fn renderFilledRectTrampoline(userdata: cptr, x: real, y: real, width: real, height: real, backgroundColor: Color, cornerRadius: CornerRadiusValues): void {
+extern C fn hzui_render_filled_rect(ctx: Context, userdata: cptr, x: real, y: real, width: real, height: real, backgroundColor: Color, cornerRadius: CornerRadiusValues): void {
     do unsafe {
         // userdata is the RenderCallbacks ref struct itself (already a single
         // heap pointer -- see render()'s own comment), not a box -- no
         // separate allocation needed to reinterpret it back.
         let state: ref DispatchState = uninitialized;
         __c__("state = userdata;");
-        state.callbacks.renderFilledRectangle(Vec2(x, y), Vec2(width, height), backgroundColor, cornerRadius);
+        Context.init(ctx, () => {
+            state.callbacks.renderFilledRectangle(Vec2(x, y), Vec2(width, height), backgroundColor, cornerRadius);
+        });
     };
 }
 
-fn renderBorderTrampoline(userdata: cptr, x: real, y: real, width: real, height: real, borderColor: Color, cornerRadius: CornerRadiusValues, borderWidth: ffi.hzui_border_widths_t): void {
+extern C fn hzui_render_border(ctx: Context, userdata: cptr, x: real, y: real, width: real, height: real, borderColor: Color, cornerRadius: CornerRadiusValues, borderWidth: ffi.hzui_border_widths_t): void {
     do unsafe {
         let state: ref DispatchState = uninitialized;
         __c__("state = userdata;");
-        state.callbacks.renderBorder(Vec2(x, y), Vec2(width, height), borderColor, cornerRadius, borderWidth);
+        Context.init(ctx, () => {
+            state.callbacks.renderBorder(Vec2(x, y), Vec2(width, height), borderColor, cornerRadius, borderWidth);
+        });
     };
 }
 
-fn renderTextTrampoline(userdata: cptr, element: ffi.hzui_draw_text_element_t): void {
+extern C fn hzui_render_text(ctx: Context, userdata: cptr, element: ffi.hzui_draw_text_element_t): void {
     do unsafe {
         let state: ref DispatchState = uninitialized;
         __c__("state = userdata;");
-        state.callbacks.renderText(element);
+        Context.init(ctx, () => {
+            state.callbacks.renderText(element);
+        });
     };
 }
 
 // Called directly by Clay (via Clay_SetMeasureTextFunction, wired up in
 // hzui_clay_init) whenever it needs to measure a word/line -- potentially
 // many times per unique text run, though Clay caches results by
-// text+font+size across frames.
-fn measureTextTrampoline(userdata: cptr, request: ffi.hzui_measure_text_request_t): Vec2 {
+// text+font+size across frames. Clay measures while a text element is
+// declared and inside Clay_EndLayout; `ctx` is the context of whichever of
+// those two calls is running (see ui.c).
+extern C fn hzui_measure_text(ctx: Context, userdata: cptr, request: ffi.hzui_measure_text_request_t): Vec2 {
     do unsafe {
         let callable: ref Box<MeasureTextCB> = uninitialized;
         __c__("callable = userdata;");
-        return callable.value(request.fontId, request.fontSize, request.text);
+        return Context.init(ctx, (): Vec2 => {
+            return callable.value(request.fontId, request.fontSize, request.text);
+        });
     };
 }
 
@@ -1578,14 +1600,16 @@ fn measureTextTrampoline(userdata: cptr, request: ffi.hzui_measure_text_request_
 // definition ever emits (see hzui_clay_define_canvas_element's `.custom`
 // config) -- so elementPtr is always already a CanvasElement's own pointer,
 // no union/tag needed to tell it apart from Div/Text.
-fn renderCustomTrampoline(userdata: cptr, elementPtr: cptr, x: real, y: real, w: real, h: real): void {
+extern C fn hzui_render_custom(ctx: Context, userdata: cptr, elementPtr: cptr, x: real, y: real, w: real, h: real): void {
     do unsafe {
         let state: ref DispatchState = uninitialized;
         __c__("state = userdata;");
 
         let canvasElement: ui_elements.CanvasElement = uninitialized;
         __c__("canvasElement = elementPtr;");
-        state.callbacks.renderCanvas(canvasElement);
+        Context.init(ctx, () => {
+            state.callbacks.renderCanvas(canvasElement);
+        });
     };
 }
 
@@ -1604,7 +1628,7 @@ fn renderCustomTrampoline(userdata: cptr, elementPtr: cptr, x: real, y: real, w:
 // knows it for free, from the Clay render command type it's dispatching on),
 // so this can safely reinterpret elementPtr as the right concrete type and
 // let Haze's own upcast turn that into the `Element` union `callable` wants.
-fn applyBoundingBoxTrampoline(userdata: cptr, elementKind: ffi.hzui_element_kind_t, elementPtr: cptr, x: real, y: real, w: real, h: real): void {
+extern C fn hzui_apply_bounding_box(ctx: Context, userdata: cptr, elementKind: ffi.hzui_element_kind_t, elementPtr: cptr, x: real, y: real, w: real, h: real): void {
     do unsafe {
         let state: ref DispatchState = uninitialized;
         __c__("state = userdata;");
@@ -1612,15 +1636,91 @@ fn applyBoundingBoxTrampoline(userdata: cptr, elementKind: ffi.hzui_element_kind
         if elementKind == ffi.hzui_element_kind_t.hzui_element_kind_div {
             let divElement: ui_elements.DivElement = uninitialized;
             __c__("divElement = elementPtr;");
-            state.callbacks.onBoundingBox(divElement, Vec2(x, y), Vec2(w, h));
+            Context.init(ctx, () => {
+                state.callbacks.onBoundingBox(divElement, Vec2(x, y), Vec2(w, h));
+            });
         } else if elementKind == ffi.hzui_element_kind_t.hzui_element_kind_text {
             let textElement: ui_elements.TextElement = uninitialized;
             __c__("textElement = elementPtr;");
-            state.callbacks.onBoundingBox(textElement, Vec2(x, y), Vec2(w, h));
+            Context.init(ctx, () => {
+                state.callbacks.onBoundingBox(textElement, Vec2(x, y), Vec2(w, h));
+            });
         } else {
             let canvasElement: ui_elements.CanvasElement = uninitialized;
             __c__("canvasElement = elementPtr;");
-            state.callbacks.onBoundingBox(canvasElement, Vec2(x, y), Vec2(w, h));
+            Context.init(ctx, () => {
+                state.callbacks.onBoundingBox(canvasElement, Vec2(x, y), Vec2(w, h));
+            });
         }
     };
+}
+
+// A div's children, as Clay declares them: from inside the
+// hzui_clay_define_div_element call that opens the div, through
+// hzui_declare_div_children. Lives on the frame of that call (see
+// processTreeElementInFlow), which Clay never outlives.
+struct DivChildren {
+    layout: LayoutContext;
+    traversal: LayoutContext.TreeTraverseContext;
+    element: ui_elements.DivElement;
+    elementId: str;
+    // The parent's forced-Grow override for each child -- see
+    // crossAxisForcesWidthGrow.
+    forceGrowWidth: bool;
+    forceGrowHeight: bool;
+    spaceBetween: bool;
+    lastIndex: int;
+    mainAxisIsWidth: bool;
+
+    fn declare() {
+        let i = 0;
+        for child in this.element.children {
+            this.layout.processTreeElement(this.traversal, child, this.forceGrowWidth, this.forceGrowHeight);
+            if this.spaceBetween && i < this.lastIndex {
+                defineSpacer(this.elementId, ID_OFFSET_FIRST_SPACER + i, this.mainAxisIsWidth);
+            }
+            i = i + 1;
+        }
+    }
+}
+
+// A margin box's one child, the element itself, declared in flow -- see
+// defineMarginBox. Same lifetime as DivChildren.
+struct MarginBoxChild {
+    layout: LayoutContext;
+    traversal: LayoutContext.TreeTraverseContext;
+    element: ui_elements.Element;
+    forceGrowWidth: bool;
+    forceGrowHeight: bool;
+
+    fn declare() {
+        this.layout.processTreeElementInFlow(this.traversal, this.element, this.forceGrowWidth, this.forceGrowHeight);
+    }
+}
+
+// The `children` of hzui_clay_define_div_element: C calls one of these from
+// inside the CLAY() block that opens the element, with the context the define
+// call was given and the thunk it was handed with it.
+extern C fn hzui_declare_div_children(ctx: Context, thunk: cptr): void {
+    do unsafe {
+        let children: ref DivChildren = uninitialized;
+        __c__("children = thunk;");
+        Context.init(ctx, () => {
+            children.declare();
+        });
+    };
+}
+
+extern C fn hzui_declare_margin_box_child(ctx: Context, thunk: cptr): void {
+    do unsafe {
+        let child: ref MarginBoxChild = uninitialized;
+        __c__("child = thunk;");
+        Context.init(ctx, () => {
+            child.declare();
+        });
+    };
+}
+
+// A space-between spacer has no children -- see defineSpacer.
+extern C fn hzui_declare_no_children(ctx: Context, thunk: cptr): void {
 }

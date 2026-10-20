@@ -2,9 +2,11 @@
 __c__("#include \"glad.h\"");
 __c__("#include \"glad.c\"");
 
-extern C noemit fn gladLoadGLLoader(proc: (name: ccstr) -> cptr) :: final;
+// glad calls `proc` for every GL entry point, so it is a C function (a
+// window's getProcAddress), never Haze code.
+extern C noemit fn gladLoadGLLoader(proc: extern C (name: ccstr) -> cptr) :: final;
 
-export fn init(proc: (name: ccstr) -> cptr) {
+export fn init(proc: extern C (name: ccstr) -> cptr) {
     gladLoadGLLoader(proc);
 }
 

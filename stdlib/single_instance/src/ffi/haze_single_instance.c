@@ -52,7 +52,11 @@ typedef struct {
 
 static haze_si_mailbox_t *g_mailbox = 0;
 
-static void *(*g_parser)(hzstd_str_t) = 0;
+// The payload parser: an extern C function defined in Haze, and the opaque
+// thunk it is called with (a GC object; a static is a root, so this keeps it
+// alive). See haze_si_parse_entry in single_instance.hz.
+static void *(*g_parser)(void *thunk, hzstd_str_t text) = 0;
+static void *g_parserThunk = 0;
 
 static int g_initialized = 0;
 static int g_isPrimary = 0;
@@ -408,7 +412,7 @@ static void haze_si_serve_connection(haze_si_conn_t conn)
     json.data = (const char *)(payload + offset);
     json.length = (hzstd_int_t)jsonLength;
 
-    void *value = g_parser(json);
+    void *value = g_parser(g_parserThunk, json);
     if (!value) {
       message = "the running instance could not decode the payload";
       goto respond;
@@ -739,9 +743,10 @@ static void haze_si_sleep_ms(int milliseconds)
 #endif
 }
 
-void haze_si_set_parser(void *(*parser)(hzstd_str_t))
+void haze_si_set_parser(void *(*parser)(void *thunk, hzstd_str_t text), void *thunk)
 {
   g_parser = parser;
+  g_parserThunk = thunk;
 }
 
 static int haze_si_client_handshake(const char **outError)

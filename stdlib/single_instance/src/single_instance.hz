@@ -21,7 +21,9 @@ namespace ffi {
     }
 
     export extern C fn haze_si_user_key(): str :: final;
-    export extern C fn haze_si_set_parser(parser: (text: str) -> cptr): void :: final;
+    // `entry` is called on the server thread with `thunk` and each request's
+    // JSON -- see haze_si_parse_entry.
+    export extern C fn haze_si_set_parser(entry: extern C (thunk: cptr, text: str) -> cptr, thunk: cptr): void :: final;
     export extern C fn haze_si_acquire(key: str, mangledName: str, fingerprint: int, prettyName: str): haze_si_acquire_result_t :: final;
     export extern C fn haze_si_send(json: str): haze_si_send_result_t :: final;
     export extern C fn haze_si_take(): haze_si_take_result_t :: final;
@@ -69,6 +71,31 @@ export fn _unboxPayload<T>(raw: cptr): T {
         __c__("boxed = raw;");
         return boxed.value;
     };
+}
+
+// The payload parser, as the C server thread calls it. That thread is not one
+// Haze started and nothing on it has a context to hand over, so the parse runs
+// under a fresh one. `thunk` is the type-specific parser init<T> registered
+// (_parsePayload<T>, boxed by _setParser): a generic cannot be `extern C`, so
+// this one entry reaches it through the box.
+extern C fn haze_si_parse_entry(thunk: cptr, text: str): cptr {
+    do unsafe {
+        let parser: ref Box<(text: str) -> cptr> = uninitialized;
+        __c__("parser = thunk;");
+        return Context.init(Context(), (): cptr => {
+            return parser.value(text);
+        });
+    };
+}
+
+// Registers the parser init<T> made for its T. Not generic: the parser's type
+// no longer mentions T, and only code compiled in this module names the
+// `extern C` entry.
+export fn _setParser(parser: (text: str) -> cptr) {
+    let boxed: ref Box<(text: str) -> cptr> = { value: parser };
+    let thunk = none as cptr;
+    __c__("thunk = boxed;");
+    ffi.haze_si_set_parser(haze_si_parse_entry, thunk);
 }
 
 export struct Instance<T> {
@@ -126,7 +153,7 @@ export fn init<T>(args: Args, onActivate: (data: T) => int): Instance<T> {
     let userKey = ffi.haze_si_user_key();
     let key = sha256.hex(f"{userKey}|{args.appId}");
 
-    ffi.haze_si_set_parser(_parsePayload<T>);
+    _setParser(_parsePayload<T>);
 
     let acquired = ffi.haze_si_acquire(key, T.mangledName, T.fingerprint, T.prettyName);
 

@@ -24,8 +24,9 @@ __c__("#include \"wgpu_impl.c\"");
 //      and `ref` is the only thing that can produce one -- `let stackref`
 //      deliberately cannot become a `ref` (H4001), precisely because it may
 //      point at scope-resident storage the GC does not manage.
-//   2. Callback userdata (`ref Box<...Callback>`): wgpu keeps the pointer past
-//      the call that registered it, so it has to be GC-owned.
+//   2. Callback userdata (`ref Box<...Callback>`, and the `ref Box<Context>`
+//      of the code that made the request): wgpu keeps the pointer past the
+//      call that registered it, so it has to be GC-owned.
 //
 // Everything else -- anything copied into a by-value field of another FFI
 // struct, and anything that becomes an element of an array built by
@@ -52,11 +53,18 @@ export struct RequestAdapterCallbackInfo {
     mode: CallbackMode = CallbackMode.WaitAnyOnly;
 }
 
-fn requestAdapterCallbackProxy(status: ffi.WGPURequestAdapterStatus, adapter: mut ffi.WGPUAdapterImpl, message: ffi.WGPUStringView, userdata1: cptr, userdata2: cptr): void :: final {
+// What wgpu calls back, from C: `extern C`, and with no context of its own, so
+// the callback runs under the requester's, which travels as userdata2 (see
+// Instance.requestAdapterAsync).
+extern C fn haze_wgpu_request_adapter_proxy(status: ffi.WGPURequestAdapterStatus, adapter: mut ffi.WGPUAdapterImpl, message: ffi.WGPUStringView, userdata1: cptr, userdata2: cptr): void :: final {
     do unsafe {
         let callback: ref Box<RequestAdapterCallback> = uninitialized;
         __c__("callback = (void*)userdata1;");
-        callback.value(fromFFI(status), fromFFI(adapter), fromFFI(message));
+        let requester: ref Box<Context> = uninitialized;
+        __c__("requester = (void*)userdata2;");
+        Context.init(requester.value, () => {
+            callback.value(fromFFI(status), fromFFI(adapter), fromFFI(message));
+        });
     };
 }
 
@@ -152,11 +160,16 @@ export struct RequestDeviceCallbackInfo {
     callback: RequestDeviceCallback;
 }
 
-fn requestDeviceCallbackProxy(status: ffi.WGPURequestDeviceStatus, device: mut ffi.WGPUDeviceImpl, message: ffi.WGPUStringView, userdata1: cptr, userdata2: cptr): void :: final {
+// Same as haze_wgpu_request_adapter_proxy, for Adapter.requestDeviceAsync.
+extern C fn haze_wgpu_request_device_proxy(status: ffi.WGPURequestDeviceStatus, device: mut ffi.WGPUDeviceImpl, message: ffi.WGPUStringView, userdata1: cptr, userdata2: cptr): void :: final {
     do unsafe {
         let callback: ref Box<RequestDeviceCallback> = uninitialized;
         __c__("callback = (void*)userdata1;");
-        callback.value(fromFFI(status), Device { handle: device }, fromFFI(message));
+        let requester: ref Box<Context> = uninitialized;
+        __c__("requester = (void*)userdata2;");
+        Context.init(requester.value, () => {
+            callback.value(fromFFI(status), Device { handle: device }, fromFFI(message));
+        });
     };
 }
 

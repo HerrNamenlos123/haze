@@ -35,7 +35,7 @@ namespace ffi {
     extern C fn glfwWindowHint(hint: i32, value: i32) :: final;
     extern C fn glfwGetTime(): f64 :: final;
     // extern C glfwMakeContextCurrent(w: GLFWwindow*);
-    extern C fn glfwGetProcAddress(procname: ccstr): (() -> void) :: final;
+    extern C fn glfwGetProcAddress(procname: ccstr): (extern C () -> void) :: final;
     extern C noemit fn glfwGetFramebufferSize(w: GLFWwindow, width: cptr /* int* aka i32* */, height: cptr /* int* aka i32* */) :: final;
 
     export fn init(): bool {
@@ -95,8 +95,10 @@ namespace ffi {
         return glfwGetTime() as f64;
     }
 
-    export extern C fn glfw_getProcAddress(procname: ccstr): () -> void {
-        return glfwGetProcAddress(procname);
+    // glad's loader signature (GLADloadproc): GLFW's own, with the
+    // GLFWglproc it answers handed on as the plain address glad expects.
+    export extern C fn glfw_getProcAddress(procname: ccstr): cptr {
+        return glfwGetProcAddress(procname) as cptr;
     }
 }
 
@@ -142,18 +144,13 @@ export ref struct Window {
         return Vec2i(width, height);
     }
 
-    fn getProcAddress(): ((name: ccstr) -> cptr) {
+    fn getProcAddress(): (extern C (name: ccstr) -> cptr) {
         // This makeContextCurrent() is important because getProcAddress is usually immediately passed to
         // gl.init, which then takes the GL context. It is important that the two are linked.
         // We just need to hope someone doesn't call getProcAddress and then do something else instead of gl.init()
         this.makeContextCurrent(); 
 
-        do unsafe {
-            const rawProc = ffi.glfw_getProcAddress;
-            const castedProc: ((name: ccstr) -> cptr) = uninitialized;
-            __c__("castedProc = (void*)rawProc;");
-            return castedProc;
-        };
+        return ffi.glfw_getProcAddress;
     }
 }
 
