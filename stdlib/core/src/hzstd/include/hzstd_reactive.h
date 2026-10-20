@@ -7,10 +7,11 @@
 // hzstd_computed_entry_t, hzstd_dep_edge_t, hzstd_node_t, hzstd_cell_dep_t,
 // hzstd_reactive_cell_t, hzstd_computed_node_t are defined in hzstd_types.h.
 //
-// Every entry point that can run Haze code -- evaluating a computed, and a
-// write, which delivers the effects it triggers -- takes the caller's
-// context by value as its first parameter and runs that code under it (see
-// hzstd_computed_entry_t). Reads and dependency bookkeeping take none.
+// Every entry point that can run Haze code takes the caller's context by
+// value as its first parameter and runs that code under it (see
+// hzstd_computed_entry_t): evaluating a computed, and a write, which
+// delivers the effects it triggers. Reads and dependency bookkeeping take
+// none.
 //
 // Everything in this file operates on a single hzstd_reactive_cell_t — the
 // representation behind both rx.reactive<T>() and rx.shallowReactive<T>()
