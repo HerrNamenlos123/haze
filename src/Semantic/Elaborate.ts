@@ -8076,7 +8076,7 @@ export class SemanticElaborator {
     if (structSymbol.variant !== Collect.ENode.TypeDefSymbol) {
       return null;
     }
-    const structTypeDef = this.withContext(
+    const [structTypeDef, valueTypeDef] = this.withContext(
       {
         context: Semantic.makeElaborationContext({
           currentScope: this.sr.cc.moduleScopeId,
@@ -8091,7 +8091,41 @@ export class SemanticElaborator {
           this.elaborateTypeDef(structSymbol, [], structSymbol.sourceloc)
         );
         assert(symbol.variant === Semantic.ENode.TypeDefSymbol);
-        return symbol.datatype;
+        // `context` is a `Context`, so diagnostics say so rather than
+        // naming the C struct.
+        const aliasSymbolId = Semantic.tryFindBuiltinSymbolByName(
+          this.sr,
+          "Context",
+          null
+        );
+        const aliasSymbol =
+          aliasSymbolId === null
+            ? null
+            : this.sr.cc.symbolNodes.get(aliasSymbolId);
+        if (
+          aliasSymbol?.variant === Collect.ENode.TypeDefSymbol &&
+          this.sr.cc.typeDefNodes.get(aliasSymbol.typeDef).variant ===
+            Collect.ENode.AliasDef
+        ) {
+          const aliasTypeDef = this.elaborateTypeDefAlias(
+            aliasSymbol.typeDef,
+            []
+          )[1];
+          const aliasUse = makeTypeUse(
+            this.sr,
+            aliasTypeDef,
+            EDatatypeMutability.Default,
+            EStorageClass.Value,
+            structSymbol.sourceloc
+          )[1];
+          if (
+            this.sr.typeUseNodes.get(this.resolveAlias(aliasUse)).type ===
+            symbol.datatype
+          ) {
+            return [symbol.datatype, aliasTypeDef] as const;
+          }
+        }
+        return [symbol.datatype, symbol.datatype] as const;
       }
     );
     this.coreContext = {
@@ -8099,7 +8133,7 @@ export class SemanticElaborator {
       typeDef: structTypeDef,
       typeUse: makeTypeUse(
         this.sr,
-        structTypeDef,
+        valueTypeDef,
         EDatatypeMutability.Default,
         EStorageClass.Value,
         structSymbol.sourceloc
