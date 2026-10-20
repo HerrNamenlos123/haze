@@ -2294,7 +2294,18 @@ class CodeGenerator {
         tempWriter.write(callExprWriter.temp);
         // const funcname = this.mangleNestedName(this.lr.functions.get(expr.functionSymbol)!);
         // outWriter.write(`_H${funcname}`);
-        outWriter.write(callExprWriter.out.get() + "(" + args.join(", ") + ")");
+        let callee = callExprWriter.out.get();
+        const calleeExpr = this.lr.exprNodes.get(expr.expr);
+        if (
+          calleeExpr.variant === Lowered.ENode.SymbolValueExpr &&
+          calleeExpr.name.mangledName.startsWith("*")
+        ) {
+          // A `->` value captured by a closure is read through its env
+          // pointer (`*hv`): `*hv(x)` would call `hv` and dereference the
+          // result.
+          callee = `(${callee})`;
+        }
+        outWriter.write(callee + "(" + args.join(", ") + ")");
 
         return { out: outWriter, temp: tempWriter };
       }
