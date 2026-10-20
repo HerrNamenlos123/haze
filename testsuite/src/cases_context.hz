@@ -767,15 +767,17 @@ fn main(): int {
             [testsuite.mustHave(errorcodes.Code.ContextNeededInExternCFunction)]);
 
         // ── no reference to the context ────────────────────────────────────────────
+        // Haze has no `&` operator (addressOf() is a library function), so
+        // `&context` is a syntax error like any `&x`: no path to a reference.
         s.compileFails(
-            "context: &context is rejected",
+            "context: &context is a syntax error",
             """
 fn main(): int {
     let p = &context; // <- no reference to the context
     return 0;
 }
 """,
-            [testsuite.mustHave(errorcodes.Code.ContextReferenceFormed)]);
+            [testsuite.mustHave(errorcodes.Code.SyntaxError)]);
 
         s.compileFails(
             "context: let stackref r = context is rejected",
