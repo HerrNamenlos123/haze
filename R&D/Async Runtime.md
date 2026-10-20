@@ -7,7 +7,8 @@
 > and Axiom disagree, Axiom wins and this document is wrong.
 
 Status (2026-10-20): the design is complete in Axiom except vsync (section 11). The stack switching
-library is being built in `stdlib/core/src/fiber/`. Nothing else is implemented.
+library is in `stdlib/core/src/fiber/`, and the hidden context is implemented (section 3). Nothing
+else is implemented.
 
 Tags used below:
 * **[Fact]**: verified in the code or a library's source on the date given. Re-verify before relying on it.
@@ -91,22 +92,33 @@ Tags used below:
 
 ---
 
-## 3. The context struct and per-task globals [Plan, mostly Open]
+## 3. The context struct and per-task globals [Built: the context; Open: per-task globals]
 
 Decided in Axiom: every Haze function receives the context as its first argument, before `this`
-(C209); calls into C carry none, and Haze code called from C must be handed one explicitly (C211);
-Haze code can name its context to carry it through C (C212); finding the current context without it
-being passed is possible only from C (C214).
+(C209); calls into C carry none, and Haze code called from C must be handed one explicitly (C211,
+C212); finding the current context without it being passed is possible only from C (C214). How it
+works: C390-C406 (stack-allocated, a value type over a pointer that never leaves the call stack,
+no references, `context.clone` as a checkpoint, `Context()` as the only constructor, C gets and
+hands back contexts by value through `Context.init`, closures run under their caller's context,
+every task has its own context cloned from its creator).
 
-User direction (2026-10-20):
-* Per-task globals live in the context struct.
-* The context struct is a **fixed C type usable everywhere**; task memory is reached through cast
-  pointers.
-* Likely shape: a `void*` data pointer in the context, plus a **process-unique identity per task global
-  variable** stored elsewhere (for example a process-wide table of variables). Accessing a given task
-  global from the current task then works even if the call stack passed into and back out of a module
-  that did not know about that variable.
-* **[Open]**: calls across modules, a module-wide context, at which offsets values actually live.
+**[Fact]** Built (2026-10-20): `Context` / `hzstd_context_t` with one hidden field `dummy`
+(placeholder for per-task state), the `context` name, `context.clone`, `Context.init`,
+`Context()`, `extern C (...) -> R` function types, and every C <-> Haze path in the stdlib
+(reactive core, Clay, SDL, wgpu requests, single_instance) carrying the context. The calling
+convention and the rules for C: DEVELOPMENT.md, "The hidden context". Each path passes the context
+along the path it is actually called on; once tasks exist, every event becomes a task with a
+context cloned from its creator (C378, C405, C406).
+
+**[Open]** Per-task globals in the context. User direction (2026-10-20):
+* Per-task globals live in the context struct, a fixed C type usable everywhere; task memory is
+  reached through cast pointers.
+* Likely shape: a `void*` data pointer in the context (today's `dummy`), plus a **process-unique
+  identity per task global variable** stored elsewhere (for example a process-wide table of
+  variables), so a task global is reachable even if the call stack passed into and back out of a
+  module that did not know about that variable.
+* Calls across modules, a module-wide context, at which offsets values actually live.
+* What `Context.init` must do beyond a plain copy once task state exists.
 
 Earlier layout idea, still compatible: the context points to the current task's block (per-task
 globals and runtime state), which points to its thread's block (per-thread globals, the stackref
@@ -508,7 +520,7 @@ Verified 2026-10-18 in the wgpu-core/wgpu-hal sources of 27.0.3/27.0.4 (Haze's w
 
 ## 12. Open implementation questions
 
-* The context struct's layout and per-task globals across modules (section 3).
+* Per-task globals in the context and across modules (section 3).
 * Vsync (section 11).
 * Default stack and guard sizes, pool caps (section 7).
 * The exact `Future<T>` API, starting from Java's (section 2).

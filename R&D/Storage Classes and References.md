@@ -676,6 +676,14 @@ C side will most likely fail to compile. The author extracts the raw pointer in 
 and it is `unsafe` by construction — consistent with the existing threat model, where `__c__`
 and `do unsafe` are outside the safety guarantee.
 
+Functions (2026-10-20, with the hidden context, Axiom C209, C390-C406): a Haze function takes a
+context as its first C parameter, so only an `extern C (...) -> R` function type is C-callable.
+Haze and `extern C` function types never convert into each other. A function (named, `->` or
+`extern C`) converts to `cptr` only with an explicit `as cptr`, never implicitly (H7224); that is
+also the only, deliberately hacky, way to hand C a Haze function. A `cptr` never converts to a
+function type (H7223); the escape hatch is inline C inside `do unsafe { }`. A `=>` closure never
+becomes a `cptr`. See DEVELOPMENT.md, "The hidden context".
+
 ### 11.2 Threads
 
 Not designed yet. When they are: a stackref may not cross a thread boundary (§4.6). Where that

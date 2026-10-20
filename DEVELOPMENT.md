@@ -296,6 +296,74 @@ Things to know before touching it:
 
 Tests: `testsuite/src/cases_union_member_access.hz`.
 
+## The hidden context (calling convention)
+
+Every Haze function receives its caller's context as its first C parameter
+(Axiom C209, C390-C406). Haze names it `context`, a value of type `Context`
+(`stdlib/core/src/context.hz`); in C it is `hzstd_context_t`
+(`hzstd_types.h`), and the generated code passes a pointer to it.
+
+```
+Haze function        R f(hzstd_context_t *__hz_ctx, [this], params...)
+closure trampoline   R t(hzstd_context_t *__hz_ctx, void *__hz_env, params...)
+extern C function    R f(params...)                 (with or without a body: unchanged)
+Haze fn typedef      R (*)(hzstd_context_t *, params...)      for `->` and the `fn` of a `=>` struct
+extern C fn typedef  R (*)(params...)                         for `extern C (...) -> R`
+`context`            (*__hz_ctx)
+context.clone(b)     { hzstd_context_t __hz_ctxN = *__hz_ctx; b(&__hz_ctxN, env); }
+Context.init(v, b)   { hzstd_context_t __hz_ctxN = v;         b(&__hz_ctxN, env); }
+Context()            hzstd_context_default()        (a plain C call)
+main                 hzstd_context_t __hz_root; hzstd_context_init(&__hz_root); main(&__hz_root)
+```
+
+Mangled names do not change. Module trampolines (`__hz_modtramp_*`) forward
+`__hz_ctx`; the hot-reload tables stay `void *`.
+
+Where it lives:
+
+- **Semantic.** `context` is an implicit variable
+  (`EVariableContext.ContextReference`) that `defineContextVariable`
+  (`src/SymbolCollection/SymbolCollection.ts`) puts into every Haze function,
+  `=>` lambda and `->` literal, like `this`; so a lambda never captures the
+  outer one and a closure runs under its caller's context (C404). `extern C`
+  functions get none. Function types carry `FunctionDatatypeDef.externC`
+  (interned and mangled separately: flag `c` in the requires block), and a
+  call passes a context exactly when its callee's function type is a Haze one.
+  `context.clone` / `Context.init` become `ContextScopeExpr`
+  (`tryContextIntrinsicCall` in `src/Semantic/Elaborate.ts`).
+- **Lower.** `Lowered.ExprCallExpr.context` is the pointer the callee gets
+  (null for `extern C` callees and runtime intrinsics); every call goes through
+  `lowerCallOf`. Everything that needs a context asks `requireContext`, which
+  throws an internal error inside an `extern C` body (H7220 rejects that
+  first).
+- **Codegen.** `functionSignatureParts` adds the parameter for Haze function
+  types; the generated `main` creates the root context.
+
+Rules for C and inline C:
+
+- C only ever receives a context **by value** (C400) and never takes the
+  address of one. Haze passes it like any argument: `someCFunction(context)`.
+  Nothing is ever passed implicitly, even to a C function whose first
+  parameter is a `Context`.
+- C enters Haze through an `extern C` function with a Haze body that calls
+  `Context.init(ctx, () => { ... })`; inside the lambda everything works.
+  The `extern C` body itself may only do what needs no context (H7220).
+- A function type C calls is spelled `extern C (...) -> R`, also on the right
+  of `extern C type X = ...` (the marker is never added automatically).
+  Haze and `extern C` function types never convert into each other; a
+  function becomes a `cptr` only with an explicit `as cptr` (H7224), and a
+  `cptr` never becomes a function (H7223).
+- Never name `__hz_ctx` in inline C. A closure handed to C is boxed and run by
+  an `extern C` entry: the reactive core is the model (`rx.Thunk` and
+  `rx.__hz_rx_run_thunk` in `reactive.hz`; every hzstd entry point that can
+  run Haze code takes `hzstd_context_t ctx` first). The stdlib's Clay, SDL,
+  wgpu and single_instance paths follow the same rule.
+
+Errors: H7219 `context` in an `extern C` function, H7220 something needing a
+context in an `extern C` body, H7221 `let stackref r = context`, H7222 a
+declaration named `context`, H7223 / H7224 the `cptr` conversions.
+Tests: `testsuite/src/cases_context.hz`, `cases_extern_c_function_types.hz`.
+
 ## Module System Architecture
 
 The compiler has a two-phase import/export system:
