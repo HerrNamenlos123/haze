@@ -80,8 +80,8 @@ fn recordingCallbacks(rec: mut Recorder): ui_layout.RenderCallbacks {
     };
 }
 
-fn makeContext(): ui_layout.Context {
-    return ui_layout.Context({
+fn makeContext(): ui_layout.LayoutContext {
+    return ui_layout.LayoutContext({
         width: 800,
         height: 600,
         fonts: [],

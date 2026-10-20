@@ -898,9 +898,9 @@ fn diffMiddle(oldLines: []str, newLines: []str, offset: int): []DiffLine {
     return result;
 }
 
-// Groups a line diff into hunks with `context` unchanged lines on each side,
+// Groups a line diff into hunks with `contextLines` unchanged lines on each side,
 // dropping the long stretches of untouched file in between.
-export fn buildHunks(lines: []DiffLine, context: int): []DiffHunk {
+export fn buildHunks(lines: []DiffLine, contextLines: int): []DiffHunk {
     let hunks: []DiffHunk = [];
 
     // Which lines are near a change and therefore worth keeping.
@@ -912,11 +912,11 @@ export fn buildHunks(lines: []DiffLine, context: int): []DiffHunk {
         if lines[i].kind == DiffLineKind.Context {
             continue;
         }
-        let start = i - context;
+        let start = i - contextLines;
         if start < 0 {
             start = 0;
         }
-        let end = i + context;
+        let end = i + contextLines;
         if end > lines.length - 1 {
             end = lines.length - 1;
         }

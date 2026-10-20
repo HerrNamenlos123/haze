@@ -153,14 +153,14 @@ export ref struct Context<TInitializationOptions> {
             };
         }
 
-        let context = Context<TInitializationOptions> {
+        let lspContext = Context<TInitializationOptions> {
             _args: _args,
             _serverProcess: _serverProcess,
             _running: true,
             initResponse: rx.shallowReactive<LSPInitResponse | none>(none),
         };
 
-        context.sendRequest<LSPInitializeParams<TInitializationOptions>, LSPInitResponse>("initialize", {
+        lspContext.sendRequest<LSPInitializeParams<TInitializationOptions>, LSPInitResponse>("initialize", {
             processId: 0,
             workspaceFolders: init.workspaceFolders,
             capabilities: {},
@@ -168,12 +168,12 @@ export ref struct Context<TInitializationOptions> {
             rootUri: init.rootUri,
         }, (value: Result<LSPInitResponse, LSPError>) => {
             assert(value);
-            context.initResponse := value;
+            lspContext.initResponse := value;
         });
 
-        context.sendNotification<LSPInitializedNotification>("initialized", {});
+        lspContext.sendNotification<LSPInitializedNotification>("initialized", {});
 
-        return context;
+        return lspContext;
     }
 
     fn loop() {

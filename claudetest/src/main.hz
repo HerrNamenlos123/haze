@@ -632,8 +632,8 @@ fn testProtocol() {
     }
 
     // Hook helpers.
-    let context = claude.hookAdditionalContext(claude.HookEvent.PostToolUse, "<ide_diagnostics>[]</ide_diagnostics>");
-    checkEq(claude.stringify(context),
+    let hookAnswer = claude.hookAdditionalContext(claude.HookEvent.PostToolUse, "<ide_diagnostics>[]</ide_diagnostics>");
+    checkEq(claude.stringify(hookAnswer),
         "{\"continue\":true,\"hookSpecificOutput\":{\"hookEventName\":\"PostToolUse\","
         + "\"additionalContext\":\"<ide_diagnostics>[]</ide_diagnostics>\"}}",
         "hook additional context shape");

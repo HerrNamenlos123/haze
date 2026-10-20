@@ -379,7 +379,7 @@ export ref struct Context {
     _undoGroupDepth: int = 0;
 
     fn constructor(args: ContextArgs): mut Context {
-        let context = Context {
+        let editContext = Context {
             args: args,
             cursorVisible: rx.computed(() => false),
             _cursorLastMovedAt: args.getTimeInSeconds(),
@@ -393,10 +393,10 @@ export ref struct Context {
             scrollIntent: rx.reactive<ScrollIntent>(ScrollIntent.None),
         };
 
-        context.cursorVisible = rx.computed(() => {
-            let now = context.args.getTimeInSeconds();
-            let elapsed = now - context._cursorLastMovedAt;
-            let blinkInterval = 1.0 / context.args.cursorBlinkFrequency;
+        editContext.cursorVisible = rx.computed(() => {
+            let now = editContext.args.getTimeInSeconds();
+            let elapsed = now - editContext._cursorLastMovedAt;
+            let blinkInterval = 1.0 / editContext.args.cursorBlinkFrequency;
             return math.modulo(elapsed, blinkInterval) <= blinkInterval / 2.0;
         });
 
@@ -404,21 +404,21 @@ export ref struct Context {
         // the point visual mode started), even when it is one character
         // wide and anchor == cursor. Outside visual modes a zero-width
         // selection is no selection at all, matching a plain textbox.
-        context.hasSelection = rx.computed(() => {
-            let anchor = rx.get(context.selectionAnchor);
+        editContext.hasSelection = rx.computed(() => {
+            let anchor = rx.get(editContext.selectionAnchor);
             if !anchor {
                 return false;
             }
-            if modeIsVisual(rx.get(context.mode)) {
+            if modeIsVisual(rx.get(editContext.mode)) {
                 return true;
             }
-            return anchor.x != context.cursorPosition.x || anchor.y != context.cursorPosition.y;
+            return anchor.x != editContext.cursorPosition.x || anchor.y != editContext.cursorPosition.y;
         });
 
-        context.selectionStart = rx.computed((): Vec2i => {
-            let anchor = rx.get(context.selectionAnchor);
-            let cx = context.cursorPosition.x;
-            let cy = context.cursorPosition.y;
+        editContext.selectionStart = rx.computed((): Vec2i => {
+            let anchor = rx.get(editContext.selectionAnchor);
+            let cx = editContext.cursorPosition.x;
+            let cy = editContext.cursorPosition.y;
             if !anchor {
                 return { x: cx, y: cy };
             }
@@ -428,10 +428,10 @@ export ref struct Context {
             return { x: cx, y: cy };
         });
 
-        context.selectionEnd = rx.computed((): Vec2i => {
-            let anchor = rx.get(context.selectionAnchor);
-            let cx = context.cursorPosition.x;
-            let cy = context.cursorPosition.y;
+        editContext.selectionEnd = rx.computed((): Vec2i => {
+            let anchor = rx.get(editContext.selectionAnchor);
+            let cx = editContext.cursorPosition.x;
+            let cy = editContext.cursorPosition.y;
             if !anchor {
                 return { x: cx, y: cy };
             }
@@ -441,7 +441,7 @@ export ref struct Context {
             return { x: anchor.x, y: anchor.y };
         });
 
-        return context;
+        return editContext;
     }
 
     // Install an input behavior (Vim, Helix, ...). Returns the context so

@@ -733,7 +733,7 @@ fn collectCanvasesRecursive(element: ui_elements.Element, out: mut []ui_elements
     }
 }
 
-export fn drawCanvasIfNeeded(element: ui_elements.CanvasElement, context: mut renderer.gfx.Renderer, contentLost: bool): bool {
+export fn drawCanvasIfNeeded(element: ui_elements.CanvasElement, canvasRenderer: mut renderer.gfx.Renderer, contentLost: bool): bool {
     let data = runtimeDataOf(element);
     if !data.drawFn {
         return false;
@@ -763,9 +763,9 @@ export fn drawCanvasIfNeeded(element: ui_elements.CanvasElement, context: mut re
         if drawFnBox {
             let drawFn = drawFnBox.get<CanvasDrawFn>();
             if let owner = data.owner {
-                runComponentCode(owner, "canvas draw", () => { drawFn(context); });
+                runComponentCode(owner, "canvas draw", () => { drawFn(canvasRenderer); });
             } else {
-                drawFn(context);
+                drawFn(canvasRenderer);
             }
         }
         return drawnVersion;
@@ -2441,7 +2441,7 @@ export opaque ref struct UIContext {
     // computeDivStyle() happens before the push), so this sees exactly the
     // same values a sibling ui.text() call at this point would inherit.
     // Falls back to "default"/16.0 if nothing in the chain sets it, matching
-    // the root defaults ui_layout.Context.render() itself pushes before
+    // the root defaults ui_layout.LayoutContext.render() itself pushes before
     // walking the tree.
     fn currentFontFamily(): str {
         let i = this.renderStack.length - 1;

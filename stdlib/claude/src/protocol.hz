@@ -1076,10 +1076,10 @@ export struct HookInput {
 
 // The standard "carry on, and here is some extra context" hook answer. The
 // text is injected into the conversation as if the tool had reported it.
-export fn hookAdditionalContext(event: HookEvent, context: str): json.Node {
+export fn hookAdditionalContext(event: HookEvent, text: str): json.Node {
     let specific = newObject();
     setStr(specific, "hookEventName", hookEventName(event));
-    setStr(specific, "additionalContext", context);
+    setStr(specific, "additionalContext", text);
 
     let node = newObject();
     setBool(node, "continue", true);

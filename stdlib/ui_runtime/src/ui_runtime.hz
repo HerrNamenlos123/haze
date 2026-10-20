@@ -38,7 +38,7 @@ export struct RuntimeArgs {
 // the other modules.
 export opaque ref struct Runtime {
     gfx: mut renderer.gfx.Context;
-    layout: mut ui_layout.Context;
+    layout: mut ui_layout.LayoutContext;
     ui: mut ui_components.UIContext;
     dpiScale: real;
     // The screen Renderer, kept for the Runtime's lifetime and re-armed each
@@ -57,7 +57,7 @@ export opaque ref struct Runtime {
     feedbackPass: int = 0;
 
     fn constructor(args: RuntimeArgs) {
-        let layout = ui_layout.Context({
+        let layout = ui_layout.LayoutContext({
             width: args.windowState.logicalSize.x,
             height: args.windowState.logicalSize.y,
             fonts: args.fonts,
@@ -364,15 +364,15 @@ export opaque ref struct Runtime {
     // at all and last frame's texture is composited again. `contentLost`: the
     // canvas was just created or resized, so its texture was just cleared.
     fn drawCanvasAndComposite(element: ui_elements.CanvasElement, handle: ui_components.CanvasHandle, contentLost: bool, feedback: ui_components.RenderFeedback, size: Vec2, frame: mut renderer.gfx.Frame, screenRenderer: mut renderer.gfx.Renderer) {
-        let context = handle.context;
+        let canvasRenderer = handle.context;
         // Drawn into outside any frame, so pointed at this one only now --
         // before the drawFn, which may itself draw into other canvases
-        // through context.frame.
-        context.retarget(frame, handle.canvas);
-        let redrawn = ui_components.drawCanvasIfNeeded(element, context, contentLost);
-        if redrawn || context.hasPendingWork() {
-            context.commit(redrawn);
-            context.reset(frame, handle.canvas);
+        // through canvasRenderer.frame.
+        canvasRenderer.retarget(frame, handle.canvas);
+        let redrawn = ui_components.drawCanvasIfNeeded(element, canvasRenderer, contentLost);
+        if redrawn || canvasRenderer.hasPendingWork() {
+            canvasRenderer.commit(redrawn);
+            canvasRenderer.reset(frame, handle.canvas);
         }
 
         screenRenderer.drawTexture({

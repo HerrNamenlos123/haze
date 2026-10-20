@@ -1335,11 +1335,11 @@ let publishEditorContext = computed(() => {
     if !props.active {
         return false;
     }
-    let context = keybindings().context;
+    let whenContext = keybindings().context;
     let on = rx.get(vimOn);
-    context.setBool(ctxVimActive(), on);
-    context.setStr(ctxVimMode(), on ? vimModeContextName(rx.get(texteditBehavior.mode)) : "");
-    context.setBool(ctxEditorHasSelection(),
+    whenContext.setBool(ctxVimActive(), on);
+    whenContext.setStr(ctxVimMode(), on ? vimModeContextName(rx.get(texteditBehavior.mode)) : "");
+    whenContext.setBool(ctxEditorHasSelection(),
         rx.get(texteditBehavior.selectionAnchor) ? true : false);
     return true;
 });

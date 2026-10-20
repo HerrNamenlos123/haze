@@ -22,7 +22,7 @@ namespace ffi {
     // Only sound when the callee cannot outlive the borrow. Every use here is
     // Clay calling straight back into us, synchronously, from inside one
     // Clay_RenderClayCommands call, with the storage owned by the frame that
-    // made that call -- see Context.render. The witness check catches a
+    // made that call -- see LayoutContext.render. The witness check catches a
     // stackref whose scope is already gone at the moment of the borrow; it
     // cannot follow the raw pointer afterwards, so the result must never be
     // stored anywhere that outlives the call.
@@ -45,7 +45,7 @@ namespace ffi {
         measureText: (userdata: cptr, request: hzui_measure_text_request_t) -> Vec2,
         measureTextUserdata: cptr,
     ): cptr :: final;
-    extern C noemit fn hzui_clay_activate_context(context: cptr): void :: final;
+    extern C noemit fn hzui_clay_activate_context(clayContext: cptr): void :: final;
     extern C noemit fn hzui_clay_set_layout_dimensions(width: int, height: int): void :: final;
     extern C noemit fn Clay_BeginLayout(): void :: final;
     extern C noemit fn Clay_EndLayout(): Clay_RenderCommandArray :: final;
@@ -558,7 +558,7 @@ export struct ContextOpts {
 }
 
 // Exported (unlike BoundingBoxCB below) because it's used as a field type on
-// the exported Context struct (measureTextBox), not just inside a function
+// the exported LayoutContext struct (measureTextBox), not just inside a function
 // body -- the cross-module shim generator needs to see it.
 export type MeasureTextCB = (fontId: int, fontSize: real, text: str) => Vec2;
 
@@ -570,10 +570,10 @@ export type MeasureTextCB = (fontId: int, fontSize: real, text: str) => Vec2;
 // layout-shaped styling concern it does own is font/text-color cascading
 // (inheriting from ancestors down the tree), since that can only be resolved
 // while walking the tree, not by looking at one element in isolation.
-export opaque ref struct Context {
+export opaque ref struct LayoutContext {
     fonts: []FontEntry;
     getFontLineHeight: (fontId: int, fontSize: real) => real;
-    // Kept alive for as long as this Context lives -- Clay holds onto the
+    // Kept alive for as long as this LayoutContext lives -- Clay holds onto the
     // raw userdata pointer we hand it in hzui_clay_init and calls back into
     // it on every subsequent layout pass, not just during this constructor.
     measureTextBox: ref Box<MeasureTextCB>;
@@ -581,11 +581,11 @@ export opaque ref struct Context {
     // whichever context it just created the globally active one, so every
     // entry point that talks to Clay on behalf of *this* instance must first
     // reactivate it via hzui_clay_activate_context -- otherwise, with more
-    // than one Context alive at once (e.g. multiple windows/canvases), calls
+    // than one LayoutContext alive at once (e.g. multiple windows/canvases), calls
     // meant for this instance would silently operate on whichever instance
     // happened to be constructed most recently, process-wide.
     clayContextPtr: cptr;
-    // Scratch buffer for the per-frame clip walk, owned by the Context rather
+    // Scratch buffer for the per-frame clip walk, owned by the LayoutContext rather
     // than rebuilt inside render(). A fresh `[]ClipEntry` per frame is not one
     // allocation but five: the initial buffer plus the whole doubling ladder as
     // the walk fills it (measured on a real session: 192 -> 384 -> 768 -> 1536
@@ -594,7 +594,7 @@ export opaque ref struct Context {
     // first frame this reuses the capacity it already grew to and allocates
     // nothing at all.
     clipScratch: mut []ClipEntry = [];
-    // The traversal context, owned by the Context instead of built per render.
+    // The traversal context, owned by the LayoutContext instead of built per render.
     // It is six dynamic stacks plus the struct itself -- thirteen heap blocks
     // every frame, measured -- and every one of them is empty again by the time
     // the traversal ends (validateEmpty asserts exactly that), so there was
@@ -607,7 +607,7 @@ export opaque ref struct Context {
         __c__("measureTextUserdata = measureTextBox;");
 
         let clayContextPtr = ffi.hzui_clay_init(opts.width, opts.height, measureTextTrampoline, measureTextUserdata);
-        return Context {
+        return LayoutContext {
             fonts: opts.fonts,
             getFontLineHeight: opts.getFontLineHeight,
             measureTextBox: measureTextBox,
@@ -635,7 +635,7 @@ export opaque ref struct Context {
 
         // Reset for a fresh traversal. clear() keeps each stack's capacity, so
         // a reused context stops allocating entirely after the first frame --
-        // see Context.traverseScratch. Called at the START of a render rather
+        // see LayoutContext.traverseScratch. Called at the START of a render rather
         // than the end, so a traversal that unwound early (an attempt/panic in
         // a child component) cannot leave stale entries behind for the next.
         fn clear() {
@@ -1388,8 +1388,8 @@ export struct ResolvedClip {
 // userData, so a draw callback can find its clip without any string work.
 // Safe to hold: these elements are kept alive for the whole frame by the
 // tree being rendered (see the DivElement branch of processTreeElement).
-// Exported only because Context caches a []ClipEntry as its per-frame scratch
-// buffer (see Context.clipScratch), and the cross-module shim generator needs
+// Exported only because LayoutContext caches a []ClipEntry as its per-frame scratch
+// buffer (see LayoutContext.clipScratch), and the cross-module shim generator needs
 // to name the field's type even though `opaque` hides it from consumers.
 export struct ClipEntry {
     elementPtr: cptr;

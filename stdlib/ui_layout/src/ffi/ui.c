@@ -111,7 +111,7 @@ static inline Clay_Dimensions MeasureText(Clay_StringSlice text, Clay_TextElemen
 // Every hzui_clay_* entry point below operates on "whichever Clay_Context is
 // currently active" (Clay's own global, Clay__currentContext) -- Clay_Initialize
 // implicitly activates the context it just created, so constructing a second
-// ui_layout.Context previously stole the active context out from under the
+// ui_layout.LayoutContext previously stole the active context out from under the
 // first one for the rest of the process, silently corrupting any interleaved
 // use of multiple simultaneous instances (e.g. multiple windows/canvases).
 // hzui_clay_activate_context (below) lets the Haze side re-select the right
