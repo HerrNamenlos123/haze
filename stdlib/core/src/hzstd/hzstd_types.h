@@ -492,7 +492,9 @@ typedef struct {
 // A `stackref` callable: the function pointer plus the referenced environment.
 // For a bound method the env is the receiver's stackref; for a lambda built in
 // place by `let stackref f = () => ...` it points at the stack-resident env
-// block. Invoking checks `env` like any dereference, then calls fn(env.ptr,...).
+// block. Invoking checks `env` like any dereference, then calls
+// fn(ctx, env.ptr, ...), `fn` cast back to the exact function type it was
+// made from (a Haze one: the context comes first).
 typedef struct {
   void *fn;
   hzstd_stackref_t env;
@@ -720,7 +722,13 @@ typedef struct {
 
 // ── Reactive ─────────────────────────────────────────────────────────────────
 
-typedef void *(*hzstd_computed_fn_t)(void *env);
+// How C runs a Haze closure the reactive core was handed (a computed's body,
+// an effect's scheduler): `entry` is an `extern C` function defined in Haze
+// (reactive.hz) that runs the closure boxed in `thunk` under `ctx`, through
+// Context.init. C never calls a Haze closure itself (Axiom C211, C402): it
+// gets the context by value from the Haze code that read or wrote, and hands
+// it on.
+typedef void *(*hzstd_computed_entry_t)(hzstd_context_t ctx, void *thunk);
 
 typedef struct hzstd_dep_edge_t hzstd_dep_edge_t;
 typedef struct hzstd_cell_dep_t hzstd_cell_dep_t;
@@ -758,17 +766,18 @@ struct hzstd_computed_node_t {
   // hzstd_computed_result_slot). 0 until the first run.
   size_t cached_size;
 
-  hzstd_computed_fn_t fn;
-  void *env;
+  // The computed's body, run by hzstd_computed_get.
+  hzstd_computed_entry_t entry;
+  void *thunk;
 
   // An effect (see hzstd_computed_set_scheduler): called once when the node
   // goes clean -> dirty, after the write that dirtied it has finished
   // propagating. NULL for a plain computed, which is only ever pulled.
-  hzstd_computed_fn_t scheduler;
-  void *scheduler_env;
+  hzstd_computed_entry_t scheduler;
+  void *scheduler_thunk;
   // Set by hzstd_computed_stop: the node never runs or subscribes again.
   int stopped;
-  // While `fn` runs: the computed whose evaluation this one runs inside, if
+  // While the body runs: the computed whose evaluation this one runs inside, if
   // any -- the chain a recovered panic walks to find every evaluation it cut
   // short (hzstd_reactive_restore_state). Meaningless otherwise.
   struct hzstd_computed_node_t *eval_parent;

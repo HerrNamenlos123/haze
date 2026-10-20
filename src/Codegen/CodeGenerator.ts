@@ -28,6 +28,10 @@ import { OutputWriter } from "./OutputWriter";
 /** Bridge key for the long-lived haze-regex-compile process. */
 const REGEX_BRIDGE = "regex";
 
+// The hidden context (Axiom C209): every Haze function's first C parameter.
+const CONTEXT_POINTER_TYPE = "hzstd_context_t*";
+const CONTEXT_PARAMETER = "__hz_ctx";
+
 function makeUnionMappingName(from: Lowered.TypeUseId, to: Lowered.TypeUseId) {
   return `_H_Union_Mapping_${from}_to_${to}_`;
 }
@@ -178,6 +182,11 @@ class CodeGenerator {
         .writeLine("int32_t main(int argc, const char* argv[]) {")
         .pushIndent();
       this.out.function_definitions.writeLine("hzstd_initialize();");
+      // The root context (Axiom C209, C390): on main's stack, with the
+      // defaults `Context()` gives. Every Haze call chain starts from it.
+      this.out.function_definitions
+        .writeLine("hzstd_context_t __hz_root;")
+        .writeLine("hzstd_context_init(&__hz_root);");
 
       const have = new Set<string>();
       for (const module of this.allModules) {
@@ -238,15 +247,23 @@ class CodeGenerator {
         // these live in the stdlib's translation unit, not this module's, so
         // they never show up in this module's own lowered-function declarations.
         this.out.function_declarations
-          .writeLine("hzstd_void_t _HN9profiling18beginAutoProfilingEv();")
-          .writeLine("hzstd_void_t _HN9profiling16endAutoProfilingEv();");
+          .writeLine(
+            `hzstd_void_t _HN9profiling18beginAutoProfilingEv(${CONTEXT_POINTER_TYPE});`
+          )
+          .writeLine(
+            `hzstd_void_t _HN9profiling16endAutoProfilingEv(${CONTEXT_POINTER_TYPE});`
+          );
         this.out.function_definitions
-          .writeLine("_HN9profiling18beginAutoProfilingEv();")
-          .writeLine(`int32_t __hz_exit_code = _HN${nsSeg}4mainEv();`)
-          .writeLine("_HN9profiling16endAutoProfilingEv();")
+          .writeLine("_HN9profiling18beginAutoProfilingEv(&__hz_root);")
+          .writeLine(
+            `int32_t __hz_exit_code = _HN${nsSeg}4mainEv(&__hz_root);`
+          )
+          .writeLine("_HN9profiling16endAutoProfilingEv(&__hz_root);")
           .writeLine("return __hz_exit_code;");
       } else {
-        this.out.function_definitions.writeLine(`return _HN${nsSeg}4mainEv();`);
+        this.out.function_definitions.writeLine(
+          `return _HN${nsSeg}4mainEv(&__hz_root);`
+        );
       }
       this.out.function_definitions
         // .writeLine(`hzstd_arena_cleanup_and_free(parent_arena->arenaImpl);`)
@@ -956,10 +973,18 @@ class CodeGenerator {
           this.out.type_definitions.writeLine("uint64_t length;");
           this.out.type_definitions.popIndent().writeLine("};");
         } else if (symbol.variant === Lowered.ENode.FunctionDatatype) {
+          // A Haze function type takes the context first (Axiom C209); an
+          // `extern C` one is the plain C signature.
+          const parameters = symbol.parameters.map(
+            (p) => `${this.mangleTypeUse(p)}`
+          );
+          if (!symbol.externC) {
+            parameters.unshift(CONTEXT_POINTER_TYPE);
+          }
           this.out.type_declarations.writeLine(
             `typedef ${this.mangleTypeUse(symbol.returnType)} (*${this.mangleTypeDef(
               symbol
-            )})(${symbol.parameters.map((p) => `${this.mangleTypeUse(p)}`).join(", ")});`
+            )})(${parameters.join(", ")});`
           );
         } else if (symbol.variant === Lowered.ENode.CallableDatatype) {
           this.out.type_declarations.writeLine(
@@ -1418,13 +1443,20 @@ class CodeGenerator {
     const ftype = this.lr.typeDefNodes.get(symbol.type);
     assert(ftype.variant === Lowered.ENode.FunctionDatatype);
 
+    const params = ftype.parameters.map((p, i) => ({
+      type: this.mangleTypeUse(p),
+      name: symbol.parameterNames[i],
+    }));
+    // Every Haze function receives its caller's context first, ahead of
+    // `this` and the captures (Axiom C209); an `extern C` function keeps its
+    // C signature (C402).
+    if (!ftype.externC) {
+      params.unshift({ type: CONTEXT_POINTER_TYPE, name: CONTEXT_PARAMETER });
+    }
     return {
       mangledName: this.mangleFunctionSymbol(symbol),
       returnType: this.mangleTypeUse(ftype.returnType),
-      params: ftype.parameters.map((p, i) => ({
-        type: this.mangleTypeUse(p),
-        name: symbol.parameterNames[i],
-      })),
+      params: params,
       vararg: ftype.vararg,
     };
   }
@@ -2248,7 +2280,12 @@ class CodeGenerator {
     const outWriter = new OutputWriter();
     switch (expr.variant) {
       case Lowered.ENode.ExprCallExpr: {
-        const args = expr.arguments.map((a) => {
+        // A Haze callee gets the context first (see Lowered.ExprCallExpr).
+        const args = (
+          expr.context !== null
+            ? [expr.context, ...expr.arguments]
+            : expr.arguments
+        ).map((a) => {
           const r = this.emitExpr(a);
           tempWriter.write(r.temp);
           return r.out.get();

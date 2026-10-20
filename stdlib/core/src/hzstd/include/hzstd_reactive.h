@@ -4,8 +4,13 @@
 
 #include "../hzstd_types.h"
 
-// hzstd_computed_fn_t, hzstd_dep_edge_t, hzstd_node_t, hzstd_cell_dep_t,
+// hzstd_computed_entry_t, hzstd_dep_edge_t, hzstd_node_t, hzstd_cell_dep_t,
 // hzstd_reactive_cell_t, hzstd_computed_node_t are defined in hzstd_types.h.
+//
+// Every entry point that can run Haze code -- evaluating a computed, and a
+// write, which delivers the effects it triggers -- takes the caller's
+// context by value as its first parameter and runs that code under it (see
+// hzstd_computed_entry_t). Reads and dependency bookkeeping take none.
 //
 // Everything in this file operates on a single hzstd_reactive_cell_t — the
 // representation behind both rx.reactive<T>() and rx.shallowReactive<T>()
@@ -21,12 +26,12 @@
 // pointer types) instead of a segfault three calls deep in has_dependency.
 
 void* hzstd_reactive_cell_read(hzstd_reactive_cell_t* cell);
-void hzstd_reactive_cell_write(hzstd_reactive_cell_t* cell, void* value);
+void hzstd_reactive_cell_write(hzstd_context_t ctx, hzstd_reactive_cell_t* cell, void* value);
 hzstd_reactive_cell_t* hzstd_reactive_cell_create(void* initial);
 
-hzstd_computed_node_t* hzstd_computed_create(hzstd_computed_fn_t fn, void* env);
-void* hzstd_computed_read(hzstd_computed_node_t* c);
-void* hzstd_computed_get(hzstd_computed_node_t* comp);
+hzstd_computed_node_t* hzstd_computed_create(hzstd_computed_entry_t entry, void* thunk);
+void* hzstd_computed_read(hzstd_context_t ctx, hzstd_computed_node_t* c);
+void* hzstd_computed_get(hzstd_context_t ctx, hzstd_computed_node_t* comp);
 
 // Turns a computed into an effect. The graph itself stays pull-based: a
 // write still only marks dependents dirty. What a scheduler adds is a
@@ -36,7 +41,7 @@ void* hzstd_computed_get(hzstd_computed_node_t* comp);
 // every notification it caused and delivers them after its own marking is
 // complete, so a scheduler is free to re-run the node -- which rewrites the
 // very dependency lists the marking walks -- or to write other cells).
-void hzstd_computed_set_scheduler(hzstd_computed_node_t* c, hzstd_computed_fn_t scheduler, void* env);
+void hzstd_computed_set_scheduler(hzstd_computed_node_t* c, hzstd_computed_entry_t entry, void* thunk);
 int hzstd_computed_is_dirty(hzstd_computed_node_t* c);
 // Unsubscribes the node from everything it depends on and freezes it: it is
 // never re-run, never re-registers, and its scheduler is never called again.
@@ -70,13 +75,13 @@ void hzstd_slot_read(void* dst, void* slot, size_t size);
     __tmp_result;                                                                                                      \
   })
 
-#define HZSTD_REACTIVE_CELL_WRITE(reactive_T, value_T, reactive_value, value)                                          \
+#define HZSTD_REACTIVE_CELL_WRITE(ctx, reactive_T, value_T, reactive_value, value)                                     \
   ({                                                                                                                   \
     reactive_T __tmp_reactive = reactive_value;                                                                        \
     value_T __tmp_value = value;                                                                                       \
     void* __slot = hzstd_reactive_cell_read(__tmp_reactive);                                                           \
     hzstd_slot_write(__slot, &__tmp_value, sizeof(__tmp_value));                                                       \
-    hzstd_reactive_cell_write(__tmp_reactive, __slot);                                                                 \
+    hzstd_reactive_cell_write(ctx, __tmp_reactive, __slot);                                                            \
     __tmp_reactive;                                                                                                    \
   })
 

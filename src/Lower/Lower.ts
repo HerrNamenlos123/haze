@@ -32,7 +32,7 @@ import {
   CompilerError,
 } from "../shared/Errors";
 import { HazeErrorCode } from "../shared/ErrorCodes";
-import { makeTempName } from "../shared/store";
+import { makeTempId, makeTempName } from "../shared/store";
 
 const ENABLE_IMMEDIATE_CALLABLE_CALL_OPTIMIZATION = true;
 
@@ -158,6 +158,18 @@ export namespace Lowered {
       Semantic.SymbolId,
       { loweredType: Lowered.TypeUseId; suppressHoisting: boolean }
     >;
+
+    // The function whose body is being lowered, for the context it has: a
+    // Haze function or lambda has its `__hz_ctx` parameter, an `extern C`
+    // function has none (Axiom C402), and neither has anything outside a
+    // function body (global initializers, enum values). null outside one.
+    currentFunction: { name: string; hasContext: boolean } | null;
+    // The C types `hzstd_context_t` and `hzstd_context_t *` (hzstd_types.h),
+    // made on first use. Never emitted: hzstd declares them.
+    contextTypes: {
+      value: Lowered.TypeUseId;
+      pointer: Lowered.TypeUseId;
+    } | null;
   };
 
   export function addTypeUse<T extends Lowered.TypeUse>(
@@ -258,6 +270,11 @@ export namespace Lowered {
     variant: ENode.ExprCallExpr;
     expr: ExprId;
     arguments: ExprId[];
+    // The `hzstd_context_t *` the callee receives as its first C argument,
+    // ahead of `arguments`: set exactly when the callee is a Haze function
+    // (Axiom C209). null for a call of an `extern C` function or function
+    // value, and for the runtime's C functions and macros (C211).
+    context: ExprId | null;
     type: TypeUseId;
   };
 
@@ -707,6 +724,11 @@ export namespace Lowered {
     parameters: TypeUseId[];
     returnType: TypeUseId;
     vararg: boolean;
+    // See Semantic.FunctionDatatypeDef.externC. false: a Haze function type,
+    // whose C form takes `hzstd_context_t *` ahead of `parameters` (the
+    // function-pointer typedef, and the signature of every function of this
+    // type). true: the plain C signature, no context.
+    externC: boolean;
   };
 
   export type FixedArrayDatatypeDef = {
@@ -923,6 +945,107 @@ const lowerExprAndWrapFlattenedStatements = (
   });
 };
 
+// The C types of the hidden context, `hzstd_context_t` and a pointer to it.
+// Plain names, never emitted: hzstd_types.h declares the struct.
+function contextTypes(lr: Lowered.Module) {
+  if (lr.contextTypes) {
+    return lr.contextTypes;
+  }
+  const [_struct, structId] = Lowered.addTypeDef<Lowered.StructDatatypeDef>(
+    lr,
+    {
+      variant: Lowered.ENode.StructDatatype,
+      noemit: true,
+      name: {
+        prettyName: "Context",
+        mangledName: "hzstd_context_t",
+        wasMangled: false,
+      },
+      members: [],
+    }
+  );
+  const use = (pointer: boolean) =>
+    Lowered.addTypeUse(lr, {
+      variant: Lowered.ENode.TypeUse,
+      mutability: EDatatypeMutability.Default,
+      name: {
+        prettyName: pointer ? "Context*" : "Context",
+        mangledName: pointer ? "hzstd_context_t*" : "hzstd_context_t",
+        wasMangled: false,
+      },
+      pointer: pointer,
+      stackref: false,
+      sourceloc: null,
+      type: structId,
+    })[1];
+  lr.contextTypes = { value: use(false), pointer: use(true) };
+  return lr.contextTypes;
+}
+
+// Throws unless the function being lowered has a context; for generated C
+// that names `__hz_ctx` itself. See currentContextPointer.
+function requireContext(
+  lr: Lowered.Module,
+  what: string,
+  sourceloc: SourceLoc
+) {
+  const f = lr.currentFunction;
+  if (!f || !f.hasContext) {
+    throw new InternalError(
+      `${what} needs a context, but ${
+        f ? `the 'extern C' function '${f.name}'` : "code outside a function"
+      } has none; this should have been rejected as H${HazeErrorCode.ContextNeededInExternCFunction}`,
+      sourceloc ?? undefined
+    );
+  }
+}
+
+// The `hzstd_context_t *` of the function being lowered: its own `__hz_ctx`
+// parameter, which every Haze function has (Axiom C209). `what` names the
+// construct that needs it. An `extern C` function has no context (C402), so
+// needing one in its body is an internal error: the checker rejects every
+// such construct first (H7220). The same holds outside any function body.
+function currentContextPointer(
+  lr: Lowered.Module,
+  what: string,
+  sourceloc: SourceLoc
+): Lowered.ExprId {
+  requireContext(lr, what, sourceloc);
+  return contextParameter(lr);
+}
+
+// `__hz_ctx`, the context parameter of a Haze function (C209), unchecked: for
+// the bodies Lower builds itself (closure trampolines).
+function contextParameter(lr: Lowered.Module): Lowered.ExprId {
+  return Lowered.addExpr(lr, {
+    variant: Lowered.ENode.SymbolValueExpr,
+    name: {
+      prettyName: "__hz_ctx",
+      mangledName: "__hz_ctx",
+      wasMangled: false,
+    },
+    type: contextTypes(lr).pointer,
+  })[1];
+}
+
+// The current context itself, an lvalue of type `hzstd_context_t`:
+// `(*__hz_ctx)`. What Haze's `context` names, and what the runtime's entry
+// points that can run Haze code receive by value (C400).
+function currentContextValue(
+  lr: Lowered.Module,
+  what: string,
+  sourceloc: SourceLoc
+): Lowered.ExprId {
+  return Lowered.addExpr(lr, {
+    variant: Lowered.ENode.DereferenceExpr,
+    expr: currentContextPointer(lr, what, sourceloc),
+    type: contextTypes(lr).value,
+  })[1];
+}
+
+// A call of one of the runtime's C functions or macros (hzstd_*, HZSTD_*):
+// never a context (C211). An entry point that can run Haze code takes the
+// context by value as an ordinary first argument (see currentContextValue).
 function makeIntrinsicCall(
   lr: Lowered.Module,
   functionName: string,
@@ -940,9 +1063,11 @@ function makeIntrinsicCall(
     },
     autoret: false,
     vararg: false,
+    externC: true,
   });
   return Lowered.addExpr(lr, {
     variant: Lowered.ENode.ExprCallExpr,
+    context: null,
     arguments: callArguments,
     expr: Lowered.addExpr(lr, {
       variant: Lowered.ENode.SymbolValueExpr,
@@ -1068,10 +1193,12 @@ function lowerComputedCellRead(
     statements,
     "__tmp_result"
   )[1];
+  // Evaluating the computed runs Haze code: it gets this function's context.
+  requireContext(lr, "Reading a computed", sourceloc);
   statements.push(
     Lowered.addStatement(lr, {
       variant: Lowered.ENode.InlineCStatement,
-      value: `void* __slot = hzstd_computed_read(__tmp_computed);
+      value: `void* __slot = hzstd_computed_read(*__hz_ctx, __tmp_computed);
 hzstd_slot_read(&__tmp_result, __slot, sizeof(__tmp_result));`,
       sourceloc: sourceloc,
     })[1]
@@ -1161,6 +1288,165 @@ type InstanceInfo = {
   returnedInstanceIds: Set<Semantic.InstanceId>;
 };
 
+// A call of an already lowered callee: a function (`->`, or a named one) or a
+// callable (`=>`). Whether the callee takes a context is a fact of its
+// function type (Lowered.FunctionDatatypeDef.externC); a callable is always
+// Haze code (a lambda's or a bound method's trampoline). `context` yields
+// the `hzstd_context_t *` to hand a Haze callee and is not evaluated for a C
+// one. `lowerArguments` lowers the call's own arguments, after the callee.
+function lowerCallOf(
+  lr: Lowered.Module,
+  calledExpr: Lowered.Expression,
+  calledExprId: Lowered.ExprId,
+  lowerArguments: () => Lowered.ExprId[],
+  type: Lowered.TypeUseId,
+  flattened: Lowered.StatementId[],
+  context: () => Lowered.ExprId
+): [Lowered.Expression, Lowered.ExprId] {
+  const calledExprType = lr.typeUseNodes.get(
+    Lowered.resolveAlias(lr, calledExpr.type)
+  );
+  const calledExprTypeDef = lr.typeDefNodes.get(calledExprType.type);
+  assert(
+    calledExprTypeDef.variant === Lowered.ENode.FunctionDatatype ||
+      calledExprTypeDef.variant === Lowered.ENode.CallableDatatype
+  );
+  const contextFor = (functionType: Lowered.TypeDefId) => {
+    const def = lr.typeDefNodes.get(functionType);
+    assert(def.variant === Lowered.ENode.FunctionDatatype);
+    return def.externC ? null : context();
+  };
+
+  if (calledExprTypeDef.variant === Lowered.ENode.CallableDatatype) {
+    if (
+      calledExpr.variant === Lowered.ENode.CallableExpr &&
+      calledExpr.envValue?.type === "method" &&
+      ENABLE_IMMEDIATE_CALLABLE_CALL_OPTIMIZATION
+    ) {
+      // A method is immediately called -> Optimize callable object away
+      // As optimization, switch back from the trampoline function to the native function
+      const trampolineFunction = lr.functionNodes.get(calledExpr.function);
+      assert(trampolineFunction.isClosureTrampolineFor);
+      const nativeFunction = lr.functionNodes.get(
+        trampolineFunction.isClosureTrampolineFor
+      );
+
+      // calledExpr.envValue.thisExpr may have been wrapped in an
+      // AddressOfExpr so it fits into a single env-block pointer slot
+      // (see the "method" envValue construction below). The native
+      // function's own 'this' parameter is forced non-inline, which only
+      // actually yields a pointer in C for struct/array receivers; for
+      // struct-backed primitive receivers (e.g. 'str') it stays by-value,
+      // so unwrap back to the original by-value expression in that case.
+      let nativeThisExpr = calledExpr.envValue.thisExpr;
+      if (nativeFunction.envType?.type === "method") {
+        const nativeThisParamIsPointer = lr.typeUseNodes.get(
+          Lowered.resolveAlias(lr, nativeFunction.envType.thisExprType)
+        ).pointer;
+        if (!nativeThisParamIsPointer) {
+          const envThisExpr = lr.exprNodes.get(calledExpr.envValue.thisExpr);
+          if (envThisExpr.variant === Lowered.ENode.AddressOfExpr) {
+            nativeThisExpr = envThisExpr.expr;
+          }
+        }
+      }
+
+      return Lowered.addExpr<Lowered.ExprCallExpr>(lr, {
+        variant: Lowered.ENode.ExprCallExpr,
+        expr: Lowered.addExpr(lr, {
+          variant: Lowered.ENode.SymbolValueExpr,
+          name: nativeFunction.name,
+          type: calledExpr.type,
+        })[1],
+        context: contextFor(nativeFunction.type),
+        arguments: [nativeThisExpr, ...lowerArguments()],
+        type: type,
+      });
+    }
+    // The callable is from a variable with unknown origin or a real lambda -> Actually call the callable properly
+    const callableTmp = storeInTempVarAndGetIfRequired(
+      lr,
+      calledExpr.type,
+      calledExprId,
+      null,
+      flattened
+    )[1];
+    if (calledExprType.stackref) {
+      // Stackref callable {fn, env: hzstd_stackref_t}: check the witness,
+      // then call fn(ctx, env.ptr, args). The method body / lambda never
+      // knows it was reached through a stackref (§12.4). `fn` is stored as
+      // `void *`; it is cast back to exactly the function type it was made
+      // from, context parameter included.
+      const fnPtrType = makeLowerTypeUse(
+        lr,
+        calledExprTypeDef.functionType,
+        false
+      )[1];
+      return Lowered.addExpr<Lowered.ExprCallExpr>(lr, {
+        variant: Lowered.ENode.ExprCallExpr,
+        expr: Lowered.addExpr(lr, {
+          variant: Lowered.ENode.ExplicitCastExpr,
+          expr: Lowered.addExpr(lr, {
+            variant: Lowered.ENode.MemberAccessExpr,
+            memberName: "fn",
+            requiresDeref: false,
+            type: lowerTypeUse(lr, lr.sr.b.cptrType()),
+            expr: callableTmp,
+          })[1],
+          type: fnPtrType,
+          integerNarrowingRange: null,
+        })[1],
+        context: contextFor(calledExprTypeDef.functionType),
+        arguments: [
+          Lowered.addExpr(lr, {
+            variant: Lowered.ENode.StackrefDerefExpr,
+            expr: Lowered.addExpr(lr, {
+              variant: Lowered.ENode.MemberAccessExpr,
+              expr: callableTmp,
+              requiresDeref: false,
+              memberName: "env",
+              type: lowerTypeUse(lr, lr.sr.b.cptrType()),
+            })[1],
+            type: lowerTypeUse(lr, lr.sr.b.cptrType()),
+          })[1],
+          ...lowerArguments(),
+        ],
+        type: type,
+      });
+    }
+    return Lowered.addExpr<Lowered.ExprCallExpr>(lr, {
+      variant: Lowered.ENode.ExprCallExpr,
+      expr: Lowered.addExpr(lr, {
+        variant: Lowered.ENode.MemberAccessExpr,
+        memberName: "fn",
+        requiresDeref: false,
+        type: calledExpr.type,
+        expr: callableTmp,
+      })[1],
+      context: contextFor(calledExprTypeDef.functionType),
+      arguments: [
+        Lowered.addExpr(lr, {
+          variant: Lowered.ENode.MemberAccessExpr,
+          expr: callableTmp,
+          requiresDeref: false,
+          memberName: "env",
+          type: lowerTypeUse(lr, lr.sr.b.cptrType()),
+        })[1],
+        ...lowerArguments(),
+      ],
+      type: type,
+    });
+  }
+  // A named function or a `->` function value: Haze or `extern C` by its type.
+  return Lowered.addExpr<Lowered.ExprCallExpr>(lr, {
+    variant: Lowered.ENode.ExprCallExpr,
+    expr: calledExprId,
+    context: contextFor(calledExprType.type),
+    arguments: lowerArguments(),
+    type: type,
+  });
+}
+
 export function lowerExpr(
   lr: Lowered.Module,
   exprId: Semantic.ExprId,
@@ -1180,166 +1466,19 @@ export function lowerExpr(
         flattened,
         instanceInfo
       );
-      const calledExprType = lr.typeUseNodes.get(
-        Lowered.resolveAlias(lr, calledExpr.type)
-      );
-      const calledExprTypeDef = lr.typeDefNodes.get(calledExprType.type);
-      assert(
-        calledExprTypeDef.variant === Lowered.ENode.FunctionDatatype ||
-          calledExprTypeDef.variant === Lowered.ENode.CallableDatatype
-      );
-
-      if (calledExprTypeDef.variant === Lowered.ENode.CallableDatatype) {
-        if (
-          calledExpr.variant === Lowered.ENode.CallableExpr &&
-          calledExpr.envValue?.type === "method" &&
-          ENABLE_IMMEDIATE_CALLABLE_CALL_OPTIMIZATION
-        ) {
-          // A method is immediately called -> Optimize callable object away
-          // As optimization, switch back from the trampoline function to the native function
-          const trampolineFunction = lr.functionNodes.get(calledExpr.function);
-          assert(trampolineFunction.isClosureTrampolineFor);
-          const nativeFunction = lr.functionNodes.get(
-            trampolineFunction.isClosureTrampolineFor
-          );
-
-          // calledExpr.envValue.thisExpr may have been wrapped in an
-          // AddressOfExpr so it fits into a single env-block pointer slot
-          // (see the "method" envValue construction below). The native
-          // function's own 'this' parameter is forced non-inline, which only
-          // actually yields a pointer in C for struct/array receivers; for
-          // struct-backed primitive receivers (e.g. 'str') it stays by-value,
-          // so unwrap back to the original by-value expression in that case.
-          let nativeThisExpr = calledExpr.envValue.thisExpr;
-          if (nativeFunction.envType?.type === "method") {
-            const nativeThisParamIsPointer = lr.typeUseNodes.get(
-              Lowered.resolveAlias(lr, nativeFunction.envType.thisExprType)
-            ).pointer;
-            if (!nativeThisParamIsPointer) {
-              const envThisExpr = lr.exprNodes.get(
-                calledExpr.envValue.thisExpr
-              );
-              if (envThisExpr.variant === Lowered.ENode.AddressOfExpr) {
-                nativeThisExpr = envThisExpr.expr;
-              }
-            }
-          }
-
-          const type = lowerTypeUse(lr, expr.type);
-          const [callExpr, callExprId] = Lowered.addExpr<Lowered.ExprCallExpr>(
-            lr,
-            {
-              variant: Lowered.ENode.ExprCallExpr,
-              expr: Lowered.addExpr(lr, {
-                variant: Lowered.ENode.SymbolValueExpr,
-                name: nativeFunction.name,
-                type: calledExpr.type,
-              })[1],
-              arguments: [
-                nativeThisExpr,
-                ...expr.arguments.map(
-                  (a) => lowerExpr(lr, a, flattened, instanceInfo)[1]
-                ),
-              ],
-              type: type,
-            }
-          );
-          return [callExpr, callExprId];
-        }
-        // The callable is from a variable with unknown origin or a real lambda -> Actually call the callable properly
-        const type = lowerTypeUse(lr, expr.type);
-        const callableTmp = storeInTempVarAndGetIfRequired(
-          lr,
-          calledExpr.type,
-          calledExprId,
-          null,
-          flattened
-        )[1];
-        if (calledExprType.stackref) {
-          // Stackref callable {fn, env: hzstd_stackref_t}: check the witness,
-          // then call fn(env.ptr, args). The method body / lambda never knows
-          // it was reached through a stackref (§12.4).
-          const fnPtrType = makeLowerTypeUse(
-            lr,
-            calledExprTypeDef.functionType,
-            false
-          )[1];
-          const [callExpr, callExprId] = Lowered.addExpr<Lowered.ExprCallExpr>(
-            lr,
-            {
-              variant: Lowered.ENode.ExprCallExpr,
-              expr: Lowered.addExpr(lr, {
-                variant: Lowered.ENode.ExplicitCastExpr,
-                expr: Lowered.addExpr(lr, {
-                  variant: Lowered.ENode.MemberAccessExpr,
-                  memberName: "fn",
-                  requiresDeref: false,
-                  type: lowerTypeUse(lr, lr.sr.b.cptrType()),
-                  expr: callableTmp,
-                })[1],
-                type: fnPtrType,
-                integerNarrowingRange: null,
-              })[1],
-              arguments: [
-                Lowered.addExpr(lr, {
-                  variant: Lowered.ENode.StackrefDerefExpr,
-                  expr: Lowered.addExpr(lr, {
-                    variant: Lowered.ENode.MemberAccessExpr,
-                    expr: callableTmp,
-                    requiresDeref: false,
-                    memberName: "env",
-                    type: lowerTypeUse(lr, lr.sr.b.cptrType()),
-                  })[1],
-                  type: lowerTypeUse(lr, lr.sr.b.cptrType()),
-                })[1],
-                ...expr.arguments.map(
-                  (a) => lowerExpr(lr, a, flattened, instanceInfo)[1]
-                ),
-              ],
-              type: type,
-            }
-          );
-          return [callExpr, callExprId];
-        }
-        const [callExpr, callExprId] = Lowered.addExpr<Lowered.ExprCallExpr>(
-          lr,
-          {
-            variant: Lowered.ENode.ExprCallExpr,
-            expr: Lowered.addExpr(lr, {
-              variant: Lowered.ENode.MemberAccessExpr,
-              memberName: "fn",
-              requiresDeref: false,
-              type: calledExpr.type,
-              expr: callableTmp,
-            })[1],
-            arguments: [
-              Lowered.addExpr(lr, {
-                variant: Lowered.ENode.MemberAccessExpr,
-                expr: callableTmp,
-                requiresDeref: false,
-                memberName: "env",
-                type: lowerTypeUse(lr, lr.sr.b.cptrType()),
-              })[1],
-              ...expr.arguments.map(
-                (a) => lowerExpr(lr, a, flattened, instanceInfo)[1]
-              ),
-            ],
-            type: type,
-          }
-        );
-        return [callExpr, callExprId];
-      }
-      const [exprCall, exprCallId] = Lowered.addExpr<Lowered.ExprCallExpr>(lr, {
-        variant: Lowered.ENode.ExprCallExpr,
-        expr: calledExprId,
-        arguments: [
-          ...expr.arguments.map(
+      return lowerCallOf(
+        lr,
+        calledExpr,
+        calledExprId,
+        () =>
+          expr.arguments.map(
             (a) => lowerExpr(lr, a, flattened, instanceInfo)[1]
           ),
-        ],
-        type: lowerTypeUse(lr, expr.type),
-      });
-      return [exprCall, exprCallId];
+        lowerTypeUse(lr, expr.type),
+        flattened,
+        // A Haze callee runs under the caller's own context (C209, C404).
+        () => currentContextPointer(lr, "A call of a Haze function", expr.sourceloc)
+      );
     }
 
     case Semantic.ENode.BinaryExpr: {
@@ -1417,6 +1556,17 @@ export function lowerExpr(
 
       if (symbol.variant === Semantic.ENode.VariableSymbol) {
         assert(symbol.type);
+
+        if (symbol.variableContext === EVariableContext.ContextReference) {
+          // `context` (Axiom C392): the function's own hidden context, an
+          // lvalue over its `__hz_ctx` parameter. Every function and lambda
+          // has its own, so it is never a capture.
+          return Lowered.addExpr(lr, {
+            variant: Lowered.ENode.DereferenceExpr,
+            expr: currentContextPointer(lr, "'context'", expr.sourceloc),
+            type: lowerTypeUse(lr, symbol.type),
+          });
+        }
 
         const globalVariableStatementId = [
           ...lr.sr.elaboratedGlobalVariableDefinitionSymbols,
@@ -2678,6 +2828,9 @@ export function lowerExpr(
           lr,
           "hzstd_reactive_array_write",
           [
+            // A write delivers the effects it triggers (watchers): Haze
+            // code, run under the writer's context.
+            currentContextValue(lr, "A reactive write", expr.sourceloc),
             lowerExpr(lr, expr.target, flattened, instanceInfo)[1],
             lowerExpr(lr, expr.value, flattened, instanceInfo)[1],
           ],
@@ -2689,6 +2842,8 @@ export function lowerExpr(
         lr,
         "HZSTD_REACTIVE_CELL_WRITE",
         [
+          // See hzstd_reactive_array_write above.
+          currentContextValue(lr, "A reactive write", expr.sourceloc),
           Lowered.addExpr(lr, {
             variant: Lowered.ENode.SymbolValueExpr,
             name: reactiveType.name,
@@ -2735,10 +2890,13 @@ export function lowerExpr(
         "__tmp_result"
       )[1];
 
+      // Evaluating the computed runs Haze code: it gets this function's
+      // context.
+      requireContext(lr, "Reading a computed", expr.sourceloc);
       statements.push(
         Lowered.addStatement(lr, {
           variant: Lowered.ENode.InlineCStatement,
-          value: `void* __slot = hzstd_computed_read(__tmp_computed);
+          value: `void* __slot = hzstd_computed_read(*__hz_ctx, __tmp_computed);
 hzstd_slot_read(&__tmp_result, __slot, sizeof(__tmp_result));`,
           sourceloc: expr.sourceloc,
         })[1]
@@ -3354,6 +3512,77 @@ hzstd_slot_read(&__tmp_result, __slot, sizeof(__tmp_result));`,
       });
     }
 
+    case Semantic.ENode.ContextScopeExpr: {
+      // `context.clone(body)` / `Context.init(value, body)` (Axiom C396,
+      // C397, C401):
+      //
+      //   ({ hzstd_context_t __hz_ctxN = *__hz_ctx;  // or = <value>
+      //      <body>(&__hz_ctxN, ...); })
+      //
+      // The new context is a local of this frame and the body is called with
+      // its address, so nothing is allocated (a lambda literal body has its
+      // env on the stack too, see CallableExpr.stackEnv). The caller's own
+      // context is never written: it is in effect again however the body is
+      // left, a recovered panic included, with nothing to restore.
+      // `Context.init` needs no context of its own, so it is legal in an
+      // `extern C` function: that is how C enters Haze (C402).
+      const statements: Lowered.StatementId[] = [];
+      const ctxName = `__hz_ctx${makeTempId()}`;
+      const ctxNameSet: NameSet = {
+        prettyName: ctxName,
+        mangledName: ctxName,
+        wasMangled: false,
+      };
+      const { value: ctxType, pointer: ctxPointerType } = contextTypes(lr);
+      const initValue =
+        expr.initValue === null
+          ? currentContextValue(lr, "context.clone()", expr.sourceloc)
+          : lowerExpr(lr, expr.initValue, statements, instanceInfo)[1];
+      statements.push(
+        Lowered.addStatement(lr, {
+          variant: Lowered.ENode.VariableStatement,
+          stackrefInit: null,
+          name: ctxNameSet,
+          type: ctxType,
+          variableContext: EVariableContext.FunctionLocal,
+          intrinsicTakeAddrOfValue: false,
+          value: initValue,
+          sourceloc: expr.sourceloc,
+        })[1]
+      );
+
+      const [body, bodyId] = lowerExpr(lr, expr.body, statements, instanceInfo);
+      const call = lowerCallOf(
+        lr,
+        body,
+        bodyId,
+        () => [],
+        lowerTypeUse(lr, expr.type),
+        statements,
+        () =>
+          Lowered.addExpr(lr, {
+            variant: Lowered.ENode.AddressOfExpr,
+            expr: Lowered.addExpr(lr, {
+              variant: Lowered.ENode.SymbolValueExpr,
+              name: ctxNameSet,
+              type: ctxType,
+            })[1],
+            type: ctxPointerType,
+          })[1]
+      )[1];
+
+      return Lowered.addExpr(lr, {
+        variant: Lowered.ENode.BlockScopeExpr,
+        block: Lowered.addBlockScope(lr, {
+          definesVariables: true,
+          statements: statements,
+          emittedExpr: call,
+        })[1],
+        type: lowerTypeUse(lr, expr.type),
+        sourceloc: expr.sourceloc,
+      });
+    }
+
     case Semantic.ENode.TernaryExpr: {
       const variableType = lowerTypeUse(lr, expr.type);
 
@@ -3627,7 +3856,9 @@ export function lowerTypeDef(
     // Now additionally intern equivalent function types, that were not equivalent in elaboration
     // but are not equivalent after lowering. By shape, in a map: scanning every lowered type
     // for every function type was quadratic and about half of all lowering time.
-    const shape = `${type.vararg ? 1 : 0}|${returnType}|${parameters.join(",")}`;
+    // The marker is part of the shape: a Haze and an `extern C` function
+    // type of the same parameters differ in C by the context parameter.
+    const shape = `${type.externC ? "C" : "H"}|${type.vararg ? 1 : 0}|${returnType}|${parameters.join(",")}`;
     const equivalent = lr.loweredFunctionTypesByShape.get(shape);
     if (equivalent !== undefined) {
       lr.loweredTypeDefs.set(typeId, equivalent);
@@ -3640,6 +3871,7 @@ export function lowerTypeDef(
       returnType: returnType,
       name: Semantic.makeNameSetTypeDef(lr.sr, typeId),
       vararg: type.vararg,
+      externC: type.externC,
     });
     lr.loweredTypeDefs.set(typeId, pId);
     lr.loweredFunctionTypesByShape.set(shape, pId);
@@ -3661,6 +3893,8 @@ export function lowerTypeDef(
 
     const semFType = lr.sr.typeDefNodes.get(type.functionType);
     assert(semFType.variant === Semantic.ENode.FunctionDatatype);
+    // `fn` is always Haze code (a lambda's or a bound method's trampoline):
+    // `R (*)(hzstd_context_t *, void *env, params...)`.
     const ftypeId = lowerTypeDef(
       lr,
       makeRawFunctionDatatypeAvailable(lr.sr, {
@@ -3669,6 +3903,7 @@ export function lowerTypeDef(
         returnType: semFType.returnType,
         sourceloc: null,
         vararg: semFType.vararg,
+        externC: false,
       })
     );
     const ftype = lr.typeDefNodes.get(ftypeId);
@@ -4923,6 +5158,22 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
         makeTrampoline = true;
       }
 
+      // An `extern C` function keeps its C signature; every other one takes
+      // the caller's context first (Axiom C209, C402). The function's type
+      // says which (Semantic.FunctionDatatypeDef.externC).
+      const externC = originalFuncType.externC;
+      if (externC !== (symbol.extern === EExternLanguage.Extern_C)) {
+        throw new InternalError(
+          `The function type of '${symbol.name}' and its declaration disagree on whether it is 'extern C'`,
+          symbol.sourceloc ?? undefined
+        );
+      }
+      if (externC && makeTrampoline) {
+        throw new InternalError(
+          `An 'extern C' function cannot be a method or a closure: '${symbol.name}'`,
+          symbol.sourceloc ?? undefined
+        );
+      }
       const newFuncType = makeRawFunctionDatatypeAvailable(lr.sr, {
         parameters: mainFuncParameters,
         returnType: originalFuncType.returnType,
@@ -4934,6 +5185,7 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
           noreturnIf: originalFuncType.requires.noreturnIf,
         },
         vararg: false,
+        externC: externC,
       });
 
       const monomorphized = Semantic.isSymbolMonomorphized(lr.sr, symbolId);
@@ -4980,6 +5232,8 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
             variant: Lowered.ENode.FunctionSymbol,
             name: name,
             parameterNames: trampolineFuncParameterNames,
+            // `(hzstd_context_t *__hz_ctx, void *__hz_env, params...)`: it
+            // hands its context on to the native function.
             type: lowerTypeDef(
               lr,
               makeRawFunctionDatatypeAvailable(lr.sr, {
@@ -4993,6 +5247,7 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
                   noreturnIf: originalFuncType.requires.noreturnIf,
                 },
                 vararg: false,
+                externC: false,
               })
             ),
             noreturn: originalFuncType.requires.noreturn,
@@ -5093,6 +5348,7 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
                 sourceloc: f.sourceloc,
                 expr: Lowered.addExpr(lr, {
                   variant: Lowered.ENode.ExprCallExpr,
+                  context: contextParameter(lr),
                   arguments: [
                     Lowered.addExpr(lr, {
                       variant: Lowered.ENode.SymbolValueExpr,
@@ -5162,6 +5418,7 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
                 sourceloc: f.sourceloc,
                 expr: Lowered.addExpr(lr, {
                   variant: Lowered.ENode.ExprCallExpr,
+                  context: contextParameter(lr),
                   arguments: args,
                   expr: Lowered.addExpr(lr, {
                     variant: Lowered.ENode.SymbolValueExpr,
@@ -5195,12 +5452,15 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
         }
       }
 
+      const prevFunction = lr.currentFunction;
+      lr.currentFunction = { name: symbol.name, hasContext: !externC };
       f.scope =
         (symbol.scope &&
           lowerBlockScope(lr, symbol.scope, {
             returnedInstanceIds: symbol.returnsInstanceIds,
           })) ||
         null;
+      lr.currentFunction = prevFunction;
 
       lr.currentFunctionCaptureTypeMap = prevCaptureTypeMap;
 
@@ -5316,11 +5576,16 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
 
       const name = Semantic.makeNameSetSymbol(lr.sr, symbolId);
       const flattened: Lowered.StatementId[] = [];
+      // A global's initializer is outside every function: it has no
+      // context, whichever function's body happens to be lowered right now.
+      const prevFunction = lr.currentFunction;
+      lr.currentFunction = null;
       let value =
         symbol.value &&
         lowerExpr(lr, symbol.value, flattened, {
           returnedInstanceIds: new Set(),
         })[1];
+      lr.currentFunction = prevFunction;
       if (value && variableSymbol.requiresHoisting) {
         const original = storeInTempVarAndGet(
           lr,
@@ -5662,6 +5927,8 @@ export function LowerModule(sr: Semantic.Context): Lowered.Module {
     loweredUnionMappings: [],
 
     currentFunctionCaptureTypeMap: new Map(),
+    currentFunction: null,
+    contextTypes: null,
   };
 
   for (const [key, entries] of sr.elaboratedFuncdefSymbols) {

@@ -3180,7 +3180,10 @@ export namespace Semantic {
         requires += "_";
         return {
           name:
-            "F" +
+            // An `extern C` function type is a different C type from the
+            // Haze one of the same signature (no context parameter), so it
+            // needs its own name: its typedef sits next to the Haze one's.
+            (type.externC ? "XF" : "F") +
             params +
             "E" +
             requires +

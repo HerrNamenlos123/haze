@@ -15764,7 +15764,9 @@ export class SemanticElaborator {
     if (name === "push") {
       const suffix = Semantic.mangleTypeUse(this.sr, userElemTypeId).name;
       const funcname = `__hz_reactive_array_push_${suffix}`;
-      const body = `__c__("HZSTD_REACTIVE_ARRAY_PUSH(this, ${promotedElemCName}, HZSTD_REACTIVE_CELL_CREATE(${promotedElemCName}, ${userElemCName}, element));");`;
+      // A notifying mutation runs the effects it triggers under the
+      // method's own context (hzstd_reactive_array.h).
+      const body = `__c__("HZSTD_REACTIVE_ARRAY_PUSH(*__hz_ctx, this, ${promotedElemCName}, HZSTD_REACTIVE_CELL_CREATE(${promotedElemCName}, ${userElemCName}, element));");`;
       return makeCallable(
         ensureSyntheticMethod(
           funcname,
@@ -15779,7 +15781,7 @@ export class SemanticElaborator {
       const funcname = `__hz_reactive_array_pop_${
         Semantic.mangleTypeUse(this.sr, promotedElemTypeId).name
       }`;
-      const body = `__c__("return HZSTD_REACTIVE_ARRAY_POP(this, ${promotedElemCName});");`;
+      const body = `__c__("return HZSTD_REACTIVE_ARRAY_POP(*__hz_ctx, this, ${promotedElemCName});");`;
       return makeCallable(
         ensureSyntheticMethod(funcname, [], promotedElemTypeId, body)
       );

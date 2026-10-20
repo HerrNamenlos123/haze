@@ -9,7 +9,7 @@
 // thread: a recovered panic restores it (hzstd_reactive_restore_state), and a
 // recovery on one thread must not rewind another thread's evaluation.
 static _Thread_local hzstd_computed_node_t* g_current_computed = NULL;
-// The computed whose `fn` is running, innermost first along eval_parent.
+// The computed whose body is running, innermost first along eval_parent.
 // Unlike g_current_computed, pausing tracking does not hide it.
 static _Thread_local hzstd_computed_node_t* g_evaluating = NULL;
 
@@ -71,17 +71,17 @@ static void register_dependency(hzstd_node_t* src, hzstd_computed_node_t* dst)
   dst->deps = dep;
 }
 
-hzstd_computed_node_t* hzstd_computed_create(hzstd_computed_fn_t fn, void* env)
+hzstd_computed_node_t* hzstd_computed_create(hzstd_computed_entry_t entry, void* thunk)
 {
   hzstd_computed_node_t* c = hzstd_heap_allocate(sizeof(*c), "hzstd_computed_node_t");
   c->base.dependents = NULL;
   c->dirty = 1;
   c->cached = NULL;
   c->cached_size = 0;
-  c->fn = fn;
-  c->env = env;
+  c->entry = entry;
+  c->thunk = thunk;
   c->scheduler = NULL;
-  c->scheduler_env = NULL;
+  c->scheduler_thunk = NULL;
   c->stopped = 0;
   c->eval_parent = NULL;
   c->deps = NULL;
@@ -134,15 +134,16 @@ void* hzstd_computed_result_slot(size_t size)
   return slot;
 }
 
-void* hzstd_computed_read(hzstd_computed_node_t* c)
+void* hzstd_computed_read(hzstd_context_t ctx, hzstd_computed_node_t* c)
 {
   if (g_current_computed) {
     register_dependency(&c->base, g_current_computed);
   }
-  return hzstd_computed_get(c);
+  return hzstd_computed_get(ctx, c);
 }
 
-void* hzstd_computed_get(hzstd_computed_node_t* comp)
+// Runs the computed's body under the reader's context.
+void* hzstd_computed_get(hzstd_context_t ctx, hzstd_computed_node_t* comp)
 {
   if (!comp->dirty || comp->stopped) {
     return comp->cached;
@@ -156,7 +157,7 @@ void* hzstd_computed_get(hzstd_computed_node_t* comp)
   g_evaluating = comp;
 
   comp->dirty = 0;
-  comp->cached = comp->fn(comp->env);
+  comp->cached = comp->entry(ctx, comp->thunk);
 
   g_evaluating = comp->eval_parent;
   g_current_computed = prev;
@@ -192,7 +193,9 @@ static void queue_effect(hzstd_computed_node_t* comp)
 //
 // A delivery a recovered panic cut short leaves its delivered entries NULL
 // and the rest pending; the next delivery skips the one and makes the other.
-static void deliver_effects(void)
+//
+// Every scheduler runs under the context of the write that delivers it.
+static void deliver_effects(hzstd_context_t ctx)
 {
   if (g_delivering_effects) {
     return;
@@ -202,7 +205,7 @@ static void deliver_effects(void)
     hzstd_computed_node_t* comp = g_pending_effects[i];
     g_pending_effects[i] = NULL;
     if (comp && comp->scheduler && !comp->stopped) {
-      comp->scheduler(comp->scheduler_env);
+      comp->scheduler(ctx, comp->scheduler_thunk);
     }
   }
   g_pending_effects_len = 0;
@@ -236,21 +239,21 @@ void* hzstd_reactive_cell_read(hzstd_reactive_cell_t* cell)
   return cell->value;
 }
 
-void hzstd_reactive_cell_write(hzstd_reactive_cell_t* cell, void* value)
+void hzstd_reactive_cell_write(hzstd_context_t ctx, hzstd_reactive_cell_t* cell, void* value)
 {
   cell->value = value;
   g_write_depth++;
   mark_dirty(&cell->base);
   g_write_depth--;
   if (g_write_depth == 0) {
-    deliver_effects();
+    deliver_effects(ctx);
   }
 }
 
-void hzstd_computed_set_scheduler(hzstd_computed_node_t* c, hzstd_computed_fn_t scheduler, void* env)
+void hzstd_computed_set_scheduler(hzstd_computed_node_t* c, hzstd_computed_entry_t entry, void* thunk)
 {
-  c->scheduler = scheduler;
-  c->scheduler_env = env;
+  c->scheduler = entry;
+  c->scheduler_thunk = thunk;
 }
 
 int hzstd_computed_is_dirty(hzstd_computed_node_t* c) { return c->dirty; }
@@ -260,7 +263,7 @@ void hzstd_computed_stop(hzstd_computed_node_t* c)
   clear_dependencies(c);
   c->stopped = 1;
   c->scheduler = NULL;
-  c->scheduler_env = NULL;
+  c->scheduler_thunk = NULL;
 }
 
 hzstd_computed_node_t* hzstd_reactive_pause_tracking(void)

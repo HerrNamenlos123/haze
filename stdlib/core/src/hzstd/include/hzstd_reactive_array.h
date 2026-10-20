@@ -55,13 +55,15 @@ hzstd_reactive_array_create(hzstd_dynamic_array_t* data)
 
 // Notify dependents that the container changed shape (push/pop/set/clear/
 // whole-array write) without notifying on every individual element cell.
+// Like every write, it delivers the effects it triggers under `ctx`, the
+// writer's context (see hzstd_reactive.h); so does every mutation below.
 static inline void
-hzstd_reactive_array_mark_changed(hzstd_reactive_array_t* ra)
+hzstd_reactive_array_mark_changed(hzstd_context_t ctx, hzstd_reactive_array_t* ra)
 {
   // Access the slot directly to avoid registering a spurious dependency.
   size_t* counter = (size_t*)(ra->version->value);
   (*counter)++;
-  hzstd_reactive_cell_write(ra->version, ra->version->value);
+  hzstd_reactive_cell_write(ctx, ra->version, ra->version->value);
 }
 
 // Register a read dependency on the version counter (for length / subscript reads).
@@ -73,25 +75,25 @@ hzstd_reactive_array_mark_changed(hzstd_reactive_array_t* ra)
   (HZSTD_REACTIVE_ARRAY_READ_TRACK(ra), (hzstd_int_t)(ra)->data->size)
 
 // .push(element) — push element then notify
-#define HZSTD_REACTIVE_ARRAY_PUSH(ra, elemType, elem)           \
+#define HZSTD_REACTIVE_ARRAY_PUSH(ctx, ra, elemType, elem)      \
   do {                                                           \
     HZSTD_ARRAY_PUSH((ra)->data, elemType, elem);               \
-    hzstd_reactive_array_mark_changed(ra);                      \
+    hzstd_reactive_array_mark_changed(ctx, ra);                 \
   } while (0)
 
 // .pop() — pop element, notify, return element
-#define HZSTD_REACTIVE_ARRAY_POP(ra, elemType)                   \
+#define HZSTD_REACTIVE_ARRAY_POP(ctx, ra, elemType)              \
   ({                                                             \
     elemType __hz_ra_popped = HZSTD_ARRAY_POP((ra)->data, elemType); \
-    hzstd_reactive_array_mark_changed(ra);                      \
+    hzstd_reactive_array_mark_changed(ctx, ra);                 \
     __hz_ra_popped;                                             \
   })
 
 // .clear() — clear array and notify
-#define HZSTD_REACTIVE_ARRAY_CLEAR(ra)    \
-  do {                                    \
-    hzstd_dynamic_array_clear((ra)->data); \
-    hzstd_reactive_array_mark_changed(ra); \
+#define HZSTD_REACTIVE_ARRAY_CLEAR(ctx, ra)     \
+  do {                                          \
+    hzstd_dynamic_array_clear((ra)->data);      \
+    hzstd_reactive_array_mark_changed(ctx, ra); \
   } while (0)
 
 // arr[index] — track + bounds-checked element access
@@ -100,11 +102,11 @@ hzstd_reactive_array_mark_changed(hzstd_reactive_array_t* ra)
    HZSTD_DYNAMIC_ARRAY_GET((ra)->data, elemType, index))
 
 // arr[index] = val — overwrite element and notify
-#define HZSTD_REACTIVE_ARRAY_SET(ra, elemType, index, val)                          \
+#define HZSTD_REACTIVE_ARRAY_SET(ctx, ra, elemType, index, val)                     \
   do {                                                                               \
     elemType __hz_ra_val = (val);                                                   \
     hzstd_dynamic_array_set((ra)->data, (size_t)(index), &__hz_ra_val);            \
-    hzstd_reactive_array_mark_changed(ra);                                          \
+    hzstd_reactive_array_mark_changed(ctx, ra);                                     \
   } while (0)
 
 // Create a reactive array from a plain dynamic array, wrapping every element in
@@ -149,10 +151,10 @@ hzstd_reactive_array_read(hzstd_reactive_array_t* ra)
 // Reactive<T> cells (matching hzstd_reactive_array_read's contract above,
 // and what the compiler produces for e.g. `arr := [rx.reactive(1), ...]`).
 static inline hzstd_reactive_array_t*
-hzstd_reactive_array_write(hzstd_reactive_array_t* ra, hzstd_dynamic_array_t* newData)
+hzstd_reactive_array_write(hzstd_context_t ctx, hzstd_reactive_array_t* ra, hzstd_dynamic_array_t* newData)
 {
   ra->data = newData;
-  hzstd_reactive_array_mark_changed(ra);
+  hzstd_reactive_array_mark_changed(ctx, ra);
   return ra;
 }
 

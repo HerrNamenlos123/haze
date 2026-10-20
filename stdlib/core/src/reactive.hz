@@ -17,6 +17,30 @@ namespace rx {
     export type Reactive<T> = builtin.__hz_reactive_t<T>;
     export type Computed<T> = builtin.__hz_computed_t<T>;
 
+    // A Haze closure handed to the reactive core: a computed's body, or an
+    // effect's scheduler. Boxed, so C can hold it as one pointer (the thunk
+    // of hzstd_computed_entry_t). C never runs it itself (Axiom C402): it
+    // calls __hz_rx_run_thunk with the context of the Haze code that read the
+    // computed or wrote the cell that triggered it.
+    export ref struct Thunk {
+        run: () => cptr;
+    }
+
+    // hzstd_computed_entry_t: runs a Thunk under the context C hands over
+    // (C401).
+    export extern C fn __hz_rx_run_thunk(ctx: Context, thunk: cptr): cptr {
+        let result = none as cptr;
+        do unsafe {
+            let box: Thunk = uninitialized;
+            __c__("box = thunk;");
+            // TEMPORARY bridge until Context.init exists: the closure is run
+            // under a copy of `ctx`, exactly what Context.init(ctx, ...) does,
+            // but by calling its `fn` from C. Replaced by Context.init.
+            __c__("{ hzstd_context_t __hz_entered = ctx; result = box->run.fn(&__hz_entered, box->run.env); }");
+        };
+        return result;
+    }
+
     // Shallow reactive is a dumb shell: whatever's inside is stored unchanged
     // and only a whole-value `:=` is ever observable, exactly like every
     // other T -- including a dynamic array. It deliberately does NOT route
@@ -104,9 +128,11 @@ namespace rx {
                 };
             };
 
+            let thunk = Thunk { run: fnWrapper };
+            let entry = __hz_rx_run_thunk;
             let result: rx.Computed<rx.UnwrapReactive<T>> = uninitialized;
             __c__("""
-                result = hzstd_computed_create(fnWrapper.fn, fnWrapper.env);
+                result = hzstd_computed_create(entry, (void*)thunk);
             """);
             result
         };
@@ -527,8 +553,10 @@ namespace rx {
             trigger();
             return none as cptr;
         };
+        let schedulerThunk = Thunk { run: schedulerWrapper };
+        let entry = __hz_rx_run_thunk;
         do unsafe {
-            __c__("hzstd_computed_set_scheduler(node, schedulerWrapper.fn, schedulerWrapper.env);");
+            __c__("hzstd_computed_set_scheduler(node, entry, (void*)schedulerThunk);");
         };
 
         if options.immediate {
