@@ -390,6 +390,11 @@ function computeTypeDefFingerprintUncached(
           state,
           computeTypeUseFingerprint(sr, def.returnType)
         );
+        // A Haze and an `extern C` function type are different types. Folded
+        // only for the latter, so every Haze function type keeps its value.
+        if (def.externC) {
+          state = fnv1a64FoldString(state, "extern C");
+        }
       }
       return state;
     }

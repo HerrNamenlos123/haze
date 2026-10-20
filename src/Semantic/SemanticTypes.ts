@@ -3172,6 +3172,11 @@ export namespace Semantic {
         if (type.requires.pure) {
           requires += "p";
         }
+        // An `extern C` function type has no context parameter, so it lowers
+        // to a different C type than the Haze one with the same signature.
+        if (type.externC) {
+          requires += "c";
+        }
         requires += "_";
         return {
           name:

@@ -1259,6 +1259,8 @@ export namespace Conversion {
   type ConversionPlanError = {
     kind: "error";
     message: string;
+    // Absent: NoSuitableConversionFound.
+    code?: HazeErrorCode;
   };
 
   type ConversionPlan = ConversionPlanSuccess | ConversionPlanError;
@@ -1366,6 +1368,20 @@ export namespace Conversion {
     }
 
     assert(resolvedSourceTypeDef.concrete && resolvedTargetTypeDef.concrete);
+
+    // A Haze function receives the caller's context as a hidden first
+    // argument, an `extern C` one does not (Axiom C209, C402): the two are
+    // never the same type, whatever their signatures.
+    if (resolvedSourceTypeDef.externC !== resolvedTargetTypeDef.externC) {
+      const marker = (externC: boolean) =>
+        externC
+          ? "an 'extern C' function type (no context, what C can call)"
+          : "a Haze function type (it receives the caller's context)";
+      return {
+        kind: "error",
+        message: `Value of type ${sourceTypeText} cannot be used as type ${targetTypeText}: the source is ${marker(resolvedSourceTypeDef.externC)}, the target is ${marker(resolvedTargetTypeDef.externC)}. Only identical function types convert.`,
+      };
+    }
 
     if (
       resolvedSourceTypeDef.parameters.length !==
@@ -1615,6 +1631,50 @@ export namespace Conversion {
     //     variant:
     //   })
     // }
+
+    // Functions and `cptr` (R&D/Storage Classes and References.md, FFI):
+    // a function becomes a `cptr` only when asked to (`f as cptr`), and a
+    // `cptr` never becomes a function. The escape hatch is inline C.
+    {
+      const isCptr = (def: Semantic.TypeDef) =>
+        def.variant === Semantic.ENode.PrimitiveDatatype &&
+        def.primitive === EPrimitive.cptr;
+      if (
+        isCptr(resolvedSourceTypeDef) &&
+        (resolvedTargetTypeDef.variant === Semantic.ENode.FunctionDatatype ||
+          resolvedTargetTypeDef.variant === Semantic.ENode.CallableDatatype)
+      ) {
+        return {
+          kind: "error",
+          message: `A 'cptr' cannot be converted to the function type ${targetTypeText}: nothing is known about what it points to. Call through it in inline C instead.`,
+          code: HazeErrorCode.CptrToFunction,
+        };
+      }
+      if (
+        resolvedSourceTypeDef.variant === Semantic.ENode.FunctionDatatype &&
+        isCptr(resolvedTargetTypeDef)
+      ) {
+        if (mode !== Mode.Explicit) {
+          return {
+            kind: "error",
+            message: `A function converts to 'cptr' only explicitly: write '... as cptr'. ${sourceTypeText} is ${resolvedSourceTypeDef.externC ? "an 'extern C' function" : "a Haze function, which expects the caller's context as its first argument"}.`,
+            code: HazeErrorCode.FunctionToCptrNeedsExplicitCast,
+          };
+        }
+        return {
+          kind: "basic-c-cast",
+        };
+      }
+      if (
+        resolvedSourceTypeDef.variant === Semantic.ENode.CallableDatatype &&
+        isCptr(resolvedTargetTypeDef)
+      ) {
+        return {
+          kind: "error",
+          message: `A closure (${sourceTypeText}) never converts to 'cptr': it is a function together with its environment, which a single pointer cannot hold`,
+        };
+      }
+    }
 
     // From none to cptr (represents nullptr)
     if (
@@ -3176,7 +3236,11 @@ export namespace Conversion {
           return declaredResult;
         }
       }
-      return { ok: false, error: conversionPlan.message };
+      return {
+        ok: false,
+        error: conversionPlan.message,
+        code: conversionPlan.code,
+      };
     }
 
     // nocopy (R&D/Storage Classes and References.md §9): landing a nocopy

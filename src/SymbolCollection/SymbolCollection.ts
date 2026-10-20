@@ -1212,6 +1212,7 @@ function defineGenericTypeParameter(
   functionScopeId: Collect.ScopeId,
   sourceloc: SourceLoc
 ) {
+  rejectDeclarationNamedContext(name, "A generic parameter", sourceloc);
   const functionScope = cc.scopeNodes.get(functionScopeId);
   assert(
     functionScope.variant === Collect.ENode.FunctionScope ||
@@ -1317,11 +1318,71 @@ function isNamespaceSymbol(
   );
 }
 
+/**
+ * The implicit `context` of every Haze function and lambda (Axiom C209, C392).
+ *
+ * It is resolved like `this`: a collected variable in the function's own scope
+ * (EVariableContext.ContextReference), so a lambda finds its own and never
+ * captures the outer one (C404). Nothing else may be found under the bare name,
+ * or the current context could be shadowed (H7222). Struct fields, methods and
+ * enum members named `context` stay legal: they are reached through a value.
+ */
+export const CONTEXT_VARIABLE_NAME = "context";
+
+export function rejectDeclarationNamedContext(
+  name: string,
+  what: string,
+  sourceloc: SourceLoc
+) {
+  if (name === CONTEXT_VARIABLE_NAME) {
+    throw new CompilerError(
+      `${what} cannot be named 'context': 'context' names the current context of every Haze function and cannot be declared. Choose another name.`,
+      sourceloc,
+      HazeErrorCode.DeclarationNamedContext
+    );
+  }
+}
+
+/** Defines the implicit `context` in a Haze function's or lambda's own scope. */
+function defineContextVariable(
+  cc: CollectionContext,
+  functionScopeId: Collect.ScopeId,
+  sourceloc: SourceLoc
+) {
+  defineVariableSymbol(
+    cc,
+    {
+      variant: Collect.ENode.VariableSymbol,
+      comptime: false,
+      // Assignable: `context = c` replaces the whole current context (C399).
+      mutability: EVariableMutability.Default,
+      name: CONTEXT_VARIABLE_NAME,
+      sourceloc: sourceloc,
+      type: null,
+      globalValueInitializer: null,
+      variableContext: EVariableContext.ContextReference,
+    },
+    functionScopeId
+  );
+}
+
 export function defineVariableSymbol(
   cc: CollectionContext,
   variable: Omit<Collect.VariableSymbol, "inScope">,
   scope: Collect.ScopeId
 ) {
+  if (
+    variable.variableContext !== EVariableContext.MemberOfStruct &&
+    variable.variableContext !== EVariableContext.ContextReference
+  ) {
+    rejectDeclarationNamedContext(
+      variable.name,
+      variable.variableContext === EVariableContext.FunctionParameter
+        ? "A parameter"
+        : "A variable",
+      variable.sourceloc
+    );
+  }
   const sc = cc.scopeNodes.get(scope);
   for (const id of sc.symbols) {
     const s = cc.symbolNodes.get(id);
@@ -1356,6 +1417,13 @@ function collectTypeDef(
 ): Collect.SymbolId {
   if (item === null) {
     assert(false);
+  }
+  if (item.variant !== "ModuleNamespaceDefinition") {
+    rejectDeclarationNamedContext(
+      item.name,
+      item.variant === "NamespaceDefinition" ? "A namespace" : "A type",
+      item.sourceloc
+    );
   }
   switch (item.variant) {
     // =================================================================================================================
@@ -1836,6 +1904,11 @@ function collectSymbol(
     // =================================================================================================================
 
     case "FunctionDefinition": {
+      // A method or constructor is reached through its struct; a free
+      // function would be found by its bare name.
+      if (item.methodType === EMethodType.None) {
+        rejectDeclarationNamedContext(item.name, "A function", item.sourceloc);
+      }
       const [overloadGroup, overloadGroupId] = makeOverloadGroupAvailable(
         cc,
         args.currentParentScope,
@@ -1993,6 +2066,11 @@ function collectSymbol(
             },
             functionScopeId
           );
+        }
+
+        // An `extern C` function has no context (C402): it is what C calls.
+        if (item.externLanguage !== EExternLanguage.Extern_C) {
+          defineContextVariable(cc, functionScopeId, functionSymbol.sourceloc);
         }
 
         for (const p of parameters) {
@@ -2239,6 +2317,7 @@ function collectGlobalDirective(
     // =================================================================================================================
 
     case "AliasDef": {
+      rejectDeclarationNamedContext(item.name, "An alias", item.sourceloc);
       const [genericsScope, genericsScopeId] =
         Collect.makeScope<Collect.TypeDefScope>(cc, {
           variant: Collect.ENode.TypeDefScope,
@@ -2320,6 +2399,7 @@ function collectGlobalDirective(
       // always named after the module and `as` was silently ignored (bug 2 of
       // §0.2).
       const boundName = item.alias ?? item.name;
+      rejectDeclarationNamedContext(boundName, "An import", item.sourceloc);
       const [alias, aliasId] = Collect.makeTypeDef<Collect.AliasDef>(cc, {
         variant: Collect.ENode.AliasDef,
         // A module namespace is a datatype, so this is the `type` subset.
@@ -2412,6 +2492,7 @@ function collectGlobalDirective(
         // `b as c` binds `c`. Only the listed names are bound -- `m` itself is
         // NOT, so it still has to be a declared dependency to be named (§2.2).
         const boundName = imported.alias ?? imported.symbol;
+        rejectDeclarationNamedContext(boundName, "An import", item.sourceloc);
 
         const [genericsScope, genericsScopeId] =
           Collect.makeScope<Collect.TypeDefScope>(cc, {
@@ -2708,6 +2789,11 @@ function collectScope(
       }
 
       case "AliasDef": {
+        rejectDeclarationNamedContext(
+          astStatement.name,
+          "An alias",
+          astStatement.sourceloc
+        );
         // The generics scope has to exist BEFORE the target is collected, and
         // the target has to be collected inside it -- otherwise the alias's own
         // type parameters are not in scope for its own right-hand side.
@@ -2861,6 +2947,18 @@ function collectScope(
       }
 
       case "ForEachStatement": {
+        rejectDeclarationNamedContext(
+          astStatement.loopVariable,
+          "A loop variable",
+          astStatement.sourceloc
+        );
+        if (astStatement.indexVariable) {
+          rejectDeclarationNamedContext(
+            astStatement.indexVariable,
+            "A loop variable",
+            astStatement.sourceloc
+          );
+        }
         addStatement(cc, blockScopeId, {
           variant: Collect.ENode.ForEachStatement,
           value: collectExpr(cc, astStatement.value, {
@@ -3163,6 +3261,9 @@ function collectExpr(
         functionScope.blockScope = collectScope(cc, item.lambda.scope, {
           currentParentScope: functionScopeId,
         });
+        // Its own `context`, never the creator's: a closure runs under the
+        // context of whoever calls it (C404).
+        defineContextVariable(cc, functionScopeId, item.sourceloc);
 
         for (const p of functionSymbol.parameters) {
           const varsymId = defineVariableSymbol(
@@ -3201,6 +3302,9 @@ function collectExpr(
         functionScope.blockScope = collectScope(cc, item.lambda.scope, {
           currentParentScope: functionScopeId,
         });
+        // A `->` function literal is a Haze function too: its own `context`,
+        // which also keeps the enclosing function's from being found here.
+        defineContextVariable(cc, functionScopeId, item.sourceloc);
 
         for (const p of functionSymbol.parameters) {
           if (p.kind === "normal" && p.type === null) {

@@ -15,3 +15,9 @@
 export extern C noemit opaque struct hzstd_context_t {}
 
 export type Context = hzstd_context_t;
+
+namespace ffi {
+    // What `Context()` is: the compiler turns it into a call of this C
+    // function (static inline in hzstd_runtime.h), so it needs no context.
+    export extern C noemit fn hzstd_context_default(): hzstd_context_t :: final;
+}
