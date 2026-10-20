@@ -1549,9 +1549,9 @@ extern C fn hzui_set_clip(ctx: Context, userdata: cptr, elementPtr: cptr): void 
 
 extern C fn hzui_render_filled_rect(ctx: Context, userdata: cptr, x: real, y: real, width: real, height: real, backgroundColor: Color, cornerRadius: CornerRadiusValues): void {
     do unsafe {
-        // userdata is the RenderCallbacks ref struct itself (already a single
-        // heap pointer -- see render()'s own comment), not a box -- no
-        // separate allocation needed to reinterpret it back.
+        // userdata is the DispatchState on render()'s own frame (see the
+        // comment there), not a box -- no separate allocation needed to
+        // reinterpret it back.
         let state: ref DispatchState = uninitialized;
         __c__("state = userdata;");
         Context.init(ctx, () => {
