@@ -11,7 +11,8 @@
 import { spawnSync } from "node:child_process";
 import { dirname } from "node:path";
 import { parseConfig } from "../ModuleCompiler/ModuleCompiler";
-import { PLATFORM, Platform } from "../shared/Config";
+import { PLATFORM } from "../shared/Config";
+import { Platform } from "../shared/HostPlatform";
 import { GeneralError } from "../shared/Errors";
 
 // The scripts already running in this process tree, outermost first. A script

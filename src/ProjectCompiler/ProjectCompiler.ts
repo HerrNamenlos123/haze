@@ -8,8 +8,8 @@ import {
   ModuleType,
   PlatformStrings,
   PLATFORM,
-  Platform,
 } from "../shared/Config";
+import { Platform } from "../shared/HostPlatform";
 import {
   assert,
   CompilerError,

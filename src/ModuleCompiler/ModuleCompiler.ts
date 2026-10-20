@@ -85,12 +85,18 @@ import {
   type GeneratorGraphNode,
   type ModuleConfig,
   type ModuleMetadata,
+  HOST,
   ModuleType,
   PLATFORM,
-  Platform,
+  type PlatformString,
   PlatformStrings,
   parseModuleMetadata,
 } from "../shared/Config";
+import {
+  fiberTargetMacro,
+  Platform,
+  platformName,
+} from "../shared/HostPlatform";
 import {
   assert,
   CmdFailed,
@@ -767,11 +773,8 @@ export class ModuleBuildCache {
   }
 }
 
-export function getCurrentPlatform() {
-  if (PLATFORM === Platform.Linux) {
-    return "linux-x64";
-  }
-  return "win32-x64";
+export function getCurrentPlatform(): PlatformString {
+  return platformName(HOST);
 }
 
 // ---------------------------------------------------------------------------
@@ -2267,6 +2270,8 @@ export class ModuleCompiler {
 
     compilerFlags.addWin32("-DHAZE_PLATFORM_WIN32");
     compilerFlags.addLinux("-DHAZE_PLATFORM_LINUX");
+    // Selects the stack switching library's implementation (stdlib/core/src/fiber/fiber.h).
+    compilerFlags.addAll(`-D${fiberTargetMacro(HOST)}`);
 
     compilerFlags.addLinux("-fPIC");
 

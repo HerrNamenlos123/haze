@@ -6,27 +6,17 @@ import { parse } from "@ltd/j-toml";
 import { getCurrentPlatform } from "../ModuleCompiler/ModuleCompiler";
 import type { Collect } from "../SymbolCollection/SymbolCollection";
 import { assert, GeneralError } from "./Errors";
+import { type Arch, detectHost, Platform } from "./HostPlatform";
 
 export enum ModuleType {
   Library = 0,
   Executable = 1,
 }
 
-export enum Platform {
-  Win32 = 0,
-  Linux = 1,
-}
-
-export let PLATFORM: Platform;
-if (process.platform === "win32") {
-  PLATFORM = Platform.Win32;
-} else if (process.platform === "linux") {
-  PLATFORM = Platform.Linux;
-} else if (process.platform === "darwin") {
-  throw new Error("MacOS not supported yet");
-} else {
-  throw new Error("Platform not supported yet: " + process.platform);
-}
+/** The machine Haze runs on and compiles for; unsupported hosts stop here (HostPlatform.ts). */
+export const HOST = detectHost(process.platform, process.arch);
+export const PLATFORM: Platform = HOST.platform;
+export const ARCH: Arch = HOST.arch;
 
 // `path` is null when the dependency is declared without one, which means
 // "resolve it from the standard library by name" (see ProjectCompiler).
@@ -227,7 +217,11 @@ export type ModuleConfig = {
   app?: AppConfig;
 };
 
-export type PlatformString = "linux-x64" | "win32-x64";
+export type PlatformString =
+  | "linux-x64"
+  | "linux-arm64"
+  | "win32-x64"
+  | "win32-arm64";
 
 export type ModuleLibMetadata = {
   platform: PlatformString;
@@ -369,7 +363,9 @@ export function parseModuleMetadata(metadata: string): ModuleMetadata {
         filename: getString(obj["filename"]),
         platform: getStringAnyOf<PlatformString>(obj["platform"], [
           "linux-x64",
+          "linux-arm64",
           "win32-x64",
+          "win32-arm64",
         ]),
         type: getStringAnyOf<"static" | "shared">(obj["type"], [
           "static",
