@@ -720,6 +720,8 @@ export type ASTFunctionTypeExpr = {
   returnType: ASTExpr;
   requires: ASTFunctionRequiresBlock;
   mutability: EDatatypeMutability;
+  // `extern C (...) -> R`: Extern_C. Absent or None: a Haze function type.
+  externLanguage?: EExternLanguage;
   sourceloc: SourceLoc;
 };
 

@@ -8625,6 +8625,7 @@ export class SemanticElaborator {
               parameters: parameters,
               returnType: returnType,
               vararg: func.vararg,
+              externC: symbol.extern === EExternLanguage.Extern_C,
               requires: {
                 final: func.requires.final,
                 noreturn: func.requires.noreturn,
@@ -8907,6 +8908,7 @@ export class SemanticElaborator {
                   parameters: parameters,
                   returnType: inferredReturnType,
                   vararg: func.vararg,
+                  externC: symbol.extern === EExternLanguage.Extern_C,
                   requires: {
                     final: true,
                     pure:
@@ -9799,6 +9801,7 @@ export class SemanticElaborator {
           returnType: this.elaborateDatatype(type.returnType),
           vararg: type.vararg,
           mutability: type.mutability,
+          externC: type.externLanguage === EExternLanguage.Extern_C,
           requires: {
             final: true,
             pure: type.requires.pure,

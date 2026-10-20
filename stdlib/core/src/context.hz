@@ -1,0 +1,17 @@
+// The hidden context (Axiom C209, C390-C406).
+//
+// Every Haze function receives the context of its caller; `context` names it,
+// like `this`. Haze sees a value with no visible fields: reading `context`
+// copies it, hidden fields included, and writing to it (a member, or the whole
+// value) goes through to the current one. No reference to it can be formed.
+//
+// A context is made only by `Context()`, which gives the defaults, or by
+// copying one. `context.clone(() => { ... })` runs a closure under a copy of the
+// current context; `Context.init(c, () => { ... })` runs one under a context
+// set up from the value `c`. That is how C enters Haze: C calls an `extern C`
+// function, handing it a context by value, and the body calls `Context.init`.
+//
+// The C side is `hzstd_context_t` in hzstd_types.h.
+export extern C noemit opaque struct hzstd_context_t {}
+
+export type Context = hzstd_context_t;

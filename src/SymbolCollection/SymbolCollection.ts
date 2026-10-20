@@ -927,6 +927,9 @@ export namespace Collect {
     vararg: boolean;
     requires: FunctionRequiresBlock;
     mutability: EDatatypeMutability;
+    // Extern_C for an `extern C (...) -> R` type (C-callable, no context);
+    // None for a Haze function type.
+    externLanguage: EExternLanguage;
     sourceloc: SourceLoc;
   };
 
@@ -3749,6 +3752,7 @@ function collectExpr(
         vararg: item.ellipsis,
         requires: requires,
         mutability: item.mutability,
+        externLanguage: item.externLanguage ?? EExternLanguage.None,
         sourceloc: item.sourceloc,
       })[1];
     }

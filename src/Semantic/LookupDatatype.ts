@@ -242,9 +242,12 @@ export function makeRawFunctionDatatypeAvailable(
     returnType: Semantic.TypeUseId;
     vararg: boolean;
     requires: Semantic.FunctionRequireBlock;
+    // See Semantic.FunctionDatatypeDef.externC. Absent = a Haze function type.
+    externC?: boolean;
     sourceloc: SourceLoc;
   }
 ): Semantic.TypeDefId {
+  const externC = args.externC ?? false;
   // Identity is compared THROUGH aliases, so a signature written with an
   // alias and the same signature written with the target are one type.
   // Left unresolved, `from m import Props` in two files -- two file-scoped
@@ -290,6 +293,9 @@ export function makeRawFunctionDatatypeAvailable(
     if (type.vararg !== args.vararg) {
       continue;
     }
+    if (type.externC !== externC) {
+      continue;
+    }
     if (type.requires.final !== args.requires.final) {
       continue;
     }
@@ -323,6 +329,7 @@ export function makeRawFunctionDatatypeAvailable(
     returnType: args.returnType,
     vararg: args.vararg,
     requires: args.requires,
+    externC: externC,
     concrete:
       args.parameters.every((p) => isTypeConcrete(sr, p.type)) &&
       isTypeConcrete(sr, args.returnType),
@@ -347,6 +354,7 @@ export function makeFunctionDatatypeAvailable(
     vararg: boolean;
     mutability: EDatatypeMutability;
     requires: Semantic.FunctionRequireBlock;
+    externC?: boolean;
     sourceloc: SourceLoc;
   }
 ): Semantic.TypeUseId {

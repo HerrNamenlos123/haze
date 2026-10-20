@@ -498,6 +498,19 @@ typedef struct {
   hzstd_stackref_t env;
 } hzstd_stackref_callable_t;
 
+// ── Context ──────────────────────────────────────────────────────────────────
+//
+// The hidden context (Axiom C209, C390-C406). Every Haze function receives the
+// current one as its first C parameter, `hzstd_context_t *__hz_ctx`, pointing
+// into a caller's stack frame; Haze names it `context` and sees a value of
+// type `Context` with no visible fields. C receives a context only by value
+// (C400) and never takes the address of one it holds: C enters Haze through
+// an `extern C` function that calls `Context.init`. `dummy` is the one hidden
+// field, a placeholder for per-task state (C405); copies carry it along.
+typedef struct hzstd_context_t {
+  void *dummy;
+} hzstd_context_t;
+
 typedef struct {
   uint64_t *gens;  // index-stable across growth (references hold an index, not an address)
   size_t cap;

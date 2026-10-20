@@ -148,6 +148,7 @@ export namespace Semantic {
     ComputedReadExpr,
     PreIncrExpr,
     PostIncrExpr,
+    ContextScopeExpr,
     // Dummy
     Dummy,
   }
@@ -317,6 +318,12 @@ export namespace Semantic {
     vararg: boolean;
     requires: FunctionRequireBlock;
     concrete: boolean;
+    // An `extern C (...) -> R` function type: what C can call. It has no
+    // hidden context. Every other function type is a Haze one, whose
+    // functions receive the caller's context as their first C parameter
+    // (Axiom C209, C402). Part of the type's identity: a Haze and an
+    // `extern C` function type are never the same type.
+    externC: boolean;
   };
 
   export type DeferredFunctionDatatypeDef = {
@@ -1011,7 +1018,24 @@ export namespace Semantic {
     | ArraySliceExpr
     | StringConstructExpr
     | PreIncrExpr
-    | PostIncrExpr;
+    | PostIncrExpr
+    | ContextScopeExpr;
+
+  // `context.clone(body)` and `Context.init(value, body)` (Axiom C396, C397,
+  // C401): runs `body` under a new context that lives in the calling frame,
+  // and yields the body's value. The caller's own context is untouched, so
+  // it is in effect again afterwards (a checkpoint), also after a panic.
+  export type ContextScopeExpr = BaseExpr & {
+    variant: ENode.ContextScopeExpr;
+    instanceIds: InstanceId[];
+    // null: `context.clone(body)`, the new context starts as a copy of the
+    // current one. Otherwise `Context.init(initValue, body)`: it starts from
+    // this Context value, with no relation to any previous context.
+    initValue: ExprId | null;
+    // The closure run under the new context: a callable `() => T`, usually a
+    // lambda literal whose env lives in the calling frame (stackEnv).
+    body: ExprId;
+  };
 
   // =============================================
 

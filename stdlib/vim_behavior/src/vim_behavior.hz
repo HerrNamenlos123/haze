@@ -96,7 +96,7 @@ export type ExCommandHook = (command: str) => void;
 // answers where the motion lands, or none when nothing matches. `cursor` is the
 // cursor and `count` the motion's count. The engine treats the answer as an
 // exclusive, jump-setting motion like vim's, so `dn` and `vn` work too.
-export type SearchMotionHook = (key: str, cursor: Vec2i, count: int) => Vec2i | none;
+export type SearchMotionHook = (key: str, cursor: Vec2i, count: int) => (Vec2i | none);
 // `/` and `?`: the host opens its search input; `backward` is true for `?`.
 export type SearchPromptHook = (backward: bool) => void;
 

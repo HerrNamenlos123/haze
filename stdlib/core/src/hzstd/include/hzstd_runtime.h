@@ -7,6 +7,19 @@
 #include "hzstd_source_location.h"
 #include "hzstd_string.h"
 
+// The default values of a context: what `Context()` gives (Axiom C398).
+static inline void hzstd_context_init(hzstd_context_t *ctx)
+{
+  ctx->dummy = NULL;
+}
+
+static inline hzstd_context_t hzstd_context_default(void)
+{
+  hzstd_context_t ctx;
+  hzstd_context_init(&ctx);
+  return ctx;
+}
+
 // hzstd_stackframe_t, hzstd_panic_type_t, hzstd_stacktrace_t,
 // hzstd_panic_info_t, HZSTD_JMP_BUF/SETJMP/LONGJMP,
 // hzstd_panic_recovery_cleanup_entry_t, hzstd_panic_recovery_frame_t are

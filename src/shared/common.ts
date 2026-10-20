@@ -96,6 +96,9 @@ export enum EVariableContext {
   MemberOfStruct = 2,
   ThisReference = 3,
   Global = 4,
+  // The implicit `context` of a Haze function or lambda (Axiom C209, C392):
+  // resolved like `this`, a value-typed lvalue over the hidden context pointer.
+  ContextReference = 5,
 }
 
 export enum ETypeModifier {
