@@ -3551,6 +3551,15 @@ hzstd_slot_read(&__tmp_result, __slot, sizeof(__tmp_result));`,
         })[1]
       );
 
+      // The body is called right here, like the callee of a call: a method
+      // bound on a value receiver only has to outlive this call (§12.2).
+      let bodyExpr = lr.sr.exprNodes.get(expr.body);
+      while (bodyExpr.variant === Semantic.ENode.ExplicitCastExpr) {
+        bodyExpr = lr.sr.exprNodes.get(bodyExpr.expr);
+      }
+      if (bodyExpr.variant === Semantic.ENode.CallableExpr) {
+        bodyExpr.immediatelyCalled = true;
+      }
       const [body, bodyId] = lowerExpr(lr, expr.body, statements, instanceInfo);
       const call = lowerCallOf(
         lr,
