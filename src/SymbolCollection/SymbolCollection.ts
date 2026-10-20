@@ -4133,7 +4133,7 @@ export function printCollectedDatatype(
     }
 
     case Collect.ENode.FunctionTypeDefinitionExpr: {
-      return `(${type.parameters
+      const signature = `(${type.parameters
         .map(
           (p, i) =>
             `param${i}${p.optional ? "?" : ""}: ${printCollectedDatatype(cc, p.type)}`
@@ -4142,6 +4142,13 @@ export function printCollectedDatatype(
         cc,
         type.returnType
       )}`;
+      if (type.externLanguage === EExternLanguage.Extern_C) {
+        // The marker is part of the type: without it the consumer re-parses a
+        // Haze function type, which C cannot call. Parenthesized, so it reads
+        // the same inside a union or after `[]`.
+        return `(extern C ${signature})`;
+      }
+      return signature;
     }
 
     case Collect.ENode.CallableTypeDefinitionExpr: {

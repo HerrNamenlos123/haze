@@ -1185,7 +1185,7 @@ ref struct Parser {
     // Type expressions.
     //
     //   typeExpr        -> union of modified types, or a tagged `union { ... }`
-    //   typeExprModified-> inline/mut/const/[]T/[N]T/(params)=>T prefixes
+    //   typeExprModified-> inline/mut/const/[]T/[N]T/(params)=>T/extern C (params)->T
     //   typeExprSimple  -> primary with .member / .[expr] postfixes
     //
     // Types and value expressions share the SymbolValueExpr/ExprMemberAccess
@@ -1327,39 +1327,75 @@ ref struct Parser {
         // so only commit to a function type when an arrow follows the `)`.
         if k == TK.LParen && this.parenIsFunctionType() {
             this.advance();
-            // The variant depends on the arrow after the parameters, so the
-            // header is hoisted in front of them once that is known.
-            let at = this.w.length();
-            let ellipsis = this.paramList(false);
-            this.expect(TK.RParen);
-            this.w.keyBool("ellipsis", ellipsis);
+            this.functionTypeRest(start, false);
+            return;
+        }
 
-            let arrow = this.kind();
-            if arrow == TK.DoubleArrow || arrow == TK.SingleArrow {
-                this.advance();
-                let variant = "CallableTypeExpr";
-                if arrow == TK.SingleArrow { variant = "FunctionTypeExpr"; }
-                let moved = this.w.length();
-                this.w.node(variant);
-                this.w.hoist(at, moved);
-
-                this.w.key("returnType");
-                this.typeExpr();
-                this.w.key("requires");
-                this.requiresBlock();
-                this.w.keyInt("mutability", 1);   // EDatatypeMutability.Default
-                this.locHere(start);
-                this.w.end();
-                return;
+        // `extern C (params) -> T`: a function type without a context, the
+        // only kind C can call. Another language, none, and `=>` are parsed
+        // and named as errors, with the same message and position as the
+        // reference parser's (Parser.ts checkExternFunctionType).
+        if k == TK.Extern {
+            this.advance();
+            if this.at(TK.Ident) {
+                let langTok = this.advance();
+                if this.text(langTok) != "C" {
+                    this.errorAt(langTok, f"unknown language '{this.text(langTok)}' in a function type: only 'extern C (...) -> R' exists");
+                }
             }
-
-            this.errorAt(this.cur(), "expected '=>' or '->' in function type");
-            this.w.truncate(at);
-            this.w.nullValue();
+            else {
+                this.errorAt(this.cur(), "expected 'C' after 'extern' in a function type: 'extern C (...) -> R'");
+            }
+            this.expect(TK.LParen);
+            this.functionTypeRest(start, true);
             return;
         }
 
         this.typeExprSimple();
+    }
+
+    // A function type from just after its `(`: parameters, arrow, return type
+    // and requires block. `externC` is the `extern C (...) -> T` form.
+    mut fn functionTypeRest(start: Token, externC: bool): void :: final {
+        // The variant depends on the arrow after the parameters, so the
+        // header is hoisted in front of them once that is known.
+        let at = this.w.length();
+        let ellipsis = this.paramList(false);
+        this.expect(TK.RParen);
+        this.w.keyBool("ellipsis", ellipsis);
+
+        let arrow = this.kind();
+        if arrow == TK.DoubleArrow || arrow == TK.SingleArrow {
+            if externC && arrow == TK.DoubleArrow {
+                this.errorAt(this.cur(), "an 'extern C' function type takes '->', not '=>': C cannot call a closure");
+            }
+            this.advance();
+            let variant = "CallableTypeExpr";
+            if arrow == TK.SingleArrow { variant = "FunctionTypeExpr"; }
+            let moved = this.w.length();
+            this.w.node(variant);
+            this.w.hoist(at, moved);
+
+            this.w.key("returnType");
+            // The grammar's return type is a typeExprModified, so
+            // `extern C () -> A | B` is `(extern C () -> A) | B`. The plain
+            // form reads `-> (A | B)` instead, against the grammar; that is an
+            // open question about the plain form, not copied into this one.
+            if externC { this.typeExprModified(); }
+            else { this.typeExpr(); }
+            this.w.key("requires");
+            this.requiresBlock();
+            this.w.keyInt("mutability", 1);   // EDatatypeMutability.Default
+            // EExternLanguage.Extern_C. Absent, the type is a Haze one.
+            if externC { this.w.keyInt("externLanguage", 2); }
+            this.locHere(start);
+            this.w.end();
+            return;
+        }
+
+        this.errorAt(this.cur(), "expected '=>' or '->' in function type");
+        this.w.truncate(at);
+        this.w.nullValue();
     }
 
     // Does the `(` at the cursor open a function type's parameter list, rather

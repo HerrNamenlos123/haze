@@ -368,6 +368,17 @@
           "match": "(?<![_[:alnum:]])(?:(?<!\\.)\\b)export\\b"
         },
         {
+          "match": "(?<![_[:alnum:]])(?:(?<!\\.)\\b)(extern)\\s+(?!(?:fn|struct|enum|type|alias|let|const|pub|noemit|opaque|plain|ref|nocopy)\\b)([_[:alpha:]][_[:alnum:]]*)\\b",
+          "captures": {
+            "1": {
+              "name": "storage.modifier.haze"
+            },
+            "2": {
+              "name": "storage.modifier.haze"
+            }
+          }
+        },
+        {
           "name": "storage.modifier.haze",
           "match": "(?<![_[:alnum:]])(?:(?<!\\.)\\b)(extern|pub|noemit|opaque|plain|ref|nocopy|static|comptime|nodiscard|clonable|nonclonable|bitflag|unscoped)\\b"
         }
@@ -775,7 +786,7 @@
     "parameter-name": {
       "patterns": [
         {
-          "match": "(?x)\n(?:(\\.\\.\\.)\\s*)?\n(?<!=|:)(?<![_[:alnum:]])(?:(?<=\\.\\.\\.)|(?<!\\.))\n(?:(this)|([_[:alpha:]][_[:alnum:]]*))\n(?![_[:alnum:]])\\s*(\\?)?\\s*(?=:)",
+          "match": "(?x)\n(?:(\\.\\.\\.)\\s*)?\n(?<!=|:)(?<![_[:alnum:]])(?:(?<=\\.\\.\\.)|(?<!\\.))\n(?:(this|context)|([_[:alpha:]][_[:alnum:]]*))\n(?![_[:alnum:]])\\s*(\\?)?\\s*(?=:)",
           "captures": {
             "1": {
               "name": "keyword.operator.rest.haze"
@@ -792,7 +803,7 @@
           }
         },
         {
-          "match": "(?x)\n(?:(\\.\\.\\.)\\s*)?\n(?<!=|:)(?<![_[:alnum:]])(?:(?<=\\.\\.\\.)|(?<!\\.))\n(?:(this)|([_[:alpha:]][_[:alnum:]]*))\n(?![_[:alnum:]])\\s*(\\?)?\\s*(?=[,)=]|$)",
+          "match": "(?x)\n(?:(\\.\\.\\.)\\s*)?\n(?<!=|:)(?<![_[:alnum:]])(?:(?<=\\.\\.\\.)|(?<!\\.))\n(?:(this|context)|([_[:alpha:]][_[:alnum:]]*))\n(?![_[:alnum:]])\\s*(\\?)?\\s*(?=[,)=]|$)",
           "captures": {
             "1": {
               "name": "keyword.operator.rest.haze"
@@ -984,6 +995,17 @@
         {
           "name": "keyword.operator.expression.typeof.haze",
           "match": "(?<![_[:alnum:]])(?:(?<!\\.)\\b)typeof\\b"
+        },
+        {
+          "match": "(?<![_[:alnum:]])(?:(?<!\\.)\\b)(extern)(?:\\s+([_[:alpha:]][_[:alnum:]]*))?(?=\\s*\\()",
+          "captures": {
+            "1": {
+              "name": "storage.modifier.haze"
+            },
+            "2": {
+              "name": "storage.modifier.haze"
+            }
+          }
         },
         {
           "include": "#type-union-declaration"
@@ -1340,7 +1362,7 @@
       "patterns": [
         {
           "name": "variable.language.this.haze",
-          "match": "(?<![_[:alnum:]])(?:(?<!\\.)\\b)this\\b"
+          "match": "(?<![_[:alnum:]])(?:(?<!\\.)\\b)(?:this|context)\\b"
         },
         {
           "match": "(?x)\n(?:(\\.)|(\\?\\.(?!\\s*[[:digit:]])))\\s*\n([_[:alpha:]][_[:alnum:]]*)",

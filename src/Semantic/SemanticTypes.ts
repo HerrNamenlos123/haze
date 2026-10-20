@@ -2645,7 +2645,9 @@ export namespace Semantic {
             `noreturn_if(${printCollectedExpr(sr.cc, datatype.requires.noreturnIf.expr)})`
           );
         }
-        return `((${datatype.parameters
+        // `extern C` is part of the type (no context, C-callable): exported
+        // signatures are re-parsed by the consumer, and diagnostics name it.
+        return `(${datatype.externC ? "extern C " : ""}(${datatype.parameters
           .map(
             (p, i) =>
               `arg_${i}${p.optional ? "?" : ""}: ${serializeTypeUse(sr, p.type)}`

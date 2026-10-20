@@ -189,6 +189,10 @@ typeExprModified
     | LBRACKET n=expr RBRACKET typeExprModified
     | LBRACKET RBRACKET typeExprModified
     | LB params RB (DOUBLEARROW | SINGLEARROW) typeExprModified requiresBlock?
+    // `extern C (params) -> R`: a function type without a context, the only
+    // kind C can call. Only `C` and only `->` are valid; the language and the
+    // arrow are left open here so the AST builder can name the mistake.
+    | EXTERN externLang=externLanguage? LB params RB (DOUBLEARROW | SINGLEARROW) typeExprModified requiresBlock?
     | typeExprSimple
     ;
 

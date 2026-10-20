@@ -505,6 +505,47 @@ class ASTBuilder extends HazeParserListener {
     return EExternLanguage.Extern;
   }
 
+  /**
+   * `extern C (params) -> R` is the only marked function type. The grammar
+   * also takes another language, none, and `=>`, so each mistake is named here.
+   * These are syntax errors at the offending token, with the same message and
+   * position as the native parser's (compiler/haze-parser typeExprModified).
+   */
+  private checkExternFunctionType(ctx: TypeExprModifiedContext) {
+    const fail = (
+      at: { line: number; column: number } | undefined | null,
+      message: string
+    ): never => {
+      throw new CompilerError(
+        message,
+        {
+          filename: this.filename,
+          start: { line: at?.line ?? 0, column: at?.column ?? 0 },
+        },
+        HazeErrorCode.SyntaxError
+      );
+    };
+
+    const lang = ctx._externLang;
+    if (!lang) {
+      fail(
+        ctx.LB()?.symbol,
+        "expected 'C' after 'extern' in a function type: 'extern C (...) -> R'"
+      );
+    } else if (lang.getText() !== "C") {
+      fail(
+        lang.start,
+        `unknown language '${lang.getText()}' in a function type: only 'extern C (...) -> R' exists`
+      );
+    }
+    if (ctx.DOUBLEARROW()) {
+      fail(
+        ctx.DOUBLEARROW()?.symbol,
+        "an 'extern C' function type takes '->', not '=>': C cannot call a closure"
+      );
+    }
+  }
+
   mutability(
     ctx:
       | GlobalVariableDefinitionContext
@@ -1091,6 +1132,13 @@ class ASTBuilder extends HazeParserListener {
   };
 
   exitTypeExprModified = (ctx: TypeExprModifiedContext) => {
+    // Before the stack is touched: a listener that throws leaves ANTLR's
+    // context in place, so every enclosing rule's `finally` fires this exit
+    // again, and only a check that throws the same error each time survives.
+    if (ctx.EXTERN()) {
+      this.checkExternFunctionType(ctx);
+    }
+
     const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
 
@@ -1218,6 +1266,20 @@ class ASTBuilder extends HazeParserListener {
 
       if (i !== produced.length) {
         throw new InternalError("TypeExprModified function stack mismatch");
+      }
+
+      if (ctx.EXTERN()) {
+        this.stack.push({
+          variant: "FunctionTypeExpr",
+          params: params.params,
+          ellipsis: params.ellipsis,
+          returnType: returnType,
+          requires: requires,
+          mutability: EDatatypeMutability.Default,
+          externLanguage: EExternLanguage.Extern_C,
+          sourceloc: this.loc(ctx),
+        } satisfies ASTFunctionTypeExpr);
+        return;
       }
 
       if (ctx.DOUBLEARROW()) {
