@@ -1,0 +1,258 @@
+// ============================================================================
+// fs.createText, fs.removeFile and fs.readHead.
+//
+// createText writes a NEW file and never replaces anything.
+//
+// writeText truncates whatever is at the path. An app that creates a file for
+// the user (haze-notes' "New note") must not do that to a file that is already
+// there, and asking fs.exists first leaves a gap in which another program can
+// create it. createText creates the file in the same call that checks for it
+// (O_EXCL), and reports AlreadyExists when anything, a file or a folder, is
+// at the path.
+//
+// removeFile removes a file and never a folder. readHead reads the start of a
+// file without reading the rest, which is what lets haze-notes tell a note
+// from any other file by its first bytes, however large the file is.
+// ============================================================================
+
+namespace cases_fs_file_ops {
+
+    export fn register(s: mut testsuite.Suite) {
+
+        s.run(
+            "fs.createText: creates a new file, never replaces one",
+            """
+fn workPath(name: str): str {
+    let dir = env.get("HAZE_TEST_WORKDIR");
+    if dir is str {
+        return f"{dir}/{name}";
+    }
+    return f"/tmp/{name}";
+}
+
+fn describe(result: Result<none, fs.Error>): str {
+    if result {
+        return "ok";
+    }
+    if result == fs.Error.AlreadyExists {
+        return "AlreadyExists";
+    }
+    if result == fs.Error.InvalidPath {
+        return "InvalidPath";
+    }
+    return f"error {result}";
+}
+
+fn contents(path: str): str {
+    if let text = fs.readText(path) {
+        return text;
+    }
+    return "<unreadable>";
+}
+
+fn main(): int {
+    let dir = workPath("fs_create_text");
+    fs.createDirectory(dir);
+
+    let path = f"{dir}/new.txt";
+    fmt.println(f"new file: {describe(fs.createText(path, \"first\"))}, holds {contents(path)}");
+    fmt.println(f"again: {describe(fs.createText(path, \"second\"))}, holds {contents(path)}");
+
+    let empty = f"{dir}/empty.txt";
+    fmt.println(f"empty text: {describe(fs.createText(empty, \"\"))}, holds '{contents(empty)}'");
+    fmt.println(f"over an empty file: {describe(fs.createText(empty, \"x\"))}, holds '{contents(empty)}'");
+
+    let folder = f"{dir}/folder";
+    fs.createDirectory(folder);
+    fmt.println(f"over a folder: {describe(fs.createText(folder, \"x\"))}");
+
+    // Like writeText, it creates the folders the file goes in.
+    let nested = f"{dir}/a/b/c.txt";
+    fmt.println(f"in new folders: {describe(fs.createText(nested, \"deep\"))}, holds {contents(nested)}");
+
+    // A NUL inside a path would cut it short and create a different file.
+    let cut = f"{dir}/cut";
+    let created = fs.createText(f"{cut}\\x00.txt", "x");
+    let made = false;
+    if let present = fs.exists(cut) {
+        made = present;
+    }
+    fmt.println(f"a path with a NUL: {describe(created)}, the cut-short file made: {made}");
+    return 0;
+}
+""",
+            """
+new file: ok, holds first
+again: AlreadyExists, holds first
+empty text: ok, holds ''
+over an empty file: AlreadyExists, holds ''
+over a folder: AlreadyExists
+in new folders: ok, holds deep
+a path with a NUL: InvalidPath, the cut-short file made: false
+""");
+
+        s.run(
+            "fs.removeFile: removes a file, never a folder",
+            """
+fn workPath(name: str): str {
+    let dir = env.get("HAZE_TEST_WORKDIR");
+    if dir is str {
+        return f"{dir}/{name}";
+    }
+    return f"/tmp/{name}";
+}
+
+fn describe(result: Result<none, fs.Error>): str {
+    if result {
+        return "ok";
+    }
+    if result == fs.Error.NotFound {
+        return "NotFound";
+    }
+    if result == fs.Error.NotAFile {
+        return "NotAFile";
+    }
+    if result == fs.Error.InvalidPath {
+        return "InvalidPath";
+    }
+    return f"error {result}";
+}
+
+fn present(path: str): bool {
+    if let exists = fs.exists(path) {
+        return exists;
+    }
+    return false;
+}
+
+__c__("#include <unistd.h>");
+
+fn makeLink(target: str, link: str) {
+    do unsafe {
+        __c__("char *t = malloc((size_t)target.length + 1); memcpy(t, target.data, (size_t)target.length); t[target.length] = 0; char *l = malloc((size_t)link.length + 1); memcpy(l, link.data, (size_t)link.length); l[link.length] = 0; symlink(t, l); free(t); free(l);");
+    };
+}
+
+fn main(): int {
+    let dir = workPath("fs_remove_file");
+    let file = f"{dir}/gone.txt";
+    fs.writeText(file, "x");
+    fmt.println(f"a file: {describe(fs.removeFile(file))}, still there {present(file)}");
+    fmt.println(f"again: {describe(fs.removeFile(file))}");
+
+    let folder = f"{dir}/folder";
+    let inside = f"{folder}/inside.txt";
+    fs.writeText(inside, "kept");
+    fmt.println(f"a folder: {describe(fs.removeFile(folder))}, still there {present(inside)}");
+
+    let empty = f"{dir}/empty";
+    fs.createDirectory(empty);
+    fmt.println(f"an empty folder: {describe(fs.removeFile(empty))}, still there {present(empty)}");
+
+    // A NUL inside a path would cut it short and remove a different file.
+    let cut = f"{dir}/cut";
+    fs.writeText(cut, "kept");
+    fmt.println(f"a path with a NUL: {describe(fs.removeFile(f\"{cut}\\x00.txt\"))}, the cut-short file still there {present(cut)}");
+
+    // A symbolic link is removed itself, never what it points to.
+    let target = f"{dir}/target.txt";
+    fs.writeText(target, "kept");
+    let link = f"{dir}/link.txt";
+    makeLink(target, link);
+    fmt.println(f"a link: {describe(fs.removeFile(link))}, the link still there {present(link)}, its target still there {present(target)}");
+    return 0;
+}
+""",
+            """
+a file: ok, still there false
+again: NotFound
+a folder: NotAFile, still there true
+an empty folder: NotAFile, still there true
+a path with a NUL: InvalidPath, the cut-short file still there true
+a link: ok, the link still there false, its target still there true
+""");
+
+        s.run(
+            "fs.readHead: the start of a file, never more",
+            """
+fn workPath(name: str): str {
+    let dir = env.get("HAZE_TEST_WORKDIR");
+    if dir is str {
+        return f"{dir}/{name}";
+    }
+    return f"/tmp/{name}";
+}
+
+__c__("#include <sys/stat.h>");
+
+fn makeFifo(path: str) {
+    do unsafe {
+        __c__("char *p = malloc((size_t)path.length + 1); memcpy(p, path.data, (size_t)path.length); p[path.length] = 0; mkfifo(p, 0600); free(p);");
+    };
+}
+
+fn head(path: str, n: int): str {
+    let read = fs.readHead(path, n);
+    if !read {
+        if read == fs.Error.NotFound {
+            return "NotFound";
+        }
+        if read == fs.Error.NotAFile {
+            return "NotAFile";
+        }
+        return f"error {read}";
+    }
+    let text: str = read;
+    return f"'{text}' ({text.length})";
+}
+
+fn main(): int {
+    let dir = workPath("fs_read_head");
+    let path = f"{dir}/ten.txt";
+    fs.writeText(path, "0123456789");
+    fmt.println(f"4 of 10: {head(path, 4)}");
+    fmt.println(f"10 of 10: {head(path, 10)}");
+    fmt.println(f"100 of 10: {head(path, 100)}");
+    fmt.println(f"0 of 10: {head(path, 0)}");
+    let empty = f"{dir}/empty.txt";
+    fs.writeText(empty, "");
+    fmt.println(f"of an empty file: {head(empty, 8)}");
+    let missing = f"{dir}/missing.txt";
+    fmt.println(f"of no file: {head(missing, 8)}");
+
+    // A large file: the head comes back without the rest being read.
+    let big = String();
+    let i = 0;
+    while i < 200000 {
+        big.append("abcdefghij");
+        i = i + 1;
+    }
+    let bigPath = f"{dir}/big.txt";
+    fs.writeText(bigPath, big.cloneString());
+    fmt.println(f"16 of 2 MB: {head(bigPath, 16)}");
+
+    // Only a regular file is read. A named pipe with no writer would block
+    // the open for ever, a folder has no text: both are NotAFile, at once.
+    let fifo = f"{dir}/pipe";
+    makeFifo(fifo);
+    fmt.println(f"of a named pipe: {head(fifo, 8)}");
+    fmt.println(f"of a folder: {head(dir, 8)}");
+    let opened = fs.openRead(fifo);
+    fmt.println(f"openRead of a named pipe: {opened is fs.Error ? \"refused\" : \"opened\"}");
+    return 0;
+}
+""",
+            """
+4 of 10: '0123' (4)
+10 of 10: '0123456789' (10)
+100 of 10: '0123456789' (10)
+0 of 10: '' (0)
+of an empty file: '' (0)
+of no file: NotFound
+16 of 2 MB: 'abcdefghijabcdef' (16)
+of a named pipe: NotAFile
+of a folder: NotAFile
+openRead of a named pipe: refused
+""");
+    }
+}

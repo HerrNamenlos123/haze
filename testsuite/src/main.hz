@@ -92,6 +92,8 @@ fn main(): int {
     cases_narrowed_recheck.register(suite);
     cases_narrowing_inverse.register(suite);
     cases_cache_file.register(suite);
+    cases_fs_file_ops.register(suite);
+    cases_fs_trash.register(suite);
     cases_reactive_write_operands.register(suite);
     cases_embed_binary.register(suite);
     cases_embed_literal.register(suite);

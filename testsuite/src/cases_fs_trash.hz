@@ -1,0 +1,448 @@
+// ============================================================================
+// fs.moveToTrash.
+//
+// moveToTrash moves a file or folder to the desktop's trash, from where the
+// user can restore it, and never deletes it: when no trash can take it, the
+// result is an error and it stays where it is. On Linux that is the
+// freedesktop.org Trash specification: the item is renamed into files/ of a
+// trash on its own device, next to an info/<name>.trashinfo with its
+// percent-encoded absolute path and the local time it was trashed, which is
+// what a file manager's Restore reads.
+//
+// The program points XDG_DATA_HOME (and HOME) into the work folder before it
+// trashes anything, so no test ever reaches the user's real trash. The one
+// item it trashes on another device (/tmp, usually a tmpfs) has a name of its
+// own, and exactly what the test made in that device's trash goes again.
+// ============================================================================
+
+namespace cases_fs_trash {
+
+    export fn register(s: mut testsuite.Suite) {
+
+        s.run(
+            "fs.moveToTrash: to the trash on the item's device, never deleted",
+            """
+__c__("#include <stdio.h>");
+__c__("#include <stdlib.h>");
+__c__("#include <string.h>");
+__c__("#include <sys/stat.h>");
+__c__("#include <time.h>");
+__c__("#include <unistd.h>");
+
+fn workPath(name: str): str {
+    let dir = env.get("HAZE_TEST_WORKDIR");
+    if dir is str {
+        return f"{dir}/{name}";
+    }
+    return f"/tmp/{name}";
+}
+
+// putenv keeps the string it is given, so that is a copy that is never freed.
+fn setEnv(name: str, value: str) {
+    let entry = f"{name}={value}";
+    do unsafe {
+        __c__("char *e = malloc((size_t)entry.length + 1); memcpy(e, entry.data, (size_t)entry.length); e[entry.length] = 0; putenv(e);");
+    };
+}
+
+// Points the home trash into the work folder, with HOME as well for the
+// fallback, so that nothing here can reach the user's real trash.
+fn pointTrashAt(dataHome: str, home: str): bool {
+    setEnv("XDG_DATA_HOME", dataHome);
+    setEnv("HOME", home);
+    let data = env.get("XDG_DATA_HOME");
+    let h = env.get("HOME");
+    return data is str && data == dataHome && h is str && h == home;
+}
+
+// A fixed zone 5:30 hours east of UTC, so that a time in UTC cannot pass
+// for the local time.
+fn setTimeZone() {
+    setEnv("TZ", "HZT-05:30");
+    do unsafe {
+        __c__("tzset();");
+    };
+}
+
+// Seconds since the epoch.
+fn now(): int {
+    let t = 0;
+    do unsafe {
+        __c__("t = (hzstd_int_t)time(NULL);");
+    };
+    return t;
+}
+
+// A YYYY-MM-DDThh:mm:ss local time in seconds since the epoch, or -1.
+fn localSeconds(date: str): int {
+    let t = -1;
+    do unsafe {
+        __c__("char *c = malloc((size_t)date.length + 1); memcpy(c, date.data, (size_t)date.length); c[date.length] = 0; struct tm tm; memset(&tm, 0, sizeof(tm)); if (sscanf(c, \\"%d-%d-%dT%d:%d:%d\\", &tm.tm_year, &tm.tm_mon, &tm.tm_mday, &tm.tm_hour, &tm.tm_min, &tm.tm_sec) == 6) { tm.tm_year -= 1900; tm.tm_mon -= 1; tm.tm_isdst = -1; t = (hzstd_int_t)mktime(&tm); } free(c);");
+    };
+    return t;
+}
+
+fn makeLink(target: str, link: str) {
+    do unsafe {
+        __c__("char *t = malloc((size_t)target.length + 1); memcpy(t, target.data, (size_t)target.length); t[target.length] = 0; char *l = malloc((size_t)link.length + 1); memcpy(l, link.data, (size_t)link.length); l[link.length] = 0; symlink(t, l); free(t); free(l);");
+    };
+}
+
+// Whether `a` and `b` both exist and are on different devices.
+fn otherDevice(a: str, b: str): bool {
+    let other = false;
+    do unsafe {
+        __c__("char *ca = malloc((size_t)a.length + 1); memcpy(ca, a.data, (size_t)a.length); ca[a.length] = 0; char *cb = malloc((size_t)b.length + 1); memcpy(cb, b.data, (size_t)b.length); cb[b.length] = 0; struct stat sa, sb; other = stat(ca, &sa) == 0 && stat(cb, &sb) == 0 && sa.st_dev != sb.st_dev; free(ca); free(cb);");
+    };
+    return other;
+}
+
+// A sticky folder that is not a symbolic link: a shared $topdir/.Trash.
+fn isStickyDir(path: str): bool {
+    let sticky = false;
+    do unsafe {
+        __c__("char *c = malloc((size_t)path.length + 1); memcpy(c, path.data, (size_t)path.length); c[path.length] = 0; struct stat s; sticky = lstat(c, &s) == 0 && S_ISDIR(s.st_mode) && (s.st_mode & S_ISVTX); free(c);");
+    };
+    return sticky;
+}
+
+// A folder only its owner can enter (no group or other permissions).
+fn isPrivate(path: str): bool {
+    let private = false;
+    do unsafe {
+        __c__("char *c = malloc((size_t)path.length + 1); memcpy(c, path.data, (size_t)path.length); c[path.length] = 0; struct stat s; private = stat(c, &s) == 0 && S_ISDIR(s.st_mode) && (s.st_mode & 077) == 0; free(c);");
+    };
+    return private;
+}
+
+fn removeEmptyDir(path: str) {
+    do unsafe {
+        __c__("char *c = malloc((size_t)path.length + 1); memcpy(c, path.data, (size_t)path.length); c[path.length] = 0; rmdir(c); free(c);");
+    };
+}
+
+fn userId(): int {
+    let id = 0;
+    do unsafe {
+        __c__("id = (hzstd_int_t)getuid();");
+    };
+    return id;
+}
+
+fn processId(): int {
+    let id = 0;
+    do unsafe {
+        __c__("id = (hzstd_int_t)getpid();");
+    };
+    return id;
+}
+
+fn describe(result: Result<none, fs.Error>): str {
+    if result {
+        return "ok";
+    }
+    if result == fs.Error.NotFound {
+        return "NotFound";
+    }
+    if result == fs.Error.NotADirectory {
+        return "NotADirectory";
+    }
+    if result == fs.Error.InvalidPath {
+        return "InvalidPath";
+    }
+    return f"error {result}";
+}
+
+fn contents(path: str): str {
+    if let text = fs.readText(path) {
+        return text;
+    }
+    return "<unreadable>";
+}
+
+fn present(path: str): bool {
+    if let exists = fs.exists(path) {
+        return exists;
+    }
+    return false;
+}
+
+fn count(dir: str): int {
+    if let entries = fs.listDir(dir) {
+        return entries.length;
+    }
+    return -1;
+}
+
+// YYYY-MM-DDThh:mm:ss
+fn isDate(value: str): bool {
+    if value.length != 19 {
+        return false;
+    }
+    for (let i = 0; i < 19; i++) {
+        let c = int(value[i]);
+        if i == 4 || i == 7 {
+            if c != 45 {
+                return false;
+            }
+        }
+        else if i == 10 {
+            if c != 84 {
+                return false;
+            }
+        }
+        else if i == 13 || i == 16 {
+            if c != 58 {
+                return false;
+            }
+        }
+        else if c < 48 || c > 57 {
+            return false;
+        }
+    }
+    return true;
+}
+
+// The .trashinfo of `name`, line by line, with the work folder (which differs
+// from run to run) cut from the front of the path. Its DeletionDate.
+fn showInfo(trash: str, name: str): str {
+    let marker = "/fs_move_to_trash/";
+    let text = contents(f"{trash}/info/{name}.trashinfo");
+    let lines = text.split("\\n");
+    fmt.println(f"  {lines.length - 1} lines, the last ends the file: {text.endsWith("\\n")}");
+    if lines.length != 4 {
+        fmt.println(f"  <unexpected> {text}");
+        return "";
+    }
+    fmt.println(f"  {lines[0]}");
+    let parts = lines[1].split(marker);
+    if parts.length == 2 && parts[0].startsWith("Path=/") {
+        fmt.println(f"  Path=<work>{marker}{parts[1]}");
+    }
+    else {
+        fmt.println(f"  <unexpected> {lines[1]}");
+    }
+    let date = lines[2].split("=");
+    fmt.println(f"  {date[0]} is a local time: {date.length == 2 && isDate(date[1])}");
+    if date.length != 2 {
+        return "";
+    }
+    return date[1];
+}
+
+fn main(): int {
+    let root = workPath("fs_move_to_trash");
+    if !root.startsWith("/") {
+        fmt.println("the work folder must be absolute");
+        return 1;
+    }
+    fs.createDirectory(root);
+    let home = f"{root}/home";
+    setTimeZone();
+
+    // A missing path: NotFound, and no trash is made for it.
+    let fresh = f"{root}/fresh";
+    if !pointTrashAt(fresh, home) {
+        fmt.println("could not point the trash into the work folder");
+        return 1;
+    }
+    let missing = f"{root}/missing.txt";
+    fmt.println(f"a missing path: {describe(fs.moveToTrash(missing))}, a trash made: {present(fresh)}");
+
+    let data = f"{root}/data";
+    if !pointTrashAt(data, home) {
+        fmt.println("could not point the trash into the work folder");
+        return 1;
+    }
+    let trash = f"{data}/Trash";
+    let notes = f"{root}/notes";
+
+    // A file with a space and a non-ASCII letter in its name.
+    let name = "My Nöte.txt";
+    let first = f"{notes}/{name}";
+    fs.writeText(first, "first");
+    let before = now();
+    fmt.println(f"a file: {describe(fs.moveToTrash(first))}, still there: {present(first)}");
+    let after = now();
+    fmt.println(f"  in the trash: {contents(f"{trash}/files/{name}")}");
+    let deleted = localSeconds(showInfo(trash, name));
+    fmt.println(f"  its DeletionDate is the local time of the move: {deleted >= before && deleted <= after}");
+    fmt.println(f"  the trash is private: {isPrivate(data) && isPrivate(trash) && isPrivate(f"{trash}/files") && isPrivate(f"{trash}/info")}");
+
+    // Another of the same name gets the next free name; the first stays.
+    fs.writeText(first, "second");
+    fmt.println(f"the same name again: {describe(fs.moveToTrash(first))}, still there: {present(first)}");
+    fmt.println(f"  in the trash as .2: {contents(f"{trash}/files/{name}.2")}, the first: {contents(f"{trash}/files/{name}")}");
+    showInfo(trash, f"{name}.2");
+
+    // A folder goes whole.
+    let folder = f"{notes}/Old~Folder";
+    fs.writeText(f"{folder}/a.txt", "a");
+    fs.writeText(f"{folder}/sub/b.txt", "b");
+    fmt.println(f"a folder: {describe(fs.moveToTrash(folder))}, still there: {present(folder)}");
+    fmt.println(f"  in the trash: {contents(f"{trash}/files/Old~Folder/a.txt")} {contents(f"{trash}/files/Old~Folder/sub/b.txt")}");
+    showInfo(trash, "Old~Folder");
+
+    // A symbolic link goes as the link; what it points to stays.
+    let target = f"{root}/target.txt";
+    fs.writeText(target, "target");
+    let link = f"{notes}/link";
+    makeLink(target, link);
+    fmt.println(f"a link: {describe(fs.moveToTrash(link))}, still there: {present(link)}, its target still there: {present(target)}");
+    showInfo(trash, "link");
+
+    // A name that only an item in files/ holds (its .trashinfo gone) is
+    // taken as well.
+    fs.writeText(f"{trash}/files/orphan.txt", "orphan");
+    let orphan = f"{notes}/orphan.txt";
+    fs.writeText(orphan, "new");
+    fmt.println(f"a name an orphan holds: {describe(fs.moveToTrash(orphan))}, as .2: {contents(f"{trash}/files/orphan.txt.2")}, the orphan: {contents(f"{trash}/files/orphan.txt")}");
+
+    // So is a name that only a .trashinfo holds.
+    fs.writeText(f"{trash}/info/lone.txt.trashinfo", "lone");
+    let lone = f"{notes}/lone.txt";
+    fs.writeText(lone, "new");
+    fmt.println(f"a name a lone .trashinfo holds: {describe(fs.moveToTrash(lone))}, as .2: {contents(f"{trash}/files/lone.txt.2")}, the .trashinfo: {contents(f"{trash}/info/lone.txt.trashinfo")}");
+
+    // A NUL inside a path names no item, least of all the one the path
+    // would be cut short to.
+    let cut = f"{notes}/cut";
+    fs.writeText(cut, "cut");
+    fmt.println(f"a path with a NUL: {describe(fs.moveToTrash(f"{cut}\\x00.txt"))}, still there: {contents(cut)}");
+
+    // A missing path leaves the trash as it was.
+    let files = count(f"{trash}/files");
+    let infos = count(f"{trash}/info");
+    fmt.println(f"a missing path: {describe(fs.moveToTrash(missing))}, the trash unchanged: {count(f"{trash}/files") == files && count(f"{trash}/info") == infos} ({files} items)");
+
+    // No home trash can be made (its folder would be below a file), and the
+    // item is on that device: an error, and the item stays.
+    let blocker = f"{root}/blocker";
+    fs.writeText(blocker, "a file, not a folder");
+    if !pointTrashAt(f"{blocker}/data", home) {
+        fmt.println("could not point the trash into the work folder");
+        return 1;
+    }
+    let kept = f"{root}/kept.txt";
+    fs.writeText(kept, "kept");
+    fmt.println(f"no home trash: {describe(fs.moveToTrash(kept))}, still there: {contents(kept)}");
+
+    // A relative XDG_DATA_HOME is ignored, as the XDG base directory
+    // specification says; the home trash is then the one below HOME.
+    if !pointTrashAt("relative/data", home) {
+        fmt.println("could not point the trash into the work folder");
+        return 1;
+    }
+    let homeFile = f"{notes}/home.txt";
+    fs.writeText(homeFile, "home");
+    fmt.println(f"a relative XDG_DATA_HOME: {describe(fs.moveToTrash(homeFile))}, in the trash below HOME: {contents(f"{home}/.local/share/Trash/files/home.txt")}");
+
+    // When the rename fails after the name is reserved (a folder cannot go
+    // into a trash inside itself), the reserved .trashinfo goes again.
+    let nest = f"{root}/nest";
+    if !pointTrashAt(f"{nest}/data", home) {
+        fmt.println("could not point the trash into the work folder");
+        return 1;
+    }
+    fs.writeText(f"{nest}/n.txt", "n");
+    fmt.println(f"a folder holding the trash: {describe(fs.moveToTrash(nest))}, still there: {contents(f"{nest}/n.txt")}, a .trashinfo left: {count(f"{nest}/data/Trash/info") != 0}");
+
+    // An item on another device goes to the trash in that device's top
+    // folder, not to the home trash. /tmp is usually a tmpfs; when it is on
+    // the work folder's device there is nothing to test, and the expected
+    // lines are printed as they are.
+    if !pointTrashAt(data, home) {
+        fmt.println("could not point the trash into the work folder");
+        return 1;
+    }
+    let top = "/tmp";
+    if !otherDevice(data, top) {
+        fmt.println("another device: ok, still there: false");
+        fmt.println("  in its top folder's trash: other device, its Path names it: true");
+        fmt.println("  in the home trash: false");
+        fmt.println("  cleaned up: true");
+        return 0;
+    }
+    let other = f"{top}/.Trash-{userId()}";
+    if isStickyDir(f"{top}/.Trash") {
+        other = f"{top}/.Trash/{userId()}";
+    }
+    let otherExisted = present(other);
+    let filesExisted = present(f"{other}/files");
+    let infoExisted = present(f"{other}/info");
+
+    // A name of its own, so that nothing of the user's in that trash is in
+    // the way, in folders of its own: the trash is in the top folder of the
+    // device, not in the folder the item is in.
+    let otherName = f"haze-trash-test-{processId()}";
+    let otherDir = f"{top}/{otherName}";
+    let item = f"{otherDir}/deep/{otherName}.txt";
+    fs.writeText(item, "other device");
+    fmt.println(f"another device: {describe(fs.moveToTrash(item))}, still there: {present(item)}");
+    let trashed = f"{other}/files/{otherName}.txt";
+    let info = f"{other}/info/{otherName}.txt.trashinfo";
+    let lines = contents(info).split("\\n");
+    let namesIt = lines.length == 4 && lines[1].startsWith("Path=/") && lines[1].endsWith(f"/{otherName}/deep/{otherName}.txt");
+    fmt.println(f"  in its top folder's trash: {contents(trashed)}, its Path names it: {namesIt}");
+    fmt.println(f"  in the home trash: {present(f"{trash}/files/{otherName}.txt")}");
+
+    // Exactly what this test made there goes again.
+    fs.removeFile(trashed);
+    fs.removeFile(info);
+    if !infoExisted {
+        removeEmptyDir(f"{other}/info");
+    }
+    if !filesExisted {
+        removeEmptyDir(f"{other}/files");
+    }
+    if !otherExisted {
+        removeEmptyDir(other);
+    }
+    removeEmptyDir(f"{otherDir}/deep");
+    removeEmptyDir(otherDir);
+    let cleaned = !present(trashed) && !present(info) && present(other) == otherExisted && !present(otherDir);
+    fmt.println(f"  cleaned up: {cleaned}");
+    return 0;
+}
+""",
+            """
+a missing path: NotFound, a trash made: false
+a file: ok, still there: false
+  in the trash: first
+  3 lines, the last ends the file: true
+  [Trash Info]
+  Path=<work>/fs_move_to_trash/notes/My%20N%C3%B6te.txt
+  DeletionDate is a local time: true
+  its DeletionDate is the local time of the move: true
+  the trash is private: true
+the same name again: ok, still there: false
+  in the trash as .2: second, the first: first
+  3 lines, the last ends the file: true
+  [Trash Info]
+  Path=<work>/fs_move_to_trash/notes/My%20N%C3%B6te.txt
+  DeletionDate is a local time: true
+a folder: ok, still there: false
+  in the trash: a b
+  3 lines, the last ends the file: true
+  [Trash Info]
+  Path=<work>/fs_move_to_trash/notes/Old~Folder
+  DeletionDate is a local time: true
+a link: ok, still there: false, its target still there: true
+  3 lines, the last ends the file: true
+  [Trash Info]
+  Path=<work>/fs_move_to_trash/notes/link
+  DeletionDate is a local time: true
+a name an orphan holds: ok, as .2: new, the orphan: orphan
+a name a lone .trashinfo holds: ok, as .2: new, the .trashinfo: lone
+a path with a NUL: InvalidPath, still there: cut
+a missing path: NotFound, the trash unchanged: true (7 items)
+no home trash: NotADirectory, still there: kept
+a relative XDG_DATA_HOME: ok, in the trash below HOME: home
+a folder holding the trash: InvalidPath, still there: n, a .trashinfo left: false
+another device: ok, still there: false
+  in its top folder's trash: other device, its Path names it: true
+  in the home trash: false
+  cleaned up: true
+""");
+    }
+}

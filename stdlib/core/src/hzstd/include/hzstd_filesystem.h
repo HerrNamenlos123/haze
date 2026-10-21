@@ -14,6 +14,15 @@ hzstd_fs_error_t
 hzstd_read_file_binary(hzstd_allocator_t allocator, hzstd_str_t path, void* buffer, hzstd_int_t length);
 
 hzstd_fs_error_t hzstd_write_file_text(hzstd_allocator_t allocator, hzstd_str_t path, hzstd_str_t input);
+// hzstd_write_file_text for a file that must not exist yet: already_exists when
+// anything is at `path`, which is never replaced.
+hzstd_fs_error_t hzstd_create_file_text(hzstd_allocator_t allocator, hzstd_str_t path, hzstd_str_t input);
+// Removes a file (never a folder: not_a_file).
+hzstd_fs_error_t hzstd_remove_file(hzstd_str_t path);
+// Moves a file or folder to the desktop's trash (the freedesktop.org trash on
+// Linux, the Recycle Bin on Windows). Never deletes it: when no trash can take
+// it, an error, and it stays where it is.
+hzstd_fs_error_t hzstd_move_to_trash(hzstd_str_t path);
 hzstd_fs_error_t
 hzstd_write_file_binary(hzstd_allocator_t allocator, hzstd_str_t path, void* buffer, hzstd_int_t length);
 

@@ -30,6 +30,9 @@ namespace ffi {
     extern C fn hzstd_read_file_binary(allocator: Allocator, path: str, buffer: cptr, length: int): hzstd_fs_error_t :: final;
 
     extern C fn hzstd_write_file_text(allocator: Allocator, path: str, input: str): hzstd_fs_error_t :: final;
+    extern C fn hzstd_create_file_text(allocator: Allocator, path: str, input: str): hzstd_fs_error_t :: final;
+    extern C fn hzstd_remove_file(path: str): hzstd_fs_error_t :: final;
+    extern C fn hzstd_move_to_trash(path: str): hzstd_fs_error_t :: final;
     extern C fn hzstd_write_file_binary(allocator: Allocator, path: str, buffer: cptr, length: int): hzstd_fs_error_t :: final;
 
     extern C fn hzstd_file_open_write(allocator: Allocator, path: str, out_handle: cptr): hzstd_fs_error_t :: final;
@@ -230,6 +233,46 @@ export namespace fs {
         }
     }
 
+    // Writes `text` to a NEW file at `path`, creating the folders it goes in
+    // as writeText does. Nothing already at `path` is ever replaced: a file
+    // or a folder there is AlreadyExists. The check and the creation are one
+    // step, so no other program can create the file in between, as it could
+    // between an exists() and a writeText().
+    export fn createText(path: str, text: str) {
+        return createText(Alloc.heap(), path, text);
+    }
+
+    export fn createText(allocator: Allocator, path: str, text: str): Result<none, Error> {
+        let result = ffi.hzstd_create_file_text(allocator, path, text);
+        if result.code == ffi.hzstd_fs_error_code_none {
+            return Result<none, Error>.Ok(none);
+        }
+        else {
+            return Result<none, Error>.Err(mapErrorEnum(result.code));
+        }
+    }
+
+    // Removes the file at `path`, for good. A folder there is NotAFile and is
+    // left alone; a symbolic link is removed itself, not what it points to.
+    export fn removeFile(path: str): Result<none, Error> {
+        let result = ffi.hzstd_remove_file(path);
+        if result.code == ffi.hzstd_fs_error_code_none {
+            return Result<none, Error>.Ok(none);
+        }
+        return Result<none, Error>.Err(mapErrorEnum(result.code));
+    }
+
+    // Moves the file or folder at `path` to the desktop's trash, from where
+    // the user can restore it. It is never deleted for good: when no trash
+    // can take it, the result is an error and it stays where it is.
+    export fn moveToTrash(path: str): Result<none, Error> {
+        let result = ffi.hzstd_move_to_trash(path);
+        if result.code == ffi.hzstd_fs_error_code_none {
+            return Result<none, Error>.Ok(none);
+        }
+        return Result<none, Error>.Err(mapErrorEnum(result.code));
+    }
+
     // ── Streaming reads ─────────────────────────────────────────────────────
     //
     // readText() reads a whole file in one call, which for a large file is a
@@ -330,6 +373,37 @@ export namespace fs {
             return mapErrorEnum(err.code);
         }
         return FileReader(handle, size);
+    }
+
+    // The first `maxBytes` bytes of the file at `path` as text, or all of it
+    // when it is shorter, without reading (or making room for) the rest: what
+    // a check of a file's kind by its first bytes needs, however large the
+    // file is.
+    export fn readHead(path: str, maxBytes: int): Result<str, Error> {
+        let handle = none as cptr;
+        let size = 0;
+        let err = do unsafe {
+            let outHandle = none as cptr;
+            let outSize = none as cptr;
+            __c__("outHandle = &handle; outSize = &size;");
+            ffi.hzstd_file_open_read(Alloc.heap(), path, outHandle, outSize)
+        };
+        if err.code != ffi.hzstd_fs_error_code_none {
+            return Result<str, Error>.Err(mapErrorEnum(err.code));
+        }
+        let length = size < maxBytes ? size : maxBytes;
+        if length < 0 {
+            length = 0;
+        }
+        let reader = FileReader(handle, length);
+        while !reader.done() {
+            let readErr = reader.readSome(length);
+            if readErr != Error.None {
+                reader.close();
+                return Result<str, Error>.Err(readErr);
+            }
+        }
+        return Result<str, Error>.Ok(reader.text());
     }
 
     // ── Streaming writes ────────────────────────────────────────────────────
