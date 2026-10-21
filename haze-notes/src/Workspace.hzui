@@ -97,9 +97,9 @@ let documentTitle = computed((): str => {
 let documentContext = computed((): str => {
     if !rx.get(controls.documentOpen) && !rx.get(controls.loadingDocument) { return ""; }
     let path = rx.get(activePath);
-    let folder = path.slice(0, max(0, path.length - baseName(path).length - 1));
+    let folder = parentFolder(path);
     if folder.length == 0 || folder == props.vaultPath { return ""; }
-    return baseName(folder);
+    return entryName(folder);
 });
 
 let vaultName = computed((): str => baseName(props.vaultPath));
@@ -138,13 +138,287 @@ let commitSidebarWidth = () => {
     props.cache.data.sidepanelWidth := width;
 };
 
+// ── What the tree lists ──────────────────────────────────────────────
+
+let showAll = computed((): bool => rx.get(props.cache.data.showAllFiles));
+
+// Every file and folder, while the tree shows them all. Not in the cache: the
+// saved index holds the notes alone.
+let allFiles = shallowReactive<VaultFS | none>(none);
+
+// While every file is shown, the vault is walked once for both indexes.
 let refreshVault = () => {
+    if rx.get(showAll) {
+        let everything = indexFolder(props.vaultPath, 0, true).entries;
+        allFiles := VaultFS { entries: rx.reactive<[]FSEntry>(everything) };
+        props.cache.data.vault := VaultFS { entries: rx.reactive<[]FSEntry>(withoutGhosts(everything)) };
+        return;
+    }
     props.cache.data.vault := indexVault(props.vaultPath);
+};
+
+ui.watch(() => rx.get(showAll), (value, old) => {
+    if rx.get(showAll) {
+        allFiles := indexAllFiles(props.vaultPath);
+    } else if rx.get(allFiles) {
+        allFiles := none;
+    }
+}, { immediate: true });
+
+let toggleShowAll = () => {
+    props.cache.data.showAllFiles := !rx.get(props.cache.data.showAllFiles);
+};
+
+let treeVault = computed((): VaultFS | none => {
+    if rx.get(showAll) {
+        if let all = rx.get(allFiles) { return all; }
+    }
+    return rx.get(props.cache.data.vault);
+});
+
+// An entry the tree is to scroll to: one just created.
+let revealTarget = reactive<str>("");
+let revealSerial = reactive<int>(0);
+let revealInTree = (path: str) => {
+    revealTarget := path;
+    revealSerial := rx.get(revealSerial) + 1;
+};
+
+// A line under the tree saying what did not work, for a while.
+const NOTICE_SECONDS = 6.0;
+let notice = reactive<str>("");
+let noticeUntil: ref Box<real> = { value: 0.0 };
+let showNotice = (text: str) => {
+    notice := text;
+    noticeUntil.value = ui.now() + NOTICE_SECONDS;
+};
+ui.onFrame(() => {
+    if rx.get(notice).length > 0 && ui.now() >= noticeUntil.value {
+        notice := "";
+    }
+});
+
+// Where something asked for in `folder` goes, for a dialog.
+let folderLabel = (folder: str): str => {
+    let vaultName = baseName(props.vaultPath);
+    if folder.length <= props.vaultPath.length {
+        return f"In {vaultName}";
+    }
+    return f"In {vaultName}/{folder.slice(props.vaultPath.length + 1, folder.length)}";
+};
+
+// Gives the keys back to the workspace once a dialog or menu that had them is
+// gone.
+let refocus = () => {
+    if let root = rx.get(rootRef) {
+        root.focus();
+    }
+};
+
+// ── The tree's menu ──────────────────────────────────────────────────
+
+let menuRequest = shallowReactive<TreeMenuRequest | none>(none);
+// The folder's "Always show folder" box, read from the disk as the menu
+// opens.
+let menuKept = reactive<bool>(false);
+let menuSerial = reactive<int>(0);
+
+// The folder the menu's entry stands for: the folder itself, a file's folder,
+// or the vault for the space around the rows.
+let menuFolder = (request: TreeMenuRequest): str => {
+    if request.path.length == 0 { return props.vaultPath; }
+    if request.isDir { return request.path; }
+    return parentFolder(request.path);
+};
+
+let menuItems = computed((): []MenuItem => {
+    let items: []MenuItem = [];
+    let request = rx.get(menuRequest);
+    if !request { return items; }
+    items.push(MenuItem { key: "note", label: "New note", icon: "new-file" });
+    items.push(MenuItem { key: "folder", label: "New folder", icon: "new-folder" });
+    if request.isDir {
+        items.push(MenuItem { key: "keep", label: "Always show folder", checkable: true,
+            checked: rx.get(menuKept), separated: true });
+    } else if request.path.length > 0 && !request.ghost {
+        items.push(MenuItem { key: "delete", label: "Delete note...", icon: "trash", danger: true,
+            separated: true });
+    }
+    return items;
+});
+
+let menuOpen = computed((): bool => {
+    if rx.get(menuRequest) { return true; }
+    return false;
+});
+
+let menuX = computed((): real => {
+    if let request = rx.get(menuRequest) {
+        let origin = rootRef?.position() ?? Vec2(0.0, 0.0);
+        return request.pos.x - origin.x;
+    }
+    return 0.0;
+});
+let menuY = computed((): real => {
+    if let request = rx.get(menuRequest) {
+        let origin = rootRef?.position() ?? Vec2(0.0, 0.0);
+        return request.pos.y - origin.y;
+    }
+    return 0.0;
+});
+let areaWidth = computed((): real => (rootRef?.size() ?? Vec2(0.0, 0.0)).x);
+let areaHeight = computed((): real => (rootRef?.size() ?? Vec2(0.0, 0.0)).y);
+
+// ── New notes and folders ────────────────────────────────────────────
+
+// "note" or "folder" while the name of one is asked for, "" otherwise.
+let namingKind = reactive<str>("");
+let namingFolder = reactive<str>("");
+let draftName = reactive<str>("");
+let namingError = reactive<str>("");
+let naming = computed((): bool => rx.get(namingKind).length > 0);
+
+// A new try starts clean.
+ui.watch(() => rx.get(draftName), (value, old) => {
+    if rx.get(namingError).length > 0 {
+        namingError := "";
+    }
+});
+
+let startNaming = (kind: str, folder: str) => {
+    draftName := "";
+    namingError := "";
+    namingFolder := folder;
+    namingKind := kind;
+};
+
+let closeNaming = () => {
+    namingKind := "";
+    refocus();
+};
+
+let namingTitle = computed((): str => rx.get(namingKind) == "folder" ? "New folder" : "New note");
+let namingLocation = computed((): str => folderLabel(rx.get(namingFolder)));
+let namingPlaceholder = computed((): str => rx.get(namingKind) == "folder" ? "Folder name" : "Note name");
+
+// ── Deleting notes ───────────────────────────────────────────────────
+
+// The note asked about, "" while nothing is.
+let deleteTarget = reactive<str>("");
+// Confirmed: it goes to the trash once nothing writes to it any more.
+let deleteBusy = reactive<bool>(false);
+let deleteError = reactive<str>("");
+let deleting = computed((): bool => rx.get(deleteTarget).length > 0);
+let deleteName = computed((): str => noteTitle(rx.get(deleteTarget)));
+let deleteLocation = computed((): str => folderLabel(parentFolder(rx.get(deleteTarget))));
+
+let cancelDelete = () => {
+    if rx.get(deleteBusy) { return; }
+    deleteTarget := "";
+    refocus();
 };
 
 let switchVault = () => {
     emits.switchVault();
 };
+
+let openMenu = (request: TreeMenuRequest) => {
+    if rx.get(naming) || rx.get(deleting) { return; }
+    menuKept := request.isDir && hasKeepFile(request.path);
+    menuRequest := request;
+    menuSerial := rx.get(menuSerial) + 1;
+};
+
+let closeMenu = () => {
+    menuRequest := none;
+};
+
+let newNoteInVault = () => {
+    startNaming("note", props.vaultPath);
+};
+
+let newFolderInVault = () => {
+    startNaming("folder", props.vaultPath);
+};
+
+let pickMenu = (key: str) => {
+    let request = rx.get(menuRequest);
+    menuRequest := none;
+    if !request { return; }
+    let folder = menuFolder(request);
+    if key == "note" {
+        startNaming("note", folder);
+    } else if key == "folder" {
+        startNaming("folder", folder);
+    } else if key == "keep" {
+        let problem = setFolderKept(request.path, !rx.get(menuKept));
+        if problem.length > 0 {
+            showNotice(problem);
+        }
+        refreshVault();
+    } else if key == "delete" {
+        deleteError := "";
+        deleteBusy := false;
+        deleteTarget := request.path;
+    }
+};
+
+let submitName = (text: str) => {
+    // A second submit in the frame that closed the dialog (Return twice, or
+    // Return and the button) has nothing left to create.
+    if !rx.get(naming) { return; }
+    if text.trim().length == 0 { return; }
+    let folder = rx.get(namingFolder);
+    if rx.get(namingKind) == "folder" {
+        let created = createFolder(folder, text);
+        if created.error.length > 0 {
+            namingError := created.error;
+            return;
+        }
+        closeNaming();
+        refreshVault();
+        revealInTree(created.path);
+        return;
+    }
+    let created = createNote(folder, text, newDocumentText());
+    if created.error.length > 0 {
+        namingError := created.error;
+        return;
+    }
+    closeNaming();
+    refreshVault();
+    openFile(created.path);
+    revealInTree(created.path);
+};
+
+// The note is closed first if it is open, and saved: what goes to the trash
+// is its latest state. It is moved once nothing writes to it any more, a
+// frame or a few later.
+let confirmDelete = () => {
+    if rx.get(deleteBusy) { return; }
+    let path = rx.get(deleteTarget);
+    deleteError := "";
+    deleteBusy := true;
+    if rx.get(activePath) == path {
+        currentDocumentPath := none;
+        props.cache.data.lastOpenedFile := none;
+    }
+};
+
+ui.onFrame(() => {
+    if !rx.get(deleteBusy) { return; }
+    let path = rx.get(deleteTarget);
+    if controls.isUsing(path) { return; }
+    let trashed = fs.moveToTrash(path);
+    deleteBusy := false;
+    if !trashed {
+        deleteError := f"It could not be moved to the trash ({fsErrorText(trashed)}), so it is still there.";
+        return;
+    }
+    deleteTarget := "";
+    refreshVault();
+    refocus();
+});
 
 let exportPdf = () => {
     controls.exportPdf();
@@ -153,6 +427,23 @@ let exportPdf = () => {
 // Keys reach here from whatever inside the workspace has focus -- the page,
 // a button just clicked -- so the shortcuts work wherever the focus is.
 let onKeyDown = (e: KeyboardEvent) => {
+    // A menu or a dialog has the keys: Escape closes it, and the page gets
+    // none (Delete would delete the selection behind a dialog). What a
+    // dialog's text box handles never reaches here.
+    if rx.get(menuOpen) || rx.get(naming) || rx.get(deleting) {
+        if e.key == Key.Escape {
+            if rx.get(menuOpen) {
+                closeMenu();
+            } else if rx.get(naming) {
+                closeNaming();
+            } else {
+                cancelDelete();
+            }
+        }
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+    }
     if hasModifier(e.modifiers, KeyModifiers.Ctrl) && e.key == Key.B {
         e.preventDefault();
         e.stopPropagation();
@@ -165,7 +456,8 @@ let onKeyDown = (e: KeyboardEvent) => {
     controls.keyDown(e, ui);
 };
 
-@template [col w-grow h-grow bg-[theme().chrome] text-color-[theme().text] font-size-13]
+// Relative: the menu and the dialogs are placed over it.
+@template [relative col w-grow h-grow bg-[theme().chrome] text-color-[theme().text] font-size-13]
     ref=rootRef
     focusable=[true]
     autofocus=[true]
@@ -181,9 +473,13 @@ div [relative row w-grow h-grow] {
     // Hidden rather than unmounted when collapsed, so the tree keeps where
     // it was scrolled to.
     div [h-grow w-[sidebarWidth]px [!sidebarOpen]?hidden] {
-        Sidebar if=[props.cache.data.vault] [] vaultName=[vaultName]
-            entries=[props.cache.data.vault.entries] expanded=[props.cache.data.expandedFolders]
-            activePath=[activePath] @open=openFile @refresh=refreshVault @switchVault=switchVault {}
+        Sidebar if=[treeVault] [] vaultName=[vaultName]
+            entries=[treeVault.entries] expanded=[props.cache.data.expandedFolders]
+            activePath=[activePath] showAll=[showAll] notice=[rx.get(notice)]
+            reveal=[rx.get(revealTarget)] revealSerial=[rx.get(revealSerial)]
+            @open=openFile @refresh=refreshVault @switchVault=switchVault
+            @newNote=newNoteInVault @newFolder=newFolderInVault @toggleShowAll=toggleShowAll
+            @menu=openMenu {}
     }
 
     DocumentView [] controls=[controls] canvasRef=[canvasRef] title=[documentTitle] {}
@@ -196,3 +492,14 @@ div [relative row w-grow h-grow] {
             @drag=dragSidebar @end=commitSidebarWidth {}
     }
 }
+
+// Last, so they lie over everything and are pressed first.
+ContextMenu if=menuOpen [] items=[rx.get(menuItems)] revision=[rx.get(menuSerial) * 2 + (rx.get(menuKept) ? 1 : 0)]
+    x=[menuX] y=[menuY] areaWidth=[areaWidth] areaHeight=[areaHeight]
+    @pick=pickMenu @dismiss=closeMenu {}
+
+NameDialog if=naming [] title=[namingTitle] location=[namingLocation] placeholder=[namingPlaceholder]
+    name=[draftName] error=[rx.get(namingError)] @submit=submitName @cancel=closeNaming {}
+
+DeleteDialog if=deleting [] noteName=[deleteName] location=[deleteLocation]
+    busy=[rx.get(deleteBusy)] error=[rx.get(deleteError)] @confirm=confirmDelete @cancel=cancelDelete {}

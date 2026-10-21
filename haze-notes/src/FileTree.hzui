@@ -17,11 +17,17 @@ entries: Reactive<[]FSEntry>;
 expanded: Reactive<[]str>;
 // The note that is open in the editor.
 activePath: str = "";
+// An entry to bring into view, its folders opened: one just created. Asked
+// for again each time `revealSerial` changes.
+reveal: str = "";
+revealSerial: int = 0;
 rowHeight: real = 28.0;
 indent: real = 16.0;
 
 @emit
 open: (str,);
+// A row's menu, or the vault's (path "") from the space around the rows.
+menu: (TreeMenuRequest,);
 
 @setup
 let scrollView = ui.componentRef<ScrollView>();
@@ -111,25 +117,50 @@ let openNote = (path: str) => {
     emits.open(path);
 };
 
-// Once, as soon as the list is measured: scroll the open note into view, so a
-// vault reopens where it was left. Folders it is in that are closed are opened
-// first, and it is scrolled to the frame after, when its row exists.
+let forwardMenu = (request: TreeMenuRequest) => {
+    emits.menu(request);
+};
+
+// The space around the rows: the vault's own menu. A row's menu stops before
+// it gets here.
+let vaultMenu = (event: PointerEvent) => {
+    event.stopPropagation();
+    emits.menu(TreeMenuRequest { path: "", pos: event.pos });
+};
+
+// An entry to scroll into view as soon as the list is measured. First the
+// open note, centred, so a vault reopens where it was left; later whatever
+// `reveal` asks for, scrolled to only as far as it takes. Folders it is in
+// that are closed are opened first, and it is scrolled to the frame after,
+// when its row exists.
+let revealPath: ref Box<str> = { value: props.activePath };
+let revealCentred: ref Box<bool> = { value: true };
 let revealed: ref Box<bool> = { value: false };
 let openedForReveal: ref Box<bool> = { value: false };
+
+ui.watch(() => props.revealSerial, (serial, previous) => {
+    if props.reveal.length == 0 { return; }
+    revealPath.value = props.reveal;
+    revealCentred.value = false;
+    revealed.value = false;
+    openedForReveal.value = false;
+});
+
 ui.onFrame(() => {
     if revealed.value { return; }
     let view = rx.get(scrollView);
     if !view { return; }
     if rx.get(view.scroll.clientHeight) <= 0.0 || rx.get(view.scroll.scrollHeight) <= 0.0 { return; }
-    let index = rowIndexOf(rx.get(rows), props.activePath);
-    if index < 0 && !openedForReveal.value && props.activePath.length > 0 {
+    let target = revealPath.value;
+    let index = rowIndexOf(rx.get(rows), target);
+    if index < 0 && !openedForReveal.value && target.length > 0 {
         openedForReveal.value = true;
         let top: []FSEntry = [];
         for entry in props.entries {
             top.push(entry);
         }
         let chain: []str = [];
-        if folderChainTo(top, props.activePath, chain) {
+        if folderChainTo(top, target, chain) {
             let current: []str = [];
             for open in props.expanded {
                 current.push(open);
@@ -157,11 +188,16 @@ ui.onFrame(() => {
     }
     revealed.value = true;
     if index >= 0 {
-        view.scroll.centerInView(TREE_PADDING + index as real * props.rowHeight, props.rowHeight);
+        let top = TREE_PADDING + index as real * props.rowHeight;
+        if revealCentred.value {
+            view.scroll.centerInView(top, props.rowHeight);
+        } else {
+            view.scroll.scrollIntoView(top, props.rowHeight);
+        }
     }
 });
 
-@template [w-grow h-grow]
+@template [w-grow h-grow] @contextmenu=vaultMenu
 
 ScrollView [] ref=scrollView padding=[TREE_PADDING] barSize=[8.0]
     thumbColor=[theme().scrollThumb] thumbHoverColor=[theme().scrollThumbHover]
@@ -178,9 +214,9 @@ ScrollView [] ref=scrollView padding=[TREE_PADDING] barSize=[8.0]
         // element after that got no box, and the tree went blank.
         FileTreeRow for=[row, i in visibleRows] key=[i] []
             path=[row.path] name=[row.name] depth=[row.depth] isDir=[row.isDir]
-            expanded=[row.open] active=[!row.isDir && row.path == props.activePath]
+            expanded=[row.open] active=[!row.isDir && row.path == props.activePath] ghost=[row.ghost]
             rowHeight=[props.rowHeight] indent=[props.indent]
-            @toggle=toggle @open=openNote
+            @toggle=toggle @open=openNote @menu=forwardMenu
         {}
         div if=[spacerAfter > 0.0] [w-grow h-[spacerAfter]px]
     }

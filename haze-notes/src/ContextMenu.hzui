@@ -1,0 +1,103 @@
+// A context menu where it was asked for, over a layer that takes the next
+// press anywhere else and closes the menu with it: the press that closes a
+// menu does nothing else, as with a desktop's own menus.
+//
+// Declared last in its owner, which is `relative` and covers the window:
+// hit-testing goes by declaration order, so only what is declared later is
+// pressed before what it lies over.
+
+struct MenuItem {
+    key: str = "";
+    label: str = "";
+    icon: str = "";
+    // An option that is on or off, with a box ticked when `checked`.
+    checkable: bool = false;
+    checked: bool = false;
+    danger: bool = false;
+    // A line above it, setting it apart from the items before.
+    separated: bool = false;
+}
+
+const MENU_WIDTH = 236.0;
+const MENU_ROW = 30.0;
+const MENU_PADDING = 4.0;
+// A separator's line and the space around it.
+const MENU_SEPARATOR = 9.0;
+// The least room kept between the menu and the owner's edges.
+const MENU_MARGIN = 4.0;
+
+@props
+[[hzui.untracked]]
+items?: []MenuItem;
+// Changes whenever `items` does: they are not compared.
+revision: int = 0;
+// Where it was asked for, from the owner's top-left.
+x: real = 0.0;
+y: real = 0.0;
+// The owner's size, which the menu stays inside.
+areaWidth: real = 0.0;
+areaHeight: real = 0.0;
+
+@emit
+pick: (str,);
+dismiss: ();
+
+@setup
+let list = computed((): []MenuItem => {
+    let r = props.revision;
+    let items = props.items;
+    if items { return items; }
+    let empty: []MenuItem = [];
+    return empty;
+});
+
+let menuHeight = computed((): real => {
+    let height = 2.0 * MENU_PADDING + 2.0;
+    for item in list {
+        height = height + MENU_ROW;
+        if item.separated { height = height + MENU_SEPARATOR; }
+    }
+    return height;
+});
+
+// Its top-left corner at the point, as a desktop places it, unless that runs
+// past the right edge (then it moves left) or the bottom (then it opens
+// upwards from the point).
+let menuLeft = computed((): real => {
+    let left = min(props.x, props.areaWidth - MENU_WIDTH - MENU_MARGIN);
+    return max(MENU_MARGIN, left);
+});
+
+let menuTop = computed((): real => {
+    let height = rx.get(menuHeight);
+    if props.y + height > props.areaHeight - MENU_MARGIN {
+        return max(MENU_MARGIN, props.y - height);
+    }
+    return props.y;
+});
+
+let dismissPress = (event: PointerEvent) => {
+    event.stopPropagation();
+    emits.dismiss();
+};
+
+let keepPress = (event: PointerEvent) => {
+    event.stopPropagation();
+};
+
+let choose = (key: str) => {
+    emits.pick(key);
+};
+
+@template [absolute top-[0] left-[0] w-grow h-grow] @pointerdown=dismissPress
+
+div [absolute left-[menuLeft] top-[menuTop] col w-[MENU_WIDTH]px h-fit p-[MENU_PADDING]px
+     rounded-8 bg-[theme().surface] border-1 border-color-[theme().surfaceBorder]]
+    @pointerdown=keepPress
+{
+    div for=[item, i in list] key=[i] [col w-grow h-fit] {
+        div if=[item.separated] [w-grow h-[1]px my-1 bg-[theme().surfaceBorder]]
+        MenuRow [] label=[item.label] icon=[item.icon] checkable=[item.checkable]
+            checked=[item.checked] danger=[item.danger] @pick=[() => { choose(item.key); }] {}
+    }
+}

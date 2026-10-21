@@ -1,0 +1,73 @@
+from codicons import CodiconComponent
+
+// Asks before a note is deleted, over the dimmed window, and says plainly
+// what deleting means: the note goes to the system's trash, and nothing in
+// the app brings it back. Only the red button deletes; Escape (handled by the
+// owner), Cancel or a press on the dimmed window keeps the note.
+//
+// Declared last in its owner, which is `relative` and covers the window.
+
+@props
+noteName: str;
+// The folder it is in, under the title.
+location: str = "";
+// The note is being moved: the buttons wait.
+busy: bool = false;
+// Why it could not be deleted, or "".
+error: str = "";
+
+@emit
+confirm: ();
+cancel: ();
+
+@setup
+let deleteLabel = computed((): str => props.busy ? "Deleting..." : "Delete note");
+
+let confirm = () => {
+    emits.confirm();
+};
+
+let cancel = () => {
+    emits.cancel();
+};
+
+let dismissPress = (event: PointerEvent) => {
+    event.stopPropagation();
+    if !props.busy {
+        emits.cancel();
+    }
+};
+
+let keepPress = (event: PointerEvent) => {
+    event.stopPropagation();
+};
+
+@template [absolute top-[0] left-[0] w-grow h-grow col items-center pt-[96]px bg-[theme().scrim]]
+    @pointerdown=dismissPress
+
+div [col w-[420]px h-fit gap-4 p-5 rounded-12 bg-[theme().surface] border-1 border-color-[theme().surfaceBorder]]
+    @pointerdown=keepPress
+{
+    div [col w-grow h-fit gap-1] {
+        div [w-grow h-fit overflow-hidden] {
+            text [text-nowrap font-size-15 text-color-[theme().text]] [f"Delete \"{props.noteName}\"?"]
+        }
+        text if=[props.location.length > 0] [font-size-12 text-color-[theme().textMuted]] [props.location]
+    }
+    div [row w-grow h-fit gap-3 p-3 rounded-8 bg-[theme().dangerFill + "33"] border-1 border-color-[theme().danger]] {
+        div [w-fit h-fit font-size-22 text-color-[theme().danger]] {
+            Codicon [] icon="warning" {}
+        }
+        div [col w-grow h-fit gap-1] {
+            text [font-size-14 text-color-[theme().text]] ["This cannot be undone in Haze Notes."]
+            text [font-size-12 text-color-[theme().textMuted]]
+                ["The note is moved to the system trash. Only the trash can bring it back."]
+        }
+    }
+    text if=[props.error.length > 0] [font-size-12 text-color-[theme().danger]] [props.error]
+    div [row w-grow h-fit gap-2 justify-end] {
+        IconButton [] label="Cancel" enabled=[!props.busy] paddingX=[12.0] @click=cancel {}
+        IconButton [] icon="trash" label=[deleteLabel] primary=[true] danger=[true]
+            enabled=[!props.busy] paddingX=[12.0] @click=confirm {}
+    }
+}

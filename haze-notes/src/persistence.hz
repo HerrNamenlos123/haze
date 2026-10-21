@@ -23,6 +23,58 @@ fn indexOfSubstring(haystack: str, needle: str): int {
     return -1;
 }
 
+// ── What a note is ─────────────────────────────────────────────────────
+
+// What a new note holds: technicalsketcher.web's new document (createDocument
+// in its store.ts), one blank ruled A4 page.
+fn newDocumentText(): str {
+    return "{\"filetype\":\"technicalsketcher\",\"fileversion\":1,\"data\":{\"pageColor\":\"#ffffff\",\"gridColor\":\"#5252524f\",\"gridType\":\"lines\",\"pages\":[{\"shapes\":[]}],\"pageWidthMm\":210,\"pageHeightMm\":297,\"currentPageIndex\":0}}";
+}
+
+// How much of a file is read to tell whether it is a note at all.
+const comptime noteHeadBytes = 4096;
+
+fn isJsonSpace(c: int): bool {
+    return c == 32 || c == 9 || c == 10 || c == 13;
+}
+
+fn skipJsonSpace(text: str, start: int): int {
+    let i = start;
+    while i < text.length && isJsonSpace(text[i] as int) {
+        i = i + 1;
+    }
+    return i;
+}
+
+// Whether `head`, the start of a file, is the start of a note: a JSON object
+// that says "filetype": "technicalsketcher", which every note says before its
+// pages (the web app and this one both write it first). Anything else, a PDF,
+// a picture or some other program's JSON, is no note.
+fn isNoteHead(head: str): bool {
+    let start = skipJsonSpace(head, 0);
+    if start >= head.length || head[start] as int != 123 { // '{'
+        return false;
+    }
+    let key = "\"filetype\"";
+    let value = "\"technicalsketcher\"";
+    let searchFrom = start;
+    while searchFrom < head.length {
+        let found = indexOfSubstring(head.slice(searchFrom, head.length), key);
+        if found < 0 {
+            return false;
+        }
+        let i = skipJsonSpace(head, searchFrom + found + key.length);
+        if i < head.length && head[i] as int == 58 { // ':'
+            i = skipJsonSpace(head, i + 1);
+            if head.slice(i, min(head.length, i + value.length)) == value {
+                return true;
+            }
+        }
+        searchFrom = searchFrom + found + key.length;
+    }
+    return false;
+}
+
 // ── Saving ──────────────────────────────────────────────────────────────
 
 // Writes `doc` to `path`, a few shapes per step().
@@ -233,6 +285,11 @@ ref struct DocumentLoad {
 
     finished: bool = false;
     failed: bool = false;
+    // It failed because the file is not a note at all, rather than a note
+    // that is damaged.
+    notANote: bool = false;
+    // Why it failed otherwise, for the page to say.
+    hint: str = "The file is damaged.";
 
     fn constructor(path: str): DocumentLoad {
         return DocumentLoad { path: path };
@@ -431,6 +488,31 @@ ref struct DocumentLoad {
         }
         if !this.hasText {
             if !this.reader {
+                // What a file is, its first bytes say. A file that is no note
+                // is turned down before it is read: it may be a video of
+                // several gigabytes.
+                let head = fs.readHead(this.path, noteHeadBytes);
+                if !head {
+                    // Only a regular file is read: a folder, or a named pipe
+                    // (which would never answer), is no note either.
+                    if head == fs.Error.NotAFile {
+                        this.notANote = true;
+                    } else if head == fs.Error.NotFound {
+                        this.hint = "It is not there any more: it was moved or deleted outside Haze Notes.";
+                    } else if head == fs.Error.PermissionDenied {
+                        this.hint = "Haze Notes is not allowed to read it.";
+                    } else {
+                        this.hint = "It could not be read.";
+                    }
+                    this.fail(f"cannot open {this.path}");
+                    return true;
+                }
+                let headText: str = head;
+                if !isNoteHead(headText) {
+                    this.notANote = true;
+                    this.fail(f"{this.path} is not a note");
+                    return true;
+                }
                 let opened = fs.openRead(this.path);
                 if opened is fs.Error {
                     this.fail(f"cannot open {this.path}");

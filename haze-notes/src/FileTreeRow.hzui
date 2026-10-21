@@ -16,12 +16,15 @@ isDir: bool;
 expanded: bool = false;
 // The note that is open in the editor.
 active: bool = false;
+// Not part of the notes (see TreeRow.ghost): drawn translucent.
+ghost: bool = false;
 rowHeight: real = 28.0;
 indent: real = 16.0;
 
 @emit
 toggle: (str,);
 open: (str,);
+menu: (TreeMenuRequest,);
 
 @setup
 let rootRef = elementRef<DivElement>();
@@ -44,10 +47,17 @@ let levels = computed((): []int => {
 let chevron = computed((): str => props.expanded ? "chevron-down" : "chevron-right");
 let icon = computed((): str => {
     if props.isDir { return props.expanded ? "folder-opened" : "folder"; }
-    return "notebook";
+    return props.ghost ? "file" : "notebook";
 });
-let iconColor = computed((): str => props.active ? theme().accent : theme().icon);
-let textColor = computed((): str => props.active || hovered ? theme().text : theme().textMuted);
+let iconColor = computed((): str => {
+    if props.active { return theme().accent; }
+    return props.ghost ? theme().ghostIcon : theme().icon;
+});
+let textColor = computed((): str => {
+    if props.active { return theme().text; }
+    if props.ghost { return theme().ghostText; }
+    return hovered ? theme().text : theme().textMuted;
+});
 
 let activate = () => {
     if props.isDir {
@@ -74,6 +84,18 @@ let tapped = (event: PointerEvent) => {
     activate();
 };
 
+// A right click, a pen's tap with the barrel button held, or a finger resting
+// on the row: its menu.
+let menuRequested = (event: PointerEvent) => {
+    event.stopPropagation();
+    emits.menu(TreeMenuRequest {
+        path: props.path,
+        isDir: props.isDir,
+        ghost: props.ghost,
+        pos: event.pos,
+    });
+};
+
 @template [
         row w-grow h-[props.rowHeight]px items-center pl-[4]px pr-2 rounded-6
         bg-[background] cursor-pointer
@@ -81,6 +103,7 @@ let tapped = (event: PointerEvent) => {
     ref=rootRef
     @pointerdown=pressed
     @click=tapped
+    @contextmenu=menuRequested
 
 div for=[level in levels] key=[level] [w-[props.indent]px h-[props.rowHeight]px justify-center] {
     div [w-[1]px h-[props.rowHeight]px bg-[theme().indentGuide]]

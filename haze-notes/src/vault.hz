@@ -4,6 +4,11 @@ struct FSFileEntry {
   type: "file";
   filename: str;
   fullPath: str;
+  // Not a note: listed only while the tree shows every file (see
+  // indexAllFiles), and drawn faded. Never saved: the saved index holds notes
+  // only.
+  [[json.ignore]]
+  ghost: bool = false;
 }
 
 struct FSDirEntry {
@@ -11,6 +16,10 @@ struct FSDirEntry {
   dirname: str;
   fullPath: str;
   children: []FSEntry;
+  // A folder the tree leaves out (no note in it, no keep file), listed only
+  // while it shows every file. Never saved, as for a file.
+  [[json.ignore]]
+  ghost: bool = false;
 }
 
 [[json.discriminator="type"]]
@@ -182,6 +191,10 @@ struct VaultOrderItem {
 // tools), and of those folders only the ones with something left in them. A
 // vault is often shared with other tools, and a file haze-notes cannot open
 // has no place in its tree -- clicking one used to close the open note.
+//
+// The one exception is a folder holding a keep file (KEEP_FILE): it is shown
+// with no note in it. A folder created in the app gets one, so it shows up
+// before anything is written in it.
 
 fn isNoteFile(name: str): bool {
     return name.contains(".tsk");
@@ -195,31 +208,65 @@ fn isHiddenFolder(name: str): bool {
 // symlink cycle) would otherwise be followed forever.
 const MAX_FOLDER_DEPTH = 32;
 
-fn indexDirectory(path: str, depth: int = 0): []FSEntry :: final {
+// The empty file that keeps a folder in the tree with no note in it. Its name
+// has no ".tsk", so it is never a note itself, and it is never listed.
+const KEEP_FILE = ".hznotekeep";
+
+// A folder as the tree sees it.
+struct IndexedFolder {
+    // What it lists inside.
+    entries: []FSEntry;
+    // It holds a keep file.
+    kept: bool;
+    // The tree shows it: it holds a keep file, or a note at any depth.
+    shown: bool;
+}
+
+// The folder at `path`. With `everything`, every file and every folder in it
+// is listed, and what the tree would leave out is marked a ghost; without,
+// only what the tree shows. Hidden folders stay out either way: the app's own
+// .hznotes and other tools' data, which no note belongs in.
+fn indexFolder(path: str, depth: int, everything: bool): IndexedFolder :: final {
     let items: []VaultOrderItem = [];
+    let kept = false;
+    let shown = false;
     if depth <= MAX_FOLDER_DEPTH {
         if let dirs = fs.listDir(path) {
             for dir in dirs {
-                if dir.isFile && isNoteFile(dir.name) {
-                    items.push(VaultOrderItem {
-                        key: vaultOrderKey(false, dir.name),
-                        entry: FSFileEntry {
-                            type: "file",
-                            filename: dir.name,
-                            fullPath: dir.path,
-                        },
-                    });
+                if dir.isFile && dir.name == KEEP_FILE {
+                    kept = true;
                 }
-                if dir.isDirectory && !isHiddenFolder(dir.name) {
-                    let children = indexDirectory(dir.path, depth + 1);
-                    if children.length > 0 {
+                else if dir.isFile {
+                    let note = isNoteFile(dir.name);
+                    if note {
+                        shown = true;
+                    }
+                    if note || everything {
+                        items.push(VaultOrderItem {
+                            key: vaultOrderKey(false, dir.name),
+                            entry: FSFileEntry {
+                                type: "file",
+                                filename: dir.name,
+                                fullPath: dir.path,
+                                ghost: !note,
+                            },
+                        });
+                    }
+                }
+                else if dir.isDirectory && !isHiddenFolder(dir.name) {
+                    let child = indexFolder(dir.path, depth + 1, everything);
+                    if child.shown {
+                        shown = true;
+                    }
+                    if child.shown || everything {
                         items.push(VaultOrderItem {
                             key: vaultOrderKey(true, dir.name),
                             entry: FSDirEntry {
                                 type: "directory",
                                 dirname: dir.name,
                                 fullPath: dir.path,
-                                children: children,
+                                children: child.entries,
+                                ghost: !child.shown,
                             },
                         });
                     }
@@ -233,7 +280,11 @@ fn indexDirectory(path: str, depth: int = 0): []FSEntry :: final {
     for item in items {
         entries.push(item.entry);
     }
-    return entries;
+    return IndexedFolder { entries: entries, kept: kept, shown: kept || shown };
+}
+
+fn indexDirectory(path: str, depth: int = 0): []FSEntry {
+    return indexFolder(path, depth, false).entries;
 }
 
 fn indexVault(vaultPath: str): VaultFS {
@@ -241,6 +292,263 @@ fn indexVault(vaultPath: str): VaultFS {
         entries: rx.reactive<[]FSEntry>(indexDirectory(vaultPath)),
     };
     return vault;
+}
+
+// The vault with every file and folder in it, for the tree's "show all
+// files": what the notes-only index leaves out is there as a ghost.
+fn indexAllFiles(vaultPath: str): VaultFS {
+    return VaultFS {
+        entries: rx.reactive<[]FSEntry>(indexFolder(vaultPath, 0, true).entries),
+    };
+}
+
+// The notes index inside an index of every file: what indexDirectory gives
+// for the same folder, without walking it again.
+fn withoutGhosts(entries: []FSEntry): []FSEntry :: final {
+    let kept: []FSEntry = [];
+    for entry in entries {
+        if entry is FSDirEntry {
+            if !entry.ghost {
+                kept.push(FSDirEntry {
+                    type: "directory",
+                    dirname: entry.dirname,
+                    fullPath: entry.fullPath,
+                    children: withoutGhosts(entry.children),
+                });
+            }
+        } else if entry is FSFileEntry {
+            if !entry.ghost {
+                kept.push(entry);
+            }
+        }
+    }
+    return kept;
+}
+
+// Whether the tree shows the folder at `path`: false for a folder it leaves
+// out, and for no folder at all.
+fn isShownFolder(path: str): bool {
+    return indexFolder(path, 0, false).shown;
+}
+
+// Whether `folder` holds a keep file, which shows it with no note in it.
+fn hasKeepFile(folder: str): bool {
+    if let entries = fs.listDir(folder) {
+        for entry in entries {
+            if entry.isFile && entry.name == KEEP_FILE {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+// ── Creating notes and folders ──────────────────────────────────────────
+//
+// Names are refused where a file system would refuse them on any of the
+// systems a vault is synced to: a vault written on Linux is opened on Windows
+// too, and a name Windows cannot hold breaks the sync. That rules out the
+// path separators, < > : " | ? *, control characters, "." and "..", and a
+// folder name ending in a dot (Windows drops the dot). A folder name starting
+// with a dot is refused as well: the tree hides such folders, so it would
+// vanish the moment it was created.
+
+fn equalsIgnoringAsciiCase(a: str, b: str): bool {
+    if a.length != b.length {
+        return false;
+    }
+    for (let i = 0; i < a.length; i++) {
+        let x = a[i] as int;
+        let y = b[i] as int;
+        if x >= 65 && x <= 90 { x = x + 32; }
+        if y >= 65 && y <= 90 { y = y + 32; }
+        if x != y {
+            return false;
+        }
+    }
+    return true;
+}
+
+// Whether Windows keeps the name for a device: CON, PRN, AUX, NUL, COM1-9 or
+// LPT1-9, in any case, with any extension after it ("nul.tsk" too).
+fn isWindowsDeviceName(name: str): bool {
+    let stemEnd = 0;
+    while stemEnd < name.length && name[stemEnd] as int != 46 { // '.'
+        stemEnd = stemEnd + 1;
+    }
+    let stem = name.slice(0, stemEnd);
+    let devices: []str = ["con", "prn", "aux", "nul",
+        "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9",
+        "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9"];
+    for device in devices {
+        if equalsIgnoringAsciiCase(stem, device) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Why there cannot be a note (or a folder) of this name, or "" when there can.
+// The name is taken as typed, before trimming.
+fn entryNameError(name: str, isFolder: bool): str {
+    let trimmed = name.trim();
+    if trimmed.length == 0 {
+        return "Enter a name.";
+    }
+    if trimmed == "." || trimmed == ".." {
+        return f"\"{trimmed}\" cannot be a name.";
+    }
+    for (let i = 0; i < trimmed.length; i++) {
+        // Signed: the bytes of a non-ASCII letter are negative here.
+        let c = trimmed[i] as int;
+        if (c >= 0 && c < 32) || c == 127 {
+            return "A name cannot contain tabs, line breaks or other control characters.";
+        }
+        // / \ < > : " | ? *
+        if c == 47 || c == 92 || c == 60 || c == 62 || c == 58 || c == 34 || c == 124 || c == 63 || c == 42 {
+            return "A name cannot contain any of / \\ < > : \" | ? *";
+        }
+    }
+    if isWindowsDeviceName(isFolder ? trimmed : noteFileName(trimmed)) {
+        return f"\"{trimmed}\" is a name Windows keeps for itself.";
+    }
+    if !isFolder && noteTitle(noteFileName(trimmed)).length == 0 {
+        return "A note needs a name before \".tsk\".";
+    }
+    if isFolder && trimmed.startsWith(".") {
+        return "Folders starting with \".\" are hidden from the notes.";
+    }
+    if isFolder && trimmed.endsWith(".") {
+        return "A folder name cannot end with \".\".";
+    }
+    return "";
+}
+
+// The file a note called `name` is saved as. It ends in ".tsk", which the
+// name may already do.
+fn noteFileName(name: str): str {
+    let trimmed = name.trim();
+    if trimmed.endsWith(".tsk") {
+        return trimmed;
+    }
+    return trimmed + ".tsk";
+}
+
+// What creating a note or a folder came to: its path, or why there is none.
+struct CreatedEntry {
+    path: str = "";
+    error: str = "";
+}
+
+// A file system error as the end of a sentence.
+fn fsErrorText(error: fs.Error): str {
+    if error == fs.Error.PermissionDenied {
+        return "permission denied";
+    }
+    if error == fs.Error.NameTooLong {
+        return "the name is too long";
+    }
+    if error == fs.Error.InvalidPath || error == fs.Error.NotADirectory {
+        return "the file system does not allow this name";
+    }
+    if error == fs.Error.NotFound {
+        return "the folder is not there any more";
+    }
+    return "the file system reported an error";
+}
+
+// Why nothing can be created in `folder`: it was removed outside the app
+// since the tree last looked. Nothing creates it again. "" when it is there.
+fn missingFolderError(folder: str): str {
+    if fs.listDir(folder) {
+        return "";
+    }
+    return f"The folder \"{baseName(folder)}\" is not there any more.";
+}
+
+// Creates the note `name` in `folder`, holding `contents`. A file already
+// there is never replaced, nor is one whose name differs only in case where
+// the file system ignores case.
+fn createNote(folder: str, name: str, contents: str): CreatedEntry {
+    let problem = entryNameError(name, false);
+    if problem.length > 0 {
+        return CreatedEntry { error: problem };
+    }
+    let gone = missingFolderError(folder);
+    if gone.length > 0 {
+        return CreatedEntry { error: gone };
+    }
+    let fileName = noteFileName(name);
+    let title = noteTitle(fileName);
+    let written = fs.createText(f"{folder}/{fileName}", contents);
+    if !written {
+        if written == fs.Error.AlreadyExists {
+            return CreatedEntry { error: f"\"{title}\" already exists in this folder." };
+        }
+        return CreatedEntry { error: f"Could not create \"{title}\": {fsErrorText(written)}." };
+    }
+    return CreatedEntry { path: f"{folder}/{fileName}" };
+}
+
+// Gives `folder` a keep file, or takes it away: whether the tree shows it
+// with no note in it. "" when done, else why not. A keep file that is there
+// already is left as it is.
+fn setFolderKept(folder: str, kept: bool): str {
+    let keepPath = f"{folder}/{KEEP_FILE}";
+    if kept {
+        let gone = missingFolderError(folder);
+        if gone.length > 0 {
+            return gone;
+        }
+        let written = fs.createText(keepPath, "");
+        if !written {
+            if written != fs.Error.AlreadyExists {
+                return f"Could not keep \"{baseName(folder)}\": {fsErrorText(written)}.";
+            }
+        }
+        return "";
+    }
+    let removed = fs.removeFile(keepPath);
+    if !removed {
+        if removed != fs.Error.NotFound {
+            return f"Could not change \"{baseName(folder)}\": {fsErrorText(removed)}.";
+        }
+    }
+    return "";
+}
+
+// Creates the folder `name` in `folder`, with a keep file so the tree shows
+// it. A folder of that name that is there already but not in the tree (it
+// holds no note) gets the keep file and is shown from then on; one the tree
+// shows already is an error, and is left alone.
+fn createFolder(folder: str, name: str): CreatedEntry {
+    let problem = entryNameError(name, true);
+    if problem.length > 0 {
+        return CreatedEntry { error: problem };
+    }
+    let gone = missingFolderError(folder);
+    if gone.length > 0 {
+        return CreatedEntry { error: gone };
+    }
+    let folderName = name.trim();
+    let path = f"{folder}/{folderName}";
+    if isShownFolder(path) {
+        return CreatedEntry { error: f"A folder named \"{folderName}\" already exists here." };
+    }
+    let made = fs.createDirectory(path);
+    if !made {
+        // What createDirectory says when something other than a folder is
+        // at the path.
+        if made == fs.Error.NotAFile {
+            return CreatedEntry { error: f"There is a file named \"{folderName}\" here already." };
+        }
+        return CreatedEntry { error: f"Could not create \"{folderName}\": {fsErrorText(made)}." };
+    }
+    let keepError = setFolderKept(path, true);
+    if keepError.length > 0 {
+        return CreatedEntry { error: keepError };
+    }
+    return CreatedEntry { path: path };
 }
 
 // ── Names ───────────────────────────────────────────────────────────────
@@ -262,10 +570,21 @@ fn baseName(path: str): str {
     return path.slice(start, end);
 }
 
+// The last part of the path of an entry in a vault. Below the vault's own
+// path the separator is "/" on every system (fs.listDir joins with it), and
+// on Linux a name may hold a backslash, so only "/" splits here.
+fn entryName(path: str): str {
+    let start = path.length;
+    while start > 0 && path[start - 1] as int != 47 {
+        start = start - 1;
+    }
+    return path.slice(start, path.length);
+}
+
 // What a note is called in the tree and the app bar: its file name without
 // the extension every note has.
 fn noteTitle(path: str): str {
-    let name = baseName(path);
+    let name = entryName(path);
     if name.endsWith(".tsk") {
         return name.slice(0, name.length - 4);
     }

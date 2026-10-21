@@ -38,6 +38,8 @@ struct Theme {
     // Text and icons on an `accent` background.
     onAccent: str;
     danger: str;
+    // A button that destroys something, filled.
+    dangerFill: str;
     // The close button's hover, red on every desktop.
     closeHover: str;
     closePressed: str;
@@ -50,6 +52,12 @@ struct Theme {
     swatchRing: str;
     indentGuide: str;
     track: str;
+    // A file or folder that is not part of the notes, listed while the tree
+    // shows every file: translucent, as an ignored file in an editor's tree.
+    ghostText: str;
+    ghostIcon: str;
+    // Over the window behind a dialog.
+    scrim: str;
 
     // ── Paper ───────────────────────────────────────────────────────
     // A bit of the page inside the chrome (see PaperStrip), so ink is shown
@@ -79,6 +87,7 @@ fn appTheme(): Theme {
         accentPressed: "#F59E0B",
         onAccent: "#1D1D20",
         danger: "#F87171",
+        dangerFill: "#A8261B",
         closeHover: "#C42B1C",
         closePressed: "#B0271A",
         scrollThumb: "#FFFFFF2B",
@@ -87,6 +96,9 @@ fn appTheme(): Theme {
         swatchRing: "#FFFFFF4D",
         indentGuide: "#FFFFFF17",
         track: "#FFFFFF21",
+        ghostText: "#B6B6BD70",
+        ghostIcon: "#ACACB461",
+        scrim: "#00000080",
         paper: "#F2F2F0",
         paperEdge: "#00000017",
         paperHover: "#0000000F",

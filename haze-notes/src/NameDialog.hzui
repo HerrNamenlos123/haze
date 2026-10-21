@@ -1,0 +1,81 @@
+from ui_widgets import TextInput, TextInputComponent
+
+// Asks for the name of a new note or folder, over the dimmed window. Return
+// or the button creates it; Escape (handled by the owner), Cancel or a press
+// on the dimmed window gives up.
+//
+// Declared last in its owner, which is `relative` and covers the window, so
+// the dimmed layer lies over everything and takes every press.
+
+@props
+title: str;
+// Where it will go, under the title.
+location: str = "";
+placeholder: str = "";
+// The name as typed, held by the owner.
+name: Reactive<str>;
+// Why the last try did not work, or "".
+error: str = "";
+
+@emit
+submit: (str,);
+cancel: ();
+
+@setup
+let inputRef = ui.componentRef<TextInput>();
+
+// The box gets the focus once it exists. Asked for by hand: autofocus fires
+// once per element for the life of the app, and this one is made anew each
+// time the dialog opens.
+let focused: ref Box<bool> = { value: false };
+ui.onFrame(() => {
+    if focused.value { return; }
+    let input = rx.get(inputRef);
+    if !input { return; }
+    input.focus();
+    focused.value = true;
+});
+
+let canCreate = computed((): bool => rx.get(props.name).trim().length > 0);
+
+let submitTyped = (text: str) => {
+    emits.submit(text);
+};
+
+let create = () => {
+    emits.submit(rx.get(props.name));
+};
+
+let cancel = () => {
+    emits.cancel();
+};
+
+let dismissPress = (event: PointerEvent) => {
+    event.stopPropagation();
+    emits.cancel();
+};
+
+let keepPress = (event: PointerEvent) => {
+    event.stopPropagation();
+};
+
+@template [absolute top-[0] left-[0] w-grow h-grow col items-center pt-[96]px bg-[theme().scrim]]
+    @pointerdown=dismissPress
+
+div [col w-[400]px h-fit gap-3 p-5 rounded-12 bg-[theme().surface] border-1 border-color-[theme().surfaceBorder]]
+    @pointerdown=keepPress
+{
+    div [col w-grow h-fit gap-1] {
+        text [text-nowrap font-size-15 text-color-[theme().text]] [props.title]
+        text if=[props.location.length > 0] [font-size-12 text-color-[theme().textMuted]] [props.location]
+    }
+    TextInput [] ref=inputRef text=[props.name] placeholder=[props.placeholder] fontSize=[14.0]
+        backgroundColor=[theme().chrome] borderColor=[theme().surfaceBorder] textColor=[theme().text]
+        placeholderColor=[theme().textSubtle] selectionColor=[theme().selected] caretColor=[theme().text]
+        focusRing=[0.0] paddingX=[10.0] paddingY=[7.0] rounded=[6.0] @submit=submitTyped {}
+    text if=[props.error.length > 0] [font-size-12 text-color-[theme().danger]] [props.error]
+    div [row w-grow h-fit gap-2 justify-end] {
+        IconButton [] label="Cancel" paddingX=[12.0] @click=cancel {}
+        IconButton [] label="Create" primary=[true] enabled=[canCreate] paddingX=[12.0] @click=create {}
+    }
+}

@@ -161,8 +161,13 @@ div if=loading [col w-grow h-grow items-center justify-center gap-3] {
     ProgressBar [] value=[rx.get(props.controls.loadProgress)] {}
 }
 
+// A file that is no note says so, calmly: the tree lists every file while it
+// shows them all, and opening one is no mistake.
+EmptyState else-if=[rx.get(props.controls.notANote)] [] icon="file" title="This file is not a note"
+    hint="Haze Notes opens its own notes only." {}
+
 EmptyState else-if=[rx.get(props.controls.loadFailed)] [] icon="warning" title="This note could not be opened"
-    hint="The file is damaged, or it is not a Haze Notes document." {}
+    hint=[rx.get(props.controls.loadHint)] {}
 
 EmptyState else-if=[!documentOpen] [] icon="notebook" title="No note open"
     hint="Choose a note in the sidebar to start writing." {}

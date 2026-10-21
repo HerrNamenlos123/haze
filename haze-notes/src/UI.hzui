@@ -15,6 +15,8 @@ struct VaultCache {
     // In px.
     sidepanelWidth: real = 260.0;
     sidepanelOpen: bool = true;
+    // The tree lists every file and folder, not only the notes.
+    showAllFiles: bool = false;
     // none until the vault is indexed, when it is opened.
     vault: VaultFS | none = none;
 }

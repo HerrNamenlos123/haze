@@ -7,6 +7,8 @@ from codicons import CodiconComponent
 // has focus -- but owns its look: the icon lights up under the pointer, a
 // `selected` one carries the accent, a `primary` one is filled with it, and a
 // `danger` one turns red under the pointer, like every window's close button.
+// One both `primary` and `danger` is filled red: the button that destroys
+// something, in a dialog that asks first.
 
 @props
 icon: str = "";
@@ -37,6 +39,11 @@ let background = computed((): str => {
     let t = theme();
     if props.primary {
         if !props.enabled { return t.track; }
+        if props.danger {
+            if pressedNow { return t.closePressed; }
+            if hovered { return t.closeHover; }
+            return t.dangerFill;
+        }
         if pressedNow { return t.accentPressed; }
         if hovered { return t.accentHover; }
         return t.accent;
@@ -53,7 +60,7 @@ let background = computed((): str => {
 let foreground = computed((): str => {
     let t = theme();
     if !props.enabled { return t.textSubtle; }
-    if props.primary { return t.onAccent; }
+    if props.primary { return props.danger ? "#FFFFFF" : t.onAccent; }
     if props.danger && (hovered || pressedNow) { return "#FFFFFF"; }
     if props.selected { return t.accent; }
     if hovered { return t.text; }
@@ -63,7 +70,7 @@ let foreground = computed((): str => {
 let labelColor = computed((): str => {
     let t = theme();
     if !props.enabled { return t.textSubtle; }
-    if props.primary { return t.onAccent; }
+    if props.primary { return props.danger ? "#FFFFFF" : t.onAccent; }
     if props.danger && (hovered || pressedNow) { return "#FFFFFF"; }
     return t.text;
 });

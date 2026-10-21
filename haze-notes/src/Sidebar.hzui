@@ -10,11 +10,23 @@ entries: Reactive<[]FSEntry>;
 // The open folders -- FileTree's model, passed through.
 expanded: Reactive<[]str>;
 activePath: str = "";
+// Every file is listed, not only the notes.
+showAll: bool = false;
+// What did not work just now, under the tree; "" for nothing.
+notice: str = "";
+// FileTree's, passed through.
+reveal: str = "";
+revealSerial: int = 0;
 
 @emit
 open: (str,);
 refresh: ();
 switchVault: ();
+// In the vault itself: the header's buttons, and the empty vault's.
+newNote: ();
+newFolder: ();
+toggleShowAll: ();
+menu: (TreeMenuRequest,);
 
 @setup
 let hasNotes = computed((): bool => props.entries.length > 0);
@@ -37,6 +49,30 @@ let openNote = (path: str) => {
     emits.open(path);
 };
 
+let newNote = () => {
+    emits.newNote();
+};
+
+let newFolder = () => {
+    emits.newFolder();
+};
+
+let toggleShowAll = () => {
+    emits.toggleShowAll();
+};
+
+let forwardMenu = (request: TreeMenuRequest) => {
+    emits.menu(request);
+};
+
+// The empty vault's space has the vault's menu too.
+let vaultMenu = (event: PointerEvent) => {
+    event.stopPropagation();
+    emits.menu(TreeMenuRequest { path: "", pos: event.pos });
+};
+
+let showAllIcon = computed((): str => props.showAll ? "eye" : "eye-closed");
+
 @template [col w-grow h-grow bg-[theme().chrome] border-r-1 border-color-[theme().border]]
 
 div [row w-grow h-[40]px items-center pl-3 pr-1.5 gap-2] {
@@ -46,15 +82,34 @@ div [row w-grow h-[40]px items-center pl-3 pr-1.5 gap-2] {
     div [w-grow h-fit overflow-hidden] {
         text [text-nowrap font-size-13 text-color-[theme().text]] [props.vaultName]
     }
-    IconButton [] icon="collapse-all" paddingX=[5.0] paddingY=[5.0] enabled=[anyExpanded] @click=collapseAll {}
-    IconButton [] icon="refresh" paddingX=[5.0] paddingY=[5.0] @click=refresh {}
+    div [row w-fit h-fit items-center gap-0.5] {
+        IconButton [] icon="new-file" paddingX=[4.0] paddingY=[5.0] @click=newNote {}
+        IconButton [] icon="new-folder" paddingX=[4.0] paddingY=[5.0] @click=newFolder {}
+        // Every file and folder, the ones outside the notes faded.
+        IconButton [] icon=[showAllIcon] selected=[props.showAll] paddingX=[4.0] paddingY=[5.0]
+            @click=toggleShowAll {}
+        IconButton [] icon="collapse-all" paddingX=[4.0] paddingY=[5.0] enabled=[anyExpanded] @click=collapseAll {}
+        IconButton [] icon="refresh" paddingX=[4.0] paddingY=[5.0] @click=refresh {}
+    }
 }
 
 FileTree if=hasNotes [] entries=[props.entries] expanded=[props.expanded]
-    activePath=[props.activePath] @open=openNote {}
+    activePath=[props.activePath] reveal=[props.reveal] revealSerial=[props.revealSerial]
+    @open=openNote @menu=forwardMenu {}
 
-EmptyState else [] icon="notebook" title="No notes yet"
-    hint="Notes this vault holds show up here." {}
+div else [col w-grow h-grow] @contextmenu=vaultMenu {
+    EmptyState [] icon="notebook" title="No notes yet"
+        hint="Notes this vault holds show up here." {
+        #actions {
+            IconButton [] icon="new-file" label="New note" paddingX=[10.0] @click=newNote {}
+            IconButton [] icon="new-folder" label="New folder" paddingX=[10.0] @click=newFolder {}
+        }
+    }
+}
+
+div if=[props.notice.length > 0] [w-grow h-fit px-3 py-2 border-t-1 border-color-[theme().border]] {
+    text [font-size-12 text-color-[theme().danger]] [props.notice]
+}
 
 div [row w-grow h-fit items-center px-1.5 py-1.5 border-t-1 border-color-[theme().border]] {
     IconButton [] icon="folder-opened" label="Open another vault" paddingX=[8.0] @click=switchVault {}

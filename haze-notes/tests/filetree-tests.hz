@@ -36,13 +36,22 @@ ref struct State {
 }
 
 // A new directory each run, so nothing a previous run left behind is indexed.
+// Found by trying names until one is free: time.now() counts from the
+// program's start, so a stamp from it names the same directory every run.
 fn fixtureDir(): str {
     let base = "/tmp";
     if let tmp = env.get("TMPDIR") {
         base = tmp;
     }
-    let stamp = (time.now() * 1000.0) as int;
-    return f"{base}/haze-notes-filetree-tests-{stamp}";
+    for (let i = 0; i < 100000; i++) {
+        let dir = f"{base}/haze-notes-filetree-tests-{i}";
+        if let present = fs.exists(dir) {
+            if !present {
+                return dir;
+            }
+        }
+    }
+    return f"{base}/haze-notes-filetree-tests";
 }
 
 fn rowsText(rows: []TreeRow): str {
@@ -111,6 +120,23 @@ fn main(): int {
     let prefixChain: []str = [];
     state.check("a folder name that is a prefix of another is not its parent",
         !folderChainTo(index, f"{root}/Week 20/x.tsk", prefixChain) && prefixChain.length == 0);
+    // A folder is found as well: the folders around it, not the folder itself.
+    let folderChain: []str = [];
+    state.check("folderChainTo finds a nested folder", folderChainTo(index, f"{root}/Week 2/Inner", folderChain));
+    state.check("its chain is the folders around it",
+        folderChain.length == 1 && folderChain[0] == f"{root}/Week 2");
+    let topFolderChain: []str = [];
+    state.check("a top-level folder has no folders around it",
+        folderChainTo(index, f"{root}/Week 10", topFolderChain) && topFolderChain.length == 0);
+
+    state.checkStr("parentFolder of a note", parentFolder(f"{root}/Week 2/Inner/deep.tsk"), f"{root}/Week 2/Inner");
+    state.checkStr("parentFolder of a folder", parentFolder(f"{root}/Week 2"), root);
+    // Inside a vault the separator is "/" on every system (fs.listDir joins
+    // with it), and on Linux a name may hold a backslash.
+    state.checkStr("parentFolder keeps a backslash in a name", parentFolder("/v/sub/a\\b.tsk"), "/v/sub");
+    state.checkStr("noteTitle keeps a backslash in a name", noteTitle("/v/sub/a\\b.tsk"), "a\\b");
+    state.checkStr("parentFolder below a Windows vault path", parentFolder("C:\\Users\\me\\Vault/Physik/x.tsk"), "C:\\Users\\me\\Vault/Physik");
+    state.checkStr("noteTitle below a Windows vault path", noteTitle("C:\\Users\\me\\Vault/x.tsk"), "x");
 
     // ── Toggling ────────────────────────────────────────────────────
     let paths: []str = ["a", "b"];

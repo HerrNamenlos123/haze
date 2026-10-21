@@ -1,0 +1,79 @@
+from codicons import CodiconComponent
+
+// One row of a ContextMenu: an icon, or a box ticked when an option is on,
+// then the label. It picks like IconButton clicks: a mouse or pen on the
+// press, a finger on the tap (so a swipe over the menu picks nothing).
+
+@props
+label: str;
+icon: str = "";
+// An option that is on or off: a box in place of the icon.
+checkable: bool = false;
+checked: bool = false;
+// Destroys something: red, and redder under the pointer.
+danger: bool = false;
+
+@emit
+pick: ();
+
+@setup
+let rootRef = elementRef<DivElement>();
+let hovered = computed(() => rootRef?.hover() ?? false);
+let pressedNow = computed(() => rootRef?.active() ?? false);
+
+let background = computed((): str => {
+    let t = theme();
+    if props.danger && pressedNow { return t.closePressed; }
+    if props.danger && hovered { return t.closeHover; }
+    if pressedNow { return t.pressed; }
+    if hovered { return t.hover; }
+    return "#00000000";
+});
+
+let foreground = computed((): str => {
+    let t = theme();
+    if props.danger && (hovered || pressedNow) { return "#FFFFFF"; }
+    if props.danger { return t.danger; }
+    return t.text;
+});
+
+let iconColor = computed((): str => {
+    let t = theme();
+    if props.danger && (hovered || pressedNow) { return "#FFFFFF"; }
+    if props.danger { return t.danger; }
+    return hovered ? t.text : t.icon;
+});
+
+let hasIcon = computed(() => !props.checkable && props.icon.length > 0);
+let boxColor = computed((): str => props.checked ? theme().accent : "#00000000");
+let boxBorder = computed((): str => props.checked ? theme().accent : theme().textSubtle);
+
+// The press is claimed either way, so it never reaches what is under the
+// menu.
+let pressed = (event: PointerEvent) => {
+    event.stopPropagation();
+    if event.button != PointerButton.Left { return; }
+    if event.activatesOnPress() { emits.pick(); }
+};
+
+let tapped = (event: PointerEvent) => {
+    if event.activatesOnPress() { return; }
+    event.stopPropagation();
+    emits.pick();
+};
+
+@template [row w-grow h-[30]px items-center gap-2.5 px-2 rounded-6 bg-[background] cursor-pointer]
+    ref=rootRef
+    @pointerdown=pressed
+    @click=tapped
+
+div [w-[18]px h-[18]px items-center justify-center font-size-15 text-color-[iconColor]] {
+    Codicon if=hasIcon [] icon=[props.icon] {}
+    div if=[props.checkable] [w-[14]px h-[14]px rounded-3 border-1 border-color-[boxBorder] bg-[boxColor]
+        items-center justify-center font-size-12 text-color-[theme().onAccent]] {
+        Codicon if=[props.checked] [] icon="check" {}
+    }
+}
+div [w-grow h-[30]px items-center overflow-hidden] {
+    text [text-nowrap font-size-13 text-color-[foreground]] [props.label]
+}

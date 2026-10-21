@@ -257,6 +257,11 @@ ref struct EditorControls {
     // The last open() ended without a document: the file is damaged or not
     // a document at all.
     loadFailed: rx.Reactive<bool>;
+    // ...and it is not a note at all: a picture, a PDF, anything the tree
+    // lists while it shows every file.
+    notANote: rx.Reactive<bool>;
+    // ...or why it could not be opened otherwise.
+    loadHint: rx.Reactive<str>;
     // The document being opened.
     loading: DocumentLoad | none = none;
     // Saves still being written, oldest first; frame() steps the first. A
@@ -346,6 +351,8 @@ ref struct EditorControls {
             loadingDocument: rx.reactive<bool>(false),
             loadProgress: rx.reactive<real>(0.0),
             loadFailed: rx.reactive<bool>(false),
+            notANote: rx.reactive<bool>(false),
+            loadHint: rx.reactive<str>(""),
             selectionTool: rx.reactive<bool>(false),
             eraserTool: rx.reactive<bool>(false),
             penColor: rx.reactive<str>("#000000"),
@@ -372,6 +379,9 @@ ref struct EditorControls {
         this.setDocument(none, "");
         if rx.get(this.loadFailed) {
             this.loadFailed := false;
+        }
+        if rx.get(this.notANote) {
+            this.notANote := false;
         }
         if let p = path {
             // A document still being saved is newer in memory than on disk.
@@ -455,6 +465,26 @@ ref struct EditorControls {
         }
     }
 
+    // Whether the document at `path` is open, being opened, or has a save
+    // still to be written. A note is not deleted before none of these holds:
+    // a save would write it again.
+    fn isUsing(path: str): bool {
+        if this.path == path {
+            return true;
+        }
+        if let load = this.loading {
+            if load.path == path {
+                return true;
+            }
+        }
+        for save in this.saves {
+            if save.path == path {
+                return true;
+            }
+        }
+        return false;
+    }
+
     // Saves everything now, however long it takes -- for when the app is
     // closing and there are no more frames to spread it over.
     fn finishSaves() {
@@ -480,7 +510,11 @@ ref struct EditorControls {
                     }
                 }
                 if !opened {
+                    this.loadHint := load.hint;
                     this.loadFailed := true;
+                    if load.notANote {
+                        this.notANote := true;
+                    }
                 }
             }
             // Saves wait: the frame's time went to the load.

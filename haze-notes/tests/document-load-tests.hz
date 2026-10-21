@@ -22,6 +22,14 @@ ref struct State {
     }
 }
 
+__c__("#include <sys/stat.h>");
+
+fn makeFifo(path: str) {
+    do unsafe {
+        __c__("char *p = malloc((size_t)path.length + 1); memcpy(p, path.data, (size_t)path.length); p[path.length] = 0; mkfifo(p, 0600); free(p);");
+    };
+}
+
 // Where the fixtures are written.
 fn fixtureDir(): str {
     if let tmp = env.get("TMPDIR") {
@@ -64,6 +72,24 @@ fn failsToLoad(state: mut State, name: str, text: str): bool {
     return load.failed && !load.doc;
 }
 
+// Loads a file holding `text`; "note", "not a note" (the file is not one at
+// all) or "damaged" (it is a note, but a broken one).
+fn loadOutcome(state: mut State, name: str, text: str): str {
+    let path = f"{fixtureDir()}/{name}";
+    state.check(f"{name}: fixture written", fs.writeText(path, text) ? true : false);
+    let load = DocumentLoad(path);
+    state.check(f"{name}: load ends", loadToEnd(load));
+    if !load.failed && load.doc {
+        return "note";
+    }
+    return load.notANote ? "not a note" : "damaged";
+}
+
+fn checkOutcome(state: mut State, name: str, text: str, expected: str) {
+    let actual = loadOutcome(state, name, text);
+    state.check(f"{name}: {expected} (got {actual})", actual == expected);
+}
+
 fn main(): int {
     let state = State {};
     fs.createDirectory(fixtureDir());
@@ -91,6 +117,31 @@ fn main(): int {
     state.check("round trip: file readable", saved ? true : false);
     let valid: str = saved ? saved : "";
 
+    // What a note created in the app starts as: technicalsketcher.web's new
+    // document, which the editor opens as one blank A4 page.
+    fmt.println("case: new note");
+    let newPath = f"{fixtureDir()}/new-note.tsk";
+    state.check("new note: written", fs.writeText(newPath, newDocumentText()) ? true : false);
+    let fresh = DocumentLoad(newPath);
+    state.check("new note: load ends", loadToEnd(fresh));
+    state.check("new note: loaded", !fresh.failed);
+    if let doc = fresh.doc {
+        state.check("new note: a technicalsketcher file, version 1",
+            doc.filetype == "technicalsketcher" && doc.fileversion == 1);
+        state.check("new note: one page", doc.data.pages.length == 1);
+        if doc.data.pages.length == 1 {
+            state.check("new note: the page is blank", doc.data.pages[0].shapes.length == 0);
+        }
+        state.check("new note: A4", doc.data.pageWidthMm == 210.0 && doc.data.pageHeightMm == 297.0);
+        state.check("new note: the web app's colours",
+            doc.data.pageColor == "#ffffff" && doc.data.gridColor == "#5252524f");
+        // A literal union has no == with a str; its JSON is the word.
+        state.check("new note: ruled", json.stringify(doc.data.gridType) == "\"lines\"");
+        state.check("new note: on its first page", doc.data.currentPageIndex == 0);
+    } else {
+        state.check("new note: has a document", false);
+    }
+
     // Files that are not documents. Each one closes a container it never
     // opened -- the first byte that does is where the scan used to die.
     state.check("a lone ']' fails", failsToLoad(state, "lone-bracket", "]"));
@@ -99,6 +150,61 @@ fn main(): int {
     state.check("a document with a ']' after it fails", failsToLoad(state, "trailing-bracket", f"{valid}]"));
     state.check("a PDF fails", failsToLoad(state, "pdf",
         "%PDF-1.7\n%\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\nstream\n]x}\nendstream\n"));
+
+    // ── Not a note ──────────────────────────────────────────────────
+    //
+    // A note is JSON whose "filetype" is "technicalsketcher", which is what
+    // its first bytes say; anything else is not a note, however it fails,
+    // and is told apart from a note that is damaged.
+    fmt.println("case: not a note");
+    checkOutcome(state, "doc.pdf", "%PDF-1.7\n%\n1 0 obj\n<< /Type /Catalog >>\nendobj\n", "not a note");
+    checkOutcome(state, "readme.md", "# Notes\nhello", "not a note");
+    checkOutcome(state, "empty.bin", "", "not a note");
+    checkOutcome(state, "other.json", "{\"a\":1}", "not a note");
+    checkOutcome(state, "other-filetype.json", "{\"filetype\":\"excalidraw\",\"fileversion\":1}", "not a note");
+    checkOutcome(state, "array.json", "[{\"filetype\":\"technicalsketcher\"}]", "not a note");
+    checkOutcome(state, "the word later.txt", "hello technicalsketcher \"filetype\":\"technicalsketcher\"", "not a note");
+    checkOutcome(state, "saved.tsk", valid, "note");
+    // Written by another program, spaced out.
+    checkOutcome(state, "pretty.tsk",
+        "{\n  \"filetype\" : \"technicalsketcher\",\n  \"fileversion\": 1,\n  \"data\": {\"pageColor\":\"#ffffff\",\"gridColor\":\"#cccccc\",\"gridType\":\"lines\",\"pages\":[{\"shapes\":[]}],\"pageWidthMm\":210,\"pageHeightMm\":297,\"currentPageIndex\":0}\n}\n",
+        "note");
+    checkOutcome(state, "truncated.tsk", valid.slice(0, valid.length / 2), "damaged");
+    checkOutcome(state, "garbled.tsk", "{\"filetype\":\"technicalsketcher\",\"fileversion\":1,\"data\":]]]", "damaged");
+
+    // A large file that is no note is turned down by its first bytes, at the
+    // load's first step: it is never read whole.
+    fmt.println("case: large file that is no note");
+    let bigText = String();
+    for (let i = 0; i < 400000; i++) {
+        bigText.append("0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123");
+    }
+    let bigPath = f"{fixtureDir()}/video.mp4";
+    state.check("large file: fixture written", fs.writeText(bigPath, bigText.cloneString()) ? true : false);
+    let big = DocumentLoad(bigPath);
+    state.check("large file: over at the first step", big.step(time.now() + 10.0));
+    state.check("large file: not a note", big.failed && big.notANote);
+    state.check("large file: nothing read past its start", big.text.length == 0 && !big.reader);
+
+    // ── Why a file could not be opened ──────────────────────────────
+    fmt.println("case: why not");
+    let missing = DocumentLoad(f"{fixtureDir()}/deleted elsewhere.tsk");
+    state.check("missing: load ends", loadToEnd(missing));
+    state.check("missing: failed, and not for being no note", missing.failed && !missing.notANote);
+    state.check(f"missing: says it is gone ({missing.hint})", missing.hint.contains("not there any more"));
+    let broken = DocumentLoad(f"{fixtureDir()}/truncated.tsk");
+    state.check("damaged: load ends", loadToEnd(broken));
+    state.check(f"damaged: says so ({broken.hint})", broken.failed && !broken.notANote && broken.hint == "The file is damaged.");
+    // A named pipe is listed while the tree shows every file. Opening it must
+    // not wait for a writer that never comes: it is simply no note.
+    let pipePath = f"{fixtureDir()}/pipe";
+    makeFifo(pipePath);
+    let pipe = DocumentLoad(pipePath);
+    state.check("a named pipe: over at the first step", pipe.step(time.now() + 10.0));
+    state.check("a named pipe: not a note", pipe.failed && pipe.notANote);
+    let folderLoad = DocumentLoad(fixtureDir());
+    state.check("a folder: over at the first step", folderLoad.step(time.now() + 10.0));
+    state.check("a folder: not a note", folderLoad.failed && folderLoad.notANote);
 
     // Already failing cleanly before; kept so the fix does not lose them.
     state.check("a truncated document fails", failsToLoad(state, "truncated", valid.slice(0, valid.length - 1)));

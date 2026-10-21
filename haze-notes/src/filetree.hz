@@ -19,6 +19,9 @@ struct TreeRow {
     isDir: bool;
     // For a folder, whether its children are listed below it.
     open: bool;
+    // Not part of the notes: a file that is no note, or a folder the tree
+    // shows only while it shows every file. Drawn faded.
+    ghost: bool = false;
 }
 
 // The rows of `entries` and of every open folder below them, depth first --
@@ -33,6 +36,7 @@ fn flattenTree(entries: []FSEntry, expanded: LinearMap<str, bool>, depth: int, o
                 depth: depth,
                 isDir: true,
                 open: open,
+                ghost: entry.ghost,
             });
             if open {
                 flattenTree(entry.children, expanded, depth + 1, out);
@@ -40,10 +44,13 @@ fn flattenTree(entries: []FSEntry, expanded: LinearMap<str, bool>, depth: int, o
         } else if entry is FSFileEntry {
             out.push(TreeRow {
                 path: entry.fullPath,
-                name: noteTitle(entry.filename),
+                // A file that is no note keeps its whole name: ".tsk" is
+                // only left off where every name has it.
+                name: entry.ghost ? entry.filename : noteTitle(entry.filename),
                 depth: depth,
                 isDir: false,
                 open: false,
+                ghost: entry.ghost,
             });
         }
     }
@@ -71,12 +78,15 @@ fn rowIndexOf(rows: []TreeRow, path: str): int {
     return -1;
 }
 
-// The folders the entry at `path` lies in, outermost first -- the ones that
-// have to be open for its row to show -- appended to `out`. False, and `out`
-// as it was, when no entry has that path.
+// The folders the entry at `path` lies in, outermost first (the ones that
+// have to be open for its row to show), appended to `out`. The entry may be a
+// note or a folder. False, and `out` as it was, when no entry has that path.
 fn folderChainTo(entries: []FSEntry, path: str, out: []str): bool :: final {
     for entry in entries {
         if entry is FSDirEntry {
+            if entry.fullPath == path {
+                return true;
+            }
             if path.startsWith(entry.fullPath + "/") {
                 out.push(entry.fullPath);
                 if folderChainTo(entry.children, path, out) {
@@ -146,4 +156,20 @@ fn treeWindow(count: int, rowHeight: real, padding: real, scrollTop: real, viewH
         rowsBefore: start,
         rowsAfter: count - end,
     };
+}
+
+// The folder the entry at `path` is in (see entryName).
+fn parentFolder(path: str): str {
+    return path.slice(0, max(0, path.length - entryName(path).length - 1));
+}
+
+// A context menu asked for in the tree: by a right click, a pen's barrel
+// button, or a finger resting on a row.
+struct TreeMenuRequest {
+    // The row's entry, or "" for the tree's empty space, which is the vault.
+    path: str = "";
+    isDir: bool = false;
+    ghost: bool = false;
+    // Where it was asked for, in window px.
+    pos: Vec2 = {};
 }
