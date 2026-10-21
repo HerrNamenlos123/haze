@@ -44,7 +44,8 @@ export class ComposeError extends Error {
 // once per render (a per-frame snapshot is exactly right in immediate mode),
 // so `props.x` stays a field path on a local -- which the compiler can
 // narrow (`[props.style.fontSize]?font-size-[props.style.fontSize]`), unlike
-// two separate `instance.props()` calls.
+// two separate `instance.props()` calls. Slot content binds it again, because
+// it runs inside another component's template (see template.lowerSlotBody).
 export function rewriteTemplateExpr(code: string): string {
   return code
     .replace(/\bslots\./g, "props.")
@@ -472,10 +473,18 @@ export function compose(filepath: string, source: string): string {
     for (const s of slots) {
       push(`    ${s.name}?: (s: ${slotStructName(s)}) => none;`);
     }
+    push("");
+    push(`    // generated: set by a use site whose slot content captures a name`);
+    push(`    // its template bound (a loop's item, a slot's payload). Nothing`);
+    push(`    // tracks such a value, so the slot is taken as new every time the`);
+    push(`    // parent renders this component (see operator!= below).`);
+    push(`    __dynamicSlots: bool = false;`);
   }
   push("");
   push(`    // generated: compares exactly the @props fields. Emits and`);
-  push(`    // slots (closures) are excluded by construction.`);
+  push(`    // slots (closures) are excluded by construction: an emit is read`);
+  push(`    // live when it fires, and slot content re-reads the parent's props`);
+  push(`    // live, so the template that runs it tracks them.`);
   push(`    //`);
   push(
     `    // Statements rather than one boolean chain so that each field can`
@@ -488,6 +497,11 @@ export function compose(filepath: string, source: string): string {
   const propsAnchor = propsSec ? propsSec.markerLine : 1;
   push(`#source "${src}:${propsAnchor}:1" {`);
   push(`        if this.id != other.id { return true; }`);
+  if (slots.length > 0) {
+    push(`        // Slot content that captured a template-bound name: new on`);
+    push(`        // every render of the parent, since nothing tracks the name.`);
+    push(`        if this.__dynamicSlots { return true; }`);
+  }
   push(`}`);
   for (const p of propNames) {
     if (p.untracked) {

@@ -510,6 +510,149 @@ Btn [] {}
   });
 });
 
+describe("slot content stays live", () => {
+  // Slot content is the PARENT's template code, run inside the template of
+  // the component that renders the slot. That component's own props usually
+  // do not change, so it re-renders only when something its template read
+  // changed, and the slot content is part of what it read.
+
+  test("a slot body reads the parent's props live, not the render's snapshot", () => {
+    // The snapshot is a plain value: reading it inside the slot would tie
+    // the slot to nothing, and the host would go on showing what the parent's
+    // props were when it last happened to re-render (the haze-notes tool
+    // palette showed the old tool after the pen menu picked another one).
+    const out = gen(`import ui_components
+@props
+tool: int;
+@template
+Panel [] {
+    #content {
+        Item [] selected=[props.tool == 1] {}
+    }
+}
+`);
+    expect(out).toMatch(
+      /content: \(__slot: PanelSlotContent\) => \{\n\s*let props = instance\.props\(\);\n/
+    );
+  });
+
+  test("so does a slot body nested in another one", () => {
+    const out = gen(`import ui_components
+@template
+Panel [] {
+    #content {
+        Strip [] {
+            #content {
+                Item [] selected=[props.tool == 1] {}
+            }
+        }
+    }
+}
+`);
+    expect(out).toMatch(
+      /content: \(__slot: StripSlotContent\) => \{\n\s*let props = instance\.props\(\);\n/
+    );
+  });
+
+  test("a slot provided where the template bound a name re-renders its host", () => {
+    // A loop's item or a slot's payload, captured by the slot body, is
+    // tracked by nothing at all. A host that keeps its props would never call
+    // the new closure, so the use site says the slot is new each time.
+    const out = gen(`import ui_components
+@template
+Btn for=[row, i in rows] key=[i] [] {
+    #content {
+        text [] [row.name]
+    }
+}
+div for=[row in rows] key=[row.id] [] {
+    Card [] {
+        #content {
+            text [] [row.name]
+        }
+    }
+}
+List [] {
+    #row r {
+        Badge [] {
+            #content {
+                text [] [r.name]
+            }
+        }
+    }
+}
+`);
+    expect(out).toMatch(/BtnComponent\(ui, \{\n\s*id: keyId\(-2, i\),\n\s*__dynamicSlots: true,\n/);
+    expect(out).toMatch(/CardComponent\(ui, \{\n\s*id: keyId\(-3, row\.id\),\n\s*__dynamicSlots: true,\n/);
+    expect(out).toMatch(/BadgeComponent\(ui, \{\n\s*id: -5,\n\s*__dynamicSlots: true,\n/);
+    // The List itself is outside every binding: its props decide.
+    expect(out).toMatch(/ListComponent\(ui, \{\n\s*id: -4,\n\s*row: /);
+  });
+
+  test("so does one under an if=[let ...], and only there", () => {
+    const out = gen(`import ui_components
+@template
+Card if=[let box = maybeBox] [] {
+    #content {
+        text [] [box.name]
+    }
+}
+Card else [] {
+    #content {
+        text [] ["none"]
+    }
+}
+Card [] {
+    #content {
+        text [] ["after"]
+    }
+}
+`);
+    expect(out).toMatch(/CardComponent\(ui, \{\n\s*id: -2,\n\s*__dynamicSlots: true,\n/);
+    expect(out).toMatch(/CardComponent\(ui, \{\n\s*id: -3,\n\s*content: /);
+    expect(out).toMatch(/CardComponent\(ui, \{\n\s*id: -4,\n\s*content: /);
+  });
+
+  test("slot content without a payload binds nothing for what it nests", () => {
+    // haze-notes' tool palette: a PaperStrip inside the Surface's slot.
+    const out = gen(`import ui_components
+@template
+Panel [] {
+    #content {
+        Strip [] {
+            #content {
+                text [] ["x"]
+            }
+        }
+    }
+}
+`);
+    expect(out).not.toContain("__dynamicSlots");
+  });
+
+  test("a slot provided outside every binding leaves the comparison to the props", () => {
+    const out = gen(`import ui_components
+@template
+Panel [] {
+    #content {
+        text [] ["x"]
+    }
+}
+`);
+    expect(out).not.toContain("__dynamicSlots");
+  });
+
+  test("a component with slots compares a dynamic provision as changed", () => {
+    const out = gen("@slot\ncontent: {};\n@template\nslot content {}\n");
+    expect(out).toContain("__dynamicSlots: bool = false;");
+    expect(out).toMatch(
+      /fn operator!=\(other: XArgs\) \{\n(?:.*\n)*?\s*if this\.__dynamicSlots \{ return true; \}\n/
+    );
+    // Without slots there is nothing to flag.
+    expect(gen("@props\nx: int;\n@template\n")).not.toContain("__dynamicSlots");
+  });
+});
+
 describe("the dialect import", () => {
   const setup = (body: string) => gen(`@setup\n${body}\n@template\n`);
 

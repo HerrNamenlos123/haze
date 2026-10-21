@@ -1,0 +1,18 @@
+// haze-notes' Toolbar in miniature: what is selected comes in as a prop and
+// is read inside slot content, one slot deep and two.
+
+@props
+tool: int;
+
+@template [col]
+
+Panel [] name="palette" {
+    #content {
+        Item [] label="pen" selected=[props.tool == 0] {}
+        Panel [] name="strip" {
+            #content {
+                Item [] label="lasso" selected=[props.tool == 1] {}
+            }
+        }
+    }
+}

@@ -1,0 +1,155 @@
+import ui_components
+import ui_elements
+
+// Slot content is the parent's template code, run inside the template of the
+// component that renders the slot. That component (the "host") is memoized on
+// its own props, which usually never change, so it re-renders only when
+// something its template read changed. This drives real .hzui components
+// headlessly, frame by frame, and checks that slot content follows each thing
+// it can depend on, changed from outside with no input at all:
+//
+//   * a prop of the parent, one slot deep and two (haze-notes' tool palette
+//     showed the old tool after the pen menu picked another one, until the
+//     pen hovered over the palette);
+//   * a loop's item, captured by the slot content;
+//   * a slot's payload, captured by slot content nested in that slot;
+//
+// and that a host whose slot content reads nothing that changed does not
+// re-render with its parent.
+//
+// Run from the repo root (never the haze binary):
+//   bun run src/main.ts run --dir stdlib/hzui/tests/slots --quiet
+
+ref struct TestState {
+    tool: rx.Reactive<int>;
+    rows: rx.ShallowReactive<[]str>;
+    title: rx.Reactive<str>;
+    unrelated: rx.Reactive<int>;
+}
+
+// How often each Panel's template ran, by name. Plain counters: a global
+// array initialiser does not compile yet.
+let paletteRuns = 0;
+let stripRuns = 0;
+let staticRuns = 0;
+let otherRuns = 0;
+
+fn countRun(name: str): str {
+    if name == "palette" { paletteRuns++; }
+    else if name == "strip" { stripRuns++; }
+    else if name == "static" { staticRuns++; }
+    else { otherRuns++; }
+    return "";
+}
+
+fn runs(name: str): int {
+    if name == "palette" { return paletteRuns; }
+    if name == "strip" { return stripRuns; }
+    if name == "static" { return staticRuns; }
+    return otherRuns;
+}
+
+fn totalRuns(): int {
+    return paletteRuns + stripRuns + staticRuns + otherRuns;
+}
+
+fn collectTexts(el: ui_elements.Element, out: []str) :: final {
+    if el is ui_elements.DivElement {
+        for c in el.children {
+            collectTexts(c, out);
+        }
+    } else if el is ui_elements.TextElement {
+        if el.text.length > 0 {
+            out.push(el.text);
+        }
+    }
+}
+
+ref struct Checker {
+    failures: int = 0;
+    checks: int = 0;
+
+    mut fn check(name: str, ok: bool, detail: str) {
+        this.checks++;
+        if !ok {
+            this.failures++;
+            fmt.println(f"FAIL: {name}: {detail}");
+        }
+    }
+}
+
+fn main(): int {
+    let state = TestState {
+        tool: rx.reactive<int>(0),
+        rows: rx.shallowReactive<[]str>(["a", "b"]),
+        title: rx.reactive<str>("x"),
+        unrelated: rx.reactive<int>(0),
+    };
+    let ui = ui_components.UIContext({
+        ui: (ctx: ui_components.UIContext) => {
+            RootComponent(ctx, { id: 0, state: state });
+        },
+        mousePos: (): Vec2 => Vec2(0.0, 0.0),
+    });
+    let c = Checker {};
+
+    // One frame; what the tree shows afterwards, as one line.
+    let frame = (): str => {
+        let tree = ui.process();
+        let texts: []str = [];
+        if tree {
+            collectTexts(tree, texts);
+        }
+        let shown = "";
+        for t in texts {
+            shown = shown.length == 0 ? t : f"{shown} | {t}";
+        }
+        return shown;
+    };
+
+    let start = "";
+    for (let i = 0; i < 3; i++) {
+        start = frame();
+    }
+    c.check("first frames", start == "unrelated 0 | pen=on | lasso=off | loop a | loop b | payload x | static", start);
+
+    // A prop of the parent, read in slot content.
+    let palette = runs("palette");
+    let strip = runs("strip");
+    state.tool := 1;
+    let shown = frame();
+    c.check("parent prop, one slot deep", shown.contains("pen=off"), shown);
+    c.check("parent prop, two slots deep", shown.contains("lasso=on"), shown);
+    c.check("the palette's host ran once", runs("palette") - palette == 1, f"{runs("palette") - palette} runs");
+    c.check("the strip's host ran once", runs("strip") - strip == 1, f"{runs("strip") - strip} runs");
+
+    // A loop's item, captured by slot content.
+    let nextRows: []str = ["c", "d"];
+    state.rows := nextRows;
+    shown = frame();
+    c.check("loop item", shown.contains("loop c | loop d"), shown);
+
+    // A slot's payload, captured by slot content inside it.
+    state.title := "y";
+    shown = frame();
+    c.check("slot payload", shown.contains("payload y"), shown);
+
+    // The parent re-renders for something no slot content reads.
+    let quiet = runs("static");
+    palette = runs("palette");
+    strip = runs("strip");
+    state.unrelated := 1;
+    shown = frame();
+    c.check("the parent re-rendered", shown.contains("unrelated 1"), shown);
+    c.check("a host whose slot reads nothing that changed stays put", runs("static") == quiet, f"{runs("static") - quiet} runs");
+    c.check("so does a child component's host", runs("palette") == palette && runs("strip") == strip,
+        f"palette {runs("palette") - palette}, strip {runs("strip") - strip} runs");
+
+    // And nothing is left owed: an idle frame changes nothing.
+    let before = totalRuns();
+    let idle = frame();
+    c.check("idle frame", idle == shown && totalRuns() == before, idle);
+
+    fmt.println(f"{c.checks - c.failures}/{c.checks} checks passed");
+    return c.failures == 0 ? 0 : 1;
+}

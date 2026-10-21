@@ -40,8 +40,16 @@ focusRingOffset: real = 2.0;
 
     content?: (s: ButtonSlotContent) => none;
 
+    // generated: set by a use site whose slot content captures a name
+    // its template bound (a loop's item, a slot's payload). Nothing
+    // tracks such a value, so the slot is taken as new every time the
+    // parent renders this component (see operator!= below).
+    __dynamicSlots: bool = false;
+
     // generated: compares exactly the @props fields. Emits and
-    // slots (closures) are excluded by construction.
+    // slots (closures) are excluded by construction: an emit is read
+    // live when it fires, and slot content re-reads the parent's props
+    // live, so the template that runs it tracks them.
     //
     // Statements rather than one boolean chain so that each field can
     // carry its own #source: a field whose type turns out not to be
@@ -51,6 +59,9 @@ focusRingOffset: real = 2.0;
     fn operator!=(other: ButtonArgs) {
 #source "button.hzui:2:1" {
         if this.id != other.id { return true; }
+        // Slot content that captured a template-bound name: new on
+        // every render of the parent, since nothing tracks the name.
+        if this.__dynamicSlots { return true; }
 }
 #source "button.hzui:3:1" {
         if this.label != other.label { return true; }

@@ -1,0 +1,11 @@
+// Hands its slot a payload that changes with its own state.
+
+@props
+item: Reactive<str>;
+
+@slot
+row: { value: str; };
+
+@template [col]
+
+slot row value=[rx.get(props.item)] {}

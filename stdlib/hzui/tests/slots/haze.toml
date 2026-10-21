@@ -1,0 +1,17 @@
+name = "hzui_slot_tests"
+id = "HzSlTs01"
+version = "0.1.0"
+description = "Slot content re-renders whenever what it reads changes (usage: top of src/main.hz)"
+license = "MIT"
+authors = []
+type = "exe"
+
+[dependencies]
+hzui = { path = "../.." }
+headwind = { path = "../../../headwind" }
+ui_components = { path = "../../../ui_components" }
+ui_elements = { path = "../../../ui_elements" }
+ui_styling = { path = "../../../ui_styling" }
+
+[plugins]
+hzui = { path = "../.." }

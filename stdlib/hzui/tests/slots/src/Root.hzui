@@ -1,0 +1,40 @@
+// Every way slot content can depend on something: a parent's prop (Palette),
+// a loop's item, a slot's payload; and slot content that depends on nothing
+// that changes, which must not re-render when its parent does.
+
+@props
+[[hzui.untracked]]
+state: TestState;
+
+@setup
+let tool = computed((): int => rx.get(props.state.tool));
+let rows = computed((): []str => rx.get(props.state.rows));
+let unrelated = computed((): int => rx.get(props.state.unrelated));
+
+@template [col]
+
+text [] [f"unrelated {unrelated}"]
+
+Palette [] tool=[tool] {}
+
+Panel for=[row, i in rows] key=[i] [] name="loop" {
+    #content {
+        text [] [f"loop {row}"]
+    }
+}
+
+Repeater [] item=[props.state.title] {
+    #row r {
+        Panel [] name="payload" {
+            #content {
+                text [] [f"payload {r.value}"]
+            }
+        }
+    }
+}
+
+Panel [] name="static" {
+    #content {
+        text [] ["static"]
+    }
+}

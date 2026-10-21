@@ -140,6 +140,16 @@ tag  if=/for=  [class-tokens]  attrs  content  { children }
   is `<Component>Slot<Name>` by the same naming rule that generates the struct. Omitting the
   payload name is therefore a true shorthand for "I don't need it", not a different shape — and
   adding a field to a slot payload later is not a breaking change at any use site.
+- **Slot content re-renders whenever what it reads changes.** It is the parent's template code,
+  but it runs inside the template of the component that renders the slot, and that component
+  is memoized on its own props (usually unchanged). So a slot body re-binds
+  `let props = instance.props();` instead of using the render's snapshot: its reads of the
+  parent's props are then tracked by the host's template. A loop's item, a slot's payload or an
+  `if=[let ...]` binding captured by slot content is a plain value nothing tracks, so a use site
+  that provides slots inside such a binding passes `__dynamicSlots: true`, and the host compares
+  as changed every time its parent renders it (Vue's dynamic slots). Before this, the haze-notes
+  tool palette (buttons in a `Surface`'s `#content`) kept showing the old tool after the pen
+  menu picked another one, and list rows needed a varying dummy prop (`label=[row.path]`).
 - **Text:** content is the trailing token: `text [tokens] label`.
 
 ### 3.3 Class tokens
@@ -257,7 +267,9 @@ of scope for now.
 - **Template purity lints:** no lambda literals, no `let` in `@template` — logic lives in setup.
   Templates must not allocate.
 - **Generated `operator!=`** compares exactly the `@props` fields; emits/slots (closures) are
-  excluded by construction. Field-wise equality for plain prop structs is generated in-language
+  excluded by construction (an emit is read live when it fires, slot content reads props live),
+  except that a component with slots compares as changed when its use site sets
+  `__dynamicSlots` (see Slots above). Field-wise equality for plain prop structs is generated in-language
   via `for comptime field in T.fields` (pattern already used in
   [reactive.hz:53](../stdlib/core/src/reactive.hz#L53)) — no core feature needed.
 - **Dialect vocabulary** (`computed`, `reactive`, `shallowReactive`, `elementRef`, `props.`,
@@ -512,6 +524,7 @@ linting.
 | Dismissal | outside-interaction callbacks on the element itself; presence in the tree is the registration | popups need something dispatch can't give (an event that never reaches them), but the global part belongs in the framework, once |
 | Dismissal ordering | queued after the bubble phase; `stopPropagation()` suppresses it | otherwise a trigger's toggle is undone and re-run — the reopen flicker |
 | Slot arity | always one payload param, explicitly typed by convention | a use site can't see a slot's arity or payload type across files, and closures into optional fields get no inference |
+| Slot reactivity | slot bodies read props live; slots capturing loop/payload/`if let` names re-render with the parent (`__dynamicSlots`) | the host is memoized on its own props, so what slot content reads must reach it by tracking or by the flag; forcing every slot host to re-render would re-run every slotted row of a list on each parent render |
 | Template root | `@template` head IS the root element; closure returns its `DivProps` | one element model — a root does everything a div does, no `componentSize()` special case |
 | Root from outside | nothing passes through, style included | the root belongs to its template; a caller uses props/slots/emits |
 | Component class list | reserved, must be written `[]`, tokens rejected | forwarding tokens breaks internals (Vue's `flex-col` problem); reserving the slot now keeps today's code meaning the same when the contract lands |

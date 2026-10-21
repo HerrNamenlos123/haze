@@ -1,0 +1,20 @@
+// A slot host whose own props never change: the shape of haze-notes' Surface
+// and PaperStrip, of ScrollView, of a Button with #content. `name` only tells
+// the test which one ran.
+//
+// The slot sits in a div of its own: slot content's elements are numbered
+// from 1 like the host's, so beside the host's own text they would share its
+// id under the same parent.
+
+@props
+name: str;
+
+@slot
+content: {};
+
+@template [col]
+
+text [] [countRun(props.name)]
+div [col] {
+    slot content {}
+}

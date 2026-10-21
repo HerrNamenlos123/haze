@@ -26,7 +26,9 @@ labelFont: Computed<Bytes>;
 }
 
     // generated: compares exactly the @props fields. Emits and
-    // slots (closures) are excluded by construction.
+    // slots (closures) are excluded by construction: an emit is read
+    // live when it fires, and slot content re-reads the parent's props
+    // live, so the template that runs it tracks them.
     //
     // Statements rather than one boolean chain so that each field can
     // carry its own #source: a field whose type turns out not to be

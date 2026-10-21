@@ -101,14 +101,13 @@ fn main(): int {
 
     // ── frame 1: builds everything ──────────────────────────────────────
     ui.process();
-    // TWO root passes, and exactly two. Building a component for the first
-    // time writes reactives the root template had already read during that
-    // same pass (its props version, its root element's style), so the pass
-    // ends up dirty from its own work. flushJobs converges that in the frame
-    // it happened rather than leaving the tree dirty for the next one --
-    // which is the whole reason it re-checks the template and not just its
-    // queues. Every pass after this one is single (see the PROBEs below).
-    state.checkInt("frame 1 ran the root template twice, then settled", state.rootRuns, 2);
+    // ONE root pass. It used to be two: bumping a component's propsVersion
+    // read the cell first (`++`), inside the root template, so the root was
+    // subscribed to it and dirtied by its own write (ui_components
+    // bumpPropsVersion now writes it untracked). A pass that does dirty
+    // itself is still converged in the same frame: flushJobs re-checks the
+    // template, not just its queues.
+    state.checkInt("frame 1 ran the root template once", state.rootRuns, 1);
     state.checkInt("frame 1 ran the child template", state.childRuns, 1);
     // ZERO: hooks run before the template pass, and setup -- which is what
     // registers them -- runs inside it. So a hook first fires on frame 2,
@@ -121,7 +120,7 @@ fn main(): int {
     ui.process();
     ui.process();
     ui.process();
-    state.checkInt("idle frames did not re-run the root template", state.rootRuns, 2);
+    state.checkInt("idle frames did not re-run the root template", state.rootRuns, 1);
     state.checkInt("idle frames did not re-run the child template", state.childRuns, 1);
     // The hook is the deliberate exception -- it is the only thing a gated
     // frame still does, because polling something the graph cannot see is
@@ -134,7 +133,7 @@ fn main(): int {
     ui.process();
     // One extra root pass, not two: in steady state the template does not
     // dirty itself, so the flush converges on the first re-check.
-    state.checkInt("template write cost exactly one root pass", state.rootRuns, 3);
+    state.checkInt("template write cost exactly one root pass", state.rootRuns, 2);
     state.checkInt("template write re-ran the child template", state.childRuns, 2);
     state.checkInt("template write rendered", state.rendered, 5);
     state.checkBool("after the frame: needsUpdate is false again", ui.needsUpdate(), false);
@@ -153,7 +152,7 @@ fn main(): int {
     state.checkInt("the frame ran the watcher", state.watcherRuns, 1);
     // ... and what the callback wrote was picked up by the SAME frame, not
     // the next one: flushJobs re-runs the template after the pre-flush.
-    state.checkInt("the watcher's write cost exactly one root pass", state.rootRuns, 4);
+    state.checkInt("the watcher's write cost exactly one root pass", state.rootRuns, 3);
     state.checkInt("the watcher's write re-ran the template", state.childRuns, 3);
     state.checkInt("the component is not stale", state.rendered, 35);
     state.checkBool("and settles", ui.needsUpdate(), false);

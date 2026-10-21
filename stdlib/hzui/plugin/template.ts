@@ -780,7 +780,7 @@ export function lowerTemplate(
 ): string {
   const nodes = new Parser(lex(body, startLine)).parseNodes(false);
   const em = new Emitter(baseIndent);
-  lowerNodes(nodes, em, ctx, { counter: 0, inLoop: false, loopKeys: [] });
+  lowerNodes(nodes, em, ctx, { counter: 0, inLoop: false, loopKeys: [], binds: false });
   return em.lines.join("\n");
 }
 
@@ -789,7 +789,66 @@ export function lowerTemplate(
 // not need them (an element's id is scoped by its parent element, which is
 // already keyed), but a component's id goes into the enclosing COMPONENT's
 // flat child list, so without them every iteration would share one instance.
-type Scope = { counter: number; inLoop: boolean; loopKeys: string[] };
+//
+// `binds`: whether this node is inside a name the template itself bound: a
+// loop's item or index, a slot's payload, an `if=[let ...]`. Unlike loopKeys
+// it is NOT reset inside slot content: a slot body is a closure, and it
+// captures every such name around it. See slotsCapture.
+type Scope = { counter: number; inLoop: boolean; loopKeys: string[]; binds: boolean };
+
+// Whether an if=/else-if= condition binds a name (`if=[let x = y]`).
+function bindsName(controlExpr: string): boolean {
+  return /^\s*let\b/.test(controlExpr);
+}
+
+// Lowers one element of an if=/else-if=/else chain. An `if=[let ...]` binds a
+// name for the element, so it is lowered with `binds` set (on the shared
+// scope rather than a copy, because siblings keep numbering from its counter).
+function lowerChainElement(
+  node: ElementNode,
+  em: Emitter,
+  ctx: TemplateContext,
+  scope: Scope
+) {
+  const outer = scope.binds;
+  if (node.controlExpr !== null && bindsName(node.controlExpr)) {
+    scope.binds = true;
+  }
+  lowerElement(node, em, ctx, scope);
+  scope.binds = outer;
+}
+
+// Whether the slot content a component is handed can capture a name the
+// template bound. The host re-renders only when its props, or something its
+// template read, changed. Slot content that reads `props` reads it live (see
+// lowerSlotBody), so that is tracked; a loop's item or a slot's payload is a
+// plain value the closure captured, and nothing tracks it. The use site then
+// says so (`__dynamicSlots`), and the host compares as changed every time its
+// parent renders it, which is what Vue does for slots that use v-for or v-slot
+// variables.
+function slotsCapture(node: ElementNode, scope: Scope): boolean {
+  return node.slotProvides.length > 0 && scope.binds;
+}
+
+// The body of one slot closure. It runs inside the template of the component
+// that renders the slot, not this one, so it re-binds `props` through
+// instance.props() instead of using the render's snapshot: the read is then
+// tracked by the host's template, and a change to this component's props
+// re-renders the slot content even though the host's own props did not change.
+function lowerSlotBody(
+  sp: { params: string[]; children: Node[] },
+  em: Emitter,
+  ctx: TemplateContext,
+  scope: Scope
+) {
+  em.emit("let props = instance.props();");
+  lowerNodes(sp.children, em, ctx, {
+    counter: 0,
+    inLoop: false,
+    loopKeys: [],
+    binds: scope.binds || sp.params.length > 0,
+  });
+}
 
 function lowerNodes(
   nodes: Node[],
@@ -824,7 +883,7 @@ function lowerNodes(
     } else if (node.control === "if") {
       // if=/else-if=/else chain over siblings
       em.emit(`if ${ctx.rewriteExpr(node.controlExpr!)} {`);
-      em.indented(() => lowerElement(node, em, ctx, scope));
+      em.indented(() => lowerChainElement(node, em, ctx, scope));
       em.emit("}");
     } else if (node.control === "else-if" || node.control === "else") {
       const prev = nodes[i - 1];
@@ -845,7 +904,7 @@ function lowerNodes(
       em.emit(
         `${last.trimStart() === "}" ? last.trimEnd() : last} else${cond} {`
       );
-      em.indented(() => lowerElement(node, em, ctx, scope));
+      em.indented(() => lowerChainElement(node, em, ctx, scope));
       em.emit("}");
     } else {
       lowerElement(node, em, ctx, scope);
@@ -899,6 +958,7 @@ function lowerElement(
         counter: scope.counter,
         inLoop: true,
         loopKeys: scope.loopKeys,
+        binds: true,
       })
     );
     em.emit(`}`);
@@ -968,6 +1028,9 @@ function lowerElementInner(
       );
     }
     const args: string[] = [`id: ${idExpr}`];
+    if (slotsCapture(node, scope)) {
+      args.push("__dynamicSlots: true");
+    }
     for (const a of node.attrs) {
       if (a.name === "ref") {
         // On a component, `ref=` binds its EXPOSED API, not an element: a
@@ -1014,9 +1077,7 @@ function lowerElementInner(
           em.emit(
             `${sp.name}: (${slotParamBinding(node.tag, sp.name, sp.params, node.line)}) => {`
           );
-          em.indented(() =>
-            lowerNodes(sp.children, em, ctx, { counter: 0, inLoop: false, loopKeys: [] })
-          );
+          em.indented(() => lowerSlotBody(sp, em, ctx, scope));
           em.emit(`},`);
         }
       });
@@ -1061,7 +1122,12 @@ function lowerElementInner(
   em.emit(`ui.${node.tag}({ ${props.join(", ")} }, (): void => {`);
   em.indented(() => {
     if (node.children) {
-      lowerNodes(node.children, em, ctx, { counter: 0, inLoop: false, loopKeys });
+      lowerNodes(node.children, em, ctx, {
+        counter: 0,
+        inLoop: false,
+        loopKeys: loopKeys,
+        binds: scope.binds,
+      });
     }
   });
   if (presetCalls.length === 0) {

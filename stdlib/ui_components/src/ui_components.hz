@@ -1684,8 +1684,20 @@ fn crashComponent(component: ComponentInstance, what: str, e: sys.PanicInfo, rer
     component.childComponents.clear();
     component.newChildComponents.clear();
     if rerender {
-        component.propsVersion++;
+        bumpPropsVersion(component);
     }
+}
+
+// Makes a component's template run again on its next render. Untracked,
+// because `++` READS the cell, and this usually runs inside the parent's
+// template: the parent would end up subscribed to the child's propsVersion
+// and dirtied by its own write. It then ran a second time after every prop
+// change, and forever for a component whose props change on every render (a
+// slot whose content captured a loop's item, see hzui's __dynamicSlots).
+fn bumpPropsVersion(component: ComponentInstance) {
+    rx.untracked(() => {
+        component.propsVersion++;
+    });
 }
 
 fn destroyComponent(component: ComponentInstance): void :: final {
@@ -5079,7 +5091,7 @@ export opaque ref struct UIContext {
         }
 
         if (propsChanged) {
-            instance.propsVersion++;
+            bumpPropsVersion(instance);
         }
 
         if instance.templateComputed is none {

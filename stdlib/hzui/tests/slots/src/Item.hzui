@@ -1,0 +1,9 @@
+// One entry that shows whether it is selected, the way a tool button does.
+
+@props
+label: str;
+selected: bool = false;
+
+@template []
+
+text [] [f"{props.label}={props.selected ? "on" : "off"}"]

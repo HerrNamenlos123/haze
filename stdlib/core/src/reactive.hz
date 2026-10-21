@@ -366,6 +366,34 @@ namespace rx {
         return same;
     }
 
+    // Runs `body` with no computed tracking what it reads: Vue's
+    // pauseTracking()/resetTracking(). For a read that belongs to a write: a
+    // computed that bumps a cell (`cell++` reads it first) must not end up
+    // subscribed to the cell it writes, or its own write dirties it again.
+    export fn untracked<T>(body: immediate () => T): T :: final {
+        let prev = _pauseTracking();
+        let value = body();
+        _resumeTracking(prev);
+        return value;
+    }
+
+    // untracked()'s two halves, apart from it: a function with inline C
+    // cannot take an `immediate` parameter.
+    export fn _pauseTracking(): cptr :: final {
+        let prev: cptr = none as cptr;
+        do unsafe {
+            __c__("prev = (void*)hzstd_reactive_pause_tracking();");
+        };
+        return prev;
+    }
+
+    export fn _resumeTracking(prev: cptr): none :: final {
+        do unsafe {
+            __c__("hzstd_reactive_resume_tracking((hzstd_computed_node_t*)prev);");
+        };
+        return none;
+    }
+
     // Writes `value` into `target` IN PLACE: a struct keeps every one of its
     // field cells, and each field is written into its own, recursively.
     // `target := value` instead hands the struct a brand-new set of cells,
