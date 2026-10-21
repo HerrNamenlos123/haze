@@ -262,12 +262,16 @@ namespace testsuite {
         return -1;
     }
 
+    // Only a diagnostic's own header counts ("Error H7220: ...", "Warning
+    // H9001: ...", see formatCompilerMessage in src/shared/Errors.ts), never
+    // a code named inside some other text: an internal error that says what
+    // should have been reported is not that diagnostic.
     fn countCode(text: str, code: int): int {
-        return countMatches(text, f"H{code}\\b");
+        return countMatches(text, f"(Error|Warning) H{code}\\b");
     }
 
     fn totalDiagnosticCodes(text: str): int {
-        return countMatches(text, "H[0-9]+\\b");
+        return countMatches(text, "(Error|Warning) H[0-9]+\\b");
     }
 
     fn checkError(output: str, check: ErrorCheck): str {

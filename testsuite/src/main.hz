@@ -99,6 +99,7 @@ fn main(): int {
     cases_if_chain_narrowing.register(suite);
     cases_context.register(suite);
     cases_extern_c_function_types.register(suite);
+    cases_context_review.register(suite);
 
     return testsuite.runAll(config, suite);
 }

@@ -1,0 +1,639 @@
+// ============================================================================
+// The hidden context: regressions found by the review of the feature
+// (hand-made mutants of the implementation, an independent oracle, a
+// security pass). The rules are those of cases_context.hz; each case here
+// pins one that a mutant broke without any other case noticing, or a bug
+// the review found.
+//
+// The runtime cases observe the context's hidden `dummy` field the way
+// cases_context.hz does: `dummy()` reports the caller's, `setDummy(n)`
+// changes it.
+//
+// Written before the fixes and shown to fail without them (or, for a rule
+// the implementation already kept, to fail on the mutant that breaks it).
+// Do not weaken a case to make an implementation pass.
+// ============================================================================
+
+namespace cases_context_review {
+
+    export fn register(s: mut testsuite.Suite) {
+
+        s.run(
+            "context review: reactive effects, clone evaluation order, bound-method and -> bodies, default = context, init forms",
+            """
+ref struct Checks {
+    checks: int = 0;
+    failures: int = 0;
+
+    mut fn check(name: str, ok: bool) {
+        this.checks = this.checks + 1;
+        if !ok {
+            this.failures = this.failures + 1;
+            fmt.println(f"FAIL: {name}");
+        }
+    }
+}
+
+fn dummyOf(c: Context): int {
+    let copy = c;
+    let v = 0;
+    do unsafe { __c__("v = (hzstd_int_t)(intptr_t)copy.dummy;"); };
+    return v;
+}
+
+fn withDummy(c: Context, n: int): Context {
+    let copy = c;
+    do unsafe { __c__("copy.dummy = (void *)(intptr_t)n;"); };
+    return copy;
+}
+
+fn dummy(): int {
+    let c = context;
+    let v = 0;
+    do unsafe { __c__("v = (hzstd_int_t)(intptr_t)c.dummy;"); };
+    return v;
+}
+
+fn setDummy(n: int) {
+    let c = context;
+    do unsafe { __c__("c.dummy = (void *)(intptr_t)n;"); };
+    context = c;
+}
+
+// ── 1. reactive code runs under its reader's / writer's context ─────────────
+// A computed is evaluated by whoever reads it; a watcher's scheduler (here a
+// synchronous one) is run by the write that makes its node dirty.
+fn tReactive(t: mut Checks) {
+    setDummy(10);
+    let comp = context.clone(() => {
+        setDummy(20);
+        return rx.computed(() => { return dummy(); });
+    });
+    let read = context.clone(() => {
+        setDummy(30);
+        let v: int = comp;
+        return v;
+    });
+    t.check("a computed runs under its reader's context, not its creator's", read == 30);
+
+    let comps: []rx.Computed<int> = [rx.computed(() => { return dummy(); }), rx.computed(() => { return dummy() + 1; })];
+    let fromLoop = context.clone(() => {
+        setDummy(35);
+        let sum = 0;
+        for v in comps {
+            sum = sum + v;
+        }
+        return sum;
+    });
+    t.check("for over computeds evaluates each under the loop's context", fromLoop == 71);
+
+    let sync: rx.WatchOptions = { scheduler: (job: rx.WatchJob): none => { job.run(); } };
+
+    let r = rx.reactive<int>(1);
+    let seen: ref Box<int> = { value: -1 };
+    let h1 = context.clone(() => {
+        setDummy(40);
+        return rx.watch(() => r, (v, old) => { seen.value = dummy(); }, sync);
+    });
+    context.clone(() => {
+        setDummy(50);
+        r := 2;
+    });
+    t.check("a watcher runs under the context of the write (:=), not its creator's", seen.value == 50);
+
+    let items = rx.reactive<[]int>([1]);
+    let seenPush: ref Box<int> = { value: -1 };
+    let h2 = rx.watch(() => items.length, (v, old) => { seenPush.value = dummy(); }, sync);
+    context.clone(() => {
+        setDummy(60);
+        items.push(2);
+    });
+    t.check("a watcher runs under the context of a push", seenPush.value == 60);
+
+    let seenPop: ref Box<int> = { value: -1 };
+    let h3 = rx.watch(() => items.length, (v, old) => { seenPop.value = dummy(); }, sync);
+    context.clone(() => {
+        setDummy(70);
+        let x = items.pop();
+    });
+    t.check("a watcher runs under the context of a pop", seenPop.value == 70);
+
+    let seenWhole: ref Box<int> = { value: -1 };
+    let h4 = rx.watch(() => items.length, (v, old) => { seenWhole.value = dummy(); }, sync);
+    context.clone(() => {
+        setDummy(80);
+        items := [rx.reactive<int>(7), rx.reactive<int>(8), rx.reactive<int>(9)] as []rx.Reactive<int>;
+    });
+    t.check("a watcher runs under the context of a whole deep-array :=", seenWhole.value == 80);
+
+    // A write made inside a callback is delivered by the outer write's loop,
+    // under the outer write's context (DEVELOPMENT.md, the hidden context).
+    let outer = rx.reactive<int>(0);
+    let inner = rx.reactive<int>(0);
+    let seenOuter: ref Box<int> = { value: -1 };
+    let seenInner: ref Box<int> = { value: -1 };
+    let h5 = rx.watch(() => outer, (v, old) => {
+        seenOuter.value = dummy();
+        context.clone(() => {
+            setDummy(99);
+            inner := 1;
+        });
+    }, sync);
+    let h6 = rx.watch(() => inner, (v, old) => { seenInner.value = dummy(); }, sync);
+    context.clone(() => {
+        setDummy(90);
+        outer := 1;
+    });
+    t.check("a write inside a callback is delivered under the outer write's context", seenOuter.value == 90 && seenInner.value == 90);
+    t.check("reactive: the caller's context is unchanged", dummy() == 10);
+}
+
+// ── 2. context.clone(e): e first, then the copy ─────────────────────────────
+// Like a call, whose callee runs after its arguments: evaluating the body
+// expression may write the current context, and the body starts from the
+// result. Context.init(v, e) evaluates v (the copy), then e.
+fn makeReader(): () => int {
+    setDummy(dummy() + 1000);
+    return () => { return dummy(); };
+}
+
+struct Pt {
+    x: int = 0;
+    fn get(): int { return this.x + dummy(); }
+    mut fn bump(): int {
+        this.x = this.x + 1;
+        return this.x * 100 + dummy();
+    }
+}
+
+ref struct RefPt {
+    x: int = 0;
+    fn get(): int { return this.x + dummy(); }
+}
+
+struct FnHolder { f: () => int; }
+
+fn plainReader(): int { return dummy(); }
+fn mkPt(): Pt { setDummy(5); return Pt { x: 1 }; }
+fn mkRefPt(): RefPt { setDummy(6); return RefPt { x: 2 }; }
+fn mkFp(): () -> int { setDummy(8); return plainReader; }
+fn mkHolder(): FnHolder { setDummy(9); return FnHolder { f: () => { return dummy(); } }; }
+fn at(n: int): int { setDummy(n); return 0; }
+
+fn tCloneOrder(t: mut Checks) {
+    setDummy(10);
+    let r = context.clone(makeReader());
+    t.check("clone(makeReader()): the body starts from what makeReader() wrote", r == 1010 && dummy() == 1010);
+    let s = Context.init(context, makeReader());
+    t.check("Context.init(context, makeReader()): the value is taken first", s == 1010 && dummy() == 2010);
+    setDummy(7);
+    t.check("clone(mkPt().get): a method bound on a temporary", context.clone(mkPt().get) == 6 && dummy() == 5);
+    setDummy(7);
+    t.check("clone(mkRefPt().get): a method bound on a returned ref", context.clone(mkRefPt().get) == 8 && dummy() == 6);
+    setDummy(7);
+    t.check("clone(mkFp()): a -> value returned by a call", context.clone(mkFp()) == 8 && dummy() == 8);
+    setDummy(7);
+    t.check("clone(mkHolder().f): a closure field of a returned struct", context.clone(mkHolder().f) == 9 && dummy() == 9);
+    let pts: []Pt = [Pt { x: 1 }];
+    setDummy(7);
+    t.check("clone(pts[at(12)].get): the receiver's index is evaluated first", context.clone(pts[at(12)].get) == 13 && dummy() == 12);
+    setDummy(7);
+    let bumped = context.clone(pts[at(13)].bump);
+    t.check("clone(pts[at(13)].bump): a mut method still changes the element itself", bumped == 213 && pts[0].x == 2 && dummy() == 13);
+    setDummy(10);
+}
+
+// ── 3. bodies and calls the main case does not reach ────────────────────────
+struct Probe {
+    v: int = 0;
+    fn get(): int {
+        setDummy(dummy() + 1);
+        return dummy() + this.v;
+    }
+}
+
+fn hazeTimes2(x: int): int { return x * 2 + dummy(); }
+fn runImmediate(f: immediate () => int): int { return f(); }
+
+// An immediate parameter as the body of clone, and called inside a clone
+// lambda: neither is an escape.
+fn cloneImmediate(f: immediate () => int): int { return context.clone(f); }
+fn cloneCallsImmediate(f: immediate () => int): int { return context.clone(() => { return f(); }); }
+
+// A default parameter value naming `context` is the caller's context.
+fn seenVia(c: Context = context): int { return dummyOf(c); }
+
+struct Seer {
+    fn seenVia(c: Context = context): int { return dummyOf(c); }
+}
+
+// `init` of a namespace or of a struct value is an ordinary call, not
+// Context.init.
+namespace Pool {
+    export fn init(a: int, b: () => int): int { return a + b(); }
+}
+
+struct Pooled {
+    base: int = 10;
+    fn init(a: int, b: () => int): int { return this.base + a + b(); }
+}
+
+fn tBodies(t: mut Checks) {
+    setDummy(10);
+    let p = Probe { v: 5 };
+    let a = context.clone(p.get);
+    t.check("clone(p.get): a method bound on a value receiver runs under the copy", a == 16 && dummy() == 10);
+    let b = Context.init(withDummy(context, 20), p.get);
+    t.check("Context.init(c, p.get): a method bound on a value receiver runs under c", b == 26 && dummy() == 10);
+
+    setDummy(3);
+    let hv: (x: int) -> int = hazeTimes2;
+    t.check("a captured -> value called in a stack-env closure", runImmediate(() => { return hv(1); }) == 5);
+    let stored = () => { return hv(2); };
+    t.check("a captured -> value called in a heap-env closure", stored() == 7);
+    let stackref inPlace = () => { return hv(3); };
+    t.check("a captured -> value called in a let stackref lambda", inPlace() == 9);
+    let underClone = context.clone(() => {
+        setDummy(100);
+        return hv(4);
+    });
+    t.check("a captured -> value called in a clone body", underClone == 108 && dummy() == 3);
+
+    setDummy(4);
+    t.check("default = context in a free function", seenVia() == 4);
+    let inner = context.clone(() => {
+        setDummy(9);
+        return seenVia();
+    });
+    t.check("default = context under a clone", inner == 9);
+    let seer = Seer {};
+    t.check("default = context in a method", seer.seenVia() == 4);
+    t.check("default = context, given explicitly", seenVia(withDummy(context, 7)) == 7);
+
+    let k = 5;
+    t.check("clone(f) with f an immediate parameter", cloneImmediate(() => { return k + dummy(); }) == 9);
+    t.check("an immediate parameter called inside a clone lambda", cloneCallsImmediate(() => { return k + 1; }) == 6);
+
+    let pooled = Pooled {};
+    t.check("Pool.init(a, b) is an ordinary call", Pool.init(1, () => { return 2; }) == 3);
+    t.check("t.init(a, b) is an ordinary method call", pooled.init(1, () => { return 2; }) == 13);
+    setDummy(10);
+}
+
+fn main(): int {
+    let t = Checks {};
+    tReactive(t);
+    tCloneOrder(t);
+    tBodies(t);
+    if dummy() != 10 {
+        t.check("main's context is back to 10", false);
+    }
+    if t.failures > 0 {
+        fmt.println(f"{t.failures} of {t.checks} checks FAILED");
+        return 1;
+    }
+    fmt.println(f"all {t.checks} checks passed");
+    return 0;
+}
+""",
+            "all 30 checks passed");
+
+        // Reading an optional field needs no context, so `?.` field reads work
+        // in an extern C body: the impossible branch of the expansion is a C
+        // trap, not a call of a Haze function.
+        s.run(
+            "context review: ?. field reads in an extern C body",
+            """
+struct Inner { w: int = 0; }
+struct M {
+    v: int = 0;
+    inner: Inner | none = none;
+}
+ref struct R { n: int = 0; }
+
+extern C fn readNone(o: M | none): int {
+    let a = o?.v;
+    let b = o?.inner?.w;
+    let r = 0;
+    if a is int { r = r + a * 100; } else { r = r + 1; }
+    if b is int { r = r + b; } else { r = r + 2; }
+    return r;
+}
+
+extern C fn readNull(o: R | null): int {
+    let a = o?.n;
+    if a is int { return a; }
+    return -1;
+}
+
+extern C fn readBoth(o: M | null | none): int {
+    let a = o?.v;
+    if a is int { return a; }
+    if a is none { return -2; }
+    return -3;
+}
+
+fn main(): int {
+    let full = M { v: 7, inner: Inner { w: 3 } };
+    let bare = M { v: 4 };
+    let some: R | null = R { n: 6 };
+    let nothing: R | null = null;
+    fmt.println(f"{readNone(full)} {readNone(bare)} {readNone(none)}");
+    fmt.println(f"{readNull(some)} {readNull(nothing)}");
+    fmt.println(f"{readBoth(full)} {readBoth(none)} {readBoth(null)}");
+    return 0;
+}
+""",
+            """
+703 402 3
+6 -1
+7 -2 -3
+""");
+
+        s.compileFails(
+            "context review: ?. calling a method in an extern C body still needs a context",
+            """
+struct M {
+    v: int = 0;
+    fn get(): int { return this.v; }
+}
+
+extern C fn entry(o: M | none): int {
+    let a = o?.get(); // <- a method call takes a context
+    return 0;
+}
+
+fn main(): int {
+    return entry(none);
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.ContextNeededInExternCFunction)]);
+
+        // ── A context is made only by Context() or by copying one (C398) ─────────
+        // json.parse builds values without their constructors; a Context
+        // anywhere in the parsed type is a compile error.
+        s.compileFails(
+            "context review: json.parse<Context> is rejected",
+            """
+fn main(): int {
+    let r = json.parse<Context>("{}"); // <- would make a Context without Context()
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.StaticAssertFailedWithMessage)]);
+
+        s.compileFails(
+            "context review: json.parse of a fixed array of Context is rejected",
+            """
+fn main(): int {
+    let r = json.parse<[2]Context>("[{}, {}]"); // <- would make two
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.StaticAssertFailedWithMessage)]);
+
+        s.compileFails(
+            "context review: json.parse of a struct with a Context field is rejected",
+            """
+struct Holder {
+    c: Context;
+    n: int = 0;
+}
+
+fn main(): int {
+    let r = json.parse<Holder>(\"\"\"{"c": {}, "n": 1}\"\"\"); // <- would make one
+    if r is Holder {
+        context = r.c;
+    }
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.StaticAssertFailedWithMessage)]);
+
+        s.compileFails(
+            "context review: json.parse of a Context nested in an array of structs is rejected",
+            """
+type Ctx = Context;
+struct Inner { c: Ctx | none = none; }
+ref struct Outer { items: []Inner = []; }
+
+fn main(): int {
+    let r = json.parse<Outer>(\"\"\"{"items": [{"c": {}}]}\"\"\"); // <- would make one
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.StaticAssertFailedWithMessage)]);
+
+        // ── The reactive core's extern C entry is not reachable from Haze ───────
+        // It reinterprets a cptr as a closure box and calls it: safe code
+        // handing it any object would jump through that object's bytes.
+        s.compileFails(
+            "context review: rx.__hz_rx_run_thunk cannot be named outside core",
+            """
+ref struct Evil {
+    a: int = 0;
+    b: int = 0;
+}
+
+fn main(): int {
+    let e = Evil { a: 1094795585, b: 1111638594 };
+    rx.__hz_rx_run_thunk(context, e as cptr); // <- not exported
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.NamespaceDoesNotDefineAnyDeclarationsNamed)]);
+
+        // ── What may be a clone / init body ─────────────────────────────────────
+        s.compileFails(
+            "context review: an extern C function as the body of clone",
+            """
+extern C fn one(): int { return 1; }
+
+fn main(): int {
+    let n = context.clone(one); // <- an extern C function has no context to run under
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.NoSuitableConversionFound)]);
+
+        s.compileFails(
+            "context review: a lambda with a parameter as the body of clone",
+            """
+fn main(): int {
+    let n = context.clone((x: int) => { return x; }); // <- the body takes no parameters
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.NoSuitableConversionFound)]);
+
+        s.compileFails(
+            "context review: a lambda with a parameter as the body of Context.init",
+            """
+fn main(): int {
+    let n = Context.init(context, (x: int) => { return x; }); // <- the body takes no parameters
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.NoSuitableConversionFound)]);
+
+        s.compileFails(
+            "context review: a function using clone is not pure",
+            """
+let counter: int = 0;
+
+fn bump(): int {
+    counter = counter + 1;
+    return counter;
+}
+
+fn viaClone(): int {
+    return context.clone(() => { return bump(); });
+}
+
+fn main(): int {
+    let p: () -> int :: pure = viaClone; // <- not pure
+    return p();
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.NoSuitableConversionFound)]);
+
+        s.compileFails(
+            "context review: for over computeds in an extern C body",
+            """
+extern C fn entry(items: []rx.Computed<int>): int {
+    let n = 0;
+    for c in items { // <- reading each element evaluates a computed
+        n = n + 1;
+    }
+    return n;
+}
+
+fn main(): int {
+    let items: []rx.Computed<int> = [rx.computed(() => { return 1; })];
+    return entry(items);
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.ContextNeededInExternCFunction)]);
+
+        // ── Declarations named `context` (H7222), one position per case ─────────
+        s.compileFailsWithModules(
+            "context review: import ... as context",
+            [contextLib()],
+            """
+import crlib as context; // <- H7222
+
+fn main(): int {
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.DeclarationNamedContext)]);
+
+        s.compileFailsWithModules(
+            "context review: from ... import one as context",
+            [contextLib()],
+            """
+from crlib import one as context; // <- H7222
+
+fn main(): int {
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.DeclarationNamedContext)]);
+
+        s.compileFails(
+            "context review: a local type alias named context",
+            """
+fn main(): int {
+    type context = int; // <- H7222
+    let x: context = 1;
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.DeclarationNamedContext)]);
+
+        s.compileFails(
+            "context review: a loop index named context",
+            """
+fn main(): int {
+    let items: []int = [1, 2];
+    let sum = 0;
+    for x, context in items { // <- H7222
+        sum = sum + x;
+    }
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.DeclarationNamedContext)]);
+
+        s.compileFails(
+            "context review: if let context",
+            """
+fn f(): int | none { return 1; }
+
+fn main(): int {
+    if let context = f() { // <- H7222
+        return 0;
+    }
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.DeclarationNamedContext)]);
+
+        s.compileFails(
+            "context review: while let context",
+            """
+fn f(): int | none { return none; }
+
+fn main(): int {
+    while let context = f() { // <- H7222
+        return 0;
+    }
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.DeclarationNamedContext)]);
+
+        s.compileFails(
+            "context review: an enum named context",
+            """
+enum context { A, B } // <- H7222
+
+fn main(): int {
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.DeclarationNamedContext)]);
+
+        s.compileFails(
+            "context review: an extern C function named context",
+            """
+extern C fn context(): int { return 0; } // <- H7222
+
+fn main(): int {
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.DeclarationNamedContext)]);
+
+        s.compileFails(
+            "context review: a global initialized from context",
+            """
+let g: int = 0;
+let c: Context = context; // <- no context outside a function
+
+fn main(): int {
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.SymbolWasNotDeclaredThisScope)]);
+    }
+
+    fn contextLib(): testsuite.TestModule {
+        return testsuite.TestModule {
+            name: "crlib",
+            source: """
+export fn one(): int { return 1; }
+""",
+        };
+    }
+}
