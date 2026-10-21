@@ -134,7 +134,8 @@ export enum PointerType { Mouse, Pen, Touch }
 // mouse move and every pen sample was a heap object of its own.
 export struct PointerEdge {
     // matches sdl.MouseButtonEvent.button: 0=left (a pen's tip, a finger),
-    // 1=middle, 2=right; 5 is a pen's eraser end, as in the DOM. -1 on a move.
+    // 1=middle, 2=right (and a pen's tip with the barrel button held, see
+    // PenContacts); 5 is a pen's eraser end, as in the DOM. -1 on a move.
     button: int;
     kind: PointerEdgeKind;
     pos: Vec2;
@@ -166,6 +167,71 @@ fn hasBit(value: int, bit: int): bool :: final {
         let result: bool = uninitialized;
         __c__("result = (value & bit) != 0;");
         return result;
+    };
+}
+
+// The pens in contact, and which button each contact is.
+//
+// The tip is the left button and the eraser end button 5, as in the DOM. The
+// tip pressed with the barrel button held is the pen's right click: the
+// gesture Windows Ink and GTK make the barrel button's, and the one that asks
+// for a context menu, as a right press does. Which button it is, the touch-down
+// decides, and the lift-off releases that same button whatever was let go of
+// in between: a press and its release are one button.
+//
+// Only pens in contact are kept: SDL may give a pen a new id each time it comes
+// into range, so an entry per id ever seen would grow for as long as the app
+// runs.
+export ref struct PenContacts {
+    _pressed: LinearMap<int, int> = {};
+
+    // The button of the edge a pen event makes, with `buttons` the DOM bits
+    // the event reports: what a touch-down presses, what a lift-off releases,
+    // and -1 for a move or a cancel (the DOM's pointercancel has no button).
+    fn button(kind: sdl.PointerEventKind, id: int, buttons: int): int {
+        if kind == sdl.PointerEventKind.Down {
+            let pressed = 0;
+            if hasBit(buttons, 32) {
+                pressed = 5;
+            } else if hasBit(buttons, 2) {
+                pressed = 2;
+            }
+            this._pressed.set(id, pressed);
+            return pressed;
+        }
+        if kind == sdl.PointerEventKind.Up || kind == sdl.PointerEventKind.Cancel {
+            let pressed = this._pressed.get(id) ?? 0;
+            this._pressed.delete(id);
+            return kind == sdl.PointerEventKind.Up ? pressed : -1;
+        }
+        return -1;
+    }
+
+    // How many pens are in contact.
+    fn inContact(): int {
+        return this._pressed.size();
+    }
+}
+
+// The edge a pen event makes: its button from `contacts`, the rest the pen's
+// own.
+export fn penEdge(contacts: PenContacts, e: sdl.PointerEvent): PointerEdge {
+    let kind = PointerEdgeKind.Moved;
+    if e.kind == sdl.PointerEventKind.Down {
+        kind = PointerEdgeKind.Pressed;
+    } else if e.kind == sdl.PointerEventKind.Up {
+        kind = PointerEdgeKind.Released;
+    } else if e.kind == sdl.PointerEventKind.Cancel {
+        kind = PointerEdgeKind.Cancelled;
+    }
+    return PointerEdge {
+        button: contacts.button(e.kind, e.id, e.buttons),
+        kind: kind,
+        pos: e.pos,
+        pointerId: penPointerId(e.id),
+        pointerType: PointerType.Pen,
+        buttons: e.buttons,
+        pressure: e.pressure,
     };
 }
 
@@ -316,12 +382,9 @@ export opaque ref struct App {
     _mouseLeftHeld: bool = false;
     _penTipHeld: bool = false;
     _touchHeld: bool = false;
-    // Per pen IN CONTACT: the buttons its last event reported, which is what
-    // tells a release of the tip from a release of the eraser (the up itself
-    // only says what is still down afterwards). Only pens in contact are
-    // kept: SDL may give a pen a new id each time it comes into range, so an
-    // entry per id ever seen would grow for as long as the app runs.
-    _penButtons: LinearMap<int, int> = {};
+    // Which button each pen in contact pressed, which its release reports
+    // (the up itself only says what is still down afterwards).
+    _penContacts: PenContacts = {};
     // The fingers currently down, in landing order, and whether the first
     // of them -- the primary one -- is still among them. A finger that lands
     // while others are down is never primary, even after the primary lifts.
@@ -530,39 +593,13 @@ export opaque ref struct App {
     // hovers with and its tip holds the primary level, exactly as the mouse
     // does -- a pen is how a tablet user clicks buttons, too.
     fn handlePen(e: sdl.PointerEvent) {
-        let previous = this._penButtons.get(e.id) ?? 0;
-        if hasBit(e.buttons, 1) || hasBit(e.buttons, 32) {
-            this._penButtons.set(e.id, e.buttons);
-        } else {
-            this._penButtons.delete(e.id);
-        }
-
         this.mousePosition = e.pos;
         this.mousePositionKnown = true;
         this.fingerLifted = false;
         this._penTipHeld = hasBit(e.buttons, 1);
         this.refreshLeftHeld();
 
-        let kind = PointerEdgeKind.Moved;
-        let button = -1;
-        if e.kind == sdl.PointerEventKind.Down {
-            kind = PointerEdgeKind.Pressed;
-            button = hasBit(e.buttons, 32) ? 5 : 0;
-        } else if e.kind == sdl.PointerEventKind.Up {
-            kind = PointerEdgeKind.Released;
-            button = hasBit(previous, 32) ? 5 : 0;
-        } else if e.kind == sdl.PointerEventKind.Cancel {
-            kind = PointerEdgeKind.Cancelled;
-        }
-        this._pointerEdgeQueue.push({
-            button: button,
-            kind: kind,
-            pos: e.pos,
-            pointerId: penPointerId(e.id),
-            pointerType: PointerType.Pen,
-            buttons: e.buttons,
-            pressure: e.pressure,
-        });
+        this._pointerEdgeQueue.push(penEdge(this._penContacts, e));
     }
 
     fn handleTouch(e: sdl.PointerEvent) {

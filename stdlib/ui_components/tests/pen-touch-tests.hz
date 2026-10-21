@@ -86,6 +86,8 @@ fn main(): int {
                             onPointerMove: (e: ui_components.PointerEvent) => { state.record(describe("inner", "move", e)); },
                             onPointerUp: (e: ui_components.PointerEvent) => { state.record(describe("inner", "up", e)); },
                             onClick: (e: ui_components.PointerEvent) => { state.record(describe("inner", "click", e)); },
+                            onAuxClick: (e: ui_components.PointerEvent) => { state.record(describe("inner", "auxclick", e)); },
+                            onContextMenu: (e: ui_components.PointerEvent) => { state.record(describe("inner", "contextmenu", e)); },
                         }, () => {});
                     });
                     return { id: 0 };
@@ -166,6 +168,24 @@ fn main(): int {
     state.checkStr("a pen tap is a click",
         state.log,
         "inner-down(pen);outer-down(pen);inner-up(pen);outer-up(pen);inner-click(pen);outer-click(pen);");
+
+    // --- The barrel button's tap is the pen's right click -------------------
+    //
+    // A host reports the tip touching down with the barrel held as a right
+    // press (see app.PenContacts): it asks for a context menu, as a right
+    // click does, and its release is no click.
+    state.log = "";
+    state.mouseX = 50.0;
+    state.mouseY = 50.0;
+    edges.push({ button: ui_components.PointerButton.Right, kind: ui_components.PointerEdgeKind.Pressed, pos: Vec2(50.0, 50.0),
+        pointerId: 1001, pointerType: "pen", buttons: ui_components.pointerButtonsFromBits(3), pressure: 0.7 });
+    ui.process();
+    edges.push({ button: ui_components.PointerButton.Right, kind: ui_components.PointerEdgeKind.Released, pos: Vec2(50.0, 50.0),
+        pointerId: 1001, pointerType: "pen", buttons: ui_components.PointerButtons.None, pressure: 0.0 });
+    ui.process();
+    state.checkStr("a pen's right press asks for a context menu and clicks nothing",
+        state.log,
+        "inner-down(pen);outer-down(pen);inner-contextmenu(pen);inner-up(pen);outer-up(pen);inner-auxclick(pen);");
 
     // --- Pen hover is hit-tested, not captured ------------------------------
     state.log = "";

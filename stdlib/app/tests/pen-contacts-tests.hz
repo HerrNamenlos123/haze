@@ -1,0 +1,110 @@
+import app
+import sdl
+
+// Which button a pen's contact is (app.PenContacts): the tip is the left
+// button, the eraser end button 5, and the tip pressed with the barrel button
+// held is the pen's right click. Its lift-off releases the button its
+// touch-down pressed, whatever was let go of in between.
+//
+// Bits are the DOM's, as sdl reports them: 1 tip, 2 barrel, 4 second barrel,
+// 32 eraser.
+//
+// Run from a throwaway exe project inside the repository that depends on app
+// and sdl, with this file as its main.hz.
+
+ref struct State {
+    checks: int = 0;
+    failures: int = 0;
+
+    mut fn checkInt(name: str, actual: int, expected: int) {
+        this.checks = this.checks + 1;
+        if actual != expected {
+            this.failures = this.failures + 1;
+            fmt.println(f"FAIL: {name}: expected {expected}, got {actual}");
+        }
+    }
+}
+
+fn main(): int {
+    let state = State {};
+    let pens = app.PenContacts {};
+    let down = sdl.PointerEventKind.Down;
+    let up = sdl.PointerEventKind.Up;
+    let move = sdl.PointerEventKind.Move;
+    let cancel = sdl.PointerEventKind.Cancel;
+
+    state.checkInt("the tip presses the left button", pens.button(down, 1, 1), 0);
+    state.checkInt("a move is no button", pens.button(move, 1, 1), -1);
+    state.checkInt("and lifting it releases the left button", pens.button(up, 1, 0), 0);
+
+    state.checkInt("the tip with the barrel held presses the right button", pens.button(down, 1, 3), 2);
+    state.checkInt("a move with it is no button", pens.button(move, 1, 3), -1);
+    state.checkInt("lifting it releases the right button", pens.button(up, 1, 2), 2);
+
+    // The barrel let go of before the tip: still the right button's release.
+    state.checkInt("barrel then tip: right press", pens.button(down, 1, 3), 2);
+    state.checkInt("the barrel let go mid-contact is a move", pens.button(move, 1, 1), -1);
+    state.checkInt("the lift releases the right button all the same", pens.button(up, 1, 0), 2);
+
+    // The barrel pressed only after the tip touched: a left contact.
+    state.checkInt("tip first: left press", pens.button(down, 1, 1), 0);
+    state.checkInt("the barrel pressed mid-contact is a move", pens.button(move, 1, 3), -1);
+    state.checkInt("the lift releases the left button", pens.button(up, 1, 2), 0);
+
+    // The second barrel button is the middle one, not a right click.
+    state.checkInt("the tip with the second barrel held is still the left button", pens.button(down, 1, 5), 0);
+    state.checkInt("released as the left button", pens.button(up, 1, 4), 0);
+
+    state.checkInt("the eraser end is button 5", pens.button(down, 1, 32), 5);
+    state.checkInt("released as button 5", pens.button(up, 1, 0), 5);
+    state.checkInt("the eraser with the barrel held is still the eraser", pens.button(down, 1, 34), 5);
+    state.checkInt("released as button 5", pens.button(up, 1, 2), 5);
+
+    // Two pens at once keep their own buttons.
+    state.checkInt("pen 1 right press", pens.button(down, 1, 3), 2);
+    state.checkInt("pen 2 left press", pens.button(down, 2, 1), 0);
+    state.checkInt("pen 1 releases right", pens.button(up, 1, 0), 2);
+    state.checkInt("pen 2 releases left", pens.button(up, 2, 0), 0);
+
+    // A cancel is the DOM's pointercancel: no button. The pen is forgotten,
+    // so its next contact starts afresh.
+    state.checkInt("right press before a cancel", pens.button(down, 7, 3), 2);
+    state.checkInt("a cancel is no button", pens.button(cancel, 7, 0), -1);
+    state.checkInt("after it, a plain tip is the left button", pens.button(down, 7, 1), 0);
+    state.checkInt("and releases it", pens.button(up, 7, 0), 0);
+
+    // Only pens in contact are kept (SDL may hand out a new id each time a
+    // pen comes into range).
+    for (let id = 100; id < 400; id++) {
+        pens.button(down, id, 3);
+        pens.button(up, id, 0);
+    }
+    state.checkInt("no pen is kept once lifted", pens.inContact(), 0);
+
+    // The edge App queues for a pen event: its button is the contact's, and
+    // the rest is the pen's own.
+    let edges = app.PenContacts {};
+    let event = (kind: sdl.PointerEventKind, buttons: int): sdl.PointerEvent => {
+        return sdl.PointerEvent {
+            kind: kind, device: sdl.PointerDevice.Pen, id: 3, pos: Vec2(40.0, 50.0),
+            pressure: 0.6, buttons: buttons, modifiers: KeyModifiers.None,
+        };
+    };
+    let pressed = app.penEdge(edges, event(down, 3));
+    state.checkInt("edge: the barrel tap is a right press", pressed.button, 2);
+    state.checkInt("edge: a press", pressed.kind == app.PointerEdgeKind.Pressed ? 1 : 0, 1);
+    state.checkInt("edge: the pen's pointer id", pressed.pointerId, 1003);
+    state.checkInt("edge: a pen", pressed.pointerType == app.PointerType.Pen ? 1 : 0, 1);
+    state.checkInt("edge: its buttons as reported", pressed.buttons, 3);
+    let moved = app.penEdge(edges, event(move, 1));
+    state.checkInt("edge: a move has no button", moved.button, -1);
+    state.checkInt("edge: a move", moved.kind == app.PointerEdgeKind.Moved ? 1 : 0, 1);
+    let released = app.penEdge(edges, event(up, 0));
+    state.checkInt("edge: the release is the right button's", released.button, 2);
+    state.checkInt("edge: a release", released.kind == app.PointerEdgeKind.Released ? 1 : 0, 1);
+    let cancelled = app.penEdge(edges, event(cancel, 0));
+    state.checkInt("edge: a cancel", cancelled.kind == app.PointerEdgeKind.Cancelled ? 1 : 0, 1);
+
+    fmt.println(f"pen-contacts-tests: {state.checks - state.failures}/{state.checks} passed");
+    return state.failures == 0 ? 0 : 1;
+}
