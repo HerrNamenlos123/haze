@@ -149,7 +149,7 @@ void hzui_clay_set_layout_dimensions(hzstd_int_t width, hzstd_int_t height)
   Clay_SetLayoutDimensions((Clay_Dimensions) { width, height });
 }
 
-// Clay_EndLayout, which measures text while it wraps -- see g_measureTextContext.
+// Clay_EndLayout, which measures text while it wraps (see g_measureTextContext).
 Clay_RenderCommandArray hzui_clay_end_layout(hzstd_context_t ctx)
 {
   hzstd_context_t outer = g_measureTextContext;
@@ -336,7 +336,7 @@ void hzui_clay_define_canvas_element(hzui_define_canvas_element_t config)
          .custom = { .customData = config.elementPtr } });
 }
 
-// Clay measures the text while declaring it -- see g_measureTextContext.
+// Clay measures the text while declaring it (see g_measureTextContext).
 void hzui_clay_define_text_element(hzstd_context_t ctx, hzui_define_text_element_t element)
 {
   hzstd_context_t outer = g_measureTextContext;

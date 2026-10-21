@@ -137,7 +137,7 @@ export fn sizeEquals(a: Size, b: Size): bool {
 //     if one is set; otherwise the nearest enclosing Relative/Absolute/Fixed
 //     ancestor; otherwise this UI Context's own viewport.
 //   - Fixed: out of flow, always relative to this UI Context's own viewport
-//     (not a literal OS screen -- a given ui_layout.LayoutContext only ever knows
+//     (not a literal OS screen: a given ui_layout.LayoutContext only ever knows
 //     about its own root, so this is already scoped correctly for apps with
 //     multiple simultaneous UI contexts/canvases).
 export enum Position { Static, Relative, Absolute, Fixed }

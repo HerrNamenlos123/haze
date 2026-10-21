@@ -583,7 +583,7 @@ extern C fn hazePointerDispatch(ctx: Context, userdata: cptr, kind: i32, device:
 		let window: Window = uninitialized;
 		__c__("window = userdata;");
 		Context.init(ctx, () => {
-			// Numbering fixed by the C side -- see haze_sdl_dispatch_pointer.
+			// Numbering fixed by the C side (see haze_sdl_dispatch_pointer).
 			let eventKind = PointerEventKind.Move;
 			if kind == 0 { eventKind = PointerEventKind.Down; }
 			else if kind == 1 { eventKind = PointerEventKind.Up; }
@@ -607,7 +607,7 @@ extern C fn hazeTextInputDispatch(ctx: Context, userdata: cptr, text: ccstr): vo
 		let window: Window = uninitialized;
 		__c__("window = userdata;");
 		// hzstd_cstr_dup only reads its argument (to copy it) despite taking
-		// a non-const char* -- safe to drop the const here. Copied out here,
+		// a non-const char*, so dropping the const here is safe. Copied out here,
 		// not inside the closure below: inline C cannot name a capture.
 		let mutableText: cstr = uninitialized;
 		__c__("mutableText = (char*)text;");

@@ -23,8 +23,8 @@ namespace ffi {
     // Clay calling straight back into us, synchronously, from inside the one
     // call that was handed the pointer (Clay_RenderClayCommands, or a
     // hzui_clay_define_div_element declaring an element's children), with the
-    // storage owned by the frame that made that call -- see
-    // LayoutContext.render and processTreeElementInFlow. The witness check
+    // storage owned by the frame that made that call (see
+    // LayoutContext.render and processTreeElementInFlow). The witness check
     // catches a stackref whose scope is already gone at the moment of the
     // borrow; it cannot follow the raw pointer afterwards, so the result must
     // never be stored anywhere that outlives the call.
@@ -38,11 +38,11 @@ namespace ffi {
 
     // Clay declares an element's children from inside the call that opens it,
     // so `children` is called back from in there with the context this call
-    // was given and `thunk`, the pointer that says whose children they are --
-    // see hzui_declare_div_children.
+    // was given and `thunk`, the pointer that says whose children they are
+    // (see hzui_declare_div_children).
     extern C noemit fn hzui_clay_define_div_element(ctx: Context, children: extern C (ctx: Context, thunk: cptr) -> void, thunk: cptr, config: hzui_define_div_element_t): void :: final;
     // Clay measures the text while declaring it, so this takes the context the
-    // measuring runs under -- see hzui_measure_text.
+    // measuring runs under (see hzui_measure_text).
     extern C noemit fn hzui_clay_define_text_element(ctx: Context, element: hzui_define_text_element_t): void :: final;
     extern C noemit fn hzui_clay_define_canvas_element(config: hzui_define_canvas_element_t): void :: final;
     extern C noemit fn hzui_clay_get_element_bounding_box(elementId: str): hzui_optional_bounding_box_t :: final;
@@ -578,7 +578,7 @@ export type MeasureTextCB = (fontId: int, fontSize: real, text: str) => Vec2;
 export opaque ref struct LayoutContext {
     fonts: []FontEntry;
     getFontLineHeight: (fontId: int, fontSize: real) => real;
-    // Kept alive for as long as this LayoutContext lives -- Clay holds onto the
+    // Kept alive for as long as this LayoutContext lives: Clay holds onto the
     // raw userdata pointer we hand it in hzui_clay_init and calls back into
     // it on every subsequent layout pass, not just during this constructor.
     measureTextBox: ref Box<MeasureTextCB>;
@@ -949,7 +949,7 @@ export opaque ref struct LayoutContext {
 
             // `let stackref`, not a heap value: what the children need is nine
             // values, and when they were a closure's captures its environment
-            // block was one heap allocation PER DIV PER FRAME -- measured as
+            // block was one heap allocation PER DIV PER FRAME, measured as
             // the single largest allocation source in the whole program (5,241
             // of "Closure env (72 bytes)" in a 3.7 s profiling session, more
             // than twice the next entry). On this frame they cost nothing.
@@ -957,7 +957,7 @@ export opaque ref struct LayoutContext {
             // Safe because they genuinely do not outlive this scope:
             // hzui_clay_define_div_element calls hzui_declare_div_children
             // synchronously, from inside the call below, and Clay keeps
-            // nothing afterwards -- so the storage is alive for exactly as long
+            // nothing afterwards, so the storage is alive for exactly as long
             // as anything can reach it. `let stackref` checks the scope is
             // still alive at the one moment the raw pointer is taken.
             let stackref children = DivChildren {
@@ -1531,8 +1531,8 @@ struct DispatchState {
 // Every function from here down is called by C: Clay's render-command
 // dispatch (renderer.c), its text measuring and its children declarations
 // (ui.c). C carries no context, so each one is an `extern C` function that is
-// handed the context of the Haze code that made the Clay call -- the
-// LayoutContext.render or element declaration on the stack below it -- and
+// handed the context of the Haze code that made the Clay call (the
+// LayoutContext.render or element declaration on the stack below it) and
 // runs its Haze code under it.
 
 extern C fn hzui_set_clip(ctx: Context, userdata: cptr, elementPtr: cptr): void {
@@ -1550,7 +1550,7 @@ extern C fn hzui_set_clip(ctx: Context, userdata: cptr, elementPtr: cptr): void 
 extern C fn hzui_render_filled_rect(ctx: Context, userdata: cptr, x: real, y: real, width: real, height: real, backgroundColor: Color, cornerRadius: CornerRadiusValues): void {
     do unsafe {
         // userdata is the DispatchState on render()'s own frame (see the
-        // comment there), not a box -- no separate allocation needed to
+        // comment there), not a box: no separate allocation needed to
         // reinterpret it back.
         let state: ref DispatchState = uninitialized;
         __c__("state = userdata;");
@@ -1664,8 +1664,8 @@ struct DivChildren {
     traversal: LayoutContext.TreeTraverseContext;
     element: ui_elements.DivElement;
     elementId: str;
-    // The parent's forced-Grow override for each child -- see
-    // crossAxisForcesWidthGrow.
+    // The parent's forced-Grow override for each child (see
+    // crossAxisForcesWidthGrow).
     forceGrowWidth: bool;
     forceGrowHeight: bool;
     spaceBetween: bool;
@@ -1684,8 +1684,8 @@ struct DivChildren {
     }
 }
 
-// A margin box's one child, the element itself, declared in flow -- see
-// defineMarginBox. Same lifetime as DivChildren.
+// A margin box's one child, the element itself, declared in flow (see
+// defineMarginBox). Same lifetime as DivChildren.
 struct MarginBoxChild {
     layout: LayoutContext;
     traversal: LayoutContext.TreeTraverseContext;
@@ -1721,6 +1721,6 @@ extern C fn hzui_declare_margin_box_child(ctx: Context, thunk: cptr): void {
     };
 }
 
-// A space-between spacer has no children -- see defineSpacer.
+// A space-between spacer has no children (see defineSpacer).
 extern C fn hzui_declare_no_children(ctx: Context, thunk: cptr): void {
 }

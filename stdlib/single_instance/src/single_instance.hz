@@ -22,7 +22,7 @@ namespace ffi {
 
     export extern C fn haze_si_user_key(): str :: final;
     // `entry` is called on the server thread with `thunk` and each request's
-    // JSON -- see haze_si_parse_entry.
+    // JSON (see haze_si_parse_entry).
     export extern C fn haze_si_set_parser(entry: extern C (thunk: cptr, text: str) -> cptr, thunk: cptr): void :: final;
     export extern C fn haze_si_acquire(key: str, mangledName: str, fingerprint: int, prettyName: str): haze_si_acquire_result_t :: final;
     export extern C fn haze_si_send(json: str): haze_si_send_result_t :: final;
