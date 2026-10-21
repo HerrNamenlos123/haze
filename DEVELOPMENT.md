@@ -412,3 +412,30 @@ file or a generator that writes the same bytes rebuilds nothing. A module's gene
 only on its inputs (temp-id counters are per module, see `src/shared/store.ts`), so an unchanged
 `import.hz` stops the rebuild there. An executable whose own inputs are unchanged is only relinked
 when a library it links changed. `scripts/incremental-build.test.ts` pins all of this.
+
+## What the test gate covers
+
+`./scripts/run-tests.sh` (`bun run test`) is the gate. It builds `dist/haze`, then runs, in order:
+the parser bootstrap check, the parser tests (`src/Parser/Parser.test.ts`), the incremental-build
+and `haze.toml` checks, parser equivalence over every `.hz` file in the tree, the headless stdlib
+path tests (`tests/stdlib-paths/headless`), and the compiler test suite (`testsuite/`).
+
+`dist/haze` keys its build cache on its version alone, so before building anything the script
+deletes what an earlier run built for the gate: the cases (`__haze__/case_*`) and the libraries of
+multi-module cases, and the build records of the test suite runner and the stdlib path test with
+every module they link (records only, so generator outputs such as SDL's build stay). Every run
+compiles everything the gate builds with the compiler under test, and the cases' warnings are
+reported again.
+
+The stdlib path tests check that the Haze code a C path reaches runs under the context of the
+Haze code that drove the C call (see "The hidden context"). The gate runs the headless ones: SDL
+event dispatch (the offscreen video driver, never a window on a display) and Clay's children,
+`measureText` and render callbacks. The rest need a GPU adapter or a second process and are
+opt-in: `scripts/run-stdlib-path-tests.sh` builds `tests/stdlib-paths/optin` with the dev compiler
+and runs the wgpu request callbacks, the GL loader (glad through a window's `getProcAddress`,
+via the offscreen driver's EGL) and single_instance (the server thread's parse, then `onActivate`
+under the poller's context, between two processes). Run it after changing a C <-> Haze path in
+`stdlib/wgpu`, `stdlib/gl`, SDL's GL loader or `stdlib/single_instance`.
+
+Not in the gate: the standalone `stdlib/*/tests/*.hz` files (each runs from a scratch project that
+depends on its package), and building the apps.
