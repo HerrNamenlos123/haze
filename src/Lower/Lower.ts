@@ -1294,6 +1294,54 @@ type InstanceInfo = {
 // Haze code (a lambda's or a bound method's trampoline). `context` yields
 // the `hzstd_context_t *` to hand a Haze callee and is not evaluated for a C
 // one. `lowerArguments` lowers the call's own arguments, after the callee.
+// Whether evaluating `e` can run code: false only for a variable or literal
+// reached through member accesses, casts, `&` and `*`.
+function isPlainValue(lr: Lowered.Module, id: Lowered.ExprId): boolean {
+  const e = lr.exprNodes.get(id);
+  switch (e.variant) {
+    case Lowered.ENode.SymbolValueExpr:
+    case Lowered.ENode.LiteralExpr:
+      return true;
+    case Lowered.ENode.MemberAccessExpr:
+    case Lowered.ENode.ExplicitCastExpr:
+    case Lowered.ENode.AddressOfExpr:
+    case Lowered.ENode.DereferenceExpr:
+    case Lowered.ENode.StackrefDerefExpr:
+      return isPlainValue(lr, e.expr);
+    default:
+      return false;
+  }
+}
+
+// Whether a call of `callee` (see lowerCallOf) runs no code of its own before
+// the callee itself: a plain value, or a callable made of plain values (a
+// method's receiver, a lambda's captures).
+function isEvaluatedCallee(
+  lr: Lowered.Module,
+  callee: Lowered.Expression
+): boolean {
+  if (callee.variant !== Lowered.ENode.CallableExpr) {
+    return (
+      callee.variant === Lowered.ENode.SymbolValueExpr ||
+      callee.variant === Lowered.ENode.LiteralExpr ||
+      ((callee.variant === Lowered.ENode.MemberAccessExpr ||
+        callee.variant === Lowered.ENode.ExplicitCastExpr) &&
+        isPlainValue(lr, callee.expr))
+    );
+  }
+  const env = callee.envValue;
+  if (env?.type === "method") {
+    return (
+      isPlainValue(lr, env.thisExpr) &&
+      (env.thisStackref === null || isPlainValue(lr, env.thisStackref))
+    );
+  }
+  if (env?.type === "lambda") {
+    return env.captures.every((c) => isPlainValue(lr, c));
+  }
+  return true;
+}
+
 function lowerCallOf(
   lr: Lowered.Module,
   calledExpr: Lowered.Expression,
@@ -3516,8 +3564,15 @@ hzstd_slot_read(&__tmp_result, __slot, sizeof(__tmp_result));`,
       // `context.clone(body)` / `Context.init(value, body)` (Axiom C396,
       // C397, C401):
       //
-      //   ({ hzstd_context_t __hz_ctxN = *__hz_ctx;  // or = <value>
+      //   ({ <body>;  hzstd_context_t __hz_ctxN = *__hz_ctx;
       //      <body>(&__hz_ctxN, ...); })
+      //   ({ hzstd_context_t __hz_ctxN = <value>;  <body>;
+      //      <body>(&__hz_ctxN, ...); })
+      //
+      // In source order, like a call: the arguments first, then the callee
+      // runs. `context.clone` copies the current context after its body
+      // expression is evaluated (which may write it, `context.clone(mk())`),
+      // `Context.init` copies its value before.
       //
       // The new context is a local of this frame and the body is called with
       // its address, so nothing is allocated (a lambda literal body has its
@@ -3534,22 +3589,24 @@ hzstd_slot_read(&__tmp_result, __slot, sizeof(__tmp_result));`,
         wasMangled: false,
       };
       const { value: ctxType, pointer: ctxPointerType } = contextTypes(lr);
-      const initValue =
-        expr.initValue === null
-          ? currentContextValue(lr, "context.clone()", expr.sourceloc)
-          : lowerExpr(lr, expr.initValue, statements, instanceInfo)[1];
-      statements.push(
-        Lowered.addStatement(lr, {
-          variant: Lowered.ENode.VariableStatement,
-          stackrefInit: null,
-          name: ctxNameSet,
-          type: ctxType,
-          variableContext: EVariableContext.FunctionLocal,
-          intrinsicTakeAddrOfValue: false,
-          value: initValue,
-          sourceloc: expr.sourceloc,
-        })[1]
-      );
+      const pushContextCopy = (initValue: Lowered.ExprId) =>
+        statements.push(
+          Lowered.addStatement(lr, {
+            variant: Lowered.ENode.VariableStatement,
+            stackrefInit: null,
+            name: ctxNameSet,
+            type: ctxType,
+            variableContext: EVariableContext.FunctionLocal,
+            intrinsicTakeAddrOfValue: false,
+            value: initValue,
+            sourceloc: expr.sourceloc,
+          })[1]
+        );
+      if (expr.initValue !== null) {
+        pushContextCopy(
+          lowerExpr(lr, expr.initValue, statements, instanceInfo)[1]
+        );
+      }
 
       // The body is called right here, like the callee of a call: a method
       // bound on a value receiver only has to outlive this call (§12.2).
@@ -3560,7 +3617,24 @@ hzstd_slot_read(&__tmp_result, __slot, sizeof(__tmp_result));`,
       if (bodyExpr.variant === Semantic.ENode.CallableExpr) {
         bodyExpr.immediatelyCalled = true;
       }
-      const [body, bodyId] = lowerExpr(lr, expr.body, statements, instanceInfo);
+      let [body, bodyId] = lowerExpr(lr, expr.body, statements, instanceInfo);
+      if (expr.initValue === null) {
+        // Whatever the call below would still evaluate (a callee returned by
+        // a call, a receiver behind an index) is evaluated into a temporary
+        // first, so the copy sees every write it makes.
+        if (!isEvaluatedCallee(lr, body)) {
+          [body, bodyId] = storeInTempVarAndGet(
+            lr,
+            body.type,
+            bodyId,
+            expr.sourceloc,
+            statements
+          );
+        }
+        pushContextCopy(
+          currentContextValue(lr, "context.clone()", expr.sourceloc)
+        );
+      }
       const call = lowerCallOf(
         lr,
         body,
