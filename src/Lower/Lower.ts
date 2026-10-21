@@ -1288,14 +1288,8 @@ type InstanceInfo = {
   returnedInstanceIds: Set<Semantic.InstanceId>;
 };
 
-// A call of an already lowered callee: a function (`->`, or a named one) or a
-// callable (`=>`). Whether the callee takes a context is a fact of its
-// function type (Lowered.FunctionDatatypeDef.externC); a callable is always
-// Haze code (a lambda's or a bound method's trampoline). `context` yields
-// the `hzstd_context_t *` to hand a Haze callee and is not evaluated for a C
-// one. `lowerArguments` lowers the call's own arguments, after the callee.
-// Whether evaluating `e` can run code: false only for a variable or literal
-// reached through member accesses, casts, `&` and `*`.
+// Whether evaluating `id` runs no code: a variable or literal, reached through
+// member accesses, casts, `&` and `*` only.
 function isPlainValue(lr: Lowered.Module, id: Lowered.ExprId): boolean {
   const e = lr.exprNodes.get(id);
   switch (e.variant) {
@@ -1342,6 +1336,12 @@ function isEvaluatedCallee(
   return true;
 }
 
+// A call of an already lowered callee: a function (`->`, or a named one) or a
+// callable (`=>`). Whether the callee takes a context is a fact of its
+// function type (Lowered.FunctionDatatypeDef.externC); a callable is always
+// Haze code (a lambda's or a bound method's trampoline). `context` yields
+// the `hzstd_context_t *` to hand a Haze callee and is not evaluated for a C
+// one. `lowerArguments` lowers the call's own arguments, after the callee.
 function lowerCallOf(
   lr: Lowered.Module,
   calledExpr: Lowered.Expression,
