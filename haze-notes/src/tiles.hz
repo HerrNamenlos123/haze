@@ -92,7 +92,7 @@ namespace tilemath {
 // localMinX/localMinY are always relative to the *page* this tile belongs
 // to (pageIndex), never to document/world space -- a tile at page-local
 // (0,0) looks identical whether it's page 0 or page 5. The page's own
-// position in the vertically-stacked document (pageOriginY in render.hz)
+// position in the vertically-stacked document (pageOriginY in documents.hz)
 // only ever gets added in at the final composite step (screen position) and
 // nowhere else, so tile content/hit-testing/bbox-matching stays uniform
 // across every page.

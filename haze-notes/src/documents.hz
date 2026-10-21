@@ -312,6 +312,15 @@ fn sameShape(a: Shape, b: Shape): bool {
     return shapeAddress(a) == shapeAddress(b);
 }
 
+fn removeShape(shapes: []Shape, target: Shape) {
+    for (let i = shapes.length - 1; i >= 0; i--) {
+        let shape = shapes[i];
+        if sameShape(shape, target) {
+            shapes.remove(i);
+        }
+    }
+}
+
 fn setShapeHidden(shape: Shape, hidden: bool) {
     if shape is LineShape { shape.hidden = hidden; }
     else if shape is ImageShape { shape.hidden = hidden; }
@@ -442,6 +451,74 @@ ref struct DocumentFile {
     filetype: str;
     fileversion: int;
     data: DocumentBody;
+}
+
+// Vertical gap between stacked pages, in mm (PDF-viewer-style layout: pages
+// stack top to bottom at x=0, each pageHeightMm + pageGapMm below the last).
+const comptime pageGapMm = 10.0;
+
+fn pageOriginY(doc: DocumentFile, pageIndex: int): real {
+    return pageIndex as real * (doc.data.pageHeightMm + pageGapMm);
+}
+
+// The page a document-space y is on -- or, between two, the nearer --
+// counting on past the last page as if more followed it.
+fn pageIndexAt(doc: DocumentFile, worldY: real): int {
+    let stride = doc.data.pageHeightMm + pageGapMm;
+    return max(0, tilemath.floorToInt((worldY + pageGapMm / 2.0) / stride));
+}
+
+// The page a document-space y is on -- or, between two, the nearer.
+fn pageAt(doc: DocumentFile, worldY: real): int {
+    return min(pageIndexAt(doc, worldY), max(0, doc.data.pages.length - 1));
+}
+
+// A shape is kept on the page it lies on, the one the middle of its bounds
+// is on: that page's tiles are the only ones that draw it, its hit tests the
+// only ones that find it, its PDF page the only one that shows it.
+
+// Where on the stacked pages the middle of `box`, in page `page`'s mm, is.
+fn middleOnPages(doc: DocumentFile, page: int, box: BBox): real {
+    return pageOriginY(doc, page) + (box.top + box.bottom) / 2.0;
+}
+
+// The page a shape of page `page` lies on, of the pages there are.
+fn pageShapeLiesOn(doc: DocumentFile, page: int, shape: Shape): int {
+    return pageAt(doc, middleOnPages(doc, page, shape.getBBox()));
+}
+
+// Gives a shape of page `source` page `target`'s own mm instead, so that it
+// stays where it is on the stacked pages.
+fn shiftShapeToPage(doc: DocumentFile, shape: Shape, source: int, target: int) {
+    translateShape(shape, Vec2(0.0, pageOriginY(doc, source) - pageOriginY(doc, target)));
+}
+
+// Puts `shapes`, all of page `page` and just moved, resized or pasted there,
+// on the page they now lie on. They stay together -- a selection is always
+// on one page -- so the middle of all of them decides. Pages are added up to
+// that one and one more: there is always an empty page to go on to. Returns
+// the page they are on.
+fn settleShapes(doc: DocumentFile, page: int, shapes: []Shape): int {
+    if shapes.length == 0 {
+        return page;
+    }
+    let box = shapes[0].getBBox();
+    for shape in shapes {
+        box = combineBBox(box, shape.getBBox());
+    }
+    let target = pageIndexAt(doc, middleOnPages(doc, page, box));
+    while doc.data.pages.length < target + 2 {
+        let blank: []Shape = [];
+        doc.data.pages.push(Page { shapes: blank });
+    }
+    if target != page {
+        for shape in shapes {
+            removeShape(doc.data.pages[page].shapes, shape);
+            shiftShapeToPage(doc, shape, page, target);
+            doc.data.pages[target].shapes.push(shape);
+        }
+    }
+    return target;
 }
 
 struct StrokeConstructArgs {

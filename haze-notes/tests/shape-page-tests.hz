@@ -1,0 +1,404 @@
+// Which page a shape is on (src/documents.hz, src/persistence.hz). The pages
+// are stacked top to bottom, and a page's tiles, hit tests and PDF page cover
+// that page alone, so a shape has to be on the page it lies on. Dragging an
+// image from the first page down onto the second once left it on the first,
+// below that page's bottom edge, where nothing drew it: it was gone. A move
+// now hands the shapes to the page the middle of their bounds is on, and a
+// load does the same for shapes that earlier builds left behind.
+//
+// Besides the examples, random moves are checked against an oracle that
+// finds the nearest page by measuring the distance to every page, and against
+// the shapes' place in the document, which a change of page must not move.
+//
+// haze-notes is an executable, so nothing can depend on it: run this from a
+// throwaway exe project inside the repository that depends on renderer,
+// tesselate and perfect_freehand, with src/persistence.hz, src/documents.hz
+// and src/tiles.hz copied in verbatim and this file as its main.hz.
+
+ref struct State {
+    checks: int = 0;
+    failures: int = 0;
+
+    mut fn check(name: str, ok: bool) {
+        this.checks = this.checks + 1;
+        if !ok {
+            this.failures = this.failures + 1;
+            fmt.println(f"FAIL: {name}");
+        }
+    }
+}
+
+fn near(a: real, b: real): bool {
+    let d = a - b;
+    return d < 0.000001 && d > -0.000001;
+}
+
+// The A4 document the web app writes, with `pages` as its pages' JSON.
+fn documentText(pages: str): str {
+    let text = String();
+    text.append("{\"filetype\":\"technicalsketcher\",\"fileversion\":1,\"data\":{\"pageColor\":\"#ffffff\",\"gridColor\":\"#5252524f\",\"gridType\":\"lines\",\"pages\":[");
+    text.append(pages);
+    text.append("],\"pageWidthMm\":210,\"pageHeightMm\":297,\"currentPageIndex\":0}}");
+    return text.cloneString();
+}
+
+// `count` blank pages. Parsed rather than built: a literal-union field
+// (gridType) cannot be set from a string literal in a struct literal yet.
+fn blankDocument(count: int): DocumentFile {
+    let pages = String();
+    for (let i = 0; i < count; i++) {
+        pages.append(i > 0 ? ",{\"shapes\":[]}" : "{\"shapes\":[]}");
+    }
+    let parsed = json.parse<DocumentFile>(documentText(pages.cloneString()));
+    assert(parsed, "blank document parses");
+    let doc: DocumentFile = parsed;
+    return doc;
+}
+
+fn image(x: real, y: real, w: real, h: real): ImageShape {
+    return ImageShape { variant: "Image", position: Vec2(x, y), size: Vec2(w, h), base64ImageData: "data:image/png;base64,AAAA" };
+}
+
+fn stroke(x: real, y: real): LineShape {
+    let points: []Point = [
+        Point { x: x, y: y, pressure: 0.5 },
+        Point { x: x + 10.0, y: y + 2.0, pressure: 0.5 },
+        Point { x: x + 20.0, y: y - 1.0, pressure: 0.5 },
+    ];
+    return LineShape { variant: "Line", points: points, penColor: "#000000", penThickness: 0.5 };
+}
+
+// How often the page holds the shape itself.
+fn timesOn(page: Page, shape: Shape): int {
+    let n = 0;
+    for s in page.shapes {
+        if sameShape(s, shape) {
+            n += 1;
+        }
+    }
+    return n;
+}
+
+fn shapeCount(doc: DocumentFile): int {
+    let n = 0;
+    for page in doc.data.pages {
+        n += page.shapes.length;
+    }
+    return n;
+}
+
+// The page nearest to a document-space y, found the slow way: the distance
+// to every page in turn, counting pages past the document's last.
+fn nearestPageOracle(doc: DocumentFile, worldY: real): int {
+    let best = 0;
+    let bestDistance = -1.0;
+    for (let p = 0; p < 1000; p++) {
+        let top = p as real * 307.0;
+        let bottom = top + doc.data.pageHeightMm;
+        let distance = 0.0;
+        if worldY < top {
+            distance = top - worldY;
+        } else if worldY > bottom {
+            distance = worldY - bottom;
+        }
+        if bestDistance < 0.0 || distance < bestDistance {
+            best = p;
+            bestDistance = distance;
+        }
+    }
+    return best;
+}
+
+// Park-Miller: the same moves every run.
+ref struct Random {
+    seed: int = 20261021;
+
+    mut fn next(): real {
+        this.seed = (this.seed * 48271) % 2147483647;
+        return this.seed as real / 2147483647.0;
+    }
+
+    mut fn between(low: real, high: real): real {
+        return low + (high - low) * this.next();
+    }
+
+    mut fn below(n: int): int {
+        let i = (this.next() * n as real) as int;
+        return i < n ? i : n - 1;
+    }
+}
+
+// Where the files for the load cases are written.
+fn fixtureDir(): str {
+    if let tmp = env.get("TMPDIR") {
+        return f"{tmp}/haze-notes-shape-page-tests";
+    }
+    if let tmp = env.get("TEMP") {
+        return f"{tmp}/haze-notes-shape-page-tests";
+    }
+    return "/tmp/haze-notes-shape-page-tests";
+}
+
+// Loads `text` the way the editor does, a short budget at a time.
+fn loaded(state: mut State, name: str, text: str): DocumentFile | none {
+    let path = f"{fixtureDir()}/{name}.tsk";
+    state.check(f"{name}: fixture written", fs.writeText(path, text) ? true : false);
+    let load = DocumentLoad(path);
+    for (let i = 0; i < 100000; i++) {
+        if load.step(time.now() + 0.005) {
+            break;
+        }
+    }
+    state.check(f"{name}: loaded", load.finished && !load.failed);
+    return load.doc;
+}
+
+fn imageJson(x: real, y: real, w: real, h: real): str {
+    return f"{{\"variant\":\"Image\",\"position\":{{\"x\":{x},\"y\":{y}}},\"size\":{{\"x\":{w},\"y\":{h}}},\"base64ImageData\":\"data:image/png;base64,AAAA\"}}";
+}
+
+fn strokeJson(x: real, y: real): str {
+    return f"{{\"variant\":\"Line\",\"points\":[{{\"x\":{x},\"y\":{y},\"pressure\":0.5}},{{\"x\":{x + 10.0},\"y\":{y + 2.0},\"pressure\":0.5}}],\"penColor\":\"#000000\",\"penThickness\":0.5}}";
+}
+
+// The y of a page's i-th shape: an image's top, a stroke's first point. A
+// shape that is not there gives a y no case expects.
+fn yOf(page: Page, i: int): real {
+    if i >= page.shapes.length {
+        return -1000000.0;
+    }
+    let shape = page.shapes[i];
+    if shape is ImageShape {
+        return shape.position.y;
+    }
+    if shape is LineShape {
+        return shape.points[0].y;
+    }
+    return -1000000.0;
+}
+
+fn main(): int {
+    let state = State {};
+    fs.createDirectory(fixtureDir());
+
+    // ── Moving ──────────────────────────────────────────────────────
+
+    // The report: pasted on the first page, dragged down onto the second.
+    fmt.println("case: dragged onto the next page");
+    let doc = blankDocument(2);
+    let pasted = image(4.4, 30.0, 200.0, 42.2);
+    doc.data.pages[0].shapes.push(pasted);
+    translateShape(pasted, Vec2(0.0, 291.3));
+    let selection: []Shape = [pasted];
+    let page = settleShapes(doc, 0, selection);
+    state.check("dragged: now on the second page", page == 1);
+    state.check("dragged: gone from the first", doc.data.pages[0].shapes.length == 0);
+    state.check("dragged: on the second once", timesOn(doc.data.pages[1], pasted) == 1 && doc.data.pages[1].shapes.length == 1);
+    state.check("dragged: where it was dropped", near(pasted.position.x, 4.4) && near(pasted.position.y, 321.3 - 307.0));
+    state.check("dragged: its bounds went along", near(pasted.getBBox().top, 321.3 - 307.0) && near(pasted.getBBox().bottom, 363.5 - 307.0));
+    state.check("dragged: an empty page after it", doc.data.pages.length == 3 && doc.data.pages[2].shapes.length == 0);
+
+    fmt.println("case: moved within its page");
+    let within = blankDocument(3);
+    let kept = image(10.0, 10.0, 50.0, 50.0);
+    within.data.pages[1].shapes.push(kept);
+    translateShape(kept, Vec2(20.0, 200.0));
+    let keptSelection: []Shape = [kept];
+    state.check("within: stays on its page", settleShapes(within, 1, keptSelection) == 1);
+    state.check("within: still there once", timesOn(within.data.pages[1], kept) == 1);
+    state.check("within: not moved", near(kept.position.y, 210.0) && near(kept.position.x, 30.0));
+    state.check("within: no page added", within.data.pages.length == 3);
+
+    // In the 10 mm between two pages, the nearer one has it.
+    fmt.println("case: in the gap");
+    let gap = blankDocument(3);
+    let upper = image(10.0, 297.0 + 4.9 - 1.0, 20.0, 2.0);
+    let lower = image(10.0, 297.0 + 5.1 - 1.0, 20.0, 2.0);
+    gap.data.pages[0].shapes.push(upper);
+    gap.data.pages[0].shapes.push(lower);
+    let upperSelection: []Shape = [upper];
+    let lowerSelection: []Shape = [lower];
+    state.check("gap: nearer the first page, stays", settleShapes(gap, 0, upperSelection) == 0);
+    state.check("gap: nearer the second, goes", settleShapes(gap, 0, lowerSelection) == 1);
+    state.check("gap: the second holds only that one",
+        gap.data.pages[1].shapes.length == 1 && timesOn(gap.data.pages[1], lower) == 1 && timesOn(gap.data.pages[0], upper) == 1);
+
+    fmt.println("case: above the first page");
+    let above = blankDocument(2);
+    let high = image(10.0, -150.0, 20.0, 20.0);
+    above.data.pages[0].shapes.push(high);
+    let highSelection: []Shape = [high];
+    state.check("above: no page before the first", settleShapes(above, 0, highSelection) == 0);
+    state.check("above: not moved", near(high.position.y, -150.0) && timesOn(above.data.pages[0], high) == 1);
+
+    // A selection is always on one page: the middle of all of it decides,
+    // not each shape for itself.
+    fmt.println("case: a selection of two");
+    let pair = blankDocument(2);
+    let line = stroke(30.0, 290.0);
+    let picture = image(40.0, 300.0, 100.0, 100.0);
+    pair.data.pages[0].shapes.push(line);
+    pair.data.pages[0].shapes.push(picture);
+    let pairSelection: []Shape = [line, picture];
+    state.check("pair: to the second page", settleShapes(pair, 0, pairSelection) == 1);
+    state.check("pair: both went", timesOn(pair.data.pages[1], line) == 1 && timesOn(pair.data.pages[1], picture) == 1 && pair.data.pages[0].shapes.length == 0);
+    state.check("pair: the stroke's points went along", near(line.points[0].y, 290.0 - 307.0) && near(line.points[2].y, 289.0 - 307.0) && near(line.points[1].x, 40.0));
+    state.check("pair: the image went along", near(picture.position.y, 300.0 - 307.0));
+
+    // Pasting a clipboard with no shapes in it settles nothing.
+    fmt.println("case: nothing selected");
+    let nothing = blankDocument(3);
+    let noShapes: []Shape = [];
+    state.check("nothing: the page it was given", settleShapes(nothing, 2, noShapes) == 2);
+    state.check("nothing: no page added", nothing.data.pages.length == 3);
+
+    // Past the last page there is always another empty one to go on to.
+    fmt.println("case: past the last page");
+    let past = blankDocument(2);
+    let far = image(10.0, 3.0 * 307.0 + 100.0, 20.0, 20.0);
+    past.data.pages[0].shapes.push(far);
+    let farSelection: []Shape = [far];
+    state.check("past: on the page it lies on", settleShapes(past, 0, farSelection) == 3);
+    state.check("past: pages up to it, and one more", past.data.pages.length == 5);
+    state.check("past: there, once", past.data.pages.length > 3 && timesOn(past.data.pages[3], far) == 1 && shapeCount(past) == 1);
+    state.check("past: where it was dropped", near(far.position.y, 100.0));
+
+    // ── Random moves against the oracle ─────────────────────────────
+    fmt.println("case: random moves");
+    let random = Random {};
+    let wrongPage = 0;
+    let movedInDocument = 0;
+    let lostOrDoubled = 0;
+    let wrongPageCount = 0;
+    for (let round = 0; round < 3000; round++) {
+        let pageCount = 1 + random.below(5);
+        let doc = blankDocument(pageCount);
+        let source = random.below(pageCount);
+        // Others on the page, which stay.
+        let bystanders = random.below(3);
+        for (let i = 0; i < bystanders; i++) {
+            doc.data.pages[source].shapes.push(image(random.between(0.0, 200.0), random.between(0.0, 280.0), 5.0, 5.0));
+        }
+        let moved: []Shape = [];
+        let count = 1 + random.below(3);
+        for (let i = 0; i < count; i++) {
+            let shape: Shape = random.next() < 0.5
+                ? stroke(random.between(0.0, 190.0), random.between(5.0, 290.0))
+                : image(random.between(0.0, 200.0), random.between(0.0, 280.0), random.between(1.0, 150.0), random.between(1.0, 150.0));
+            doc.data.pages[source].shapes.push(shape);
+            moved.push(shape);
+        }
+        let d = Vec2(random.between(-100.0, 100.0), random.between(-2.5 * 307.0, 3.5 * 307.0));
+        for shape in moved {
+            translateShape(shape, d);
+        }
+        let box = moved[0].getBBox();
+        let worldTops: []real = [];
+        for shape in moved {
+            box = combineBBox(box, shape.getBBox());
+            worldTops.push(source as real * 307.0 + shape.getBBox().top);
+        }
+        let expected = nearestPageOracle(doc, source as real * 307.0 + (box.top + box.bottom) / 2.0);
+        let before = shapeCount(doc);
+
+        let to = settleShapes(doc, source, moved);
+
+        if to != expected {
+            wrongPage += 1;
+        }
+        let expectedPages = pageCount > expected + 2 ? pageCount : expected + 2;
+        if doc.data.pages.length != expectedPages {
+            wrongPageCount += 1;
+        }
+        if shapeCount(doc) != before {
+            lostOrDoubled += 1;
+        }
+        for (let i = 0; i < moved.length; i++) {
+            let shape = moved[i];
+            for (let p = 0; p < doc.data.pages.length; p++) {
+                if timesOn(doc.data.pages[p], shape) != (p == to ? 1 : 0) {
+                    lostOrDoubled += 1;
+                }
+            }
+            if !near(to as real * 307.0 + shape.getBBox().top, worldTops[i]) {
+                movedInDocument += 1;
+            }
+        }
+    }
+    state.check(f"random: the nearest page ({wrongPage} wrong)", wrongPage == 0);
+    state.check(f"random: an empty page after it ({wrongPageCount} wrong)", wrongPageCount == 0);
+    state.check(f"random: each shape on that page once ({lostOrDoubled} wrong)", lostOrDoubled == 0);
+    state.check(f"random: nothing moved in the document ({movedInDocument} wrong)", movedInDocument == 0);
+
+    // ── Loading ─────────────────────────────────────────────────────
+
+    // What the report's file holds: the image dragged onto the second page is
+    // still in the first page's shapes, 14 mm into the second.
+    fmt.println("case: a file with an image left behind");
+    let leftBehind = documentText(f"{{\"shapes\":[{imageJson(4.9, 4.5, 200.0, 29.7)},{imageJson(4.4, 321.3, 200.0, 42.2)}]}},{{\"shapes\":[{strokeJson(20.0, 100.0)}]}},{{\"shapes\":[]}}");
+    if let doc = loaded(state, "left-behind", leftBehind) {
+        state.check("left behind: no page added", doc.data.pages.length == 3);
+        state.check("left behind: the first page keeps its own image",
+            doc.data.pages[0].shapes.length == 1 && near(yOf(doc.data.pages[0], 0), 4.5));
+        state.check("left behind: the second page has the image and its stroke", doc.data.pages[1].shapes.length == 2);
+        state.check("left behind: the image where it lies",
+            near(yOf(doc.data.pages[1], 0), 321.3 - 307.0) || near(yOf(doc.data.pages[1], 1), 321.3 - 307.0));
+        state.check("left behind: the third page stays empty", doc.data.pages[2].shapes.length == 0);
+
+        // Saved and loaded again, nothing moves any more.
+        let path = f"{fixtureDir()}/left-behind-saved.tsk";
+        let save = DocumentSave(path, doc);
+        save.finish();
+        state.check("left behind: saved", !save.failed);
+        let again = fs.readText(path);
+        let againText: str = again ? again : "";
+        if let reloaded = loaded(state, "left-behind-again", againText) {
+            state.check("left behind: the same pages again",
+                reloaded.data.pages.length == 3 && reloaded.data.pages[0].shapes.length == 1 && reloaded.data.pages[1].shapes.length == 2);
+        }
+    }
+
+    // A dot 3.5 mm below its page's bottom edge, from the web app: the gap's
+    // nearer page is its own.
+    fmt.println("case: a dot just below its page");
+    let dotPages = String();
+    for (let i = 0; i < 8; i++) {
+        if i > 0 {
+            dotPages.append(",");
+        }
+        dotPages.append(i == 4 ? f"{{\"shapes\":[{strokeJson(50.0, 300.5)}]}}" : "{\"shapes\":[]}");
+    }
+    if let doc = loaded(state, "dot", documentText(dotPages.cloneString())) {
+        state.check("dot: stays on its page", doc.data.pages[4].shapes.length == 1 && shapeCount(doc) == 1);
+        state.check("dot: not moved", near(yOf(doc.data.pages[4], 0), 300.5));
+    }
+
+    fmt.println("case: a stroke above its page");
+    if let doc = loaded(state, "above", documentText(f"{{\"shapes\":[]}},{{\"shapes\":[{strokeJson(20.0, -100.0)}]}}")) {
+        state.check("above: on the page before", doc.data.pages[0].shapes.length == 1 && doc.data.pages[1].shapes.length == 0);
+        state.check("above: where it lies", near(yOf(doc.data.pages[0], 0), 207.0));
+    }
+
+    // A load adds no pages: beyond the last page, the last one has it.
+    fmt.println("case: beyond the last page");
+    if let doc = loaded(state, "beyond", documentText(f"{{\"shapes\":[{imageJson(10.0, 1000.0, 20.0, 20.0)}]}},{{\"shapes\":[]}}")) {
+        state.check("beyond: no page added", doc.data.pages.length == 2);
+        state.check("beyond: on the last page", doc.data.pages[1].shapes.length == 1);
+        state.check("beyond: where it lies", near(yOf(doc.data.pages[1], 0), 1000.0 - 307.0));
+    }
+
+    // Shapes on their own page are left alone, in their order.
+    fmt.println("case: everything on its page");
+    if let doc = loaded(state, "in-place", documentText(f"{{\"shapes\":[{imageJson(1.0, 1.0, 5.0, 5.0)},{strokeJson(20.0, 280.0)},{imageJson(1.0, 2.0, 5.0, 5.0)}]}}")) {
+        state.check("in place: all three, in order",
+            doc.data.pages[0].shapes.length == 3 && near(yOf(doc.data.pages[0], 0), 1.0)
+            && near(yOf(doc.data.pages[0], 1), 280.0) && near(yOf(doc.data.pages[0], 2), 2.0));
+    }
+
+    if state.failures > 0 {
+        fmt.println(f"{state.failures} of {state.checks} checks FAILED");
+        return 1;
+    }
+    fmt.println(f"all {state.checks} checks passed");
+    return 0;
+}

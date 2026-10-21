@@ -2,10 +2,6 @@ import renderer
 import base64
 import image
 
-// Vertical gap between stacked pages, in mm (PDF-viewer-style layout: pages
-// stack top to bottom at x=0, each pageHeightMm + pageGapMm below the last).
-const comptime pageGapMm = 10.0;
-
 // A zoom gesture is considered "finished" once the live zoom value has held
 // steady (within zoomEpsilon) for this many consecutive render() calls --
 // only then does a page zoomed into retile at the new native resolution.
@@ -49,10 +45,6 @@ const comptime gridLineZIndex = -1.0;
 // The shadow under a page on screen, behind the paper: its layers go further
 // back the further out they reach.
 const comptime pageShadowZIndex = -3.0;
-
-fn pageOriginY(doc: DocumentFile, pageIndex: int): real {
-    return pageIndex as real * (doc.data.pageHeightMm + pageGapMm);
-}
 
 // The file's currentPageIndex, kept to a page that exists.
 fn currentPageOf(doc: DocumentFile): int {
@@ -539,8 +531,10 @@ ref struct DocumentRenderer {
         if isShapeHidden(shape) {
             return;
         }
-        for live in this.liveShapes {
-            if sameShape(live, shape) {
+        for (let k = 0; k < this.liveShapes.length; k++) {
+            if sameShape(this.liveShapes[k], shape) {
+                // It may have gone to another page since.
+                this.livePages[k] = pageIndex;
                 return;
             }
         }

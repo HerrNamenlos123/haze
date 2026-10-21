@@ -231,15 +231,6 @@ ref struct ImagePaste {
     }
 }
 
-fn removeShape(shapes: []Shape, target: Shape) {
-    for (let i = shapes.length - 1; i >= 0; i--) {
-        let shape = shapes[i];
-        if sameShape(shape, target) {
-            shapes.remove(i);
-        }
-    }
-}
-
 ref struct EditorControls {
     view: mut DocumentRenderer;
     // Has the canvas drawn again at its next step -- the renderer's state is
@@ -615,25 +606,8 @@ ref struct EditorControls {
         return this.view.viewport.zoomPxPerMm;
     }
 
-    // The page a document-space y is on -- or, between two, the nearer.
-    fn pageAt(doc: DocumentFile, worldY: real): int {
-        let n = doc.data.pages.length;
-        if n == 0 {
-            return 0;
-        }
-        let stride = doc.data.pageHeightMm + pageGapMm;
-        let i = tilemath.floorToInt((worldY + pageGapMm / 2.0) / stride);
-        if i < 0 {
-            return 0;
-        }
-        if i >= n {
-            return n - 1;
-        }
-        return i;
-    }
-
     fn pageUnder(doc: DocumentFile, local: Vec2): int {
-        return this.pageAt(doc, this.view.screenToWorld(local).y);
+        return pageAt(doc, this.view.screenToWorld(local).y);
     }
 
     // Canvas px -> mm within `page`.
@@ -1159,10 +1133,14 @@ ref struct EditorControls {
                     }
                 }
                 setShapeHidden(shape, false);
-                this.view.markShapeDirty(this.selectionPage, shape);
             }
             if changed {
+                // Dragged onto another page, or grown into it: it goes there.
+                this.selectionPage = settleShapes(doc, this.selectionPage, this.selected);
                 this.markChanged();
+            }
+            for shape in this.selected {
+                this.view.markShapeDirty(this.selectionPage, shape);
             }
         }
         else if gesture == Gesture.Lasso {
@@ -1414,10 +1392,14 @@ ref struct EditorControls {
             forgetStoredOutline(shape);
             translateShape(shape, Vec2(10.0, 10.0));
             doc.data.pages[page].shapes.push(shape);
-            this.view.markShapeDirty(page, shape);
             this.selected.push(shape);
         }
-        this.selectionPage = page;
+        // Copied off the bottom of a page, the 10 mm can take them over the
+        // edge onto the next.
+        this.selectionPage = settleShapes(doc, page, this.selected);
+        for shape in this.selected {
+            this.view.markShapeDirty(this.selectionPage, shape);
+        }
         this.markChanged();
         this.publishUi();
         this.invalidate();

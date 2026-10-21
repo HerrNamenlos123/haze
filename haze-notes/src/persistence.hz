@@ -580,7 +580,14 @@ ref struct DocumentLoad {
                 return true;
             }
             forgetStoredOutline(shape);
-            doc.data.pages[this.shapePage[k]].shapes.push(shape);
+            // Earlier builds left a shape dragged onto another page on the
+            // one it came from, where nothing showed it any more.
+            let page = this.shapePage[k];
+            let liesOn = pageShapeLiesOn(doc, page, shape);
+            if liesOn != page {
+                shiftShapeToPage(doc, shape, page, liesOn);
+            }
+            doc.data.pages[liesOn].shapes.push(shape);
             this.parsedShapes += 1;
             if time.now() >= deadline {
                 return false;
