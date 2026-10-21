@@ -4896,7 +4896,7 @@ export class SemanticElaborator {
   //     if (tmp is not null && tmp is not none) { result = <ops[i..] on narrowed tmp>; }
   //     else if (tmp is none) { result = none; }
   //     else if (tmp is null) { result = null; }
-  //     else { unreachable(); }
+  //     else { hzstd_unreachable(0); }  // C, see below
   //     result
   //   }
   //
@@ -5111,11 +5111,16 @@ export class SemanticElaborator {
           elseIfs: elseIfs,
           sourceloc: sourceloc,
           thenBlock: assignResult(restId),
+          // The C runtime's trap, not sys.unreachable: a call of a Haze
+          // function would need a context, and reading an optional field
+          // needs none (it stays legal in an `extern C` body).
           else: this.sr.b.blockScope(
             [
-              this.sr.b.exprStatement(
-                this.sr.b.callUnreachable(sourceloc)[1]
-              )[1],
+              this.sr.b.addStatement(this.sr, {
+                variant: Semantic.ENode.InlineCStatement,
+                value: "hzstd_unreachable(0);",
+                sourceloc: sourceloc,
+              })[1],
             ],
             this.sr.b.noneExpr()[1],
             sourceloc
