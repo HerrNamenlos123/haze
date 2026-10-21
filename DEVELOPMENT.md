@@ -420,12 +420,12 @@ the parser bootstrap check, the parser tests (`src/Parser/Parser.test.ts`), the 
 and `haze.toml` checks, parser equivalence over every `.hz` file in the tree, the headless stdlib
 path tests (`tests/stdlib-paths/headless`), and the compiler test suite (`testsuite/`).
 
-`dist/haze` keys its build cache on its version alone, so before building anything the script
-deletes what an earlier run built for the gate: the cases (`__haze__/case_*`) and the libraries of
-multi-module cases, and the build records of the test suite runner and the stdlib path test with
-every module they link (records only, so generator outputs such as SDL's build stay). Every run
-compiles everything the gate builds with the compiler under test, and the cases' warnings are
-reported again.
+`dist/haze` keys its build cache on its version alone, so before its first `dist/haze` build the
+script deletes what an earlier run built for the gate: the cases (`__haze__/case_*`) and the
+libraries of multi-module cases, and the build records of the test suite runner and the stdlib
+path test with every module they link (records only, so generator outputs such as SDL's build
+stay). Every run compiles everything the gate builds with the compiler under test, and the cases'
+warnings are reported again.
 
 The stdlib path tests check that the Haze code a C path reaches runs under the context of the
 Haze code that drove the C call (see "The hidden context"). The gate runs the headless ones: SDL
