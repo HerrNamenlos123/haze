@@ -1,0 +1,41 @@
+import pathcheck
+
+// The stdlib's C <-> Haze paths that need what scripts/run-tests.sh cannot
+// count on: a GPU adapter (wgpu, GL) or a second process (single_instance).
+// scripts/run-stdlib-path-tests.sh builds this and runs every mode; the
+// headless paths are in ../headless, which the gate runs.
+//
+//   stdlib-paths-optin wgpu
+//   stdlib-paths-optin gl
+//   stdlib-paths-optin si-primary <appId> <readyFile>
+//   stdlib-paths-optin si-secondary <appId>
+
+fn usage(): int {
+    fmt.println("usage: stdlib-paths-optin wgpu | gl | si-primary <appId> <readyFile> | si-secondary <appId>");
+    return 2;
+}
+
+fn main(): int {
+    let args = sys.args();
+    if args.length < 2 {
+        return usage();
+    }
+    let mode = args[1];
+    let log = pathcheck.Log {};
+    if mode == "wgpu" && args.length == 2 {
+        wgpuRequests(log);
+    }
+    else if mode == "gl" && args.length == 2 {
+        glLoader(log);
+    }
+    else if mode == "si-primary" && args.length == 4 {
+        singleInstancePrimary(log, args[2], args[3]);
+    }
+    else if mode == "si-secondary" && args.length == 3 {
+        singleInstanceSecondary(log, args[2]);
+    }
+    else {
+        return usage();
+    }
+    return log.report();
+}

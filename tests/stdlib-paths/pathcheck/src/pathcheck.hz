@@ -1,0 +1,91 @@
+// What the stdlib path tests (tests/stdlib-paths) share: a way to tell
+// contexts apart, and a log of what the Haze callbacks saw.
+//
+// Haze cannot see the context's one hidden field, `dummy`, so these read and
+// write it with inline C on a local copy, as testsuite/src/cases_context.hz
+// does. A test sets its own value, drives a C path inside a
+// `context.clone(() => { setDummy(n); ... })`, and every Haze callback the C
+// code reaches records `dummy()`: each must see n, the value of the code that
+// drove the path, and not the default context's 0 or the value its creator
+// ran under.
+
+// The `dummy` value of the caller's context.
+export fn dummy(): int {
+    let c = context;
+    let v = 0;
+    do unsafe { __c__("v = (hzstd_int_t)(intptr_t)c.dummy;"); };
+    return v;
+}
+
+// Changes the caller's context: modify a copy, assign it back whole.
+export fn setDummy(n: int) {
+    let c = context;
+    do unsafe { __c__("c.dummy = (void *)(intptr_t)n;"); };
+    context = c;
+}
+
+export ref struct Log {
+    lines: []str = [];
+    failures: int = 0;
+    checks: int = 0;
+
+    mut fn note(line: str) {
+        this.lines.push(line);
+    }
+
+    mut fn check(name: str, ok: bool) {
+        this.checks = this.checks + 1;
+        if !ok {
+            this.failures = this.failures + 1;
+            fmt.println(f"FAIL: {name}");
+        }
+    }
+
+    fn has(line: str): bool {
+        for l in this.lines {
+            if l == line {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // How many lines are exactly `line`.
+    fn count(line: str): int {
+        let n = 0;
+        for l in this.lines {
+            if l == line {
+                n = n + 1;
+            }
+        }
+        return n;
+    }
+
+    // There is at least one line that starts with `prefix`, and every such
+    // line ends with ` <mark>`.
+    fn allMarked(prefix: str, mark: int): bool {
+        let found = false;
+        for l in this.lines {
+            if l.startsWith(prefix) {
+                found = true;
+                if !l.endsWith(f" {mark}") {
+                    return false;
+                }
+            }
+        }
+        return found;
+    }
+
+    // Prints the totals, and the whole log when something failed; the
+    // process exit code (a run that checked nothing fails too).
+    fn report(): int {
+        let ok = this.failures == 0 && this.checks > 0;
+        if !ok {
+            for l in this.lines {
+                fmt.println(l);
+            }
+        }
+        fmt.println(f"{this.checks} checks, {this.failures} failures");
+        return ok ? 0 : 1;
+    }
+}

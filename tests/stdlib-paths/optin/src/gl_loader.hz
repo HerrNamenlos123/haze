@@ -1,0 +1,54 @@
+import pathcheck
+import sdl
+import gl
+
+__c__("#include <SDL3/SDL.h>");
+
+// GL: glad loads every entry point through the window's getProcAddress, an
+// `extern C (name: ccstr) -> cptr` value handed through gl.init with no cast
+// and no context. A loader called with the wrong signature hands back
+// garbage, so the clear below would crash or leave the wrong colour; the
+// pixel is read back through SDL's own loader, not glad's.
+
+fn glLoader(log: mut pathcheck.Log) {
+    // The offscreen driver (EGL), whatever the environment says.
+    do unsafe {
+        __c__("SDL_SetHintWithPriority(SDL_HINT_VIDEO_DRIVER, \"offscreen\", SDL_HINT_OVERRIDE);");
+    };
+    let init = sdl.init(true);
+    if !init {
+        fmt.println(f"sdl.init failed: {init}");
+        log.check("gl: sdl.init with the offscreen driver", false);
+        return;
+    }
+    let window = sdl.createWindow({ title: "stdlib-paths gl", size: { width: 64, height: 64 }, noApi: false, hidden: true });
+    if !window {
+        fmt.println(f"gl: createWindow failed: {window}");
+        log.check("gl: an offscreen window with a GL context", false);
+        sdl.terminate();
+        return;
+    }
+    gl.init(window.getProcAddress());
+    gl.viewport(0, 0, 64, 64);
+    gl.clearColor(Color(0.2, 0.4, 0.6, 1.0));
+    gl.clear();
+    let r = 0;
+    let g = 0;
+    let b = 0;
+    do unsafe {
+        __c__("""
+            typedef void (*read_pixels_t)(int, int, int, int, unsigned int, unsigned int, void *);
+            read_pixels_t readPixels = (read_pixels_t)SDL_GL_GetProcAddress("glReadPixels");
+            unsigned char pixel[4] = {0, 0, 0, 0};
+            if (readPixels) {
+                readPixels(32, 32, 1, 1, 0x1908 /* GL_RGBA */, 0x1401 /* GL_UNSIGNED_BYTE */, pixel);
+            }
+            r = pixel[0]; g = pixel[1]; b = pixel[2];
+        """);
+    };
+    log.note(f"gl pixel {r} {g} {b}");
+    log.check("gl: the clear through glad's pointers drew the colour", r >= 50 && r <= 52 && g >= 101 && g <= 103 && b >= 152 && b <= 154);
+    window.swapBuffers();
+    window.destroy();
+    sdl.terminate();
+}

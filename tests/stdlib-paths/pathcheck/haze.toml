@@ -1,0 +1,7 @@
+name = "pathcheck"
+id = "BxgQxSOt"
+version = "0.1.0"
+description = "The context marker and check log the stdlib path tests share"
+license = "MIT"
+authors = []
+type = "lib"

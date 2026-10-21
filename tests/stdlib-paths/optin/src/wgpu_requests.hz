@@ -1,0 +1,49 @@
+import pathcheck
+import wgpu
+
+// wgpu's request callbacks: requestAdapterAsync / requestDeviceAsync box the
+// requester's context and hand it to wgpu as userdata, and the `extern C`
+// proxies in wgpu.hz run the callback under a context set up from it. The
+// callbacks are created under other contexts than the requests run under,
+// and the device is requested from inside the adapter callback.
+
+fn wgpuRequests(log: mut pathcheck.Log) {
+    let instance = wgpu.createInstance(wgpu.primaryBackends());
+    if !instance {
+        log.check("wgpu: an instance", false);
+        return;
+    }
+
+    let deviceInfo = context.clone((): wgpu.RequestDeviceCallbackInfo => {
+        pathcheck.setDummy(15);
+        return {
+            callback: (status: wgpu.RequestDeviceStatus, device: wgpu.Device, message: str): void => {
+                log.note(f"wgpu device {status == wgpu.RequestDeviceStatus.Success} {pathcheck.dummy()}");
+            },
+        };
+    });
+    let adapterInfo = context.clone((): wgpu.RequestAdapterCallbackInfo => {
+        pathcheck.setDummy(14);
+        return {
+            callback: (status: wgpu.RequestAdapterStatus, adapter: wgpu.Adapter, message: str): void => {
+                log.note(f"wgpu adapter {status == wgpu.RequestAdapterStatus.Success} {pathcheck.dummy()}");
+                if status == wgpu.RequestAdapterStatus.Success {
+                    pathcheck.setDummy(45);
+                    adapter.requestDeviceAsync(none, deviceInfo);
+                }
+            },
+        };
+    });
+
+    pathcheck.setDummy(7);
+    context.clone(() => {
+        pathcheck.setDummy(44);
+        instance.requestAdapterAsync(none, adapterInfo);
+        // The callback ran on a copy: its setDummy(45) stayed there.
+        log.note(f"wgpu requester after the request {pathcheck.dummy()}");
+    });
+    log.check("wgpu: the requester's own context is back after the clone", pathcheck.dummy() == 7);
+    log.check("wgpu: adapter callback under the requester's context", log.has("wgpu adapter true 44"));
+    log.check("wgpu: device callback under its requester's context", log.has("wgpu device true 45"));
+    log.check("wgpu: the callback's own change did not reach the requester", log.has("wgpu requester after the request 44"));
+}

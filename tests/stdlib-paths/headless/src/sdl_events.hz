@@ -1,0 +1,87 @@
+import pathcheck
+import sdl
+
+__c__("#include <SDL3/SDL.h>");
+
+// SDL's event pump: sdl.pollEvents() hands the poller's context to
+// haze_sdl_pollEvents, which forwards it to every dispatch trampoline
+// (`extern C` functions in sdl.hz that enter Haze with Context.init). The
+// handlers are registered under one context and the events polled under
+// another: each handler must run under the poller's.
+
+fn pushEvents(window: sdl.Window) {
+    let handle = window.handle;
+    do unsafe {
+        __c__("""
+            SDL_WindowID id = SDL_GetWindowID((SDL_Window *)handle);
+            SDL_Event e;
+            SDL_zero(e); e.type = SDL_EVENT_KEY_DOWN; e.key.windowID = id; e.key.scancode = SDL_SCANCODE_A; e.key.down = true; SDL_PushEvent(&e);
+            SDL_zero(e); e.type = SDL_EVENT_KEY_UP; e.key.windowID = id; e.key.scancode = SDL_SCANCODE_A; SDL_PushEvent(&e);
+            SDL_zero(e); e.type = SDL_EVENT_MOUSE_MOTION; e.motion.windowID = id; e.motion.which = 1; e.motion.x = 10; e.motion.y = 20; SDL_PushEvent(&e);
+            SDL_zero(e); e.type = SDL_EVENT_MOUSE_BUTTON_DOWN; e.button.windowID = id; e.button.which = 1; e.button.button = SDL_BUTTON_LEFT; e.button.down = true; e.button.x = 10; e.button.y = 20; SDL_PushEvent(&e);
+            SDL_zero(e); e.type = SDL_EVENT_MOUSE_BUTTON_UP; e.button.windowID = id; e.button.which = 1; e.button.button = SDL_BUTTON_LEFT; e.button.x = 10; e.button.y = 20; SDL_PushEvent(&e);
+            SDL_zero(e); e.type = SDL_EVENT_MOUSE_WHEEL; e.wheel.windowID = id; e.wheel.which = 1; e.wheel.y = 1; SDL_PushEvent(&e);
+            SDL_zero(e); e.type = SDL_EVENT_TEXT_INPUT; e.text.windowID = id; e.text.text = "hi"; SDL_PushEvent(&e);
+            SDL_zero(e); e.type = SDL_EVENT_WINDOW_RESIZED; e.window.windowID = id; e.window.data1 = 320; e.window.data2 = 200; SDL_PushEvent(&e);
+            SDL_zero(e); e.type = SDL_EVENT_PEN_MOTION; e.pmotion.windowID = id; e.pmotion.which = 1; e.pmotion.x = 5; e.pmotion.y = 6; SDL_PushEvent(&e);
+        """);
+    };
+}
+
+fn sdlEvents(log: mut pathcheck.Log) {
+    // The offscreen driver, whatever the environment says: this test never
+    // shows a window on a real display.
+    do unsafe {
+        __c__("SDL_SetHintWithPriority(SDL_HINT_VIDEO_DRIVER, \"offscreen\", SDL_HINT_OVERRIDE);");
+    };
+    let init = sdl.init(true);
+    if !init {
+        fmt.println(f"sdl.init failed: {init}");
+        log.check("sdl: init with the offscreen driver", false);
+        return;
+    }
+    let offscreen = false;
+    do unsafe {
+        __c__("const char *driver = SDL_GetCurrentVideoDriver(); offscreen = driver != NULL && SDL_strcmp(driver, \"offscreen\") == 0;");
+    };
+    log.check("sdl: the offscreen video driver is in use", offscreen);
+    let window = sdl.createWindow({ title: "stdlib-paths", size: { width: 320, height: 200 }, hidden: true });
+    if !window {
+        fmt.println(f"sdl.createWindow failed: {window}");
+        log.check("sdl: an offscreen window", false);
+        sdl.terminate();
+        return;
+    }
+
+    context.clone(() => {
+        pathcheck.setDummy(11);
+        window.onKeyDown((e: sdl.KeyEvent) => { log.note(f"sdl keyDown {pathcheck.dummy()}"); return false; });
+        window.onKeyUp((e: sdl.KeyEvent) => { log.note(f"sdl keyUp {pathcheck.dummy()}"); return false; });
+        window.onMouseMove((e: sdl.MouseMoveEvent) => { log.note(f"sdl mouseMove {pathcheck.dummy()}"); return false; });
+        window.onMouseDown((e: sdl.MouseButtonEvent) => { log.note(f"sdl mouseDown {pathcheck.dummy()}"); return false; });
+        window.onMouseUp((e: sdl.MouseButtonEvent) => { log.note(f"sdl mouseUp {pathcheck.dummy()}"); return false; });
+        window.onMouseWheel((e: sdl.MouseWheelEvent) => { log.note(f"sdl wheel {pathcheck.dummy()}"); return false; });
+        window.onTextInput((e: sdl.TextInputEvent) => { log.note(f"sdl text {e.text} {pathcheck.dummy()}"); return false; });
+        window.onResize((e: sdl.ResizeEvent) => { log.note(f"sdl resize {pathcheck.dummy()}"); return false; });
+        window.onPointer((e: sdl.PointerEvent) => { log.note(f"sdl pointer {pathcheck.dummy()}"); return false; });
+    });
+
+    pushEvents(window);
+    pathcheck.setDummy(7);
+    context.clone(() => {
+        pathcheck.setDummy(42);
+        sdl.pollEvents();
+    });
+    log.check("sdl: the poller's own context is back after the clone", pathcheck.dummy() == 7);
+    log.check("sdl: keyDown under the poller's context", log.allMarked("sdl keyDown", 42));
+    log.check("sdl: keyUp under the poller's context", log.allMarked("sdl keyUp", 42));
+    log.check("sdl: mouseMove under the poller's context", log.allMarked("sdl mouseMove", 42));
+    log.check("sdl: mouseDown under the poller's context", log.allMarked("sdl mouseDown", 42));
+    log.check("sdl: mouseUp under the poller's context", log.allMarked("sdl mouseUp", 42));
+    log.check("sdl: wheel under the poller's context", log.allMarked("sdl wheel", 42));
+    log.check("sdl: text input copied and under the poller's context", log.has("sdl text hi 42"));
+    log.check("sdl: resize under the poller's context", log.allMarked("sdl resize", 42));
+    log.check("sdl: pen motion (dispatch_pointer) under the poller's context", log.allMarked("sdl pointer", 42));
+    window.destroy();
+    sdl.terminate();
+}

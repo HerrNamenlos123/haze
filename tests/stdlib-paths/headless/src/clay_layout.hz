@@ -1,0 +1,123 @@
+import pathcheck
+import ui_layout
+import ui_elements
+import ui_styling
+
+// Clay's callbacks: render() hands its caller's context to C, and every Haze
+// function Clay reaches during that call runs under it: the div children
+// declared through hzui_declare_div_children (and the margin box's child
+// entry), measureText (while text is declared and in hzui_clay_end_layout),
+// and every render callback. The layout and the callbacks are created under
+// other contexts than the one render() runs under.
+
+fn clayTree(): ui_elements.Element {
+    let text = ui_elements.TextElement({ id: 1, globalId: "root/text", text: "hello context world" });
+    let canvas = ui_elements.CanvasElement({
+        id: 2,
+        globalId: "root/margined/canvas",
+        style: { width: 20.0, height: 20.0, backgroundColor: Color(0.0, 1.0, 0.0, 1.0) },
+    });
+    // Measured while the margin box's child is declared.
+    let marginedText = ui_elements.TextElement({ id: 8, globalId: "root/margined/text", text: "inside the margin box" });
+    // A div with a margin is declared through a margin box, whose one child
+    // (the div itself) Clay declares through its own entry.
+    let margined = ui_elements.DivElement({
+        id: 3,
+        globalId: "root/margined",
+        children: [canvas, marginedText],
+        style: {
+            margin: { left: 4.0, top: 4.0, right: 4.0, bottom: 4.0 },
+            backgroundColor: Color(0.0, 0.0, 1.0, 1.0),
+            borderWidth: { left: 1.0, right: 1.0, top: 1.0, bottom: 1.0 },
+            borderColor: Color(1.0, 1.0, 1.0, 1.0),
+        },
+    });
+    let a = ui_elements.DivElement({ id: 4, globalId: "root/row/a", style: { width: 10.0, height: 10.0, backgroundColor: Color(1.0, 0.0, 0.0, 1.0) } });
+    let b = ui_elements.DivElement({ id: 5, globalId: "root/row/b", style: { width: 10.0, height: 10.0, backgroundColor: Color(1.0, 0.0, 0.0, 1.0) } });
+    let c = ui_elements.DivElement({ id: 6, globalId: "root/row/c", style: { width: 10.0, height: 10.0, backgroundColor: Color(1.0, 0.0, 0.0, 1.0) } });
+    // Space-between: the spacers between a, b and c are declared through
+    // the entry for divs without children.
+    let row = ui_elements.DivElement({
+        id: 7,
+        globalId: "root/row",
+        children: [a, b, c],
+        style: { width: 200.0, packing: ui_styling.Packing.SpaceBetween },
+    });
+    return ui_elements.DivElement({
+        id: 0,
+        globalId: "root",
+        children: [text, margined, row],
+        style: {
+            width: 400.0,
+            height: 300.0,
+            direction: ui_styling.Direction.Column,
+            backgroundColor: Color(0.0, 0.0, 0.0, 1.0),
+        },
+    });
+}
+
+fn makeLayout(log: mut pathcheck.Log): ui_layout.LayoutContext {
+    let layout = ui_layout.LayoutContext({
+        width: 400,
+        height: 300,
+        fonts: [{ name: "default", id: 0 }],
+        getFontLineHeight: (fontId: int, fontSize: real): real => fontSize,
+        measureText: (fontId: int, fontSize: real, text: str): Vec2 => {
+            log.note(f"clay measure {pathcheck.dummy()}");
+            return Vec2(text.length as real * 8.0, fontSize);
+        },
+    });
+    layout.setLayoutSize(400, 300);
+    return layout;
+}
+
+fn makeCallbacks(log: mut pathcheck.Log): ui_layout.RenderCallbacks {
+    return {
+        renderFilledRectangle: (position: Vec2, size: Vec2, backgroundColor: Color, cornerRadius: ui_layout.CornerRadiusValues): void => {
+            log.note(f"clay rect {pathcheck.dummy()}");
+        },
+        renderText: (element: ui_layout.ffi.hzui_draw_text_element_t): void => {
+            log.note(f"clay text {element.text} {pathcheck.dummy()}");
+        },
+        onBoundingBox: (element: ui_elements.Element, pos: Vec2, size: Vec2): void => {
+            log.note(f"clay bbox {pathcheck.dummy()}");
+        },
+        renderCanvas: (element: ui_elements.CanvasElement): void => {
+            log.note(f"clay canvas {element.globalId} {pathcheck.dummy()}");
+        },
+        renderBorder: (position: Vec2, size: Vec2, borderColor: Color, cornerRadius: ui_layout.CornerRadiusValues, borderWidth: ui_layout.ffi.hzui_border_widths_t): void => {
+            log.note(f"clay border {pathcheck.dummy()}");
+        },
+        setClip: (clip: ui_layout.ResolvedClip): void => {
+            log.note(f"clay clip {pathcheck.dummy()}");
+        },
+    };
+}
+
+fn clayLayout(log: mut pathcheck.Log) {
+    let layout = context.clone((): ui_layout.LayoutContext => {
+        pathcheck.setDummy(12);
+        return makeLayout(log);
+    });
+    let callbacks = context.clone((): ui_layout.RenderCallbacks => {
+        pathcheck.setDummy(13);
+        return makeCallbacks(log);
+    });
+    let tree = clayTree();
+
+    pathcheck.setDummy(7);
+    context.clone(() => {
+        pathcheck.setDummy(43);
+        layout.render(tree, callbacks);
+    });
+    log.check("clay: render()'s caller's own context is back after the clone", pathcheck.dummy() == 7);
+    log.check("clay: measureText under render()'s context", log.allMarked("clay measure", 43));
+    log.check("clay: rects under render()'s context", log.allMarked("clay rect", 43));
+    log.check("clay: text measured and drawn under render()'s context", log.has("clay text hello context world 43"));
+    log.check("clay: the margin box's text drawn under render()'s context", log.has("clay text inside the margin box 43"));
+    log.check("clay: bounding boxes under render()'s context", log.allMarked("clay bbox", 43));
+    log.check("clay: the margined canvas declared through the margin box and drawn", log.has("clay canvas root/margined/canvas 43"));
+    log.check("clay: borders under render()'s context", log.allMarked("clay border", 43));
+    log.check("clay: clips under render()'s context", log.allMarked("clay clip", 43));
+    log.check("clay: every painted div drew (root, margined, a, b, c)", log.count("clay rect 43") == 5);
+}

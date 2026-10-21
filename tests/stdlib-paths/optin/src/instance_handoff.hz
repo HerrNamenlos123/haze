@@ -1,0 +1,62 @@
+import pathcheck
+import single_instance
+
+// single_instance: a secondary process sends a payload; the primary's server
+// thread (a C thread) parses it through haze_si_parse_entry, which runs the
+// parse under a fresh Context() since nothing on that thread has one to hand
+// over; poll() then runs onActivate under the poller's context, not the one
+// the instance was set up under. Which context the parse ran under cannot be
+// observed (json.parse runs no code of the payload's), so the parse is
+// checked by its result: the payload arrives whole.
+
+struct Payload {
+    n: int;
+    text: str;
+}
+
+fn singleInstancePrimary(log: mut pathcheck.Log, appId: str, readyFile: str) {
+    let stackref received = Box<int>(0);
+    let si = context.clone((): single_instance.Instance<Payload> => {
+        pathcheck.setDummy(16);
+        return single_instance.init<Payload>({ appId: appId }, (p: Payload): int => {
+            log.note(f"si activate {p.n} {p.text} {pathcheck.dummy()}");
+            received.value = p.n;
+            return 5;
+        });
+    });
+    log.check("si: this process is the primary", si.status == single_instance.Status.Primary);
+    if si.status != single_instance.Status.Primary {
+        fmt.println(f"si: not the primary: {si.error}");
+        return;
+    }
+    let ready = fs.writeText(readyFile, "ready");
+    if !ready {
+        log.check("si: the ready file is written", false);
+        si.release();
+        return;
+    }
+
+    pathcheck.setDummy(46);
+    let tries = 0;
+    while received.value == 0 && tries < 200 {
+        si.poll();
+        time.sleep(0.05);
+        tries = tries + 1;
+    }
+    log.check("si: the secondary's payload was parsed on the server thread and delivered", received.value == 123);
+    log.check("si: onActivate runs under the poller's context", log.has("si activate 123 hello 46"));
+    si.release();
+}
+
+fn singleInstanceSecondary(log: mut pathcheck.Log, appId: str) {
+    let si = single_instance.init<Payload>({ appId: appId }, (p: Payload): int => {
+        return 1;
+    });
+    log.check("si: this process is the secondary", si.status == single_instance.Status.Secondary);
+    if si.status != single_instance.Status.Secondary {
+        return;
+    }
+    let result = si.send({ n: 123, text: "hello" });
+    log.note(f"si send: delivered {result.status == single_instance.SendStatus.Delivered}, exit code {result.exitCode}, message '{result.message}'");
+    log.check("si: delivered, and the primary answered 5", result.status == single_instance.SendStatus.Delivered && result.exitCode == 5);
+}

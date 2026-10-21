@@ -1,0 +1,14 @@
+name = "stdlib-paths"
+id = "ARr683XB"
+version = "0.1.0"
+description = "The stdlib's headless C <-> Haze paths (SDL, Clay) run their Haze code under the right context; part of scripts/run-tests.sh"
+license = "MIT"
+authors = []
+type = "exe"
+
+[dependencies]
+pathcheck = { path = "../pathcheck" }
+sdl = { path = "../../../stdlib/sdl" }
+ui_layout = { path = "../../../stdlib/ui_layout" }
+ui_elements = { path = "../../../stdlib/ui_elements" }
+ui_styling = { path = "../../../stdlib/ui_styling" }

@@ -1,0 +1,16 @@
+import pathcheck
+
+// The stdlib's C <-> Haze paths that run without a GPU or a second process:
+// SDL's event dispatch (offscreen video driver, no window on any display) and
+// Clay's layout and render callbacks (no renderer at all). Each check asserts
+// that the Haze code the C side reaches runs under the context of the Haze
+// code that drove the C call (DEVELOPMENT.md, "The hidden context").
+// scripts/run-tests.sh builds and runs this; the paths that need a GPU
+// adapter or two processes are in ../optin.
+
+fn main(): int {
+    let log = pathcheck.Log {};
+    sdlEvents(log);
+    clayLayout(log);
+    return log.report();
+}

@@ -1,0 +1,14 @@
+name = "stdlib-paths-optin"
+id = "XMEoEQmV"
+version = "0.1.0"
+description = "The stdlib's C <-> Haze paths that need a GPU adapter or two processes (wgpu, GL, single_instance); run by scripts/run-stdlib-path-tests.sh"
+license = "MIT"
+authors = []
+type = "exe"
+
+[dependencies]
+pathcheck = { path = "../pathcheck" }
+wgpu = { path = "../../../stdlib/wgpu" }
+sdl = { path = "../../../stdlib/sdl" }
+gl = { path = "../../../stdlib/gl" }
+single_instance = { path = "../../../stdlib/single_instance" }
