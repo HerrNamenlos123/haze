@@ -27,14 +27,36 @@ namespace rx {
     }
 
     // hzstd_computed_entry_t: runs a Thunk under the context C hands over
-    // (C401, C402).
-    export extern C fn __hz_rx_run_thunk(ctx: Context, thunk: cptr): cptr {
+    // (C401, C402). Not exported: it takes any pointer for a Thunk, so only
+    // _computedNode below names it.
+    extern C fn __hz_rx_run_thunk(ctx: Context, thunk: cptr): cptr {
         let box = do unsafe {
             let b: Thunk = uninitialized;
             __c__("b = thunk;");
             b
         };
         return Context.init(ctx, () => box.run());
+    }
+
+    // The C node of a computed whose value `body` computes, with the
+    // scheduler rx.watch installs (run once per clean -> dirty transition)
+    // if there is one. Not generic, so it is compiled here: rx.computed and
+    // rx.watch are re-elaborated in the importing module, which cannot name
+    // the entry.
+    export fn _computedNode(body: Thunk, scheduler: Thunk | none): cptr {
+        let entry = __hz_rx_run_thunk;
+        let node = none as cptr;
+        do unsafe {
+            __c__("node = (void*)hzstd_computed_create(entry, (void*)body);");
+        };
+        if scheduler is Thunk {
+            // Copied into a plain local: raw C can only name those.
+            let effect = scheduler;
+            do unsafe {
+                __c__("hzstd_computed_set_scheduler((hzstd_computed_node_t*)node, entry, (void*)effect);");
+            };
+        }
+        return node;
     }
 
     // Shallow reactive is a dumb shell: whatever's inside is stored unchanged
@@ -108,6 +130,12 @@ namespace rx {
     }
 
     export fn computed<T>(func: () => T): rx.Computed<rx.UnwrapReactive<T>> {
+        return _computedWith<T>(func, none);
+    }
+
+    // rx.computed, with the scheduler of rx.watch when there is one (see
+    // _computedNode).
+    export fn _computedWith<T>(func: () => T, scheduler: Thunk | none): rx.Computed<rx.UnwrapReactive<T>> {
         return do unsafe {
             let fnWrapper = (): cptr => {
                 let resultValue = rx.get(func());
@@ -124,12 +152,9 @@ namespace rx {
                 };
             };
 
-            let thunk = Thunk { run: fnWrapper };
-            let entry = __hz_rx_run_thunk;
+            let node = _computedNode(Thunk { run: fnWrapper }, scheduler);
             let result: rx.Computed<rx.UnwrapReactive<T>> = uninitialized;
-            __c__("""
-                result = hzstd_computed_create(entry, (void*)thunk);
-            """);
+            __c__("result = node;");
             result
         };
     }
@@ -465,13 +490,22 @@ namespace rx {
             once = true;
         }
 
-        let node = rx.computed(() => {
+        // C runs the node's scheduler once per clean -> dirty transition. It
+        // is installed with the node and calls the trigger below, which needs
+        // the node and so is put in the box afterwards; nothing makes the
+        // node dirty before that.
+        let scheduled: ref Box<() => none> = { value: (): none => {} };
+        let schedulerWrapper = (): cptr => {
+            scheduled.value();
+            return none as cptr;
+        };
+        let node = _computedWith(() => {
             let value = getter();
             if deep {
                 traverse(value);
             }
             return value;
-        });
+        }, Thunk { run: schedulerWrapper });
         let nodePtr: cptr = none as cptr;
         do unsafe {
             __c__("nodePtr = (void*)node;");
@@ -535,7 +569,7 @@ namespace rx {
         let watchJob = WatchJob { id: handle.id, run: runJob };
 
         // Vue: effect.scheduler / effect.trigger(). Called by the C core once
-        // per clean -> dirty transition of the node.
+        // per clean -> dirty transition of the node (see `scheduled` above).
         let trigger = (): none => {
             if handle._paused {
                 // The node stays dirty; resume() delivers it.
@@ -544,16 +578,7 @@ namespace rx {
             options.scheduler(watchJob);
         };
         handle._schedule = trigger;
-
-        let schedulerWrapper = (): cptr => {
-            trigger();
-            return none as cptr;
-        };
-        let schedulerThunk = Thunk { run: schedulerWrapper };
-        let entry = __hz_rx_run_thunk;
-        do unsafe {
-            __c__("hzstd_computed_set_scheduler(node, entry, (void*)schedulerThunk);");
-        };
+        scheduled.value = trigger;
 
         if options.immediate {
             job(true);
