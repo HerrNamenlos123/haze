@@ -19,6 +19,223 @@ export struct AppOptions {
     size: sdl.WindowSizeConfig = {};
     startHidden: bool = false;
     hideOnClose: bool = false;
+    // Open the window the way it was left: its size, whether it was
+    // maximized, and -- where the platform lets an application place its
+    // window, which Wayland does not (see sdl.applicationPlacesWindows) --
+    // where it was, on a display that is still there. `size` is then only the
+    // size of the very first window. Kept in the platform's state directory
+    // under the [app] appId from haze.toml, which this needs. See
+    // RememberedWindow.
+    rememberWindowState: bool = false;
+}
+
+// ── Remembered window state ──────────────────────────────────────────────
+//
+// What AppOptions.rememberWindowState keeps of the window between runs, in
+// <state directory>/<appId>/window-state.json.
+//
+// The size is the one the window returns to when it is restored, not the one
+// it happens to have: a maximized or tiled window comes back maximized or at
+// its own size, and un-maximizing it then gives back the size it had before,
+// as it would have in the run it was left in. Its position is kept only where
+// the platform lets an application place its window at all; on Wayland the
+// compositor places every window itself.
+//
+// Written once the window has stayed the same for windowStateSettleSeconds,
+// and again when it closes: a resize is a stream of changes, and an
+// application that is killed, crashes or loses power never gets to close, so
+// what it was left like must already be on disk.
+
+export struct RememberedWindow {
+    // The size the window returns to when it is restored, in the desktop's
+    // coordinates (logical pixels where the platform scales).
+    width: int;
+    height: int;
+    maximized: bool = false;
+    // Where it was. none where the platform places windows itself.
+    placement: RememberedPlacement | none = none;
+}
+
+export struct RememberedPlacement {
+    // The top left corner of the window's restore rect.
+    x: int;
+    y: int;
+    // The work area of the display the window was on, when it was left. A
+    // display whose work area is no longer this one has changed (or is
+    // another display), and the window may no longer fit where it was.
+    workArea: sdl.Rect;
+}
+
+const windowStateSettleSeconds = 0.5;
+
+// Larger than any real window, so a file that says more is not trusted.
+const maxRememberedWindowSize = 16384;
+const maxRememberedCoordinate = 1048576;
+
+// The least of a restored window that stays on a display: enough of its top
+// edge to grab the titlebar beside a button or two, and enough of its height
+// to hold the titlebar. A window or a work area smaller than that is shown
+// whole.
+const minVisibleWidth = 100;
+const minVisibleHeight = 50;
+
+fn minInt(a: int, b: int): int {
+    return a < b ? a : b;
+}
+
+fn maxInt(a: int, b: int): int {
+    return a > b ? a : b;
+}
+
+// `value` moved into [low, high]; low wins where the two cross.
+fn clampInt(value: int, low: int, high: int): int {
+    return maxInt(low, minInt(value, high));
+}
+
+fn rectOverlapArea(a: sdl.Rect, b: sdl.Rect): int {
+    let width = minInt(a.x + a.width, b.x + b.width) - maxInt(a.x, b.x);
+    let height = minInt(a.y + a.height, b.y + b.height) - maxInt(a.y, b.y);
+    if width <= 0 || height <= 0 {
+        return 0;
+    }
+    return width * height;
+}
+
+// The squared distance between the nearest points of two rectangles; 0 where
+// they touch or overlap.
+fn rectGapSquared(a: sdl.Rect, b: sdl.Rect): int {
+    let dx = maxInt(0, maxInt(b.x - (a.x + a.width), a.x - (b.x + b.width)));
+    let dy = maxInt(0, maxInt(b.y - (a.y + a.height), a.y - (b.y + b.height)));
+    return dx * dx + dy * dy;
+}
+
+fn rectContains(outer: sdl.Rect, inner: sdl.Rect): bool {
+    return inner.x >= outer.x && inner.y >= outer.y
+        && inner.x + inner.width <= outer.x + outer.width
+        && inner.y + inner.height <= outer.y + outer.height;
+}
+
+// Which of the displays' `areas` a window at `rect` is on: the one it
+// overlaps most, or the nearest one when it overlaps none -- the rule
+// Windows' MonitorFromRect applies. A tie goes to the earlier area, which
+// puts the primary display first (see sdl.displayWorkAreas). -1 for no areas.
+export fn displayIndexFor(rect: sdl.Rect, areas: []sdl.Rect): int {
+    let best = -1;
+    let bestOverlap = 0;
+    for (let i = 0; i < areas.length; i++) {
+        let overlap = rectOverlapArea(rect, areas[i]);
+        if overlap > bestOverlap {
+            best = i;
+            bestOverlap = overlap;
+        }
+    }
+    if best >= 0 {
+        return best;
+    }
+    let bestGap = 0;
+    for (let i = 0; i < areas.length; i++) {
+        let gap = rectGapSquared(rect, areas[i]);
+        if best < 0 || gap < bestGap {
+            best = i;
+            bestGap = gap;
+        }
+    }
+    return best;
+}
+
+// Where a window remembered at `rect` goes on the displays there are now:
+// `areas`, their work areas, of which there is at least one. `savedArea` is
+// the work area of the display it was on (RememberedPlacement.workArea).
+//
+// On displays that have not changed, the window goes back exactly where it
+// was, even partly off the edge where the user left it so. Only so far off
+// that it could not be grabbed is it pulled back: its titlebar never above
+// the work area, and at least minVisibleWidth x minVisibleHeight of it on
+// the display. A window whose display changed (another resolution, another
+// arrangement, or gone, so that it lands on another one) and that no longer
+// fits where it was goes wholly onto the display it is now on, shrunk to the
+// work area if it is larger.
+export fn placeOnDisplays(rect: sdl.Rect, savedArea: sdl.Rect, areas: []sdl.Rect): sdl.Rect {
+    assert(areas.length > 0);
+    let area = areas[displayIndexFor(rect, areas)];
+    let result = rect;
+    if area != savedArea && !rectContains(area, rect) {
+        result.width = minInt(rect.width, area.width);
+        result.height = minInt(rect.height, area.height);
+        result.x = clampInt(rect.x, area.x, area.x + area.width - result.width);
+        result.y = clampInt(rect.y, area.y, area.y + area.height - result.height);
+        return result;
+    }
+    let visibleWidth = minInt(minVisibleWidth, minInt(rect.width, area.width));
+    let visibleHeight = minInt(minVisibleHeight, minInt(rect.height, area.height));
+    result.x = clampInt(rect.x, area.x + visibleWidth - rect.width, area.x + area.width - visibleWidth);
+    result.y = clampInt(rect.y, area.y, area.y + area.height - visibleHeight);
+    return result;
+}
+
+// <state directory>/<appId>/window-state.json, none without a state
+// directory. The XDG state directory on Linux (XDG_STATE_HOME, which must be
+// an absolute path, or ~/.local/state), %LOCALAPPDATA% on Windows.
+fn windowStatePath(appId: str): str | none {
+    if sys.isWin32() {
+        if let local = env.get("LOCALAPPDATA") {
+            if local.length > 0 {
+                return f"{local}/{appId}/window-state.json";
+            }
+        }
+        return none;
+    }
+    if let dir = env.get("XDG_STATE_HOME") {
+        if dir.startsWith("/") {
+            return f"{dir}/{appId}/window-state.json";
+        }
+    }
+    if let home = env.get("HOME") {
+        if home.length > 0 {
+            return f"{home}/.local/state/{appId}/window-state.json";
+        }
+    }
+    return none;
+}
+
+// What the file at `path` remembers: none when there is no file yet, and
+// none for a file that is unreadable or holds what no window could have been
+// (it is then replaced by the next save).
+fn loadRememberedWindow(path: str): RememberedWindow | none {
+    let text = fs.readText(path);
+    if !text {
+        return none;
+    }
+    let parsed = json.parse<RememberedWindow>(text);
+    if !parsed {
+        fmt.println(f"The remembered window state in {path} is not valid and is ignored: {parsed}");
+        return none;
+    }
+    let state = parsed;
+    if state.width < 1 || state.width > maxRememberedWindowSize || state.height < 1 || state.height > maxRememberedWindowSize {
+        return none;
+    }
+    if let placement = state.placement {
+        let area = placement.workArea;
+        let coordinatesValid = placement.x >= -maxRememberedCoordinate && placement.x <= maxRememberedCoordinate
+            && placement.y >= -maxRememberedCoordinate && placement.y <= maxRememberedCoordinate
+            && area.x >= -maxRememberedCoordinate && area.x <= maxRememberedCoordinate
+            && area.y >= -maxRememberedCoordinate && area.y <= maxRememberedCoordinate
+            && area.width >= 1 && area.width <= maxRememberedCoordinate
+            && area.height >= 1 && area.height <= maxRememberedCoordinate;
+        if !coordinatesValid {
+            state.placement = none;
+        }
+    }
+    return state;
+}
+
+// The window as it would be remembered: its restore rect and whether it is
+// maximized. Compared frame to frame, so it holds only what is cheap to read.
+// Exported because App's fields name it, as with every type they hold.
+export struct WindowGeometry {
+    rect: sdl.Rect;
+    maximized: bool;
 }
 
 fn pickSurfaceFormat(caps: wgpu.SurfaceCapabilities): wgpu.TextureFormat {
@@ -343,6 +560,19 @@ export opaque ref struct App {
     framePresented: bool = false;
     hideOnClose: bool = false;
 
+    // ── Remembered window state (AppOptions.rememberWindowState) ───────
+    //
+    // Where it is kept, none when it is not remembered; what the file holds;
+    // the window as last seen, and when that last changed. Seen only while
+    // the window is on screen and not minimized: a minimized window was
+    // maximized or not before it was minimized, and that is what it comes
+    // back as.
+    _windowStatePath: str | none = none;
+    _savedWindow: RememberedWindow | none = none;
+    _windowGeometry: WindowGeometry | none = none;
+    _windowGeometryChangedAt: real = 0.0;
+    _windowStateUnsaved: bool = false;
+
     // When the current tick began (sdl.getTime(), seconds) -- stamped by
     // nextFrame(), read by idle() to keep skipped ticks from running
     // back-to-back.
@@ -410,9 +640,66 @@ export opaque ref struct App {
         let initResult = sdl.init(options.nativeTitlebar);
         if !initResult { return f"SDL init failed: {initResult}"; }
 
+        let statePath: str | none = none;
+        let remembered: RememberedWindow | none = none;
+        if options.rememberWindowState {
+            let appId = sys.appId();
+            if !appId {
+                return "AppOptions.rememberWindowState needs an [app] appId in haze.toml: the state is kept under it";
+            }
+            statePath = windowStatePath(appId);
+            if let path = statePath {
+                remembered = loadRememberedWindow(path);
+            }
+            else {
+                fmt.println("The window state is not remembered: there is no state directory to keep it in");
+            }
+        }
+
+        let width = options.size.width;
+        let height = options.size.height;
+        let maximized = false;
+        let position: Vec2i | none = none;
+        if let state = remembered {
+            width = state.width;
+            height = state.height;
+            maximized = state.maximized;
+            let areas = sdl.displayWorkAreas();
+            if sdl.applicationPlacesWindows() && areas.length > 0 {
+                if let placement = state.placement {
+                    let placed = placeOnDisplays(
+                        sdl.Rect { x: placement.x, y: placement.y, width: width, height: height },
+                        placement.workArea,
+                        areas,
+                    );
+                    position = Vec2i(placed.x, placed.y);
+                    width = placed.width;
+                    height = placed.height;
+                }
+            }
+            if !position {
+                // Placed by the platform, on a display it has not named yet.
+                // Kept no larger than the largest display, so that a window
+                // remembered from a larger one never opens larger than any
+                // screen there is.
+                let largestWidth = 0;
+                let largestHeight = 0;
+                for area in areas {
+                    largestWidth = maxInt(largestWidth, area.width);
+                    largestHeight = maxInt(largestHeight, area.height);
+                }
+                if largestWidth > 0 && largestHeight > 0 {
+                    width = minInt(width, largestWidth);
+                    height = minInt(height, largestHeight);
+                }
+            }
+        }
+
         let window = sdl.createWindow({
             title: options.title,
-            size: options.size,
+            size: { width: width, height: height },
+            position: position,
+            maximized: maximized,
             noApi: true,
             borderless: !options.nativeTitlebar,
             // Not on screen yet -- see windowShown below.
@@ -487,6 +774,8 @@ export opaque ref struct App {
             _pointerButtons: pointerButtons,
             windowShown: options.startHidden,
             hideOnClose: options.hideOnClose,
+            _windowStatePath: statePath,
+            _savedWindow: remembered,
         };
 
         window.onMouseMove((e: sdl.MouseMoveEvent) => {
@@ -767,6 +1056,9 @@ export opaque ref struct App {
     }
 
     fn hide() {
+        // Hiding to the background is how such an application is usually
+        // left, so the window is saved as it was while it is still known.
+        this.saveWindowState();
         this.window.hide();
         // At once, not at the next nextFrame(): a caller that hides in the
         // middle of its tick (on focus loss, say) still renders after.
@@ -817,6 +1109,93 @@ export opaque ref struct App {
         this.window.commitRegions();
     }
 
+    // ── Remembering the window (AppOptions.rememberWindowState) ──────
+
+    // The window as it would be remembered, none while there is nothing to
+    // see: hidden, or minimized (see _windowGeometry).
+    fn currentWindowGeometry(): WindowGeometry | none {
+        if !this.window.isVisible() || this.window.isMinimized() {
+            return none;
+        }
+        let rect = this.window.getRestoreRect();
+        if rect.width <= 0 || rect.height <= 0 {
+            return none;
+        }
+        return WindowGeometry { rect: rect, maximized: this.window.isMaximized() };
+    }
+
+    // Once a frame: notes a change, and saves it once the window has stayed
+    // that way for windowStateSettleSeconds.
+    fn trackWindowState() {
+        if !this._windowStatePath {
+            return;
+        }
+        let geometry = this.currentWindowGeometry();
+        if !geometry {
+            return;
+        }
+        let changed = true;
+        if let known = this._windowGeometry {
+            changed = known != geometry;
+        }
+        if changed {
+            this._windowGeometry = geometry;
+            this._windowGeometryChangedAt = sdl.getTime();
+            this._windowStateUnsaved = true;
+            return;
+        }
+        if this._windowStateUnsaved && sdl.getTime() - this._windowGeometryChangedAt >= windowStateSettleSeconds {
+            this.saveWindowState();
+        }
+    }
+
+    // Saves the window as last seen, now.
+    fn saveWindowState() {
+        this._windowStateUnsaved = false;
+        if let path = this._windowStatePath {
+            if let geometry = this._windowGeometry {
+                this.writeWindowState(path, geometry);
+            }
+        }
+    }
+
+    // Writes `geometry` to `path`, unless the file already holds it. The
+    // displays are read here, not every frame: only what is written needs
+    // them.
+    fn writeWindowState(path: str, geometry: WindowGeometry) {
+        let state = RememberedWindow {
+            width: geometry.rect.width,
+            height: geometry.rect.height,
+            maximized: geometry.maximized,
+        };
+        if sdl.applicationPlacesWindows() {
+            let areas = sdl.displayWorkAreas();
+            let index = displayIndexFor(geometry.rect, areas);
+            if index >= 0 {
+                state.placement = RememberedPlacement { x: geometry.rect.x, y: geometry.rect.y, workArea: areas[index] };
+            }
+        }
+        if let saved = this._savedWindow {
+            if saved == state {
+                return;
+            }
+        }
+        // Written beside it and renamed over it, so the file is always
+        // either the old state or the new one, never half of one.
+        let partial = f"{path}.saving";
+        let written = fs.writeText(partial, json.stringify(state));
+        if !written {
+            fmt.println(f"The window state could not be saved to {path}: {written}");
+            return;
+        }
+        let moved = fs.move(partial, path, { overwrite: true });
+        if !moved {
+            fmt.println(f"The window state could not be saved to {path}: {moved}");
+            return;
+        }
+        this._savedWindow = state;
+    }
+
     // Polls events, handles resize, and returns this App's Frame reset for
     // this tick (the same persistent instance every call, not a fresh
     // allocation -- see Frame's doc comment in renderer.hz).
@@ -824,10 +1203,12 @@ export opaque ref struct App {
     mut fn nextFrame(): mut renderer.gfx.Frame | none {
         if this.window.shouldClose() {
             if !this.hideOnClose {
+                this.saveWindowState();
                 return none;
             }
             this.window.cancelClose();
             if this.window.shouldClose() {
+                this.saveWindowState();
                 return none;
             }
             this.hide();
@@ -905,6 +1286,8 @@ export opaque ref struct App {
             }
         }
 
+        this.trackWindowState();
+
         this.frame.reset();
         return this.frame;
     }
@@ -944,6 +1327,8 @@ export opaque ref struct App {
     }
 
     fn destroy() {
+        // For a host that leaves its loop without nextFrame() returning none.
+        this.saveWindowState();
         this.window.destroy();
         sdl.terminate();
     }

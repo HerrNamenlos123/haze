@@ -265,6 +265,117 @@ true
 true
 """);
 
+        // ── A struct inside a union ──────────────────────────────────────
+        // Comparing two unions compares the variant both hold, and that
+        // comparison is the variant's own: memberwise for a plain struct,
+        // through its operator for a struct that declares one, element by
+        // element for a fixed array. An optional struct member (`p: P | none`)
+        // is the everyday case. It used to emit a C `==` on the structs
+        // themselves, which does not compile.
+        s.run(
+            "value equality: a struct inside a union compares as that struct",
+            """
+struct P { x: int = 0; s: str = ""; }
+struct Q { y: int = 0; }
+struct HasOptional { id: int = 0; p: P | none = none; }
+struct ById {
+    id: int = 0;
+    label: str = "";
+    fn operator==(other: ById): bool { return this.id == other.id; }
+    fn operator!=(other: ById): bool { return this.id != other.id; }
+}
+
+fn main(): int {
+    // An optional struct member, both present.
+    let a = HasOptional { id: 1, p: P { x: 2, s: "hi" } };
+    let b = HasOptional { id: 1, p: P { x: 2, s: "hi" } };
+    fmt.println(f"{a == b}");
+    fmt.println(f"{a != b}");
+    // ... differing inside it, by an int and by string contents.
+    let c = HasOptional { id: 1, p: P { x: 3, s: "hi" } };
+    fmt.println(f"{a == c}");
+    let d = HasOptional { id: 1, p: P { x: 2, s: "h" + "I" } };
+    fmt.println(f"{a == d}");
+    fmt.println(f"{a != d}");
+    // ... present on one side only, and absent on both.
+    let e = HasOptional { id: 1 };
+    let f = HasOptional { id: 1 };
+    fmt.println(f"{a == e}");
+    fmt.println(f"{e == f}");
+
+    // Bare unions.
+    let u1: P | none = P { x: 5, s: "u" };
+    let u2: P | none = P { x: 5, s: "u" };
+    let u3: P | none = P { x: 6, s: "u" };
+    let u4: P | none = none;
+    fmt.println(f"{u1 == u2}");
+    fmt.println(f"{u1 == u3}");
+    fmt.println(f"{u1 != u3}");
+    fmt.println(f"{u1 == u4}");
+    // Different variants are unequal, so `!=` holds -- it is the negation of
+    // `==`, not "the same variant with other contents".
+    fmt.println(f"{u1 != u4}");
+    let u5: P | none = none;
+    fmt.println(f"{u4 == u5}");
+    fmt.println(f"{u4 != u5}");
+
+    // Two struct variants: the same variant with other contents, and the
+    // other variant.
+    let v1: P | Q = P { x: 1, s: "v" };
+    let v2: P | Q = P { x: 1, s: "w" };
+    let v3: P | Q = Q { y: 1 };
+    let v4: P | Q = Q { y: 1 };
+    fmt.println(f"{v1 == v2}");
+    fmt.println(f"{v1 == v3}");
+    fmt.println(f"{v3 == v4}");
+    fmt.println(f"{v1 != v3}");
+    fmt.println(f"{v1 != v2}");
+
+    // A variant that declares its own operator uses it: these differ only
+    // in what ById's operator ignores.
+    let w1: ById | none = ById { id: 7, label: "a" };
+    let w2: ById | none = ById { id: 7, label: "b" };
+    let w3: ById | none = ById { id: 8, label: "a" };
+    fmt.println(f"{w1 == w2}");
+    fmt.println(f"{w1 == w3}");
+    fmt.println(f"{w1 != w2}");
+
+    // A fixed array variant, element by element.
+    let f1: [2]int | none = [1, 2];
+    let f2: [2]int | none = [1, 2];
+    let f3: [2]int | none = [1, 3];
+    fmt.println(f"{f1 == f2}");
+    fmt.println(f"{f1 == f3}");
+    return 0;
+}
+""",
+            """
+true
+false
+false
+false
+true
+false
+true
+true
+false
+true
+false
+true
+true
+false
+false
+false
+true
+true
+true
+true
+false
+false
+true
+false
+""");
+
         // ── Non-comparable members poison the enclosing type ─────────────
         s.compileFails(
             "value equality: a dynamic-array member makes the struct incomparable",

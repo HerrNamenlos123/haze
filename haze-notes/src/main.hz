@@ -110,6 +110,9 @@ fn main(): int {
         let a = app.App({
             title: "Haze Notes",
             nativeTitlebar: false,
+            // Opens the way it was left: size, maximized, and where the
+            // platform allows it, position.
+            rememberWindowState: true,
         })?!;
 
         // Embedded rather than loaded by path: an installed copy runs from

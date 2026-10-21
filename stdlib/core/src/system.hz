@@ -202,6 +202,7 @@ namespace fmt {
 namespace ffi {
     extern C noemit fn hzstd_arg_count(): int :: final;
     extern C noemit fn hzstd_arg_at(index: int): str :: final;
+    extern C noemit fn hzstd_app_id_get(): str :: final;
 }
 
 namespace sys {
@@ -215,6 +216,17 @@ namespace sys {
             result.push(ffi.hzstd_arg_at(i));
         }
         return result;
+    }
+
+    // The [app] appId from this program's haze.toml -- the name the desktop
+    // knows the application by, like "io.github.user.AppName" -- or none
+    // when it has no [app] table.
+    export fn appId(): str | none {
+        let id = ffi.hzstd_app_id_get();
+        if id.length == 0 {
+            return none;
+        }
+        return id;
     }
 
     export struct InputPipe {

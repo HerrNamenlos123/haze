@@ -16,7 +16,7 @@ namespace ffi {
 
 	extern C fn haze_sdl_init(platformDecorations: bool): bool :: final;
 	extern C fn haze_sdl_terminate(): void :: final;
-	extern C fn haze_sdl_createWindow(width: i32, height: i32, title: ccstr, noApi: bool, borderless: bool, hidden: bool): SDL_Window | none :: final;
+	extern C fn haze_sdl_createWindow(width: i32, height: i32, title: ccstr, noApi: bool, borderless: bool, hidden: bool, positioned: bool, x: i32, y: i32, maximized: bool): SDL_Window | none :: final;
 	extern C fn haze_sdl_showWindow(window: SDL_Window): void :: final;
 	extern C fn haze_sdl_hideWindow(window: SDL_Window): void :: final;
 	extern C fn haze_sdl_windowIsVisible(window: SDL_Window): bool :: final;
@@ -55,7 +55,21 @@ namespace ffi {
 	extern C fn haze_sdl_restoreWindow(window: SDL_Window): void :: final;
 	extern C fn haze_sdl_windowIsMaximized(window: SDL_Window): bool :: final;
 	extern C fn haze_sdl_windowIsBorderless(window: SDL_Window): bool :: final;
+	extern C fn haze_sdl_windowIsMinimized(window: SDL_Window): bool :: final;
 	extern C fn haze_sdl_requestWindowClose(window: SDL_Window): void :: final;
+
+	// Where windows and displays are -- see the block comment above
+	// haze_sdl_getWindowRestoreRect in sdl_impl.c.
+	extern C noemit struct SDL_Rect {
+		x: i32;
+		y: i32;
+		w: i32;
+		h: i32;
+	}
+	extern C fn haze_sdl_getWindowRestoreRect(window: SDL_Window): SDL_Rect :: final;
+	extern C fn haze_sdl_applicationPlacesWindows(): bool :: final;
+	extern C fn haze_sdl_getDisplayCount(): i32 :: final;
+	extern C fn haze_sdl_getDisplayWorkArea(index: i32): SDL_Rect :: final;
 	extern C noemit fn SDL_GetWindowSize(window: SDL_Window, width: cptr, height: cptr): bool :: final;
 	extern C noemit fn SDL_GetWindowSizeInPixels(window: SDL_Window, width: cptr, height: cptr): bool :: final;
 	extern C noemit fn SDL_GetError(): ccstr :: final;
@@ -131,8 +145,8 @@ namespace ffi {
 		haze_sdl_terminate();
 	}
 
-	export fn createWindow(width: i32, height: i32, title: ccstr, noApi: bool, borderless: bool, hidden: bool): SDL_Window | none {
-		return haze_sdl_createWindow(width, height, title, noApi, borderless, hidden);
+	export fn createWindow(width: i32, height: i32, title: ccstr, noApi: bool, borderless: bool, hidden: bool, positioned: bool, x: i32, y: i32, maximized: bool): SDL_Window | none {
+		return haze_sdl_createWindow(width, height, title, noApi, borderless, hidden, positioned, x, y, maximized);
 	}
 
 	export fn showWindow(window: SDL_Window) {
@@ -253,6 +267,10 @@ namespace ffi {
 
 	export fn windowIsBorderless(window: SDL_Window): bool {
 		return haze_sdl_windowIsBorderless(window);
+	}
+
+	export fn windowIsMinimized(window: SDL_Window): bool {
+		return haze_sdl_windowIsMinimized(window);
 	}
 
 	export fn requestWindowClose(window: SDL_Window) {
@@ -741,6 +759,20 @@ export ref struct Window {
 		return ffi.windowIsMaximized(this.handle);
 	}
 
+	fn isMinimized(): bool {
+		return ffi.windowIsMinimized(this.handle);
+	}
+
+	// The size and position the window returns to when it is restored: its
+	// own while it is neither maximized nor tiled, the ones it had before
+	// otherwise. What to remember of a window to open it the same way next
+	// time, since a maximized or tiled window's current size is not the one
+	// it should come back with. The position is meaningless where
+	// applicationPlacesWindows() is false.
+	fn getRestoreRect(): Rect {
+		return rectFromSdl(ffi.haze_sdl_getWindowRestoreRect(this.handle));
+	}
+
 	// Is the platform's own titlebar and frame gone (SDL_WINDOW_BORDERLESS)?
 	// True exactly when the application asked for a borderless window, which
 	// is the moment it owes the window a titlebar of its own.
@@ -1128,6 +1160,42 @@ export ref struct WindowSizeConfig {
 	height: int = 720;
 }
 
+// A rectangle in the desktop's coordinates, the ones windows are placed in
+// and displays are laid out in.
+export struct Rect {
+	x: int = 0;
+	y: int = 0;
+	width: int = 0;
+	height: int = 0;
+}
+
+fn rectFromSdl(rect: ffi.SDL_Rect): Rect {
+	return Rect { x: rect.x as int, y: rect.y as int, width: rect.w as int, height: rect.h as int };
+}
+
+// Can an application put its window where it wants, and learn where it is?
+// False on Wayland, where the compositor alone places windows and never tells
+// an application where one is: there WindowConfig.position is ignored and
+// Window.getRestoreRect() has no position.
+export fn applicationPlacesWindows(): bool {
+	return ffi.haze_sdl_applicationPlacesWindows();
+}
+
+// The work area of each connected display -- the part a window may cover,
+// without the taskbar, dock or panels -- the primary display first. Empty if
+// SDL knows of no display.
+export fn displayWorkAreas(): []Rect {
+	let result: []Rect = [];
+	let count = ffi.haze_sdl_getDisplayCount();
+	for (let i = 0 as i32; i < count; i++) {
+		let area = rectFromSdl(ffi.haze_sdl_getDisplayWorkArea(i));
+		if area.width > 0 && area.height > 0 {
+			result.push(area);
+		}
+	}
+	return result;
+}
+
 export ref struct WindowConfig {
 	title: ccstr;
 	size: WindowSizeConfig = {};
@@ -1136,6 +1204,12 @@ export ref struct WindowConfig {
 	// own. See Window.enableHitTest, which is what gives such a window its
 	// dragging, resizing, snapping and double-click-to-maximize back.
 	borderless: bool = false;
+	// Where the window goes, in the desktop's coordinates (see Rect). none
+	// leaves it to the platform, as does a platform that places every window
+	// itself whatever this says (see applicationPlacesWindows).
+	position: Vec2i | none = none;
+	// Start maximized, with `size` as the size it returns to when restored.
+	maximized: bool = false;
 	// Create the window without mapping it, leaving it invisible until
 	// Window.show() is called.
 	//
@@ -1164,7 +1238,17 @@ export fn terminate() {
 export fn createWindow(config: WindowConfig): Result<mut Window, str> {
 	assert(config.size.width >= i32.min && config.size.width <= i32.max);
 	assert(config.size.height >= i32.min && config.size.height <= i32.max);
-	const handle = ffi.createWindow(config.size.width, config.size.height, config.title, config.noApi, config.borderless, config.hidden);
+	let positioned = false;
+	let x = 0 as i32;
+	let y = 0 as i32;
+	if let position = config.position {
+		assert(position.x >= i32.min && position.x <= i32.max);
+		assert(position.y >= i32.min && position.y <= i32.max);
+		positioned = true;
+		x = position.x as i32;
+		y = position.y as i32;
+	}
+	const handle = ffi.createWindow(config.size.width, config.size.height, config.title, config.noApi, config.borderless, config.hidden, positioned, x, y, config.maximized);
 	if !handle {
 		return Result<mut Window, str>.Err(ffi.getError());
 	}

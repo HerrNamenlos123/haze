@@ -46,10 +46,16 @@ fn main(): int {
         //   the user is working in. SDL only reports the keyboard focus, and
         //   GNOME holds the keyboard itself while its menus close and during
         //   moves, so that is not the same thing. To be proposed upstream.
+        //   window-floating-rect: adds SDL_HazeGetWindowFloatingRect, the
+        //   size and position a window returns to when it is restored --
+        //   what app remembers between runs. SDL keeps it for
+        //   SDL_RestoreWindow but has no getter, and a maximized or tiled
+        //   window's own geometry is not it.
         let patches: []str = [
             "wayland-clipboard-receive.patch",
             "windows-tray.patch",
             "wayland-activated.patch",
+            "window-floating-rect.patch",
         ];
         for patch in patches {
             process.run("git", { "apply", f"{sourceDir}/patches/{patch}" }, {

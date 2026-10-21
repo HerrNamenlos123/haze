@@ -69,6 +69,19 @@ static const char *frame_system(hzstd_str_t name)
   return NULL;
 }
 
+// ── The application
+// ───────────────────────────────────────────────────────────
+
+extern const char *const hzstd_app_id;
+
+hzstd_str_t hzstd_app_id_get(void)
+{
+  if (!hzstd_app_id) {
+    return (hzstd_str_t) { .data = 0, .length = 0 };
+  }
+  return hzstd_str_from_ccstr_ref(hzstd_app_id);
+}
+
 // ── Panic functions
 // ───────────────────────────────────────────────────────────
 

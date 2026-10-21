@@ -59,6 +59,14 @@ bool hzstd_run_on_worker_thread(void (*fn)(void *arg), void *arg);
 hzstd_int_t hzstd_arg_count(void);
 hzstd_str_t hzstd_arg_at(hzstd_int_t index);
 
+// ── The application ─────────────────────────────────────────────────────────
+//
+// The [app] appId from the program's haze.toml: the name the desktop knows the
+// application by (its desktop entry, its icon). Empty when the program has no
+// [app] table. The compiler defines hzstd_app_id in every executable's
+// generated main.
+hzstd_str_t hzstd_app_id_get(void);
+
 void hzstd_initialize_platform(void);
 _Noreturn void hzstd_block_thread_forever(void);
 void hzstd_setup_panic_handler(void);

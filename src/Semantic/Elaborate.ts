@@ -3884,11 +3884,15 @@ export class SemanticElaborator {
         // let a: (int | null | none)
         // let b: (int | null | none)
         // a == b
-        // Should turn into
+        // turns into
         // ((a is int && b is int) && a == b) || ((a is null && b is null) && a == b) || ((a is none && b is none) && a == b)
-        // a != b
-        // Should turn into
-        // ((a is int && b is int) && a != b) || ((a is null && b is null) && a != b) || ((a is none && b is none) && a != b)
+        // and a != b into the negation of that whole expression: values of
+        // different variants are unequal, so "the same variant with other
+        // contents" alone is not what `!=` means.
+        //
+        // Each `a == b` is the variant's own comparison, built by re-entering
+        // compareElaboratedExprs exactly as a struct member's is -- so a
+        // struct variant uses its operator, or is expanded member by member.
 
         const members = leftMembers;
         const comparisons: Semantic.ExprId[] = [];
@@ -3904,8 +3908,8 @@ export class SemanticElaborator {
           const constraints = this.currentContext.constraints.clone();
           this.buildLogicalConstraintSet(constraints, narrowingCondition);
 
-          // This is ((...) && a == b) or ((...) && a != b)
-          const actualCondition = this.sr.b.binaryExpr(
+          // This is a == b, with both narrowed to the variant
+          const actualCondition = this.compareElaboratedExprs(
             Conversion.MakeConversionOrThrow(
               this.sr,
               leftId,
@@ -3915,7 +3919,6 @@ export class SemanticElaborator {
               Conversion.Mode.Implicit,
               false
             ),
-            operation,
             Conversion.MakeConversionOrThrow(
               this.sr,
               rightId,
@@ -3925,10 +3928,12 @@ export class SemanticElaborator {
               Conversion.Mode.Implicit,
               false
             ),
-            sourceloc
+            EBinaryOperation.Equal,
+            sourceloc,
+            inference
           )[1];
 
-          // This is ((...) && ...)
+          // This is ((...) && a == b)
           comparisons.push(
             this.sr.b.binaryExpr(
               narrowingCondition,
@@ -3940,7 +3945,16 @@ export class SemanticElaborator {
         }
 
         // Now combine all of those using OR
-        return this.sr.b.binaryOr(comparisons, sourceloc);
+        const equal = this.sr.b.binaryOr(comparisons, sourceloc);
+        if (operation === EBinaryOperation.Equal) {
+          return equal;
+        }
+        return this.sr.b.unaryExpr(
+          equal[1],
+          EUnaryOperation.Negate,
+          this.sr.b.boolType(),
+          sourceloc
+        );
       }
     }
 

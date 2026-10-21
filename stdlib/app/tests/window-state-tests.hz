@@ -1,0 +1,298 @@
+import app
+import sdl
+
+// Where a remembered window goes (app.displayIndexFor, app.placeOnDisplays)
+// and what is remembered of it (app.RememberedWindow as JSON).
+//
+// Hand-picked cases first, then random ones checked against the rules
+// themselves -- how much of the window is on which display, worked out from
+// the rectangles directly rather than from the clamping the implementation
+// does.
+//
+// Run from a throwaway exe project inside the repository that depends on app
+// and sdl, with this file as its main.hz.
+
+ref struct State {
+    checks: int = 0;
+    failures: int = 0;
+
+    fn check(name: str, ok: bool) {
+        this.checks = this.checks + 1;
+        if !ok {
+            this.failures = this.failures + 1;
+            fmt.println(f"FAIL: {name}");
+        }
+    }
+
+    fn checkInt(name: str, actual: int, expected: int) {
+        this.check(f"{name}: expected {expected}, got {actual}", actual == expected);
+    }
+
+    fn checkRect(name: str, actual: sdl.Rect, expected: sdl.Rect) {
+        this.check(f"{name}: expected {show(expected)}, got {show(actual)}", actual == expected);
+    }
+}
+
+fn show(r: sdl.Rect): str {
+    return f"({r.x},{r.y} {r.width}x{r.height})";
+}
+
+fn rect(x: int, y: int, width: int, height: int): sdl.Rect {
+    return sdl.Rect { x: x, y: y, width: width, height: height };
+}
+
+fn minOf(a: int, b: int): int {
+    return a < b ? a : b;
+}
+
+fn maxOf(a: int, b: int): int {
+    return a > b ? a : b;
+}
+
+// How far two rectangles overlap along each axis (0 when they do not).
+fn overlapWidth(a: sdl.Rect, b: sdl.Rect): int {
+    return maxOf(0, minOf(a.x + a.width, b.x + b.width) - maxOf(a.x, b.x));
+}
+
+fn overlapHeight(a: sdl.Rect, b: sdl.Rect): int {
+    return maxOf(0, minOf(a.y + a.height, b.y + b.height) - maxOf(a.y, b.y));
+}
+
+fn contains(outer: sdl.Rect, inner: sdl.Rect): bool {
+    return inner.x >= outer.x && inner.y >= outer.y
+        && inner.x + inner.width <= outer.x + outer.width
+        && inner.y + inner.height <= outer.y + outer.height;
+}
+
+// Park-Miller: small enough that no product overflows an int.
+ref struct Random {
+    state: int = 1;
+
+    fn next(): int {
+        this.state = (this.state * 48271) % 2147483647;
+        return this.state;
+    }
+
+    // In [low, high].
+    fn between(low: int, high: int): int {
+        return low + this.next() % (high - low + 1);
+    }
+}
+
+fn exampleCases(s: State) {
+    let laptop = rect(0, 32, 1920, 1048);
+    let external = rect(1920, 0, 2560, 1440);
+    let both: []sdl.Rect = [laptop, external];
+    let onlyLaptop: []sdl.Rect = [laptop];
+
+    // Which display.
+    s.checkInt("inside the laptop: the laptop", app.displayIndexFor(rect(100, 100, 800, 600), both), 0);
+    s.checkInt("inside the external one: the external one", app.displayIndexFor(rect(2000, 100, 800, 600), both), 1);
+    s.checkInt("straddling, mostly on the external one", app.displayIndexFor(rect(1800, 100, 800, 600), both), 1);
+    s.checkInt("straddling, mostly on the laptop", app.displayIndexFor(rect(1500, 100, 800, 600), both), 0);
+    s.checkInt("on neither, nearer the external one", app.displayIndexFor(rect(5000, 100, 800, 600), both), 1);
+    s.checkInt("on neither, nearer the laptop", app.displayIndexFor(rect(-3000, 2000, 800, 600), both), 0);
+    s.checkInt("mirrored displays: the first", app.displayIndexFor(rect(100, 100, 800, 600), [laptop, laptop]), 0);
+    s.checkInt("no displays", app.displayIndexFor(rect(100, 100, 800, 600), []), -1);
+
+    // Nothing changed: exactly where it was.
+    s.checkRect("unchanged display, inside", app.placeOnDisplays(rect(100, 100, 800, 600), laptop, onlyLaptop), rect(100, 100, 800, 600));
+    s.checkRect("unchanged displays, on the external one", app.placeOnDisplays(rect(2500, 300, 1200, 900), external, both), rect(2500, 300, 1200, 900));
+    // Left partly off the edge on purpose, still grabbable: kept.
+    s.checkRect("unchanged, half off the right edge", app.placeOnDisplays(rect(1500, 100, 800, 600), laptop, onlyLaptop), rect(1500, 100, 800, 600));
+
+    // Too far off to grab: pulled back just enough.
+    s.checkRect("unchanged, nearly gone right", app.placeOnDisplays(rect(1900, 100, 800, 600), laptop, onlyLaptop), rect(1820, 100, 800, 600));
+    s.checkRect("unchanged, nearly gone left", app.placeOnDisplays(rect(-790, 100, 800, 600), laptop, onlyLaptop), rect(-700, 100, 800, 600));
+    s.checkRect("unchanged, nearly gone below", app.placeOnDisplays(rect(100, 1070, 800, 600), laptop, onlyLaptop), rect(100, 1030, 800, 600));
+    s.checkRect("titlebar under the top bar", app.placeOnDisplays(rect(100, 10, 800, 600), laptop, onlyLaptop), rect(100, 32, 800, 600));
+    s.checkRect("titlebar above the screen", app.placeOnDisplays(rect(100, -500, 800, 600), laptop, onlyLaptop), rect(100, 32, 800, 600));
+    s.checkRect("far off to the right of everything", app.placeOnDisplays(rect(50000, 100, 800, 600), laptop, onlyLaptop), rect(1820, 100, 800, 600));
+    // A window smaller than the minimum shows all of itself.
+    s.checkRect("tiny window nearly gone", app.placeOnDisplays(rect(1915, 100, 40, 30), laptop, onlyLaptop), rect(1880, 100, 40, 30));
+
+    // Its display is gone: onto the one there is, same size where it fits.
+    s.checkRect("external unplugged", app.placeOnDisplays(rect(2500, 300, 1200, 900), external, onlyLaptop), rect(720, 180, 1200, 900));
+    s.checkRect("external unplugged, too large", app.placeOnDisplays(rect(2000, 100, 2400, 1300), external, onlyLaptop), rect(0, 32, 1920, 1048));
+    // Resolution changed under it and it no longer fits: wholly on screen.
+    let smaller = rect(0, 32, 1280, 688);
+    s.checkRect("resolution lowered", app.placeOnDisplays(rect(600, 300, 800, 600), laptop, [smaller]), rect(480, 120, 800, 600));
+    // Changed, but it still fits where it was: left alone.
+    s.checkRect("resolution lowered, still fits", app.placeOnDisplays(rect(100, 100, 800, 500), laptop, [smaller]), rect(100, 100, 800, 500));
+}
+
+fn jsonCases(s: State) {
+    let state = app.RememberedWindow {
+        width: 1200,
+        height: 800,
+        maximized: true,
+        placement: app.RememberedPlacement { x: -40, y: 70, workArea: rect(0, 32, 1920, 1048) },
+    };
+    let parsed = json.parse<app.RememberedWindow>(json.stringify(state));
+    if !parsed {
+        s.check(f"round trip parses: {parsed}", false);
+    }
+    else {
+        s.check("round trip is the same", parsed == state);
+    }
+
+    let wayland = app.RememberedWindow { width: 900, height: 700 };
+    let parsedWayland = json.parse<app.RememberedWindow>(json.stringify(wayland));
+    if !parsedWayland {
+        s.check(f"without a placement parses: {parsedWayland}", false);
+    }
+    else {
+        s.check("without a placement is the same", parsedWayland == wayland);
+        s.check("without a placement has none", !parsedWayland.placement);
+    }
+
+    // A file from before a field existed takes the field's default.
+    let old = json.parse<app.RememberedWindow>("{\"width\": 640, \"height\": 480}");
+    if !old {
+        s.check(f"missing keys parse: {old}", false);
+    }
+    else {
+        s.check("missing maximized is false", old.maximized == false);
+        s.check("missing placement is none", !old.placement);
+    }
+
+    s.check("a size is required", !json.parse<app.RememberedWindow>("{\"maximized\": true}"));
+    s.check("garbage is an error", !json.parse<app.RememberedWindow>("{width: "));
+}
+
+// A random layout: one to three displays, side by side or stacked or
+// overlapping (mirrored), each with a work area somewhat inside its bounds.
+fn randomAreas(r: Random): []sdl.Rect {
+    let areas: []sdl.Rect = [];
+    let count = r.between(1, 3);
+    let x = r.between(-2000, 0);
+    for (let i = 0; i < count; i++) {
+        let width = r.between(200, 4000);
+        let height = r.between(150, 2400);
+        let y = r.between(-1500, 1500);
+        let top = r.between(0, 40);
+        areas.push(rect(x, y + top, width, height - top));
+        // Mostly next to each other; sometimes overlapping.
+        x = x + (r.between(0, 4) == 0 ? r.between(-width, width) : width);
+    }
+    return areas;
+}
+
+fn randomRect(r: Random, areas: []sdl.Rect): sdl.Rect {
+    let width = r.between(1, 5000);
+    let height = r.between(1, 3000);
+    if r.between(0, 2) == 0 {
+        // Anywhere at all.
+        return rect(r.between(-20000, 20000), r.between(-20000, 20000), width, height);
+    }
+    // Near one of the displays.
+    let area = areas[r.between(0, areas.length - 1)];
+    return rect(
+        r.between(area.x - width - 200, area.x + area.width + 200),
+        r.between(area.y - height - 200, area.y + area.height + 200),
+        width,
+        height,
+    );
+}
+
+fn gapSquared(a: sdl.Rect, b: sdl.Rect): int {
+    let dx = maxOf(0, maxOf(b.x - (a.x + a.width), a.x - (b.x + b.width)));
+    let dy = maxOf(0, maxOf(b.y - (a.y + a.height), a.y - (b.y + b.height)));
+    return dx * dx + dy * dy;
+}
+
+fn propertyCases(s: State) {
+    let r = Random { state: 20261021 };
+    let failed = 0;
+    for (let n = 0; n < 200000 && failed < 20; n++) {
+        let areas = randomAreas(r);
+        let window = randomRect(r, areas);
+        // The display it was on is often still there unchanged, and often
+        // not (changed, or another display entirely).
+        let saved = r.between(0, 1) == 0 ? areas[r.between(0, areas.length - 1)] : randomRect(r, areas);
+        let placed = app.placeOnDisplays(window, saved, areas);
+        let index = app.displayIndexFor(window, areas);
+        let area = areas[index];
+        let problems: []str = [];
+
+        // The display: the one it overlaps most, or the nearest when it
+        // overlaps none; ties to the first.
+        let best = overlapWidth(window, area) * overlapHeight(window, area);
+        for (let i = 0; i < areas.length; i++) {
+            let other = overlapWidth(window, areas[i]) * overlapHeight(window, areas[i]);
+            if other > best || (other == best && best > 0 && i < index) {
+                problems.push(f"display {i} overlaps more");
+            }
+            if best == 0 {
+                let gap = gapSquared(window, areas[i]);
+                let chosenGap = gapSquared(window, area);
+                if gap < chosenGap || (gap == chosenGap && i < index) {
+                    problems.push(f"display {i} is nearer");
+                }
+            }
+        }
+
+        // The user's rule and then some: enough of it on that display to grab
+        // the titlebar, which is not above the work area.
+        let visibleWidth = minOf(100, minOf(placed.width, area.width));
+        let visibleHeight = minOf(50, minOf(placed.height, area.height));
+        if overlapWidth(placed, area) < visibleWidth { problems.push("too little of its width on screen"); }
+        if overlapHeight(placed, area) < visibleHeight { problems.push("too little of its height on screen"); }
+        if placed.y < area.y { problems.push("titlebar above the work area"); }
+        if overlapWidth(placed, area) == 0 || overlapHeight(placed, area) == 0 { problems.push("wholly off its display"); }
+
+        // Never larger than remembered, never empty.
+        if placed.width > window.width || placed.height > window.height { problems.push("grew"); }
+        if placed.width < 1 || placed.height < 1 { problems.push("empty"); }
+
+        // Inside its display: exactly where it was.
+        if contains(area, window) && placed != window {
+            problems.push("moved although inside its display");
+        }
+        // Same display, grabbable already: exactly where it was too.
+        let wasGrabbable = overlapWidth(window, area) >= minOf(100, minOf(window.width, area.width))
+            && overlapHeight(window, area) >= minOf(50, minOf(window.height, area.height))
+            && window.y >= area.y;
+        if area == saved && wasGrabbable && placed != window {
+            problems.push("moved although grabbable");
+        }
+        // Same display: the size is the user's.
+        if area == saved && (placed.width != window.width || placed.height != window.height) {
+            problems.push("resized on an unchanged display");
+        }
+        // Changed display and no longer fitting: wholly on it, as large as
+        // there is room for.
+        if area != saved && !contains(area, window) {
+            if !contains(area, placed) {
+                problems.push("not wholly on the changed display");
+            }
+            if placed.width != minOf(window.width, area.width) || placed.height != minOf(window.height, area.height) {
+                problems.push("not as large as there is room for");
+            }
+        }
+
+        s.checks = s.checks + 1;
+        if problems.length > 0 {
+            failed = failed + 1;
+            s.failures = s.failures + 1;
+            let shown: []str = [];
+            for a in areas {
+                shown.push(show(a));
+            }
+            fmt.println(f"FAIL #{n}: {show(window)} saved {show(saved)} on {shown}, chose {index} -> {show(placed)}: {problems}");
+        }
+    }
+}
+
+fn main(): int {
+    let s = State {};
+    exampleCases(s);
+    jsonCases(s);
+    propertyCases(s);
+    if s.failures > 0 {
+        fmt.println(f"{s.failures} of {s.checks} checks failed");
+        return 1;
+    }
+    fmt.println(f"All {s.checks} checks passed");
+    return 0;
+}

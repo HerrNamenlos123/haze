@@ -1018,6 +1018,65 @@ bool haze_sdl_windowIsBorderless(SDL_Window *window) {
   return (SDL_GetWindowFlags(window) & SDL_WINDOW_BORDERLESS) != 0;
 }
 
+bool haze_sdl_windowIsMinimized(SDL_Window *window) {
+  if (!window) {
+    return false;
+  }
+  return (SDL_GetWindowFlags(window) & SDL_WINDOW_MINIMIZED) != 0;
+}
+
+/* ---------- Where a window is, to put it back there ----------
+
+   What an application remembers of its window between runs: the geometry it
+   returns to when restored, whether it was maximized, and -- where the
+   platform lets an application place its windows -- the displays it could go
+   on. */
+
+/* From the window-floating-rect patch to SDL. */
+extern bool SDL_HazeGetWindowFloatingRect(SDL_Window *window, SDL_Rect *rect);
+
+/* The size and position the window returns to when it is restored: its own
+   while it is neither maximized nor tiled, the one it had before otherwise.
+   An empty rect for no window. The position means nothing where
+   haze_sdl_applicationPlacesWindows is false. */
+SDL_Rect haze_sdl_getWindowRestoreRect(SDL_Window *window) {
+  SDL_Rect rect = {0, 0, 0, 0};
+  if (window && !SDL_HazeGetWindowFloatingRect(window, &rect)) {
+    SDL_zero(rect);
+  }
+  return rect;
+}
+
+/* Can an application put its window where it wants, and learn where it is?
+   Not on Wayland: there the compositor alone places windows and never tells
+   a client where one is. Everywhere else it can. */
+bool haze_sdl_applicationPlacesWindows(void) {
+  return !haze_sdl_video_is_wayland();
+}
+
+/* The connected displays, the primary one first (SDL keeps it there). */
+int haze_sdl_getDisplayCount(void) {
+  int count = 0;
+  SDL_DisplayID *displays = SDL_GetDisplays(&count);
+  SDL_free(displays);
+  return count;
+}
+
+/* The part of display `index` a window may cover -- without the taskbar,
+   dock or panels -- in the desktop's coordinates. An empty rect for an index
+   out of range. */
+SDL_Rect haze_sdl_getDisplayWorkArea(int index) {
+  SDL_Rect rect = {0, 0, 0, 0};
+  int count = 0;
+  SDL_DisplayID *displays = SDL_GetDisplays(&count);
+  if (displays && index >= 0 && index < count &&
+      !SDL_GetDisplayUsableBounds(displays[index], &rect)) {
+    SDL_zero(rect);
+  }
+  SDL_free(displays);
+  return rect;
+}
+
 /* Asks the window to close, by pushing the very event the platform's own
    close button pushes.
 
@@ -1066,9 +1125,21 @@ void haze_sdl_terminate(void) {
   SDL_Quit();
 }
 
+/* positioned: put the window at (x, y), in the desktop's coordinates, rather
+   than where the platform would place it. Ignored where the platform places
+   every window itself (Wayland, see haze_sdl_applicationPlacesWindows).
+
+   maximized: the window starts maximized, with width x height as the size it
+   returns to when restored. On a hidden window SDL holds the state until
+   haze_sdl_showWindow. */
 SDL_Window *haze_sdl_createWindow(int width, int height, const char *title,
-                                  bool noApi, bool borderless, bool hidden) {
+                                  bool noApi, bool borderless, bool hidden,
+                                  bool positioned, int x, int y,
+                                  bool maximized) {
   SDL_WindowFlags flags = SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY;
+  if (maximized) {
+    flags |= SDL_WINDOW_MAXIMIZED;
+  }
   /* Born off-screen, to be shown by haze_sdl_showWindow once there is
      something to show. A window is mapped the instant it is created, and
      from that instant the compositor has to paint SOMETHING for it -- but
@@ -1099,7 +1170,24 @@ SDL_Window *haze_sdl_createWindow(int width, int height, const char *title,
     flags |= SDL_WINDOW_OPENGL;
   }
 
-  SDL_Window *window = SDL_CreateWindow(title, width, height, flags);
+  SDL_PropertiesID createProps = SDL_CreateProperties();
+  if (!createProps) {
+    return NULL;
+  }
+  SDL_SetStringProperty(createProps, SDL_PROP_WINDOW_CREATE_TITLE_STRING,
+                        title);
+  SDL_SetNumberProperty(createProps, SDL_PROP_WINDOW_CREATE_WIDTH_NUMBER,
+                        width);
+  SDL_SetNumberProperty(createProps, SDL_PROP_WINDOW_CREATE_HEIGHT_NUMBER,
+                        height);
+  if (positioned) {
+    SDL_SetNumberProperty(createProps, SDL_PROP_WINDOW_CREATE_X_NUMBER, x);
+    SDL_SetNumberProperty(createProps, SDL_PROP_WINDOW_CREATE_Y_NUMBER, y);
+  }
+  SDL_SetNumberProperty(createProps, SDL_PROP_WINDOW_CREATE_FLAGS_NUMBER,
+                        (Sint64)flags);
+  SDL_Window *window = SDL_CreateWindowWithProperties(createProps);
+  SDL_DestroyProperties(createProps);
   if (!window) {
     return NULL;
   }
@@ -1221,10 +1309,22 @@ void haze_sdl_showWindow(SDL_Window *window) {
   if (!window) {
     return;
   }
-  const bool wasHidden = (SDL_GetWindowFlags(window) & SDL_WINDOW_HIDDEN) != 0;
+  /* A hidden window's flags include the state it is to be shown in. */
+  const SDL_WindowFlags flags = SDL_GetWindowFlags(window);
+  const bool wasHidden = (flags & SDL_WINDOW_HIDDEN) != 0;
   SDL_ShowWindow(window);
 #ifdef HAZE_SDL_WAYLAND
   if (wasHidden) {
+    /* A window shown maximized must have its maximized size before its first
+       frame. On Wayland SDL asks for the maximized state only once the
+       window's first configure has been answered, so the compositor's reply
+       is still on its way when SDL_ShowWindow returns; a frame drawn then
+       would map the window at its restored size, and it would visibly jump
+       to maximized a moment later. Waiting for that reply (one round trip)
+       lets the first frame come out at the right size. */
+    if ((flags & SDL_WINDOW_MAXIMIZED) && haze_sdl_video_is_wayland()) {
+      SDL_SyncWindow(window);
+    }
     haze_sdl_watch_first_frame(window);
   }
 #else
