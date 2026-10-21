@@ -310,11 +310,15 @@ extern C function    R f(params...)                 (with or without a body: unc
 Haze fn typedef      R (*)(hzstd_context_t *, params...)      for `->` and the `fn` of a `=>` struct
 extern C fn typedef  R (*)(params...)                         for `extern C (...) -> R`
 `context`            (*__hz_ctx)
-context.clone(b)     { hzstd_context_t __hz_ctxN = *__hz_ctx; b(&__hz_ctxN, env); }
-Context.init(v, b)   { hzstd_context_t __hz_ctxN = v;         b(&__hz_ctxN, env); }
+context.clone(b)     { <b>; hzstd_context_t __hz_ctxN = *__hz_ctx; b(&__hz_ctxN, env); }
+Context.init(v, b)   { hzstd_context_t __hz_ctxN = v; <b>;         b(&__hz_ctxN, env); }
 Context()            hzstd_context_default()        (a plain C call)
 main                 hzstd_context_t __hz_root; hzstd_context_init(&__hz_root); main(&__hz_root)
 ```
+
+`<b>` is the evaluation of the body expression, in source order: `clone` copies
+the context after it (so `context.clone(make())` runs under what `make()`
+wrote), `init` copies its value before it.
 
 Mangled names do not change. Module trampolines (`__hz_modtramp_*`) forward
 `__hz_ctx`; the hot-reload tables stay `void *`.
@@ -341,13 +345,15 @@ Where it lives:
 
 Rules for C and inline C:
 
-- C only ever receives a context **by value** (C400) and never takes the
-  address of one. Haze passes it like any argument: `someCFunction(context)`.
-  Nothing is ever passed implicitly, even to a C function whose first
-  parameter is a `Context`.
+- C only ever receives a context **by value** (C400) and never passes or
+  keeps the address of one (only the generated code takes addresses, of its
+  own locals, for one call). Haze passes it like any argument:
+  `someCFunction(context)`. Nothing is ever passed implicitly, even to a C
+  function whose first parameter is a `Context`.
 - C enters Haze through an `extern C` function with a Haze body that calls
   `Context.init(ctx, () => { ... })`; inside the lambda everything works.
-  The `extern C` body itself may only do what needs no context (H7220).
+  The `extern C` body itself may only do what needs no context (H7220):
+  `o?.field` is fine, `o?.m()` is a call.
 - A function type C calls is spelled `extern C (...) -> R`, also on the right
   of `extern C type X = ...` (the marker is never added automatically).
   Haze and `extern C` function types never convert into each other; a
@@ -358,11 +364,19 @@ Rules for C and inline C:
   `rx.__hz_rx_run_thunk` in `reactive.hz`; every hzstd entry point that can
   run Haze code takes `hzstd_context_t ctx` first). The stdlib's Clay, SDL,
   wgpu and single_instance paths follow the same rule.
+- Such an entry takes any `cptr` for its box, so it is never exported: a
+  generic reaches it through a non-generic exported function that takes only
+  typed values (`rx._computedNode` takes `rx.Thunk`s,
+  `single_instance._setParser` a `->` function).
+- A reactive write runs the schedulers it triggers under its own context. A
+  write made inside one of their callbacks is delivered by the outer write's
+  loop, under the outer write's context.
 
 Errors: H7219 `context` in an `extern C` function, H7220 something needing a
 context in an `extern C` body, H7221 `let stackref r = context`, H7222 a
 declaration named `context`, H7223 / H7224 the `cptr` conversions.
-Tests: `testsuite/src/cases_context.hz`, `cases_extern_c_function_types.hz`.
+Tests: `testsuite/src/cases_context.hz`, `cases_extern_c_function_types.hz`,
+`cases_context_review.hz`.
 
 ## Module System Architecture
 
