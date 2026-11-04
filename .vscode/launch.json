@@ -23,6 +23,24 @@
     {
       "type": "lldb",
       "request": "launch",
+      "name": "Launch claude token reader",
+      "program": "${workspaceFolder}/__haze__/claude-account-switcher/bin/claude-account-switcher",
+      "args": ["--print-token"],
+      "env": {
+        // "HAZE_PROFILE": "TRUE"
+      },
+      "cwd": "${workspaceFolder}",
+      // "preLaunchTask": "Build Code Editor",
+      // SIGPWR/SIGXCPU are Boehm GC's internal stop-the-world signals (fire on every GC cycle);
+      // Both are expected/handled internally and would otherwise stop the debugger on every single occurrence.
+      "preRunCommands": [
+        "process handle SIGPWR --stop false --notify false --pass true",
+        "process handle SIGXCPU --stop false --notify false --pass true"
+      ]
+    },
+    {
+      "type": "lldb",
+      "request": "launch",
       "name": "Launch CodeEditor",
       "program": "${workspaceFolder}/__haze__/codeeditor/bin/codeeditor",
       "args": [],

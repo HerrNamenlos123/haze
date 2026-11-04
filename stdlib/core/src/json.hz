@@ -50,6 +50,7 @@ namespace ffi {
 
     export extern C fn hzstd_json_add_item_to_object(allocator: Allocator, object: hzstd_json_node_t, name: str, item: hzstd_json_node_t): bool :: final;
     export extern C fn hzstd_json_add_item_to_array(allocator: Allocator, object: hzstd_json_node_t, item: hzstd_json_node_t): bool :: final;
+    export extern C fn hzstd_json_remove_object_item(allocator: Allocator, object: hzstd_json_node_t, name: str): bool :: final;
 
     export extern C fn hzstd_json_print_unformatted(allocator: Allocator, json: hzstd_json_node_t): str :: final;
     export extern C fn hzstd_json_print(allocator: Allocator, json: hzstd_json_node_t): str :: final;
@@ -250,6 +251,37 @@ namespace json {
 
         fn isNumber(): bool {
             return ffi.hzstd_json_is_number(this.data);
+        }
+
+        // Before objectEntryCount()/objectKeyAt(), which panic on anything else.
+        fn isObject(): bool {
+            return ffi.hzstd_json_is_object(this.data);
+        }
+
+        // The object's member `key` gone (every one of that name); false when
+        // there was none. Setting a member that is there already needs this
+        // first: `node[key] := value` adds one more.
+        fn remove(key: str): bool {
+            if !ffi.hzstd_json_is_object(this.data) {
+                sys.panic("remove() called on a JSON node that is not an object");
+            }
+            return ffi.hzstd_json_remove_object_item(this.allocator, this.data, key);
+        }
+
+        // The object's member named exactly `key` (case included, as remove()
+        // matches; operator[] and the typed parse ignore case), the first one
+        // when there are several; none when there is none.
+        fn member(key: str): Node | none {
+            if !ffi.hzstd_json_is_object(this.data) {
+                sys.panic("member() called on a JSON node that is not an object");
+            }
+            let count = this.objectEntryCount();
+            for (let i: usize = 0; i < count; i++) {
+                if this.objectKeyAt(i) == key {
+                    return this.objectValueAt(i);
+                }
+            }
+            return none;
         }
 
         fn arrayLength(): usize {

@@ -215,6 +215,20 @@ hzstd_bool_t hzstd_json_add_item_to_array(hzstd_allocator_t allocator,
   return cJSON_AddItemToArray((cJSON *)object, (cJSON *)item);
 }
 
+// Detached, not deleted: the items live in the tree's arena (see
+// hzstd_json_use_arena), which frees them with the rest. Every item of that
+// name goes, since a parsed object may hold a key twice.
+hzstd_bool_t hzstd_json_remove_object_item(hzstd_allocator_t allocator,
+                                           hzstd_json_node_t *object,
+                                           hzstd_str_t name) {
+  char *key = hzstd_cstr_from_str(allocator, name);
+  hzstd_bool_t removed = false;
+  while (cJSON_DetachItemFromObjectCaseSensitive((cJSON *)object, key)) {
+    removed = true;
+  }
+  return removed;
+}
+
 // See the declaration comment in hzstd_json.h: objects and arrays share the
 // same child/next chain in cJSON, so these mirror
 // hzstd_json_get_array_size()/hzstd_json_get_array_item() above (which

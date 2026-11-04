@@ -1,0 +1,84 @@
+// Claude Code's own setting for the switcher, in its settings.json: while an
+// account is active, `apiKeyHelper` runs the installed switcher with
+// --print-token and the token is read again every second
+// (CLAUDE_CODE_API_KEY_HELPER_TTL_MS); while none is, neither is there, and
+// Claude Code uses its own login. The switcher keeps this true on every
+// machine it runs on, so no machine sets it by hand and none can drift.
+//
+// Only these two entries are ever touched; every other one stays as it is.
+// The host decides which file and which program; nothing here knows a real
+// path.
+
+export const helperKey = "apiKeyHelper";
+export const envKey = "env";
+export const ttlKey = "CLAUDE_CODE_API_KEY_HELPER_TTL_MS";
+export const ttlValue = "1000";
+
+// The apiKeyHelper command that runs `executable`: its full path, quoted, so
+// nothing depends on PATH or on spaces in the path.
+export fn helperCommand(executable: str): str {
+    return f"\"{executable}\" --print-token";
+}
+
+// Makes the settings file at `path` hold `command` as its apiKeyHelper (and
+// the token refresh interval), or neither when `command` is none. True when
+// the file was written, false when it already said so. A file that is not
+// there counts as `{}`. One that is there but cannot be read, or is not a
+// JSON object with an object as "env", is an error and is never written to.
+export fn applyClaudeSettings(path: str, command: str | none): Result<bool, str> {
+    let text = "{}";
+    let read = fs.readText(path);
+    if read {
+        let content: str = read;
+        text = content;
+    } else if read != fs.Error.NotFound {
+        return Result<bool, str>.Err(f"{path} could not be read: {read}");
+    }
+    let parsed = json.parseToJsonNode(text);
+    if !parsed {
+        return Result<bool, str>.Err(f"{path} is not JSON");
+    }
+    let root: json.Node = parsed;
+    if !root.isObject() {
+        return Result<bool, str>.Err(f"{path} is not a JSON object");
+    }
+    let env = root.member(envKey);
+    if let existing = env {
+        if !existing.isObject() {
+            return Result<bool, str>.Err(f"{path}: \"env\" is not an object");
+        }
+    }
+    let before = root.print({ pretty: true });
+
+    root.remove(helperKey);
+    if let existing = env {
+        // An "env" that only held the interval goes with it.
+        let removedTtl = existing.remove(ttlKey);
+        if removedTtl && existing.objectEntryCount() == 0 && !command {
+            root.remove(envKey);
+        }
+    }
+    if let wanted = command {
+        let helper = root[helperKey];
+        if helper is json.Node.Proxy {
+            helper := wanted;
+        }
+        let envProxy = root[envKey];
+        if envProxy is json.Node.Proxy {
+            let ttl = envProxy[ttlKey];
+            if ttl is json.Node.Proxy {
+                ttl := ttlValue;
+            }
+        }
+    }
+
+    let after = root.print({ pretty: true });
+    if after == before {
+        return Result<bool, str>.Ok(false);
+    }
+    let written = fs.replaceText(path, after);
+    if !written {
+        return Result<bool, str>.Err(f"{path} could not be written: {written}");
+    }
+    return Result<bool, str>.Ok(true);
+}

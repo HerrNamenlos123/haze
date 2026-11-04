@@ -59,6 +59,11 @@ hzstd_bool_t hzstd_json_add_item_to_object(hzstd_allocator_t allocator,
 hzstd_bool_t hzstd_json_add_item_to_array(hzstd_allocator_t allocator,
                                           hzstd_json_node_t *object,
                                           hzstd_json_node_t *item);
+// Takes every item named `name` (exactly, case included) out of `object`;
+// false when it had none.
+hzstd_bool_t hzstd_json_remove_object_item(hzstd_allocator_t allocator,
+                                           hzstd_json_node_t *object,
+                                           hzstd_str_t name);
 
 // Object-key enumeration, for consumers (e.g. LinearMap<K, V>'s
 // [[json.parse]] hook) that need to walk every key of an object whose key

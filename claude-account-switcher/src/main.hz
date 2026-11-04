@@ -29,6 +29,40 @@ ref struct TrayShows {
     iconVersion: int = -1;
 }
 
+// What Claude Code's settings were last made to say: -1 not yet, 0 no
+// helper, 1 the helper.
+ref struct ClaudeSettingsState {
+    applied: int = -1;
+}
+
+// ~/.claude/settings.json, the user's Claude Code settings.
+fn claudeSettingsPath(): str | none {
+    if sys.isWin32() {
+        if let profile = env.get("USERPROFILE") {
+            if profile.length > 0 { return f"{profile}\\.claude\\settings.json"; }
+        }
+        return none;
+    }
+    if let home = env.get("HOME") {
+        if home.length > 0 { return f"{home}/.claude/settings.json"; }
+    }
+    return none;
+}
+
+// The credential command for Claude Code: the installed program by its full
+// path. None when the program is not installed, so that no build that merely
+// runs ever becomes what every Claude session depends on.
+fn installedHelperCommand(): str | none {
+    if let installed = app.installedExecutable(programName) {
+        if let present = fs.exists(installed) {
+            if present {
+                return claude_account_switcher_ui.helperCommand(installed);
+            }
+        }
+    }
+    return none;
+}
+
 let quitRequested = false;
 
 fn quitApp() {
@@ -187,6 +221,32 @@ fn main(): int {
         };
         updateTray();
 
+        // Claude Code's apiKeyHelper is there exactly while an account is
+        // active (so it can never point at a missing token), and only when
+        // this program is installed. Written on start and whenever that
+        // changes, never on an idle frame.
+        let settingsPath = claudeSettingsPath();
+        let helperCommand = installedHelperCommand();
+        let claudeSettings = ClaudeSettingsState {};
+        let updateClaudeSettings = () => {
+            let s = claude_account_switcher_ui.switcher();
+            let wanted = 0;
+            if rx.get(s.active) { wanted = 1; }
+            if wanted == claudeSettings.applied { return; }
+            claudeSettings.applied = wanted;
+            let path = settingsPath;
+            let command = helperCommand;
+            if !path { return; }
+            if !command { return; }
+            let commandFor: str | none = none;
+            if wanted == 1 { commandFor = command; }
+            let applied = claude_account_switcher_ui.applyClaudeSettings(path as str, commandFor);
+            if !applied {
+                s.fail(f"Claude Code's settings were not changed: {applied}");
+            }
+        };
+        updateClaudeSettings();
+
         let activation = rx.reactive<int>(0);
         let pointerEdgeScratch: mut []ui_components.PointerEdge = [];
         let keyEdgeScratch: mut []ui_components.KeyEdge = [];
@@ -295,6 +355,7 @@ fn main(): int {
                 }
             }
             updateTray();
+            updateClaudeSettings();
 
             if a.resized {
                 runtime.resize(a.windowState);
