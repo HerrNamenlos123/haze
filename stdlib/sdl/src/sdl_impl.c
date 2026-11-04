@@ -2686,3 +2686,38 @@ void haze_sdl_moveWindowToTray(SDL_Window *window, SDL_Tray *tray) {
   int y = SDL_clamp(anchor.y - height / 2, area.y, area.y + area.h - height);
   SDL_SetWindowPosition(window, x, y);
 }
+
+/* How the system draws the window's corners: 0 its default, 1 square, 2
+   rounded, 3 slightly rounded (the Haze WindowCorners
+   members, in order). Windows 11 draws them with the window's own edge and
+   shadow (DWM), also for a window without a native titlebar. Elsewhere the
+   window manager decides and this does nothing; on Windows 10, which has no
+   such attribute, the call is refused and nothing changes. dwmapi is loaded
+   here rather than linked, so no program that never asks needs it. */
+void haze_sdl_setWindowCorners(SDL_Window *window, hzstd_int_t corners) {
+#ifdef _WIN32
+  HWND hwnd = (HWND)SDL_GetPointerProperty(
+      SDL_GetWindowProperties(window), SDL_PROP_WINDOW_WIN32_HWND_POINTER, NULL);
+  if (!hwnd) {
+    return;
+  }
+  typedef HRESULT(WINAPI * HazeDwmSetWindowAttribute)(HWND, DWORD, LPCVOID,
+                                                     DWORD);
+  HMODULE dwm = LoadLibraryW(L"dwmapi.dll");
+  if (!dwm) {
+    return;
+  }
+  HazeDwmSetWindowAttribute set =
+      (HazeDwmSetWindowAttribute)(void *)GetProcAddress(dwm,
+                                                        "DwmSetWindowAttribute");
+  if (set) {
+    /* DWMWA_WINDOW_CORNER_PREFERENCE */
+    DWORD preference = (DWORD)corners;
+    set(hwnd, 33, &preference, sizeof(preference));
+  }
+  FreeLibrary(dwm);
+#else
+  (void)window;
+  (void)corners;
+#endif
+}

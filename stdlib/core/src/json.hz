@@ -268,6 +268,43 @@ namespace json {
             return ffi.hzstd_json_remove_object_item(this.allocator, this.data, key);
         }
 
+        // A new member `key` holding `value`, after the others. It does not
+        // look at members already there (`node[key]` matches keys ignoring
+        // case): remove() first to replace one.
+        fn addString(key: str, value: str) {
+            if !ffi.hzstd_json_is_object(this.data) {
+                sys.panic("addString() called on a JSON node that is not an object");
+            }
+            let item = ffi.hzstd_json_create_string(this.allocator, value);
+            assert(ffi.hzstd_json_add_item_to_object(this.allocator, this.data, key, item));
+        }
+
+        // A new, empty object member `key`, after the others; see addString.
+        fn addObject(key: str): Node {
+            if !ffi.hzstd_json_is_object(this.data) {
+                sys.panic("addObject() called on a JSON node that is not an object");
+            }
+            let item = ffi.hzstd_json_create_object(this.allocator);
+            assert(ffi.hzstd_json_add_item_to_object(this.allocator, this.data, key, item));
+            return Node { allocator: this.allocator, data: item };
+        }
+
+        // How many members are named exactly `key`: a parsed object may hold
+        // one twice.
+        fn memberCount(key: str): int {
+            if !ffi.hzstd_json_is_object(this.data) {
+                sys.panic("memberCount() called on a JSON node that is not an object");
+            }
+            let found = 0;
+            let count = this.objectEntryCount();
+            for (let i: usize = 0; i < count; i++) {
+                if this.objectKeyAt(i) == key {
+                    found = found + 1;
+                }
+            }
+            return found;
+        }
+
         // The object's member named exactly `key` (case included, as remove()
         // matches; operator[] and the typed parse ignore case), the first one
         // when there are several; none when there is none.

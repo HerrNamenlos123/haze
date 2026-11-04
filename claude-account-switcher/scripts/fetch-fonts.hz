@@ -1,0 +1,63 @@
+// Fetches the fonts this program embeds (Geist and Geist Mono, SIL Open Font
+// License 1.1) into resources/fonts/, which git ignores: the repository never
+// holds them, and no other project gets them.
+//
+// Pinned to the vercel/geist-font commit of release v1.8.1. Every file is
+// checked against the git blob hash that commit lists for it (`git
+// hash-object`, so no other tool is needed), and only a file that matches
+// is put in place. Changing the pin is an edit of this script, which makes
+// the build run it again.
+
+const commit = "e1f671c727f6de7e97c1e1d26dbb44f349c19459";
+
+struct PinnedFile {
+    // In the geist-font repository.
+    source: str;
+    // Under resources/fonts/.
+    name: str;
+    blob: str;
+}
+
+fn pinned(): []PinnedFile {
+    return [
+        { source: "fonts/Geist/ttf/Geist-Regular.ttf", name: "Geist-Regular.ttf", blob: "71cb8160a35149c54c83f5ea92f034f3bae67e61" },
+        { source: "fonts/Geist/ttf/Geist-Medium.ttf", name: "Geist-Medium.ttf", blob: "492b319a5ecd257d01264061522224a144564b0c" },
+        { source: "fonts/GeistMono/ttf/GeistMono-Regular.ttf", name: "GeistMono-Regular.ttf", blob: "643e6ba0731882a61296da368cb0d6362290b882" },
+        // The licence travels with the fonts.
+        { source: "LICENSE.txt", name: "LICENSE.txt", blob: "8d003fec6b8a0f9f866ab1038579b6ea20926ac4" },
+    ];
+}
+
+fn main(): int {
+    attempt {
+        let sourceDir = env.get("HAZE_MODULE_SOURCE_DIR");
+        if !sourceDir { raise "HAZE_MODULE_SOURCE_DIR not defined"; }
+        let fontsDir = f"{sourceDir}/resources/fonts";
+        fs.createDirectory(fontsDir)?!;
+
+        for file in pinned() {
+            let target = f"{fontsDir}/{file.name}";
+            let partial = f"{target}.download";
+            let url = f"https://raw.githubusercontent.com/vercel/geist-font/{commit}/{file.source}";
+            process.run("curl", { "-fsSL", "--retry", "2", "-o", partial, url }, process.Options {
+                inherit_stdio: true,
+            })?!;
+            // --no-filters: the file as fetched, whatever git would convert on checkout.
+            let hashed = process.runCaptured("git", { "hash-object", "--no-filters", partial }, process.Options {});
+            if hashed.exitCode != 0 {
+                raise f"git hash-object failed: {hashed.stderrResult}";
+            }
+            let blob = hashed.stdoutResult.trim();
+            if blob != file.blob {
+                fs.removeFile(partial);
+                raise f"{file.source} from geist-font {commit} is not the pinned file: git blob {blob}, expected {file.blob}";
+            }
+            fs.move(partial, target, { overwrite: true })?!;
+        }
+        return 0;
+    }
+    else e {
+        fmt.println("fetch-fonts failed: ", e);
+        return 1;
+    };
+}

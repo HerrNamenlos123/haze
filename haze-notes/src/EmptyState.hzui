@@ -15,7 +15,7 @@ actions: {};
 
 div [w-[56]px h-[56]px rounded-14 items-center justify-center bg-[theme().hover]
      text-color-[theme().textMuted] font-size-28] {
-    Codicon [] icon=[props.icon] {}
+    Codicon [] icon=[props.icon] size=[28] {}
 }
 div [col items-center gap-1] {
     text [text-nowrap font-size-15 text-color-[theme().text]] [props.title]

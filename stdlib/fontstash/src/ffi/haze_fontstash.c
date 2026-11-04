@@ -16,6 +16,27 @@
 
 #include "public/haze_fontstash.h"
 
+#ifdef FONS_USE_FREETYPE
+#error "haze_fons_size_for_em reads stb_truetype's font info; give it the FreeType equivalent first"
+#endif
+
+/* Haze's font sizes are CSS sizes: the font's em, the size a browser gives
+   text for `font-size`. fontstash's sizes are a font's full height, ascender
+   to descender (stbtt_ScaleForPixelHeight), which is that font's own multiple
+   of its em: 1.3 for Geist, about 1.17 for Roboto. So every size goes to
+   fontstash through here, and the line height, ascender and descender it
+   reports follow. */
+static float haze_fons_size_for_em(FONScontext* fs, int font, float emSize)
+{
+  if (font < 0 || font >= fs->nfonts) {
+    /* fontstash draws nothing for a font it does not have; neither does
+       anything change here. */
+    return emSize;
+  }
+  const stbtt_fontinfo* info = &fs->fonts[font]->font.font;
+  return emSize * stbtt_ScaleForMappingEmToPixels(info, 1.0f) / stbtt_ScaleForPixelHeight(info, 1.0f);
+}
+
 void* haze_fontstash_create(hzstd_int_t width, hzstd_int_t height)
 {
   FONSparams params;
@@ -68,7 +89,7 @@ void haze_fontstash_layout_text(void* ctx,
   FONScontext* fs = (FONScontext*)ctx;
 
   fonsSetFont(fs, font);
-  fonsSetSize(fs, size);
+  fonsSetSize(fs, haze_fons_size_for_em(fs, font, size));
 
   FONStextIter iter;
   FONSquad quad;
@@ -162,7 +183,7 @@ void haze_fontstash_layout_text_scaled(void* ctx,
   memset(&lquad, 0, sizeof(lquad));
 
   fonsSetFont(fs, font);
-  fonsSetSize(fs, size);
+  fonsSetSize(fs, haze_fons_size_for_em(fs, font, size));
   fonsTextIterInit(fs, &liter, x, y, text.data, text.data + text.length);
 
   while (fonsTextIterNext(fs, &liter, &lquad)) {
@@ -189,7 +210,7 @@ void haze_fontstash_layout_text_scaled(void* ctx,
     FONSquad pquad;
     memset(&pquad, 0, sizeof(pquad));
 
-    fonsSetSize(fs, size * scale);
+    fonsSetSize(fs, haze_fons_size_for_em(fs, font, size) * scale);
     fonsTextIterInit(fs, &piter, 0.0f, y * scale, gs, ge);
 
     int havePhysical = 0;
@@ -198,7 +219,7 @@ void haze_fontstash_layout_text_scaled(void* ctx,
         havePhysical = 1;
       }
     }
-    fonsSetSize(fs, size);
+    fonsSetSize(fs, haze_fons_size_for_em(fs, font, size));
 
     if (!havePhysical) {
       memset(&lquad, 0, sizeof(lquad));
@@ -296,7 +317,7 @@ haze_fontstash_metrics_t haze_fontstash_get_metrics(hzstd_cptr_t ctx, hzstd_int_
   FONScontext* fs = ctx;
 
   fonsSetFont(fs, font);
-  fonsSetSize(fs, size);
+  fonsSetSize(fs, haze_fons_size_for_em(fs, font, size));
 
   haze_fontstash_metrics_t metrics;
   fonsVertMetrics(fs, &metrics.ascender, &metrics.descender, &metrics.lineh);
@@ -309,7 +330,7 @@ haze_fontstash_measure_text(hzstd_cptr_t ctx, hzstd_int_t font, float size, hzst
   FONScontext* fs = ctx;
 
   fonsSetFont(fs, font);
-  fonsSetSize(fs, size);
+  fonsSetSize(fs, haze_fons_size_for_em(fs, font, size));
 
   // text.data is a length-prefixed slice, not guaranteed null-terminated --
   // pass the end pointer explicitly instead of relying on HZSTD_CSTR's

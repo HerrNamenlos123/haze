@@ -258,11 +258,20 @@ fn process_rounded_rect_border(in: VSOut) -> vec4<f32> {
     return vec4(in.borderColor.rgb * a, a);
 }
 
+// How much a glyph's partly covered edge pixels are strengthened: the
+// rasterized coverage c becomes c * (1 + k) / (1 + k * c), the "enhanced
+// contrast" Windows applies to its own text. Full stays full and empty stays
+// empty; only the edges get stronger, which keeps small text from looking
+// pale and thin, light text on a dark background above all. 0.0 is the
+// coverage exactly as rasterized.
+const glyphContrast: f32 = 0.5;
+
 fn process_glyph(in: VSOut) -> vec4<f32> {
-    let coverage = textureSample(colorTexture,colorSampler,in.uv).r;
-    if(coverage <= 0.0){
+    let raster = textureSample(colorTexture,colorSampler,in.uv).r;
+    if(raster <= 0.0){
         discard;
     }
+    let coverage = raster * (1.0 + glyphContrast) / (1.0 + glyphContrast * raster);
 
     let a = in.fillColor.a * coverage;
     return vec4(in.fillColor.rgb * a, a);

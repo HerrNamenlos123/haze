@@ -1,0 +1,37 @@
+// The switcher's look: haze style proposal 2 (dark), hardcoded here until
+// haze has a token system that this moves onto. Every colour, radius and
+// size the components use comes from this file.
+
+export const canvas = "#0F1012";
+export const panel = "#141518";
+export const raised = "#1A1B1F";
+export const hover = "#1E2024";
+export const pressed = "#25272C";
+export const border = "#25272C";
+export const borderStrong = "#353840";
+export const text1 = "#EEEFF1";
+export const text2 = "#B3B6BE";
+export const text3 = "#8A8E98";
+export const accent = "#F2B23B";
+export const accentInk = "#1A1305";
+export const accentHover = "#F5C15E";
+export const accentPressed = "#DFA232";
+// The active account's row: a faint amber over the canvas.
+export const accentTint = "#1C1913";
+export const danger = "#F2646D";
+export const dangerHover = "#F57C84";
+// Behind a problem: a faint red over the canvas.
+export const dangerTint = "#1D1214";
+export const transparent = "#00000000";
+
+export const radiusControl = 3.0;
+export const radiusRow = 4.0;
+export const radiusFloat = 6.0;
+
+export const fontRegular = "geist";
+export const fontMedium = "geist-medium";
+export const fontMono = "geist-mono";
+
+export const textSize = 13.0;
+export const smallSize = 12.0;
+export const keySize = 11.0;

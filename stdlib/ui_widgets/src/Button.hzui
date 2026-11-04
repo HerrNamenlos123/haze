@@ -58,9 +58,13 @@ let pressed = (event: PointerEvent) => {
     if event.activatesOnPress() { emits.click(); }
 };
 
+// The click is the button's either way: also when the press already clicked
+// it (activatesOnPress), it must not go on to what the button sits in (a row
+// that does something on a click of its own).
 let tapped = (event: PointerEvent) => {
-    if !props.enabled || event.activatesOnPress() { return; }
+    if !props.enabled { return; }
     event.stopPropagation();
+    if event.activatesOnPress() { return; }
     if props.ignoreDoubleClick && event.detail >= 2 { return; }
     emits.click();
 };

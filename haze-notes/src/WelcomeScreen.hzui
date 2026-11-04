@@ -32,7 +32,7 @@ div [col w-[400]px h-fit gap-6 p-7 rounded-16 bg-[theme().surface] border-1 bord
     div [row w-grow h-fit items-center gap-3.5] {
         div [w-[48]px h-[48]px rounded-12 items-center justify-center bg-[theme().accent]
              text-color-[theme().onAccent] font-size-26] {
-            Codicon [] icon="notebook" {}
+            Codicon [] icon="notebook" size=[26] {}
         }
         div [col w-grow h-fit gap-1] {
             text [text-nowrap font-size-20 text-color-[theme().text]] ["Haze Notes"]

@@ -1,38 +1,66 @@
 @export
 
-from ui_widgets import ScrollView, ScrollViewComponent, ScrollViewSlotContent
+from ui_widgets import ButtonComponent, ScrollView, ScrollViewComponent, ScrollViewSlotContent, DropdownComponent, DropdownItem, DropdownStyle
 
 // The whole window. Until the profile repo is chosen it asks for nothing
 // else; after that it shows the accounts, the add form and the settings.
+//
+// Closing the window (or clicking elsewhere, which hides it) keeps everything
+// as it is: what is typed, which form is open, what a row is doing. Opening
+// it again only reads the files again.
 
 enum View { Accounts, Add, Settings }
 
+// The account menu's items, by key.
+const MENU_ACTIVATE = 1;
+const MENU_TOKEN = 2;
+const MENU_ICON = 3;
+const MENU_RENAME = 4;
+const MENU_REMOVE = 5;
+const MENU_WIDTH = 180.0;
+// Five rows, a separator and the padding: what keeps it inside the window.
+const MENU_HEIGHT = 150.0;
+
 @props
-// Bumped by the host each time the window opens: it opens on the accounts,
-// read again from disk.
+// Bumped by the host each time the window opens.
 activation: Reactive<int>;
 
 @emit
 quit: ();
 
 @setup
+let rootRef = elementRef<DivElement>();
 let view = reactive<View>(View.Accounts);
-let confirmingRemove = reactive<str>("");
+// The one row that is doing something other than showing its account.
+let editingId = reactive<str>("");
+let editingMode = reactive<RowMode>(RowMode.Normal);
+
+let menuOpen = reactive<bool>(false);
+let menuFor = reactive<str>("");
+let menuX = reactive<real>(0.0);
+let menuY = reactive<real>(0.0);
 
 let hasRepo = computed((): bool => switcher().hasProfileRepo());
 let items = computed((): []Account => switcher().list());
 
-// The problem stays: the window may open because a switch failed, and then
-// it is what the user needs to see.
 ui.watch(() => rx.get(props.activation), (value, old) => {
-    view := View.Accounts;
-    confirmingRemove := "";
+    menuOpen := false;
     switcher().reload();
 });
 
+let modeOf = (id: str): RowMode => {
+    if rx.get(editingId) == id { return rx.get(editingMode); }
+    return RowMode.Normal;
+};
+
+let setMode = (id: str, mode: RowMode) => {
+    editingId := mode == RowMode.Normal ? "" : id;
+    editingMode := mode;
+};
+
 let toggle = (target: View) => {
     view := rx.get(view) == target ? View.Accounts : target;
-    confirmingRemove := "";
+    setMode("", RowMode.Normal);
     switcher().clearProblem();
     if rx.get(view) != View.Add {
         switcher().clearPicked();
@@ -51,12 +79,82 @@ let showAccounts = () => {
     view := View.Accounts;
 };
 
-let askRemove = (id: str) => {
-    confirmingRemove := id;
+let closeAdd = () => {
+    view := View.Accounts;
+    switcher().clearPicked();
 };
 
-let cancelRemove = () => {
-    confirmingRemove := "";
+// The menu for `id`, at (x, y) in the window, kept inside it.
+let openMenu = (id: str, x: real, y: real) => {
+    let width = 380.0;
+    let height = 420.0;
+    if let root = rx.get(rootRef) {
+        if let size = root.size() {
+            width = size.x;
+            height = size.y;
+        }
+    }
+    menuFor := id;
+    menuX := clamp<real>(x, 4.0, max<real>(4.0, width - MENU_WIDTH - 4.0));
+    menuY := clamp<real>(y, 4.0, max<real>(4.0, height - MENU_HEIGHT - 4.0));
+    menuOpen := true;
+};
+
+let closeMenu = () => {
+    menuOpen := false;
+};
+
+let menuItems = computed((): []DropdownItem => {
+    let id = rx.get(menuFor);
+    let canActivate = false;
+    for account in switcher().list() {
+        if account.id == id {
+            canActivate = account.hasToken && !switcher().isActive(id);
+        }
+    }
+    let out: []DropdownItem = [
+        DropdownItem { key: MENU_ACTIVATE, label: "Make active", enabled: canActivate },
+        DropdownItem { key: MENU_TOKEN, label: "Replace token" },
+        DropdownItem { key: MENU_ICON, label: "Change icon" },
+        DropdownItem { key: MENU_RENAME, label: "Rename" },
+        DropdownItem { separator: true },
+        DropdownItem { key: MENU_REMOVE, label: "Remove", danger: true },
+    ];
+    return out;
+});
+
+let menuStyle = DropdownStyle {
+    bg: raised,
+    borderColor: borderStrong,
+    textColor: text1,
+    textColorDisabled: text3,
+    textColorMuted: text3,
+    textColorDanger: danger,
+    itemBgHover: hover,
+    separatorColor: border,
+    rounded: radiusFloat,
+    padding: 4.0,
+    itemPaddingX: 8.0,
+    itemPaddingY: 4.0,
+    itemRounded: radiusControl,
+};
+
+let pickMenu = (key: int) => {
+    let id = rx.get(menuFor);
+    menuOpen := false;
+    if key == MENU_ACTIVATE { switcher().activateAccount(id); }
+    else if key == MENU_TOKEN { setMode(id, RowMode.Token); }
+    else if key == MENU_ICON { switcher().requestIconFor(id); }
+    else if key == MENU_RENAME { setMode(id, RowMode.Rename); }
+    else if key == MENU_REMOVE { setMode(id, RowMode.ConfirmRemove); }
+};
+
+let dismissProblem = () => {
+    switcher().clearProblem();
+};
+
+let retryClaudeSettings = () => {
+    switcher().retryClaudeSettings();
 };
 
 let quit = () => {
@@ -66,33 +164,53 @@ let quit = () => {
 let keyPressed = (event: KeyboardEvent) => {
     if event.key == Key.Escape {
         event.stopPropagation();
+        if rx.get(menuOpen) {
+            menuOpen := false;
+            return;
+        }
+        if rx.get(editingId) != "" {
+            setMode("", RowMode.Normal);
+            return;
+        }
         ui.window.close();
     }
 };
 
-@template [col w-grow h-grow bg-["#17171C"] text-color-["#E4E4E7"] font-size-14] @keydown=keyPressed
+@template [col w-grow h-grow bg-[canvas] text-color-[text1] font-size-[textSize] font-family-[fontRegular] relative] ref=rootRef focusable=[true] autofocus=[true] @keydown=keyPressed
 
 TitleBar [] accountsAvailable=[rx.get(hasRepo)] addOpen=[rx.get(view) == View.Add]
     settingsOpen=[rx.get(view) == View.Settings] @toggleAdd=toggleAdd @toggleSettings=toggleSettings {}
 
-div if=[!rx.get(hasRepo)] [col w-grow h-grow p-4 gap-4] {
+div if=[!rx.get(hasRepo)] [col w-grow h-grow p-[14]px] {
     ProfileRepo [] @done=showAccounts {}
 }
 Settings else-if=[rx.get(view) == View.Settings] [] @close=showAccounts @quit=quit {}
 ScrollView else [] padding=[6] {
     #content {
-        div [col w-grow h-fit gap-1] {
-            AddAccount if=[rx.get(view) == View.Add] [] @added=showAccounts {}
-            AccountRow for=[account, i in items] key=[i] []
-                account=[account] active=[switcher().isActive(account.id)]
-                confirmingRemove=[rx.get(confirmingRemove) == account.id]
-                @askRemove=askRemove @cancelRemove=cancelRemove {}
-            div if=[items.length == 0 && rx.get(view) != View.Add] [col w-grow items-center py-10] {
-                text [text-color-["#71717A"]] ["No accounts"]
+        div [col w-grow h-fit gap-[1]px] {
+            AddAccount if=[rx.get(view) == View.Add] [] @added=showAccounts @cancel=closeAdd {}
+            AccountRow for=[account, i in items] key=[switcher().rowKey(account.id)] []
+                account=[account] active=[switcher().isActive(account.id)] mode=[modeOf(account.id)]
+                @menu=openMenu @setMode=setMode {}
+            div if=[items.length == 0 && rx.get(view) != View.Add] [col w-grow items-center py-[40]px] {
+                text [text-color-[text3]] ["No accounts"]
             }
         }
     }
 }
-div if=[switcher().hasProblem()] [w-grow h-fit px-4 py-2 bg-["#2A1517"]] {
-    text [text-color-["#F87171"] font-size-12] [switcher().problemText()]
+div if=[switcher().hasProblem()] [row w-grow h-fit gap-[10]px items-center pl-[12]px pr-[6]px py-[6]px bg-[dangerTint] border-l-[2] border-color-[danger]] {
+    div [w-grow h-fit] {
+        text [text-color-[text1] font-size-[smallSize]] [switcher().problemText()]
+    }
+    Button [] icon="close" paddingX=[5] paddingY=[5] rounded=[radiusControl] bgHover=[hover] textColor=[text2] focusRing=[0] @click=dismissProblem {}
 }
+div if=[switcher().hasClaudeSettingsProblem()] [row w-grow h-fit gap-[10]px items-center pl-[12]px pr-[6]px py-[6]px bg-[dangerTint] border-l-[2] border-color-[danger]] {
+    div [w-grow h-fit] {
+        text [text-color-[text1] font-size-[smallSize]] [switcher().claudeSettingsProblemText()]
+    }
+    Button [] label="Retry" bg=[accent] bgHover=[accentHover] bgActive=[accentPressed] textColor=[accentInk]
+        paddingX=[10] paddingY=[4] rounded=[radiusControl] focusRing=[0] @click=retryClaudeSettings {}
+}
+// Last in the tree, as Dropdown asks: hit-testing goes by tree order.
+Dropdown [] open=[rx.get(menuOpen)] items=[rx.get(menuItems)] offsetX=[rx.get(menuX)] offsetY=[rx.get(menuY)]
+    minWidth=[MENU_WIDTH] style=[menuStyle] @select=pickMenu @dismiss=closeMenu {}

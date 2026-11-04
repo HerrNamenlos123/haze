@@ -142,9 +142,13 @@ static FILE* hzstd_fs_open_for_reading(const char* path, const char* mode, hzstd
   if (handle == INVALID_HANDLE_VALUE) {
     DWORD err = GetLastError();
     hzstd_fs_error_code_t code = hzstd_fs_error_from_windows_error(err);
-    // fopen reported these as EACCES.
+    // What fopen reported for these (the C runtime's mapping): EACCES and
+    // ENOENT.
     if (err == ERROR_SHARING_VIOLATION || err == ERROR_LOCK_VIOLATION) {
       code = hzstd_fs_error_code_permission_denied;
+    } else if (err == ERROR_INVALID_DRIVE || err == ERROR_BAD_NETPATH || err == ERROR_BAD_NET_NAME
+               || err == ERROR_FILENAME_EXCED_RANGE) {
+      code = hzstd_fs_error_code_not_found;
     }
     *error = (hzstd_fs_error_t) { .code = code, .message = hzstd_fs_windows_error(err) };
     return NULL;

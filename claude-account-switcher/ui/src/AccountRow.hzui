@@ -1,23 +1,71 @@
-from ui_widgets import ButtonComponent, TextInputComponent
+from ui_widgets import ButtonComponent, ButtonSlotContent, TextInput, TextInputComponent
+from codicons import CodiconComponent
 
 @props
 account: Account;
 active: bool;
-// This row asks whether to remove the account.
-confirmingRemove: bool;
+// What this row is doing.
+mode: RowMode;
 
 @emit
-askRemove: (str,);
-cancelRemove: ();
+// The row's menu, at a point in the window.
+menu: (str, real, real,);
+setMode: (str, RowMode,);
 
 @setup
 let rootRef = elementRef<DivElement>();
+let renameRef = ui.componentRef<TextInput>();
+// The rename box selects the old name once it is there (the frame after the
+// mode changed), so typing replaces it.
+let selectName = reactive<bool>(false);
+let moreRef = elementRef<DivElement>();
 let hovered = computed(() => rootRef?.hover() ?? false);
+// What is typed into this row's boxes. They stay while the window is closed
+// and opened again: the row is not rebuilt for that.
 let token = reactive<str>("");
+let name = reactive<str>("");
+
+let showsTokenBox = computed((): bool => props.mode == RowMode.Token || (!props.account.hasToken && props.mode == RowMode.Normal));
+
+let background = computed((): str => {
+    if props.active { return accentTint; }
+    if rx.get(hovered) && props.mode == RowMode.Normal { return hover; }
+    return transparent;
+});
+
+let activate = (event: PointerEvent) => {
+    if props.mode != RowMode.Normal { return; }
+    switcher().activateAccount(props.account.id);
+};
+
+// A right press on a row asks for its menu: it must not also count as a
+// press outside the menu that is open, which would close it again.
+let rightPressed = (event: PointerEvent) => {
+    if event.button == PointerButton.Right {
+        event.stopPropagation();
+    }
+};
+
+let openMenu = (event: PointerEvent) => {
+    event.stopPropagation();
+    emits.menu(props.account.id, event.pos.x, event.pos.y);
+};
+
+// The button opens the menu under itself.
+let openMenuFromButton = () => {
+    let more = rx.get(moreRef);
+    if !more { return; }
+    if let pos = more.position() {
+        if let size = more.size() {
+            emits.menu(props.account.id, pos.x + size.x, pos.y + size.y);
+        }
+    }
+};
 
 let saveToken = () => {
     if switcher().setToken(props.account.id, rx.get(token)) {
         token := "";
+        emits.setMode(props.account.id, RowMode.Normal);
     }
 };
 
@@ -25,45 +73,89 @@ let submitToken = (value: str) => {
     saveToken();
 };
 
-let askRemove = () => {
-    emits.askRemove(props.account.id);
+let cancel = () => {
+    token := "";
+    emits.setMode(props.account.id, RowMode.Normal);
+};
+
+ui.watch(() => props.mode, (value, old) => {
+    if value == RowMode.Rename {
+        name := props.account.name;
+        selectName := true;
+    }
+});
+
+ui.onFrame(() => {
+    if !rx.get(selectName) { return; }
+    if let input = rx.get(renameRef) {
+        selectName := false;
+        input.selectAll();
+    }
+});
+
+let saveName = (value: str) => {
+    if switcher().renameAccount(props.account.id, rx.get(name)) {
+        emits.setMode(props.account.id, RowMode.Normal);
+    }
+};
+
+// Focus going anywhere else (a click outside the box) ends a rename and keeps
+// the name typed, as Enter does. Esc, which throws it away, ends the mode
+// before focus moves, so this does not run for it.
+let focusLeft = (event: FocusEvent) => {
+    if props.mode == RowMode.Rename {
+        saveName(rx.get(name));
+    }
 };
 
 let remove = () => {
     switcher().removeAccount(props.account.id);
-    emits.cancelRemove();
+    emits.setMode(props.account.id, RowMode.Normal);
 };
 
-let cancel = () => {
-    emits.cancelRemove();
+let keyPressed = (event: KeyboardEvent) => {
+    if event.key == Key.Escape && props.mode != RowMode.Normal {
+        event.stopPropagation();
+        cancel();
+    }
 };
 
-@template [
-        col w-grow h-fit gap-2 px-3 py-2 rounded-[6]px
-        bg-[props.active ? "#26262F" : (rx.get(hovered) ? "#1E1E25" : "#00000000")]
-        border-[1] border-color-[props.active ? "#6D5BD0" : "#00000000"]
-    ]
-    ref=rootRef
+@template [col w-grow h-fit rounded-[radiusRow]px bg-[rx.get(background)] relative] ref=rootRef @pointerdown=rightPressed @contextmenu=openMenu @keydown=keyPressed @focusout=focusLeft
 
-div [row w-grow h-fit items-center gap-3] {
+div if=[props.active] [absolute left-[0] top-[6] w-[2]px h-[20]px rounded-[1]px bg-[accent]] {}
+div [row w-grow h-[32]px items-center gap-[10]px pl-[10]px pr-[6]px cursor-pointer] @click=activate {
     AccountIcon [] accountId=[props.account.id] {}
-    div [w-grow h-fit] {
-        text [text-color-[props.account.hasToken ? "#E4E4E7" : "#A1A1AA"]] [props.account.name]
+    TextInput if=[props.mode == RowMode.Rename] [] ref=renameRef text=[name] autofocus=[true] fontSize=[textSize] fontFamily=[fontRegular]
+        backgroundColor=[canvas] borderColor=[accent] textColor=[text1] selectionColor=[pressed] caretColor=[accent]
+        paddingX=[6] paddingY=[3] rounded=[radiusControl] focusRing=[0] @submit=saveName {}
+    div else [w-grow h-fit] {
+        text [text-nowrap text-color-[text1] font-size-[textSize] font-family-[props.active ? fontMedium : fontRegular]] [props.account.name]
     }
-    div if=[props.confirmingRemove] [row h-fit gap-1 items-center] {
-        Button [] label="Remove" bg="#C42B1C" bgHover="#D13A2B" bgActive="#B0271A" textColor="#FFFFFF"
-            paddingX=[10] paddingY=[3] focusRing=[0] @click=remove {}
-        Button [] icon="close" paddingX=[4] paddingY=[3] textColor="#A1A1AA" focusRing=[0] @click=cancel {}
+    text if=[!props.account.hasToken && props.mode == RowMode.Normal] [text-nowrap text-color-[danger] font-size-[smallSize]] ["no token"]
+    div if=[props.mode == RowMode.ConfirmRemove] [row h-fit gap-[4]px items-center] {
+        Button [] label="Remove" bg=[danger] bgHover=[dangerHover] bgActive=[danger] textColor=[accentInk]
+            paddingX=[10] paddingY=[4] rounded=[radiusControl] focusRing=[0] @click=remove {}
+        Button [] icon="close" paddingX=[5] paddingY=[5] rounded=[radiusControl] bgHover=[hover] textColor=[text2] focusRing=[0] @click=cancel {}
     }
-    // Always laid out, so the name keeps its width whether the button shows.
-    div else [w-[24]px h-fit items-center justify-center] {
-        Button if=[rx.get(hovered)] [] icon="trash" paddingX=[4] paddingY=[2]
-            textColor="#71717A" focusRing=[0] @click=askRemove {}
+    div else-if=[props.mode == RowMode.Normal] [row h-fit gap-[4]px items-center] {
+        div if=[props.active] [text-color-[accent]] {
+            Codicon [] icon="check" {}
+        }
+        // Always laid out, so the name keeps its width whether it shows.
+        div [w-[22]px h-[22]px items-center justify-center] ref=moreRef {
+            Button if=[rx.get(hovered)] [] icon="ellipsis" paddingX=[3] paddingY=[3] rounded=[radiusControl]
+                bg=[raised] bgHover=[pressed] textColor=[text2] focusRing=[0] @click=openMenuFromButton {}
+        }
     }
 }
-div if=[!props.account.hasToken] [row w-grow h-fit gap-2 items-center] {
-    TextInput [] text=[token] placeholder="Token for this machine" fontSize=[13]
-        backgroundColor="#1F1F26" borderColor="#2E2E38" textColor="#E4E4E7" focusRing=[0] @submit=submitToken {}
-    Button [] label="Save" bg="#6D5BD0" bgHover="#7C6BDB" bgActive="#5E4EC0" textColor="#FFFFFF"
-        paddingX=[12] paddingY=[5] focusRing=[0] @click=saveToken {}
+div if=[rx.get(showsTokenBox)] [row w-grow h-fit gap-[6]px items-center pl-[40]px pr-[6]px pb-[6]px] {
+    TextInput [] text=[token] placeholder="sk-ant-oat01-..." fontSize=[smallSize] fontFamily=[fontMono]
+        autofocus=[props.mode == RowMode.Token]
+        backgroundColor=[canvas] borderColor=[borderStrong] textColor=[text1] placeholderColor=[text3]
+        selectionColor=[pressed] caretColor=[accent] paddingX=[8] paddingY=[5] rounded=[radiusControl] focusRing=[0]
+        @submit=submitToken {}
+    Button [] label="Save" bg=[accent] bgHover=[accentHover] bgActive=[accentPressed] textColor=[accentInk]
+        paddingX=[10] paddingY=[5] rounded=[radiusControl] focusRing=[0] @click=saveToken {}
+    Button if=[props.mode == RowMode.Token] [] icon="close" paddingX=[5] paddingY=[5] rounded=[radiusControl]
+        bgHover=[hover] textColor=[text2] focusRing=[0] @click=cancel {}
 }

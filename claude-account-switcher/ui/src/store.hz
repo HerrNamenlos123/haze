@@ -60,6 +60,10 @@ const syncedFolderName = "claude-account-switcher";
 // profile repo's folder.
 export enum PickKind { Icon, Folder }
 
+// What an account's row is doing: showing it, editing its name, asking for
+// a new token, or asking whether to remove it.
+export enum RowMode { Normal, Rename, Token, ConfirmRemove }
+
 // The id the add form's icon preview draws under (no account can have it:
 // ids are slugs without underscores).
 export const draftIconId = "_draft";
@@ -67,13 +71,25 @@ export const draftIconId = "_draft";
 export ref struct Switcher {
     stateDir: str;
     // The host's: opens a native picker, which may take long; its answer
-    // comes back through picked().
-    pick: (kind: PickKind) => none;
+    // comes back through picked(). False when none opened (one is open
+    // already): nothing will come back for this request.
+    pick: (kind: PickKind) => bool;
     // The last image file picked for a new account, and it as the icon it
     // becomes (none when it is no image).
     pickedIcon: rx.Reactive<str | none>;
     pickedIconImage: rx.Reactive<image.Image | none>;
     pickedFolder: rx.Reactive<str | none>;
+    // The account the open icon picker is for, none for the add form's.
+    iconPickFor: str | none = none;
+    // Every account id a row was shown for, by rowKey.
+    rowKeys: []str = [];
+    // Why Claude Code's settings could not be made to match the active
+    // account, none while they do. Separate from `problem`: it stays until a
+    // write succeeds, whatever else the user does, because until then Claude
+    // Code may be using another account than the one shown.
+    claudeSettingsProblem: rx.Reactive<str | none>;
+    // Bumped by the window's Retry.
+    claudeSettingsRetries: rx.Reactive<int>;
     // none until the user chose the profile repo (settings.json is not there).
     profileRepo: rx.Reactive<str | none>;
     accounts: rx.ShallowReactive<[]Account>;
@@ -182,6 +198,34 @@ export ref struct Switcher {
         this.accountsLoaded = false;
     }
 
+    // A key for `id`'s row that stays the same for as long as the program
+    // runs, wherever the account moves in the list: a row keeps what is
+    // typed into it when another one goes.
+    mut fn rowKey(id: str): int {
+        for (let i = 0; i < this.rowKeys.length; i++) {
+            if this.rowKeys[i] == id {
+                return i + 1;
+            }
+        }
+        this.rowKeys.push(id);
+        return this.rowKeys.length;
+    }
+
+    fn hasClaudeSettingsProblem(): bool {
+        if rx.get(this.claudeSettingsProblem) { return true; }
+        return false;
+    }
+
+    fn claudeSettingsProblemText(): str {
+        if let message = rx.get(this.claudeSettingsProblem) { return message; }
+        return "";
+    }
+
+    // The window's Retry: the host writes Claude Code's settings again.
+    fn retryClaudeSettings() {
+        this.claudeSettingsRetries := rx.get(this.claudeSettingsRetries) + 1;
+    }
+
     fn fail(message: str): bool {
         this.problem := message;
         return false;
@@ -193,13 +237,29 @@ export ref struct Switcher {
 
     // ── Pickers ────────────────────────────────────────────────────────────
 
-    fn requestPick(kind: PickKind) {
-        this.pick(kind);
+    // The target is set before the picker opens (a host may answer at once)
+    // and put back when none opened: the answer still to come is then the
+    // open picker's, for what that one was asked for.
+    mut fn requestPick(kind: PickKind) {
+        let previous = this.iconPickFor;
+        this.iconPickFor = none;
+        if !this.pick(kind) {
+            this.iconPickFor = previous;
+        }
+    }
+
+    // An icon picker whose image becomes `id`'s icon right away.
+    mut fn requestIconFor(id: str) {
+        let previous = this.iconPickFor;
+        this.iconPickFor = id;
+        if !this.pick(PickKind.Icon) {
+            this.iconPickFor = previous;
+        }
     }
 
     // The host's answer to pick(): the path chosen, none when the picker was
     // cancelled (which changes nothing).
-    fn picked(kind: PickKind, path: str | none) {
+    mut fn picked(kind: PickKind, path: str | none) {
         let chosen = path;
         if !chosen {
             return;
@@ -207,6 +267,11 @@ export ref struct Switcher {
         let file = chosen as str;
         if kind == PickKind.Folder {
             this.pickedFolder := file;
+            return;
+        }
+        if let account = this.iconPickFor {
+            this.iconPickFor = none;
+            this.setAccountIcon(account, file);
             return;
         }
         this.pickedIcon := file;
@@ -561,6 +626,84 @@ export ref struct Switcher {
         return this.reload();
     }
 
+    // `id` becomes the active account (a click on its row). It needs a token
+    // on this machine; without one the row asks for it.
+    mut fn activateAccount(id: str): bool {
+        if !this.reload() {
+            return false;
+        }
+        let index = this.indexOf(id);
+        if index < 0 {
+            return this.fail("That account is gone");
+        }
+        if !this.list()[index].hasToken {
+            return this.fail(f"{this.list()[index].name} has no token on this machine");
+        }
+        if this.isActive(id) {
+            this.clearProblem();
+            return true;
+        }
+        if this.activate(id) {
+            this.clearProblem();
+            return true;
+        }
+        return false;
+    }
+
+    // A new name for `id`; its id, icon and tokens stay.
+    mut fn renameAccount(id: str, name: str): bool {
+        if !this.reload() {
+            return false;
+        }
+        if this.indexOf(id) < 0 {
+            return this.fail("That account is gone");
+        }
+        let trimmed = name.trim();
+        if trimmed.length == 0 {
+            return this.fail("The account needs a name");
+        }
+        let stored: []StoredAccount = [];
+        for account in this.list() {
+            stored.push(StoredAccount { id: account.id, name: account.id == id ? trimmed : account.name });
+        }
+        if !this.saveAccounts(stored) {
+            return false;
+        }
+        this.clearProblem();
+        return this.reload();
+    }
+
+    // `id`'s icon, from the image file at `iconFile`.
+    mut fn setAccountIcon(id: str, iconFile: str): bool {
+        if !this.reload() {
+            return false;
+        }
+        if this.indexOf(id) < 0 {
+            return this.fail("That account is gone");
+        }
+        let synced = this.syncedDir();
+        if !synced {
+            return this.fail("Choose the profile repo first");
+        }
+        let dir = synced as str;
+        let png = iconPngFromFile(iconFile);
+        if png is str {
+            return this.fail(png);
+        }
+        let iconsDir = f"{dir}/icons";
+        let madeIcons = fs.createDirectory(iconsDir);
+        if !madeIcons {
+            return this.fail(f"{iconsDir} could not be created: {madeIcons}");
+        }
+        let iconPath = f"{iconsDir}/{id}.png";
+        let wroteIcon = fs.writeBinary(iconPath, png as Bytes);
+        if !wroteIcon {
+            return this.fail(f"{iconPath} could not be written: {wroteIcon}");
+        }
+        this.clearProblem();
+        return this.reload();
+    }
+
     // The account, its icon and this machine's token, gone. On the other
     // machines it is gone after their next pull.
     mut fn removeAccount(id: str): bool {
@@ -839,7 +982,7 @@ let switcherStore: mut Switcher | none = none;
 // `stateDir`. Only a settings.json that is not there starts without a profile
 // repo. One that is there but cannot be read or understood is an error, and
 // nothing in this module will ever write to it.
-export fn openSwitcher(stateDir: str, pick: (kind: PickKind) => none): Result<none, str> {
+export fn openSwitcher(stateDir: str, pick: (kind: PickKind) => bool): Result<none, str> {
     let settings = SettingsFile { profileRepo: "", active: none };
     let hasSettings = false;
     let path = f"{stateDir}/settings.json";
@@ -865,6 +1008,8 @@ export fn openSwitcher(stateDir: str, pick: (kind: PickKind) => none): Result<no
         accounts: rx.shallowReactive<[]Account>([]),
         active: rx.reactive<str | none>(settings.active),
         problem: rx.reactive<str | none>(none),
+        claudeSettingsProblem: rx.reactive<str | none>(none),
+        claudeSettingsRetries: rx.reactive<int>(0),
         iconVersion: rx.reactive<int>(0),
     };
     if hasSettings {

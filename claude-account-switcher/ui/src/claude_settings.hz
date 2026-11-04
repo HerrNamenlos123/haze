@@ -42,10 +42,18 @@ export fn applyClaudeSettings(path: str, command: str | none): Result<bool, str>
     if !root.isObject() {
         return Result<bool, str>.Err(f"{path} is not a JSON object");
     }
+    // Claude Code reads the last of a key that is there twice, this code the
+    // first: with two, which one counts is not this program's to decide.
+    if root.memberCount(envKey) > 1 || root.memberCount(helperKey) > 1 {
+        return Result<bool, str>.Err(f"{path} has \"env\" or \"apiKeyHelper\" twice");
+    }
     let env = root.member(envKey);
     if let existing = env {
         if !existing.isObject() {
             return Result<bool, str>.Err(f"{path}: \"env\" is not an object");
+        }
+        if existing.memberCount(ttlKey) > 1 {
+            return Result<bool, str>.Err(f"{path} has {ttlKey} twice");
         }
     }
     let before = root.print({ pretty: true });
@@ -58,18 +66,18 @@ export fn applyClaudeSettings(path: str, command: str | none): Result<bool, str>
             root.remove(envKey);
         }
     }
+    // "env" first, then the helper at the end: the order a first write leaves
+    // is the order every later one makes again, so an unchanged state is
+    // never written again. Every key by its exact name: an "Env" is not
+    // Claude Code's "env".
     if let wanted = command {
-        let helper = root[helperKey];
-        if helper is json.Node.Proxy {
-            helper := wanted;
+        if let existing = env {
+            existing.addString(ttlKey, ttlValue);
+        } else {
+            let created = root.addObject(envKey);
+            created.addString(ttlKey, ttlValue);
         }
-        let envProxy = root[envKey];
-        if envProxy is json.Node.Proxy {
-            let ttl = envProxy[ttlKey];
-            if ttl is json.Node.Proxy {
-                ttl := ttlValue;
-            }
-        }
+        root.addString(helperKey, wanted);
     }
 
     let after = root.print({ pretty: true });

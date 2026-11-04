@@ -29,10 +29,11 @@ ref struct TrayShows {
     iconVersion: int = -1;
 }
 
-// What Claude Code's settings were last made to say: -1 not yet, 0 no
-// helper, 1 the helper.
+// What Claude Code's settings were last made to say: -1 not yet (or the last
+// write failed), 0 no helper, 1 the helper; and the Retry count handled.
 ref struct ClaudeSettingsState {
     applied: int = -1;
+    retries: int = 0;
 }
 
 // ~/.claude/settings.json, the user's Claude Code settings.
@@ -170,14 +171,15 @@ fn main(): int {
         if !stateDir { raise "This system names no folder for the program's own files"; }
 
         let picker = OpenPicker {};
-        let pick = (kind: claude_account_switcher_ui.PickKind): none => {
-            if picker.dialog { return; }
+        let pick = (kind: claude_account_switcher_ui.PickKind): bool => {
+            if picker.dialog { return false; }
             picker.kind = kind;
             if kind == claude_account_switcher_ui.PickKind.Folder {
                 picker.dialog = filedialog.pickFolderAsync({});
             } else {
                 picker.dialog = filedialog.pickFileAsync({ filters: "png,jpg,jpeg,bmp,gif,tga,psd" });
             }
+            return true;
         };
         claude_account_switcher_ui.openSwitcher(stateDir as str, pick)?!;
         applyAutostart();
@@ -190,7 +192,13 @@ fn main(): int {
             hideOnClose: true,
         })?!;
 
-        let font = a.gfx.fontRenderer.fs.addFont("roboto-regular", embed.binary("resources/Roboto-Regular.ttf"));
+        // Slightly rounded, like everything in it.
+        a.window.setCorners(sdl.WindowCorners.RoundSmall);
+
+        // Geist and Geist Mono (SIL OFL 1.1), fetched by scripts/fetch-fonts.hz.
+        let geist = a.gfx.fontRenderer.fs.addFont("geist", embed.binary("resources/fonts/Geist-Regular.ttf"));
+        let geistMedium = a.gfx.fontRenderer.fs.addFont("geist-medium", embed.binary("resources/fonts/Geist-Medium.ttf"));
+        let geistMono = a.gfx.fontRenderer.fs.addFont("geist-mono", embed.binary("resources/fonts/GeistMono-Regular.ttf"));
         let logo = image.decode(embed.binary("../resources/haze-logo.png"), 4);
         if !logo { raise "The program's icon could not be decoded"; }
         let defaultIcon = claude_account_switcher_ui.normalizedIcon(logo);
@@ -232,17 +240,29 @@ fn main(): int {
             let s = claude_account_switcher_ui.switcher();
             let wanted = 0;
             if rx.get(s.active) { wanted = 1; }
-            if wanted == claudeSettings.applied { return; }
-            claudeSettings.applied = wanted;
+            let retries = rx.get(s.claudeSettingsRetries);
+            if wanted == claudeSettings.applied && retries == claudeSettings.retries { return; }
+            claudeSettings.retries = retries;
             let path = settingsPath;
             let command = helperCommand;
-            if !path { return; }
-            if !command { return; }
+            if !path {
+                claudeSettings.applied = wanted;
+                return;
+            }
+            if !command {
+                claudeSettings.applied = wanted;
+                return;
+            }
             let commandFor: str | none = none;
             if wanted == 1 { commandFor = command; }
             let applied = claude_account_switcher_ui.applyClaudeSettings(path as str, commandFor);
-            if !applied {
-                s.fail(f"Claude Code's settings were not changed: {applied}");
+            if applied {
+                claudeSettings.applied = wanted;
+                s.claudeSettingsProblem := none;
+            } else {
+                // Not remembered as done: the next change, or Retry, writes again.
+                claudeSettings.applied = -1;
+                s.claudeSettingsProblem := f"Claude Code's settings: {applied}";
             }
         };
         updateClaudeSettings();
@@ -258,8 +278,10 @@ fn main(): int {
             gfx: a.gfx,
             windowState: a.windowState,
             fonts: [
-                { name: "roboto", id: font },
-                { name: "default", id: font },
+                { name: "default", id: geist },
+                { name: "geist", id: geist },
+                { name: "geist-medium", id: geistMedium },
+                { name: "geist-mono", id: geistMono },
             ],
             mousePos: () => a.mousePos(),
             mousePosKnown: () => a.mousePosKnown(),

@@ -11,8 +11,9 @@ The tokens are made with `claude setup-token` (valid for a year), one per accoun
 ## Using it
 
 - Left click on the tray icon: the next account that has a token on this machine becomes active.
-- Right click: the window, where accounts are added, removed and given this machine's token. The gear holds the profile repo's folder and Quit.
+- Right click: the window. A click on an account makes it active; its menu (right click, or the button on hover) replaces its token, changes its icon, renames or removes it. The gear holds the profile repo's folder and Quit.
 - On the first start the window asks for the profile repo's folder.
+- Closing the window, or clicking elsewhere, keeps whatever is typed and open in it.
 
 On Linux a click on the tray icon opens its menu instead (not done yet).
 
@@ -33,12 +34,11 @@ An account pulled from another machine shows without a token until one is entere
 
 ## Claude Code setting
 
-In `~/.claude/settings.json` on Windows, with the installed program's full path (never a name looked up on PATH):
+The switcher keeps it itself, in `~/.claude/settings.json`: while an account is active and the program is installed, `apiKeyHelper` is the installed program by its full path (never a name looked up on PATH) with `--print-token`, and `env.CLAUDE_CODE_API_KEY_HELPER_TTL_MS` is `1000`; while no account is active, neither is there and Claude Code uses its own login. Every other entry stays as it is, and a file that is not valid JSON is never written. So no machine sets this by hand, and none can drift.
 
-```json
-"apiKeyHelper": "\"C:\\Users\\<user>\\AppData\\Local\\Programs\\claude-account-switcher\\claude-account-switcher.exe\" --print-token",
-"env": { "CLAUDE_CODE_API_KEY_HELPER_TTL_MS": "1000" }
-```
+While the setting is there, Claude Code's claude.ai features (Artifacts, Remote Control, claude.ai connectors) are off: they need its own login.
+
+To go back to Claude Code's own login by hand (if the program is gone): delete those two entries from `~/.claude/settings.json`.
 
 ## Build, run and test
 
@@ -53,6 +53,7 @@ Installed for the current user (release build into `%LOCALAPPDATA%\Programs\clau
 
 - `src/main.hz`: the program (window, tray, pickers, autostart, where the files are).
 - `ui/`: the accounts, the tokens and every component, as the library `claude_account_switcher_ui`. It knows no real path.
+- `scripts/fetch-fonts.hz`: fetches Geist and Geist Mono (SIL Open Font License 1.1, its text comes along) at a pinned commit into `resources/fonts/`, which git ignores; the build runs it whenever the files are missing or the pin changes, and the program embeds them.
 - `tests/`: the store against scratch folders and the window driven headlessly:
 
 ```

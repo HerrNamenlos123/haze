@@ -11,6 +11,9 @@ let codicon_metadata: rx.Computed<[]IconMeta> | none = none;
 
 @props
 icon: str;
+// In px. Codicons are drawn on a 16 px grid: at 16 (or a whole multiple) every
+// stroke falls on whole pixels, anywhere else it is smeared across two.
+size: real = 16.0;
 
 @setup
 
@@ -69,6 +72,6 @@ let selectedIcon = computed(() => {
     return fallback;
 });
 
-@template [h-fit w-fit font-family-["codicons"]]
+@template [h-fit w-fit font-family-["codicons"] font-size-[props.size]]
 
 text [] [selectedIcon.icon]

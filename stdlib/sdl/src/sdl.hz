@@ -18,6 +18,7 @@ namespace ffi {
 	extern C fn haze_sdl_destroyTray(tray: SDL_Tray): void :: final;
 	extern C fn haze_sdl_takeGlobalHotkey(): bool :: final;
 	extern C fn haze_sdl_moveWindowToTray(window: SDL_Window, tray: SDL_Tray): void :: final;
+	extern C fn haze_sdl_setWindowCorners(window: SDL_Window, corners: int): void :: final;
 	extern C fn haze_sdl_getPrefPath(org: str, app: str): str :: final;
 
 	extern C fn haze_sdl_init(platformDecorations: bool): bool :: final;
@@ -670,6 +671,16 @@ export ref struct Window {
 		ffi.haze_sdl_moveWindowToTray(this.handle, tray.handle);
 	}
 
+	// How the system draws the window's corners. Windows 11 only: elsewhere the
+	// window manager decides, and this does nothing.
+	fn setCorners(corners: WindowCorners) {
+		let value = 0;
+		if corners == WindowCorners.Square { value = 1; }
+		else if corners == WindowCorners.Round { value = 2; }
+		else if corners == WindowCorners.RoundSmall { value = 3; }
+		ffi.haze_sdl_setWindowCorners(this.handle, value);
+	}
+
 	fn cancelClose() {
 		ffi.setWindowShouldClose(this.handle, false);
 	}
@@ -1282,6 +1293,10 @@ export fn waitEventTimeout(timeoutMs: i32) {
 export fn getTime(): real {
 	return ffi.getTime() as real;
 }
+
+// How a window's corners are drawn: the system's default, square, rounded,
+// or only slightly rounded.
+export enum WindowCorners { Default, Square, Round, RoundSmall }
 
 // A click on the tray icon itself. sdl_impl.c queues them as 0, 1 and 2.
 export enum TrayClick { Left, Right, Middle }

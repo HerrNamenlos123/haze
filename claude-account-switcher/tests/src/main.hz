@@ -45,6 +45,7 @@ ref struct Sim {
     drawingTexts: []TextDraw = [];
     // What the store asked the host to pick, and what the test answers.
     picks: []claude_account_switcher_ui.PickKind = [];
+    pickBusy: bool = false;
     answer: str = "";
     checks: int = 0;
     failures: int = 0;
@@ -128,12 +129,16 @@ fn newFixture(sim: mut Sim): Fixture {
 }
 
 fn open(sim: mut Sim, f: Fixture): bool {
-    let opened = claude_account_switcher_ui.openSwitcher(f.state, (kind: claude_account_switcher_ui.PickKind): none => {
+    // Like the host's: refused while one is open (pickBusy); otherwise
+    // answered at once with `answer` (none when it is empty, a cancel).
+    let opened = claude_account_switcher_ui.openSwitcher(f.state, (kind: claude_account_switcher_ui.PickKind): bool => {
+        if sim.pickBusy { return false; }
         sim.picks.push(kind);
         let answer = sim.answer;
         let path: str | none = none;
         if answer.length > 0 { path = answer; }
         claude_account_switcher_ui.switcher().picked(kind, path);
+        return true;
     });
     if opened { return true; }
     return false;
@@ -566,6 +571,159 @@ fn findTextStarting(sim: mut Sim, prefix: str): TextDraw | none {
     return none;
 }
 
+// ── Found by the second review (2026-11-04) ─────────────────────────
+
+fn countOf(text: str, needle: str): int {
+    return text.split(needle).length - 1;
+}
+
+// JSON keys are exact: an "Env" of the user's is not Claude Code's "env",
+// and nothing piles up however often the state is written.
+fn scenarioClaudeSettingsExactKeys(sim: mut Sim) {
+    let dir = freshDir(sim.scenario);
+    let path = f"{dir}/settings.json";
+    let cmd = claude_account_switcher_ui.helperCommand("C:\\x\\switcher.exe");
+    fs.writeText(path, "{\"Env\": {\"KEEP\": \"1\"}, \"ApiKeyHelper\": \"theirs\"}");
+    claude_account_switcher_ui.applyClaudeSettings(path, cmd);
+    claude_account_switcher_ui.applyClaudeSettings(path, none);
+    claude_account_switcher_ui.applyClaudeSettings(path, cmd);
+    let on = readOr(path, "");
+    sim.check("one interval", countOf(on, "CLAUDE_CODE_API_KEY_HELPER_TTL_MS") == 1);
+    sim.check("one helper", countOf(on, "--print-token") == 1);
+    sim.check("in an exact \"env\"", on.contains("\"env\""));
+    sim.check("the user's Env and ApiKeyHelper untouched", on.contains("\"Env\"") && on.contains("KEEP") && on.contains("theirs"));
+    claude_account_switcher_ui.applyClaudeSettings(path, none);
+    let off = readOr(path, "");
+    sim.check("off: no interval left anywhere", countOf(off, "CLAUDE_CODE_API_KEY_HELPER_TTL_MS") == 0 && countOf(off, "--print-token") == 0);
+    sim.check("off: theirs still there", off.contains("KEEP") && off.contains("theirs"));
+
+    fs.writeText(path, "{\"env\": {\"FOO\": \"1\"}}");
+    claude_account_switcher_ui.applyClaudeSettings(path, cmd);
+    claude_account_switcher_ui.applyClaudeSettings(path, none);
+    claude_account_switcher_ui.applyClaudeSettings(path, cmd);
+    claude_account_switcher_ui.applyClaudeSettings(path, cmd);
+    sim.check("with the user's env: one interval after on, off, on, on", countOf(readOr(path, ""), "CLAUDE_CODE_API_KEY_HELPER_TTL_MS") == 1);
+
+    let twice = "{\"env\": {}, \"env\": {}}";
+    fs.writeText(path, twice);
+    let refused = claude_account_switcher_ui.applyClaudeSettings(path, cmd);
+    sim.check("two \"env\" are refused", refused ? false : true);
+    sim.checkStr("and left as they are", readOr(path, ""), twice);
+}
+
+// A right click on another row while a menu is open moves the menu there.
+fn scenarioWindowMenuMoves(sim: mut Sim) {
+    let f = threeAccounts(sim);
+    let activation = rx.reactive<int>(0);
+    let w = openWindow(sim, activation);
+    // The menu opens below the pointer: the second right click goes to a
+    // row above it, which the menu does not cover.
+    w.rightClick(centerOf(sim, "C"));
+    w.rightClick(centerOf(sim, "A"));
+    sim.check("menu open again", shows(sim, "Rename"));
+    w.click(centerOf(sim, "Rename"));
+    w.type("Aye");
+    w.key(ui_components.Key.Return);
+    sim.checkStr("the menu was A's", readOr(f"{f.synced()}/accounts.json", ""),
+        "{\"accounts\":[{\"id\":\"a\",\"name\":\"Aye\"},{\"id\":\"b\",\"name\":\"B\"},{\"id\":\"c\",\"name\":\"C\"}]}");
+}
+
+// "Change icon" while another picker is open: the answer that comes is the
+// open picker's, and goes where that one was for.
+fn scenarioIconPickWhileOpen(sim: mut Sim) {
+    let f = threeAccounts(sim);
+    let blue = f"{f.repo}/blue.png";
+    fs.writeBinary(blue, solidPng(64, 64, 0 as u8, 0 as u8, 255 as u8));
+    sim.pickBusy = true;
+    s().requestIconFor("c");
+    s().picked(claude_account_switcher_ui.PickKind.Icon, blue);
+    sim.pickBusy = false;
+    sim.check("the add form got it", rx.get(s().pickedIcon) ? true : false);
+    if let icon = s().iconOf("c") {
+        sim.check("c's icon unchanged (still red)", icon.pixels[4 * (32 * 64 + 32)] > 200);
+    }
+}
+
+// A row keeps what is typed into it when another row goes.
+fn scenarioWindowRowKeepsItsDraft(sim: mut Sim) {
+    let f = threeAccounts(sim);
+    let activation = rx.reactive<int>(0);
+    let w = openWindow(sim, activation);
+    w.rightClick(centerOf(sim, "C"));
+    w.click(centerOf(sim, "Replace token"));
+    w.type("sk-ant-oat01-half");
+    s().removeAccount("b");
+    w.frames(4);
+    sim.check("the half token is still in C's box", shows(sim, "sk-ant-oat01-half"));
+    w.type("done");
+    w.key(ui_components.Key.Return);
+    sim.checkStr("and saved to C", readOr(f"{f.state}/tokens/c.token", ""), "sk-ant-oat01-halfdone");
+    sim.checkStr("a untouched", readOr(f"{f.state}/tokens/a.token", ""), TOKEN_A);
+}
+
+// Esc first undoes what is open in the window (menu, a row's edit), and the
+// menu does not survive closing the window.
+fn scenarioWindowEscapeOrder(sim: mut Sim) {
+    let f = threeAccounts(sim);
+    let activation = rx.reactive<int>(0);
+    let w = openWindow(sim, activation);
+    w.rightClick(centerOf(sim, "B"));
+    w.click(centerOf(sim, "Remove"));
+    sim.check("asks", shows(sim, "Remove"));
+    w.key(ui_components.Key.Escape);
+    sim.check("Esc cancels the question", !shows(sim, "Remove"));
+    sim.checkStr("nothing removed", ids(), "a+,b+,c+");
+    w.rightClick(centerOf(sim, "B"));
+    sim.check("menu open", shows(sim, "Rename"));
+    activation := rx.get(activation) + 1;
+    w.frames(4);
+    sim.check("closing and opening the window closes the menu", !shows(sim, "Rename"));
+}
+
+// A click anywhere else ends a rename and keeps what was typed (Esc is what
+// throws it away).
+fn scenarioWindowRenameEndsOnClickOutside(sim: mut Sim) {
+    let f = threeAccounts(sim);
+    let activation = rx.reactive<int>(0);
+    let w = openWindow(sim, activation);
+    w.rightClick(centerOf(sim, "B"));
+    w.click(centerOf(sim, "Rename"));
+    w.type("Zed");
+    w.click(Vec2((WIDTH as real) / 2.0, (HEIGHT as real) - 40.0));
+    sim.check("the box is gone", shows(sim, "Zed") && !shows(sim, "B"));
+    sim.checkStr("and the name kept", readOr(f"{f.synced()}/accounts.json", ""),
+        "{\"accounts\":[{\"id\":\"a\",\"name\":\"A\"},{\"id\":\"b\",\"name\":\"Zed\"},{\"id\":\"c\",\"name\":\"C\"}]}");
+    sim.checkStr("nothing else happened", activeId(), "a");
+
+    w.rightClick(centerOf(sim, "C"));
+    w.click(centerOf(sim, "Rename"));
+    w.type("Nope");
+    w.key(ui_components.Key.Escape);
+    sim.check("Esc throws it away", shows(sim, "C") && !shows(sim, "Nope"));
+    sim.check("and stores nothing", !readOr(f"{f.synced()}/accounts.json", "").contains("Nope"));
+}
+
+// The row's menu button is the button's, not a click on the row: it opens
+// the menu and does not make the account active.
+fn scenarioWindowMenuButtonIsNotARowClick(sim: mut Sim) {
+    let f = threeAccounts(sim);
+    let activation = rx.reactive<int>(0);
+    let w = openWindow(sim, activation);
+    let row = centerOf(sim, "B");
+    w.hover(row);
+    // Its icon: the drawn glyph on B's line, right of the name.
+    let button = Vec2(-100.0, -100.0);
+    for d in sim.textDraws {
+        if d.x > (WIDTH as real) - 60.0 && d.y < row.y + 8.0 && d.y + d.h > row.y - 8.0 {
+            button = Vec2(d.x + d.w / 2.0, d.y + d.h / 2.0);
+        }
+    }
+    sim.check("the button shows on hover", button.x > 0.0);
+    w.click(button);
+    sim.checkStr("b not made active", activeId(), "a");
+    sim.check("the menu opened", shows(sim, "Rename"));
+}
+
 // ── Ids ──────────────────────────────────────────────────────────────
 
 fn scenarioSlugs(sim: mut Sim) {
@@ -675,6 +833,25 @@ ref struct Window {
         this.frames(3);
     }
 
+    // A right click, which asks for the menu of whatever is under it.
+    mut fn rightClick(pos: Vec2) {
+        this.sim.now = this.sim.now + 2.0;
+        this.sim.mouse = pos;
+        this.sim.pointerEdges.push({ button: ui_components.PointerButton.None, kind: ui_components.PointerEdgeKind.Moved, pos: pos });
+        this.frames(2);
+        this.sim.pointerEdges.push({ button: ui_components.PointerButton.Right, kind: ui_components.PointerEdgeKind.Pressed, pos: pos });
+        this.frame();
+        this.sim.pointerEdges.push({ button: ui_components.PointerButton.Right, kind: ui_components.PointerEdgeKind.Released, pos: pos });
+        this.frames(3);
+    }
+
+    mut fn key(k: ui_components.Key) {
+        this.sim.keyEdges.push({ key: k, kind: ui_components.KeyEdgeKind.Pressed, repeat: false, modifiers: KeyModifiers.None });
+        this.frame();
+        this.sim.keyEdges.push({ key: k, kind: ui_components.KeyEdgeKind.Released, repeat: false, modifiers: KeyModifiers.None });
+        this.frames(2);
+    }
+
     mut fn hover(pos: Vec2) {
         this.sim.mouse = pos;
         this.sim.pointerEdges.push({ button: ui_components.PointerButton.None, kind: ui_components.PointerEdgeKind.Moved, pos: pos });
@@ -691,7 +868,7 @@ fn openWindow(sim: mut Sim, activation: rx.Reactive<int>): mut Window {
     let layout = ui_layout.LayoutContext({
         width: WIDTH,
         height: HEIGHT,
-        fonts: [{ name: "default", id: 0 }, { name: "roboto", id: 0 }],
+        fonts: [{ name: "default", id: 0 }, { name: "geist", id: 0 }, { name: "geist-medium", id: 0 }, { name: "geist-mono", id: 0 }],
         getFontLineHeight: (fontId: int, fontSize: real): real => fontSize * 1.3,
         measureText: (fontId: int, fontSize: real, text: str): Vec2 => Vec2(text.length as real * CHAR, fontSize * 1.3),
     });
@@ -785,7 +962,7 @@ fn scenarioWindowFirstStart(sim: mut Sim) {
     // A wrong folder: shown, still asking.
     sim.check("path box", clickBox(w, "C:\\Users\\...\\Projects\\profile"));
     w.type(f"{f.repo}/nope");
-    w.click(centerOf(sim, "Use"));
+    w.click(centerOf(sim, "Use folder"));
     sim.check("still asking", shows(sim, "Profile repo"));
     sim.check("problem shown", s().hasProblem());
 
@@ -793,7 +970,7 @@ fn scenarioWindowFirstStart(sim: mut Sim) {
     sim.answer = f.repo;
     s().requestPick(claude_account_switcher_ui.PickKind.Folder);
     w.frames(3);
-    w.click(centerOf(sim, "Use"));
+    w.click(centerOf(sim, "Use folder"));
     sim.check("accounts view", shows(sim, "No accounts"));
     sim.check("repo taken", s().hasProfileRepo());
     sim.check("problem gone", !s().hasProblem());
@@ -809,12 +986,12 @@ fn scenarioWindowTokenMissing(sim: mut Sim) {
     let activation = rx.reactive<int>(0);
     let w = openWindow(sim, activation);
     sim.check("account listed", shows(sim, "Work"));
-    sim.check("asks for its token", clickBox(w, "Token for this machine"));
+    sim.check("asks for its token", clickBox(w, "sk-ant-oat01-..."));
     w.type(TOKEN_A);
     w.click(centerOf(sim, "Save"));
     sim.checkStr("saved", readOr(f"{f.state}/tokens/work.token", "<missing>"), TOKEN_A);
     sim.checkStr("now active", activeId(), "work");
-    sim.check("token box gone", !shows(sim, "Token for this machine"));
+    sim.check("token box gone", !shows(sim, "sk-ant-oat01-..."));
     sim.check("token never drawn", !shows(sim, TOKEN_A));
 }
 
@@ -823,16 +1000,157 @@ fn scenarioWindowRemoveAsks(sim: mut Sim) {
     let activation = rx.reactive<int>(0);
     let w = openWindow(sim, activation);
     sim.check("three rows", shows(sim, "A") && shows(sim, "B") && shows(sim, "C"));
-    // The trash button shows on hover, right of the name; the name's row is
-    // the whole width, so the button sits near the right edge.
-    let row = centerOf(sim, "B");
-    w.hover(row);
-    w.click(Vec2((WIDTH as real) - 30.0, row.y));
-    sim.check("asks first", shows(sim, "Remove"));
+    sim.check("no menu yet", !shows(sim, "Rename"));
+    w.rightClick(centerOf(sim, "B"));
+    sim.check("right click opens the menu", shows(sim, "Make active") && shows(sim, "Replace token") && shows(sim, "Change icon") && shows(sim, "Rename") && shows(sim, "Remove"));
+    w.click(centerOf(sim, "Remove"));
+    sim.check("menu closed", !shows(sim, "Rename"));
+    sim.check("the row asks first", shows(sim, "Remove"));
     sim.checkStr("nothing removed yet", ids(), "a+,b+,c+");
     w.click(centerOf(sim, "Remove"));
     sim.checkStr("b removed", ids(), "a+,c+");
     sim.check("b's row gone", !shows(sim, "B"));
+}
+
+// A click on a row makes that account active; one without a token on this
+// machine says so instead.
+fn scenarioWindowRowClickActivates(sim: mut Sim) {
+    let f = threeAccounts(sim);
+    let activation = rx.reactive<int>(0);
+    let w = openWindow(sim, activation);
+    sim.checkStr("a active", activeId(), "a");
+    w.click(centerOf(sim, "C"));
+    sim.checkStr("c active after its row was clicked", activeId(), "c");
+    sim.checkStr("c's token in use", readOr(f"{f.state}/active.token", ""), TOKEN_C);
+    w.click(centerOf(sim, "C"));
+    sim.checkStr("a second click changes nothing", activeId(), "c");
+    fs.removeFile(f"{f.state}/tokens/b.token");
+    s().reload();
+    w.frames(3);
+    sim.check("b asks for its token", shows(sim, "no token"));
+    w.click(centerOf(sim, "B"));
+    sim.checkStr("b without a token stays inactive", activeId(), "c");
+    sim.check("and says why", s().problemText().contains("no token on this machine"));
+    checkConsistent(sim, f, "after row clicks");
+}
+
+// Rename and replace the token through the menu.
+fn scenarioWindowMenuEdits(sim: mut Sim) {
+    let f = threeAccounts(sim);
+    let activation = rx.reactive<int>(0);
+    let w = openWindow(sim, activation);
+    w.rightClick(centerOf(sim, "B"));
+    w.click(centerOf(sim, "Rename"));
+    // The old name is selected: typing replaces it.
+    w.type("Bee");
+    w.key(ui_components.Key.Return);
+    sim.check("renamed", shows(sim, "Bee") && !shows(sim, "B"));
+    sim.checkStr("stored", readOr(f"{f.synced()}/accounts.json", ""),
+        "{\"accounts\":[{\"id\":\"a\",\"name\":\"A\"},{\"id\":\"b\",\"name\":\"Bee\"},{\"id\":\"c\",\"name\":\"C\"}]}");
+    sim.checkStr("its id stays", ids(), "a+,b+,c+");
+
+    w.rightClick(centerOf(sim, "A"));
+    w.click(centerOf(sim, "Replace token"));
+    sim.check("asks for the token", shows(sim, "sk-ant-oat01-..."));
+    w.type(TOKEN_C);
+    w.key(ui_components.Key.Return);
+    sim.checkStr("a's new token", readOr(f"{f.state}/tokens/a.token", ""), TOKEN_C);
+    sim.checkStr("in use at once (a is active)", readOr(f"{f.state}/active.token", ""), TOKEN_C);
+    sim.check("token box gone", !shows(sim, "sk-ant-oat01-..."));
+    sim.check("token never drawn", !shows(sim, TOKEN_C));
+}
+
+// Closing and opening the window (clicking elsewhere hides it) keeps what is
+// typed and which form is open.
+fn scenarioWindowKeepsState(sim: mut Sim) {
+    let f = threeAccounts(sim);
+    let activation = rx.reactive<int>(0);
+    let w = openWindow(sim, activation);
+    // The + button: the leftmost icon in the title bar, right of the title.
+    let plus = Vec2(-100.0, -100.0);
+    for d in sim.textDraws {
+        if d.y < 34.0 && d.text != "Claude Accounts" && (plus.x < 0.0 || d.x < plus.x) {
+            plus = Vec2(d.x + d.w / 2.0, d.y + d.h / 2.0);
+        }
+    }
+    sim.check("the + button is drawn", plus.x > 0.0);
+    w.click(plus);
+    sim.check("add form open", shows(sim, "Add account"));
+    w.type("Half typ");
+    activation := rx.get(activation) + 1;
+    w.frames(4);
+    sim.check("still open after reopening", shows(sim, "Add account"));
+    sim.check("what was typed is still there", shows(sim, "Half typ"));
+}
+
+// The account menu offers "Make active" only where it would do something.
+fn scenarioStoreActivateRenameIcon(sim: mut Sim) {
+    let f = threeAccounts(sim);
+    sim.check("activate b", s().activateAccount("b"));
+    sim.checkStr("b active", activeId(), "b");
+    sim.check("activate the active one is fine", s().activateAccount("b"));
+    sim.check("unknown refused", !s().activateAccount("zzz"));
+    sim.check("rename refused without a name", !s().renameAccount("b", "   "));
+    sim.check("rename", s().renameAccount("b", "  Bee  "));
+    sim.checkStr("name trimmed, others kept", readOr(f"{f.synced()}/accounts.json", ""),
+        "{\"accounts\":[{\"id\":\"a\",\"name\":\"A\"},{\"id\":\"b\",\"name\":\"Bee\"},{\"id\":\"c\",\"name\":\"C\"}]}");
+    let blue = f"{f.repo}/blue.png";
+    fs.writeBinary(blue, solidPng(64, 64, 0 as u8, 0 as u8, 255 as u8));
+    s().requestIconFor("c");
+    sim.answer = blue;
+    s().picked(claude_account_switcher_ui.PickKind.Icon, blue);
+    let icon = s().iconOf("c");
+    sim.check("c's icon replaced", icon ? true : false);
+    if let img = icon {
+        sim.check("now blue", img.pixels[2 + 4 * (32 * 64 + 32)] > 200 && img.pixels[4 * (32 * 64 + 32)] < 50);
+    }
+    sim.check("the add form's icon untouched", !rx.get(s().pickedIcon));
+    checkConsistent(sim, f, "after activate, rename, icon");
+}
+
+// ── Claude Code's settings ───────────────────────────────────────────
+
+fn scenarioClaudeSettings(sim: mut Sim) {
+    let dir = freshDir(sim.scenario);
+    let path = f"{dir}/settings.json";
+    let cmd = claude_account_switcher_ui.helperCommand("C:\\Program Files\\x\\switcher.exe");
+    sim.checkStr("the command quotes the full path", cmd, "\"C:\\Program Files\\x\\switcher.exe\" --print-token");
+
+    let applied = claude_account_switcher_ui.applyClaudeSettings(path, cmd);
+    sim.check("a missing file is written", applied ? (applied as bool) : false);
+    let made = json.parseToJsonNode(readOr(path, "{}"));
+    sim.check("it holds the helper and the interval", readOr(path, "").contains("apiKeyHelper") && readOr(path, "").contains("CLAUDE_CODE_API_KEY_HELPER_TTL_MS"));
+
+    let again = claude_account_switcher_ui.applyClaudeSettings(path, cmd);
+    sim.check("unchanged: not written again", again ? !(again as bool) : false);
+
+    fs.writeText(path, "{\"model\": \"opus\", \"permissions\": {\"allow\": [\"Bash(ls)\"]}, \"env\": {\"FOO\": \"1\"}, \"apiKeyHelper\": \"old\"}");
+    claude_account_switcher_ui.applyClaudeSettings(path, cmd);
+    let text = readOr(path, "");
+    sim.check("other entries kept", text.contains("\"model\"") && text.contains("opus") && text.contains("Bash(ls)") && text.contains("FOO"));
+    sim.check("old helper replaced", !text.contains("\"old\"") && text.contains("--print-token"));
+
+    claude_account_switcher_ui.applyClaudeSettings(path, none);
+    let off = readOr(path, "");
+    sim.check("off: helper and interval gone", !off.contains("apiKeyHelper") && !off.contains("CLAUDE_CODE_API_KEY_HELPER_TTL_MS"));
+    sim.check("off: the user's env stays", off.contains("FOO") && off.contains("Bash(ls)"));
+
+    fs.writeText(path, "{\"env\": {\"CLAUDE_CODE_API_KEY_HELPER_TTL_MS\": \"1000\"}, \"apiKeyHelper\": \"x\", \"theme\": \"dark\"}");
+    claude_account_switcher_ui.applyClaudeSettings(path, none);
+    let emptied = readOr(path, "");
+    sim.check("an env that only held the interval goes", !emptied.contains("\"env\"") && emptied.contains("theme"));
+
+    fs.writeText(path, "{\"env\": {}}");
+    claude_account_switcher_ui.applyClaudeSettings(path, none);
+    sim.check("an env that was empty already stays", readOr(path, "").contains("\"env\""));
+
+    let broken: []str = ["{", "[1]", "{\"env\": 3}", "\"text\""];
+    for content in broken {
+        fs.writeText(path, content);
+        let refused = claude_account_switcher_ui.applyClaudeSettings(path, cmd);
+        sim.check(f"refuses {content}", refused ? false : true);
+        sim.checkStr(f"{content} untouched", readOr(path, "<missing>"), content);
+    }
 }
 
 // Opening the window reads the files again: what a pull changed shows.
@@ -882,6 +1200,18 @@ fn main(): int {
     run("window-token-missing", (s: mut Sim) => { scenarioWindowTokenMissing(s); });
     run("window-remove-asks", (s: mut Sim) => { scenarioWindowRemoveAsks(s); });
     run("window-reloads-on-open", (s: mut Sim) => { scenarioWindowReloadsOnOpen(s); });
+    run("window-row-click-activates", (s: mut Sim) => { scenarioWindowRowClickActivates(s); });
+    run("window-menu-edits", (s: mut Sim) => { scenarioWindowMenuEdits(s); });
+    run("window-keeps-state", (s: mut Sim) => { scenarioWindowKeepsState(s); });
+    run("store-activate-rename-icon", (s: mut Sim) => { scenarioStoreActivateRenameIcon(s); });
+    run("claude-settings", (s: mut Sim) => { scenarioClaudeSettings(s); });
+    run("claude-settings-exact-keys", (s: mut Sim) => { scenarioClaudeSettingsExactKeys(s); });
+    run("window-menu-moves", (s: mut Sim) => { scenarioWindowMenuMoves(s); });
+    run("icon-pick-while-open", (s: mut Sim) => { scenarioIconPickWhileOpen(s); });
+    run("window-row-keeps-its-draft", (s: mut Sim) => { scenarioWindowRowKeepsItsDraft(s); });
+    run("window-escape-order", (s: mut Sim) => { scenarioWindowEscapeOrder(s); });
+    run("window-rename-ends-on-click-outside", (s: mut Sim) => { scenarioWindowRenameEndsOnClickOutside(s); });
+    run("window-menu-button-is-not-a-row-click", (s: mut Sim) => { scenarioWindowMenuButtonIsNotARowClick(s); });
     fmt.println(f"{sim.checks - sim.failures}/{sim.checks} checks passed");
     return sim.failures;
 }
