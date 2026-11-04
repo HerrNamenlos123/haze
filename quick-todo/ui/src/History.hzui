@@ -4,21 +4,32 @@ from ui_widgets import ButtonComponent, ScrollView, ScrollViewComponent, ScrollV
 close: ();
 
 @setup
+let rootRef = elementRef<DivElement>();
 let selected = reactive<int>(0);
 let pendingDelete = reactive<bool>(false);
 let items = computed((): []Note => notes().historyList());
+// The selection as it applies to the history as it is now (see NoteList).
+let current = computed((): int => clamp<int>(rx.get(selected), 0, max(items.length - 1, 0)));
 
 let select = (index: int) => {
     selected := clamp<int>(index, 0, max(items.length - 1, 0));
 };
 
+// The keyboard stays here: a row's own button had it, and that row is gone.
+let focusHistory = () => {
+    let root = rx.get(rootRef);
+    if root { root.focus(); }
+};
+
 let restore = (index: int) => {
     notes().restore(index, 0);
+    focusHistory();
     select(index);
 };
 
 let forget = (index: int) => {
     notes().forget(index);
+    focusHistory();
     select(index);
 };
 
@@ -27,7 +38,7 @@ let clear = () => {
 };
 
 let keyPressed = (event: KeyboardEvent) => {
-    let index: int = rx.get(selected);
+    let index: int = current;
     let shift = hasModifier(event.modifiers, KeyModifiers.Shift);
     let deleting = rx.get(pendingDelete);
     let hasItems = items.length > 0;
@@ -44,13 +55,13 @@ let keyPressed = (event: KeyboardEvent) => {
     event.stopPropagation();
 };
 
-@template [col w-grow h-grow] focusable=[true] autofocus=[true] @keydown=keyPressed
+@template [col w-grow h-grow] ref=rootRef focusable=[true] autofocus=[true] @keydown=keyPressed
 
 ScrollView [] padding=[6] {
     #content {
         div [col w-grow h-fit gap-1] {
             HistoryItem for=[note, i in items] key=[i] [] text=[note.text] done=[note.done] index=[i]
-                selected=[i == rx.get(selected)] @select=select @restore=restore @forget=forget {}
+                selected=[i == rx.get(current)] @select=select @restore=restore @forget=forget {}
             div if=[items.length == 0] [col w-grow items-center py-8] {
                 text [text-color-["#71717A"]] ["Deleted notes show up here"]
             }

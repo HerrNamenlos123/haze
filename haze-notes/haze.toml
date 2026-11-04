@@ -10,7 +10,7 @@ type = "exe"
 # How the app presents itself on the desktop: the build writes a .desktop entry
 # and the icon from this next to the binary.
 [app]
-appId = "io.github.herrnamenlos123.HazeNotes"
+appId = "io.github.hazelang.HazeNotes"
 displayName = "Haze Notes"
 icon = "../resources/haze-logo.png"
 categories = ["Office"]
@@ -23,8 +23,8 @@ categories = ["Office"]
 install = '''
 haze build --release &&
 install -Dm755 __haze__/haze-notes/bin/haze-notes ~/.local/bin/haze-notes &&
-install -Dm644 __haze__/haze-notes/bin/io.github.herrnamenlos123.HazeNotes.desktop ~/.local/share/applications/io.github.herrnamenlos123.HazeNotes.desktop &&
-install -Dm644 __haze__/haze-notes/bin/io.github.herrnamenlos123.HazeNotes.png ~/.local/share/icons/hicolor/512x512/apps/io.github.herrnamenlos123.HazeNotes.png &&
+install -Dm644 __haze__/haze-notes/bin/io.github.hazelang.HazeNotes.desktop ~/.local/share/applications/io.github.hazelang.HazeNotes.desktop &&
+install -Dm644 __haze__/haze-notes/bin/io.github.hazelang.HazeNotes.png ~/.local/share/icons/hicolor/512x512/apps/io.github.hazelang.HazeNotes.png &&
 gtk-update-icon-cache -f -t ~/.local/share/icons/hicolor
 '''
 

@@ -1,0 +1,18 @@
+name = "quick_todo_ui"
+id = "SlUae9DW"
+version = "1.0.0"
+description = "Quick Todo's notes store and its user interface, without the window, the tray or the system integration"
+license = "MIT"
+authors = ["HerrNamenlos123"]
+type = "lib"
+
+[dependencies]
+ui_components = { path = "../../stdlib/ui_components" }
+ui_widgets = { path = "../../stdlib/ui_widgets" }
+codicons = { path = "../../stdlib/codicons" }
+# The SFC transformer below generates `from hzui import ...` into every
+# .hzui file in this module, so hzui is a real dependency, not only a plugin.
+hzui = { path = "../../stdlib/hzui" }
+
+[plugins]
+hzui = { path = "../../stdlib/hzui" }

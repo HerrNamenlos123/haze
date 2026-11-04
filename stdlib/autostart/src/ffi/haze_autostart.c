@@ -16,7 +16,7 @@ static void haze_autostart_widen(hzstd_str_t text, wchar_t *out, int capacity)
   out[written > 0 ? written : 0] = 0;
 }
 
-hzstd_bool_t haze_autostart_set(hzstd_str_t appId, hzstd_str_t args, hzstd_bool_t enabled)
+hzstd_bool_t haze_autostart_set(hzstd_str_t appId, hzstd_str_t executable, hzstd_str_t args, hzstd_bool_t enabled)
 {
   wchar_t name[256];
   haze_autostart_widen(appId, name, 256);
@@ -25,10 +25,11 @@ hzstd_bool_t haze_autostart_set(hzstd_str_t appId, hzstd_str_t args, hzstd_bool_
     return status == ERROR_SUCCESS || status == ERROR_FILE_NOT_FOUND;
   }
 
-  wchar_t exe[MAX_PATH];
-  if (!GetModuleFileNameW(NULL, exe, MAX_PATH)) {
+  if (executable.length == 0) {
     return false;
   }
+  wchar_t exe[MAX_PATH];
+  haze_autostart_widen(executable, exe, MAX_PATH);
   wchar_t wideArgs[1024];
   haze_autostart_widen(args, wideArgs, 1024);
   wchar_t command[MAX_PATH + 1024 + 4];
@@ -76,7 +77,7 @@ static int haze_autostart_path(hzstd_str_t appId, char *out, size_t capacity)
   return snprintf(out, capacity, "%s/%.*s.desktop", dir, (int)appId.length, appId.data) < (int)capacity;
 }
 
-hzstd_bool_t haze_autostart_set(hzstd_str_t appId, hzstd_str_t args, hzstd_bool_t enabled)
+hzstd_bool_t haze_autostart_set(hzstd_str_t appId, hzstd_str_t executable, hzstd_str_t args, hzstd_bool_t enabled)
 {
   char path[4096];
   if (!haze_autostart_path(appId, path, sizeof(path))) {
@@ -86,12 +87,12 @@ hzstd_bool_t haze_autostart_set(hzstd_str_t appId, hzstd_str_t args, hzstd_bool_
     return unlink(path) == 0 || access(path, F_OK) != 0;
   }
 
-  char exe[4096];
-  ssize_t length = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
-  if (length <= 0) {
+  if (executable.length == 0 || executable.length >= 4096) {
     return false;
   }
-  exe[length] = 0;
+  char exe[4096];
+  memcpy(exe, executable.data, executable.length);
+  exe[executable.length] = 0;
 
   char dir[4096];
   haze_autostart_dir(dir, sizeof(dir));

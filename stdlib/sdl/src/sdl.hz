@@ -6,6 +6,9 @@ namespace ffi {
 	export extern C ref struct SDL_Window {};
 	export extern C ref struct SDL_Tray {};
 
+	// The key a key event names: see sdl_impl.c. For tests.
+	export extern C fn haze_sdl_layout_key(scancode: int, keycode: int): int :: final;
+
 	extern C fn haze_sdl_createTray(pixels: cptr, width: int, height: int, tooltip: str): SDL_Tray | none :: final;
 	extern C fn haze_sdl_addTrayEntry(tray: SDL_Tray, label: str): int :: final;
 	extern C fn haze_sdl_takeTrayClick(): int :: final;

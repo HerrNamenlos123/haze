@@ -1,16 +1,19 @@
 __c__("#include \"ffi/haze_autostart.c\"");
 
 namespace ffi {
-    export extern C fn haze_autostart_set(appId: str, args: str, enabled: bool): bool :: final;
+    export extern C fn haze_autostart_set(appId: str, executable: str, args: str, enabled: bool): bool :: final;
     export extern C fn haze_autostart_is_enabled(appId: str): bool :: final;
 }
 
-export fn enable(appId: str, args: str = ""): bool {
-    return ffi.haze_autostart_set(appId, args, true);
+// Starts `executable` with `args` at login, as the entry named `appId`. The
+// caller names the program: the running one is often a build that is not the
+// installed program (see app.installedExecutable).
+export fn enable(appId: str, executable: str, args: str = ""): bool {
+    return ffi.haze_autostart_set(appId, executable, args, true);
 }
 
 export fn disable(appId: str): bool {
-    return ffi.haze_autostart_set(appId, "", false);
+    return ffi.haze_autostart_set(appId, "", "", false);
 }
 
 export fn isEnabled(appId: str): bool {

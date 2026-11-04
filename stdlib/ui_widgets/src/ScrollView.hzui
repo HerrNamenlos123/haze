@@ -26,6 +26,11 @@ content: {};
 
 @expose
 scroll: mut ui_components.ScrollState;
+// Scrolls a span of the content into view (scrollIntoView, "nearest"), given
+// in WINDOW coordinates as the last layout placed it -- e.g. an element's
+// position().y and size().y. Only this view knows where its content layer
+// is, padding included, so it is the one place that can convert them.
+revealWindowSpan: (top: real, height: real) => none;
 
 @setup
 let viewRef = elementRef<DivElement>();
@@ -59,6 +64,14 @@ let trackOffset = (windowY: real): real => {
     let view = rx.get(viewRef);
     let pos = view ? view.position() : none;
     return pos ? windowY - pos.y : windowY;
+};
+
+let revealWindowSpan = (top: real, height: real): none => {
+    let content = rx.get(contentRef);
+    let origin = content ? content.position() : none;
+    if origin {
+        scroll.scrollIntoView(top - origin.y, height);
+    }
 };
 
 let grabBar = (event: PointerEvent) => {

@@ -24,6 +24,10 @@ fontSize: real | none = none;
 focusRing: real = 2.0;
 focusRingColor: str = "#0078D4";
 focusRingOffset: real = 2.0;
+// The second press of a double click does nothing. For a button whose row is
+// replaced by the next one under the pointer when it acts (a list's remove
+// button): otherwise a double click acts on two rows.
+ignoreDoubleClick: bool = false;
 
 @slot
 content: {
@@ -50,17 +54,29 @@ let ringVisible = computed(() => (buttonRef?.focusVisible() ?? false) && props.f
 let pressed = (event: PointerEvent) => {
     if !props.enabled { return; }
     event.stopPropagation();
+    if props.ignoreDoubleClick && event.detail >= 2 { return; }
     if event.activatesOnPress() { emits.click(); }
 };
 
 let tapped = (event: PointerEvent) => {
     if !props.enabled || event.activatesOnPress() { return; }
     event.stopPropagation();
+    if props.ignoreDoubleClick && event.detail >= 2 { return; }
     emits.click();
 };
 
+// Two presses on a button are two presses of the button, never a double
+// click on whatever it sits in (a row that opens on a double click).
+let doubleClicked = (event: PointerEvent) => {
+    event.stopPropagation();
+};
+
+// Enter and Space press a focused button, as in every toolkit. Every other
+// key goes on to the button's ancestors: Escape still closes the panel the
+// button is in, and Tab still moves on.
 let keydown = (event: KeyboardEvent) => {
     if !props.enabled { return; }
+    if event.key != Key.Return && event.key != Key.Space { return; }
     event.preventDefault();
     event.stopPropagation();
     emits.click();
@@ -92,6 +108,7 @@ let backgroundColor = computed(() => {
     focusable=[props.enabled]
     @pointerdown=pressed
     @click=tapped
+    @dblclick=doubleClicked
     @keydown=keydown
 
 slot content label=[props.label] icon=[props.icon] {

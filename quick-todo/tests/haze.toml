@@ -1,0 +1,13 @@
+name = "quick_todo_tests"
+id = "Qt7sTn4e"
+version = "1.0.0"
+description = "Quick Todo's notes and its user interface driven headlessly, against scratch files"
+license = "MIT"
+authors = ["HerrNamenlos123"]
+type = "exe"
+
+[dependencies]
+quick_todo_ui = { path = "../ui" }
+ui_components = { path = "../../stdlib/ui_components" }
+ui_elements = { path = "../../stdlib/ui_elements" }
+ui_layout = { path = "../../stdlib/ui_layout" }

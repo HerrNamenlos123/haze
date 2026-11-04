@@ -1,0 +1,252 @@
+// A note as it is stored in notes.json. The file format: changing it changes
+// what every older Quick Todo can read.
+//
+// No field has a default, so a file without one of them is not a notes file:
+// every file Quick Todo ever wrote holds all of them, and `{}` or a file of
+// some other shape must not open as an empty list that the next save writes
+// over it.
+export struct StoredNote {
+    text: str;
+    done: bool;
+}
+
+export struct NotesFile {
+    notes: []StoredNote;
+    history: []StoredNote;
+    autostart: bool;
+}
+
+// A note while the program runs. `id` names this note and no other for as long
+// as the program runs, and is never stored: everything that acts on a note it
+// saw earlier (an edit in progress, a click) names it by id, so a list that
+// changed meanwhile can never redirect the action to a different note.
+export struct Note {
+    id: int;
+    text: str = "";
+    done: bool = false;
+}
+
+const historyLimit = 500;
+
+export ref struct NotesStore {
+    notes: rx.ShallowReactive<[]Note>;
+    history: rx.ShallowReactive<[]Note>;
+    autostart: rx.Reactive<bool>;
+    path: str;
+    // The system side of the setting (the login entry), which is the host's:
+    // this module only remembers what the user chose.
+    applyAutostart: (enabled: bool) => none;
+    lastId: int = 0;
+
+    fn list(): []Note {
+        let list: []Note = rx.get(this.notes);
+        return list;
+    }
+
+    fn historyList(): []Note {
+        let list: []Note = rx.get(this.history);
+        return list;
+    }
+
+    // Where the note `id` is in the list now, or -1 once it is gone.
+    fn indexOf(id: int): int {
+        let list = this.list();
+        for (let i = 0; i < list.length; i++) {
+            if list[i].id == id {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    mut fn newId(): int {
+        this.lastId = this.lastId + 1;
+        return this.lastId;
+    }
+
+    // The whole state, every time: a save that fails leaves the file as it
+    // was (fs.replaceText), and the next one writes everything, including
+    // what the failed one missed.
+    fn save() {
+        let saved = fs.replaceText(this.path, json.stringify(NotesFile {
+            notes: stored(this.list()),
+            history: stored(this.historyList()),
+            autostart: rx.get(this.autostart),
+        }));
+        if !saved {
+            fmt.println(f"Quick Todo could not save {this.path}: {saved}");
+        }
+    }
+
+    fn update(notes: []Note, history: []Note) {
+        this.notes := notes;
+        this.history := history;
+        this.save();
+    }
+
+    // A new empty note at `index`; returns its id.
+    mut fn insertNew(index: int): int {
+        let id = this.newId();
+        let next = copyNotes(this.list());
+        next.insert(clamp<int>(index, 0, next.length), Note { id: id });
+        this.update(next, this.historyList());
+        return id;
+    }
+
+    // The note `id`, wherever it is now. Nothing when it is gone.
+    fn setText(id: int, text: str) {
+        let index = this.indexOf(id);
+        if index < 0 { return; }
+        let next = copyNotes(this.list());
+        next[index] = Note { id: id, text: text, done: next[index].done };
+        this.update(next, this.historyList());
+    }
+
+    fn toggleDone(id: int) {
+        let index = this.indexOf(id);
+        if index < 0 { return; }
+        let next = copyNotes(this.list());
+        next[index] = Note { id: id, text: next[index].text, done: !next[index].done };
+        this.update(next, this.historyList());
+    }
+
+    // Into the history, from where `restore` brings it back.
+    fn remove(id: int) {
+        let index = this.indexOf(id);
+        if index < 0 { return; }
+        let next = copyNotes(this.list());
+        let history = withRemembered(this.historyList(), [next[index]]);
+        next.remove(index);
+        this.update(next, history);
+    }
+
+    // Gone without a trace: for a note that was never more than empty.
+    fn discard(id: int) {
+        let index = this.indexOf(id);
+        if index < 0 { return; }
+        let next = copyNotes(this.list());
+        next.remove(index);
+        this.update(next, this.historyList());
+    }
+
+    fn removeDone() {
+        let kept: []Note = [];
+        let done: []Note = [];
+        for note in this.list() {
+            if note.done { done.push(note); } else { kept.push(note); }
+        }
+        this.update(kept, withRemembered(this.historyList(), done));
+    }
+
+    fn restore(historyIndex: int, at: int): bool {
+        if historyIndex < 0 || historyIndex >= this.historyList().length {
+            return false;
+        }
+        let history = copyNotes(this.historyList());
+        let next = copyNotes(this.list());
+        next.insert(clamp<int>(at, 0, next.length), history[historyIndex]);
+        history.remove(historyIndex);
+        this.update(next, history);
+        return true;
+    }
+
+    fn forget(historyIndex: int) {
+        if historyIndex < 0 || historyIndex >= this.historyList().length {
+            return;
+        }
+        let history = copyNotes(this.historyList());
+        history.remove(historyIndex);
+        this.update(this.list(), history);
+    }
+
+    fn clearHistory() {
+        this.update(this.list(), []);
+    }
+
+    fn setAutostart(enabled: bool) {
+        this.autostart := enabled;
+        this.applyAutostart(enabled);
+        this.save();
+    }
+}
+
+fn copyNotes(notes: []Note): []Note {
+    let copy: []Note = [];
+    for note in notes {
+        copy.push(note);
+    }
+    return copy;
+}
+
+fn stored(notes: []Note): []StoredNote {
+    let out: []StoredNote = [];
+    for note in notes {
+        out.push(StoredNote { text: note.text, done: note.done });
+    }
+    return out;
+}
+
+fn withRemembered(history: []Note, removed: []Note): []Note {
+    let next: []Note = [];
+    for note in removed {
+        if note.text.trim().length > 0 {
+            next.push(note);
+        }
+    }
+    for note in history {
+        if next.length < historyLimit {
+            next.push(note);
+        }
+    }
+    return next;
+}
+
+let notesStore: mut NotesStore | none = none;
+
+// Opens the notes at `path` for the whole program. The host decides where they
+// live; nothing in this module knows a real path.
+//
+// Only a file that is not there starts empty. One that is there but cannot be
+// read or understood is an error, and nothing in this module will ever write
+// to it: saving over a file that was not loaded would replace the user's notes
+// with nothing.
+export fn openNotes(path: str, applyAutostart: (enabled: bool) => none): Result<none, str> {
+    let file = NotesFile { notes: [], history: [], autostart: true };
+    let text = fs.readText(path);
+    if text {
+        let parsed = json.parse<NotesFile>(text);
+        if !parsed {
+            return Result<none, str>.Err(f"{path} is not a notes file: {parsed}");
+        }
+        file = parsed;
+    } else if text != fs.Error.NotFound {
+        return Result<none, str>.Err(f"{path} could not be read: {text}");
+    }
+
+    let store = NotesStore {
+        notes: rx.shallowReactive<[]Note>([]),
+        history: rx.shallowReactive<[]Note>([]),
+        autostart: rx.reactive<bool>(file.autostart),
+        path: path,
+        applyAutostart: applyAutostart,
+    };
+    let notes: []Note = [];
+    for note in file.notes {
+        notes.push(Note { id: store.newId(), text: note.text, done: note.done });
+    }
+    let history: []Note = [];
+    for note in file.history {
+        history.push(Note { id: store.newId(), text: note.text, done: note.done });
+    }
+    store.notes := notes;
+    store.history := history;
+    notesStore = store;
+    return Result<none, str>.Ok(none);
+}
+
+export fn notes(): mut NotesStore {
+    if let existing = notesStore {
+        return existing;
+    }
+    sys.panic("notes() before openNotes()");
+}

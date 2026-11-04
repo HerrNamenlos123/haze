@@ -1,0 +1,182 @@
+from ui_widgets import ButtonComponent, ScrollView, ScrollViewComponent, ScrollViewSlotContent
+
+// No note has this id (they count from 1): nothing is being edited.
+const NOT_EDITING = 0;
+
+@props
+activation: Reactive<int>;
+createRequested: Reactive<bool>;
+
+@emit
+openHistory: ();
+openSettings: ();
+
+@setup
+let rootRef = elementRef<DivElement>();
+let scrollView = ui.componentRef<ScrollView>();
+let selected = reactive<int>(0);
+// The note being edited, by id. An edit belongs to the note it began on, and
+// ends when its box loses focus, like a textarea's: a click anywhere else ends
+// it before that click does anything. Each note keeps its own text (NoteItem),
+// so there is no draft that could carry over to another note.
+let editingId = reactive<int>(NOT_EDITING);
+let pendingDelete = reactive<bool>(false);
+// Bumped by everything that moves the selection from the keyboard or starts an
+// edit. The selected note answers each bump once, on the next frame, when the
+// layout already shows it where it now is (NoteItem). Scrolling by hand never
+// bumps it, so the list stays wherever the user scrolled it.
+let revealSerial = reactive<int>(0);
+
+let items = computed((): []Note => notes().list());
+// The selection as it applies to the list as it is now: a note was removed or
+// the list emptied since the selection was set, and it still names a note.
+let current = computed((): int => clamp<int>(rx.get(selected), 0, max(items.length - 1, 0)));
+
+let focusList = () => {
+    let root = rx.get(rootRef);
+    if root { root.focus(); }
+};
+
+let select = (index: int) => {
+    selected := clamp<int>(index, 0, max(items.length - 1, 0));
+    revealSerial := rx.get(revealSerial) + 1;
+};
+
+// A press on a note: it is under the pointer, so it is already in view.
+let selectId = (id: int) => {
+    let index = notes().indexOf(id);
+    if index >= 0 { selected := index; }
+};
+
+// Ends the edit in progress, if any. A note left empty goes, without a trace
+// in the history. `refocus` hands the keyboard back to the list, for an edit
+// ended from the keyboard; an edit ended by focus moving elsewhere leaves it
+// where it went.
+let stopEditing = (refocus: bool) => {
+    let id: int = rx.get(editingId);
+    if id == NOT_EDITING { return; }
+    editingId := NOT_EDITING;
+    let index = notes().indexOf(id);
+    if index >= 0 {
+        let list: []Note = items;
+        if list[index].text.trim().length == 0 {
+            notes().discard(id);
+        }
+    }
+    if refocus { focusList(); }
+};
+
+let finish = (id: int) => {
+    if rx.get(editingId) == id { stopEditing(true); }
+};
+
+let left = (id: int) => {
+    if rx.get(editingId) == id { stopEditing(false); }
+};
+
+let edit = (id: int) => {
+    if rx.get(editingId) == id { return; }
+    stopEditing(false);
+    // Looked up only now: ending the other edit may have discarded a note.
+    let at = notes().indexOf(id);
+    if at < 0 { return; }
+    selected := at;
+    editingId := id;
+    revealSerial := rx.get(revealSerial) + 1;
+};
+
+let create = (index: int) => {
+    stopEditing(false);
+    edit(notes().insertNew(clamp<int>(index, 0, items.length)));
+};
+
+// Text reaches a note only through its own edit: a keystroke still on its
+// way to an edit box that was just closed (Escape and a character in one
+// frame) belongs to no edit and changes nothing.
+let edited = (id: int, text: str) => {
+    if rx.get(editingId) == id {
+        notes().setText(id, text);
+    }
+};
+
+// From a note's own button: that button had the keyboard and goes with the
+// note, so the keyboard comes back to the list rather than to nothing.
+let removeNote = (id: int) => {
+    notes().remove(id);
+    focusList();
+};
+
+let reveal = (top: real, height: real) => {
+    if let view = rx.get(scrollView) {
+        view.revealWindowSpan(top, height);
+    }
+};
+
+ui.watch(() => rx.get(props.createRequested), (value, old) => {
+    if rx.get(props.createRequested) {
+        props.createRequested := false;
+        create(0);
+    }
+}, { immediate: true });
+
+ui.watch(() => rx.get(props.activation), (value, old) => {
+    stopEditing(true);
+    focusList();
+});
+
+let keyPressed = (event: KeyboardEvent) => {
+    if rx.get(editingId) != NOT_EDITING {
+        if event.key == Key.Escape {
+            event.stopPropagation();
+            stopEditing(true);
+        }
+        return;
+    }
+    let shift = hasModifier(event.modifiers, KeyModifiers.Shift);
+    let index: int = current;
+    let deleting = rx.get(pendingDelete);
+    let list: []Note = items;
+    let hasItems = list.length > 0;
+    pendingDelete := false;
+
+    if event.key == Key.J || event.key == Key.Down { select(index + 1); }
+    else if event.key == Key.K || event.key == Key.Up { select(index - 1); }
+    else if event.key == Key.G { select(shift ? list.length - 1 : 0); }
+    else if event.key == Key.N { create(0); }
+    else if event.key == Key.O { create(shift ? index : index + 1); }
+    else if hasItems && (event.key == Key.Return || event.key == Key.I || event.key == Key.A) { edit(list[index].id); }
+    else if hasItems && (event.key == Key.X || event.key == Key.Space) { notes().toggleDone(list[index].id); }
+    else if hasItems && event.key == Key.D && deleting {
+        notes().remove(list[index].id);
+        select(index);
+    }
+    else if hasItems && event.key == Key.D { pendingDelete := true; }
+    else if event.key == Key.U {
+        if notes().restore(0, index) { select(index); }
+    }
+    else if event.key == Key.H { emits.openHistory(); }
+    else if event.key == Key.S { emits.openSettings(); }
+    else { return; }
+    event.preventDefault();
+    event.stopPropagation();
+};
+
+@template [col w-grow h-grow] ref=rootRef focusable=[true] autofocus=[true] @keydown=keyPressed
+
+ScrollView [] padding=[6] ref=scrollView {
+    #content {
+        div [col w-grow h-fit gap-1] {
+            NoteItem for=[note, i in items] key=[i] []
+                noteId=[note.id] text=[note.text] done=[note.done]
+                selected=[i == rx.get(current)] editing=[note.id == rx.get(editingId)]
+                revealSerial=[rx.get(revealSerial)]
+                @select=selectId @edit=edit @finish=finish @left=left @remove=removeNote @edited=edited @reveal=reveal
+            {}
+            div if=[items.length == 0] [col w-grow items-center gap-2 py-10] {
+                text [text-color-["#71717A"]] ["Nothing to remember"]
+                text [text-color-["#52525B"] font-size-12] ["n new · j/k move · enter edit"]
+                text [text-color-["#52525B"] font-size-12] ["x done · dd delete · h history · s settings"]
+            }
+        }
+    }
+}

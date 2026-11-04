@@ -6,6 +6,7 @@
 #include "../../include/hzstd_string.h"
 #include "cJSON.h"
 #include <ctype.h>
+#include <stdio.h>
 #include <threads.h>
 
 #define GC_THREADS
@@ -46,11 +47,24 @@ static void hzstd_json_use_arena(hzstd_allocator_t allocator) {
 hzstd_json_parse_result_t hzstd_json_parse(hzstd_allocator_t allocator,
                                            hzstd_str_t data) {
   hzstd_json_use_arena(allocator);
-  cJSON *cjson = cJSON_ParseWithLength(data.data, data.length);
+  // Where the parse stopped comes back from THIS parse, as a pointer into
+  // `data`, and is only ever turned into an offset: `data` is a slice with no
+  // terminator, so reading it as a C string runs past its end. cJSON's
+  // process-wide cJSON_GetErrorPtr() is not used at all -- for an empty input
+  // it records no position and returns NULL.
+  const char *end = NULL;
+  cJSON *cjson = cJSON_ParseWithLengthOpts(data.data, data.length, &end, 0);
   if (!cjson) {
+    char message[64];
+    if (data.length == 0) {
+      snprintf(message, sizeof(message), "empty input");
+    } else {
+      size_t offset = end ? (size_t)(end - data.data) : 0;
+      snprintf(message, sizeof(message), "invalid JSON at byte %zu", offset);
+    }
     return (hzstd_json_parse_result_t){
       .node = NULL,
-      .error = hzstd_str_from_cstr_dup(allocator, (hzstd_cstr_t)cJSON_GetErrorPtr()),
+      .error = hzstd_str_from_cstr_dup(allocator, message),
     };
   }
 

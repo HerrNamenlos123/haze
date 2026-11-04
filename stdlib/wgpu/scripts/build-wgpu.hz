@@ -53,7 +53,13 @@ fn main(): int {
             raise f"Cargo is not installed. Please install the 'cargo' Rust build system, it is required to build WebGPU-Native. Your best bet is: '{msg}'";
         };
 
-        process.run("cargo", { "build", "--release" }, {
+        // Every path rustc compiles in (panic locations of each crate, under
+        // the cargo registry and this build folder) starts at the home folder:
+        // it becomes "~", so a binary built here does not carry its builder's
+        // name. A TOML literal string, so Windows backslashes stay as they are.
+        let home = env.get(sys.isWin32() ? "USERPROFILE" : "HOME");
+        if !home { raise "No home folder (USERPROFILE / HOME) to remap"; }
+        process.run("cargo", { "build", "--release", "--config", f"build.rustflags=['--remap-path-prefix={home}=~']" }, {
             inherit_stdio : true,
             cwd: repoPath,
         })?!;

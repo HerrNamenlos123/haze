@@ -1689,6 +1689,19 @@ static bool haze_sdl_is_synthesized_mouse(SDL_MouseID which) {
   return which == SDL_TOUCH_MOUSEID || which == SDL_PEN_MOUSEID;
 }
 
+/* The key a key event names. A letter key is the letter the keyboard LAYOUT
+   puts on it, the way every desktop app matches shortcuts: on a German layout
+   the key labelled Z is the US Y key, and Ctrl+Z there must still be Ctrl+Z.
+   Every other key is the physical key (the scancode), which is what the
+   haze Key enum numbers. Exported so it can be tested without a keyboard. */
+hzstd_int_t haze_sdl_layout_key(hzstd_int_t scancode, hzstd_int_t keycode)
+{
+  if (keycode >= 'a' && keycode <= 'z') {
+    return SDL_SCANCODE_A + (keycode - 'a');
+  }
+  return scancode;
+}
+
 void haze_sdl_pollEvents(hzstd_context_t ctx) {
   SDL_Event event;
   while (SDL_PollEvent(&event)) {
@@ -1748,7 +1761,8 @@ void haze_sdl_pollEvents(hzstd_context_t ctx) {
       if (window && g_haze_trampolines.keyDown) {
         void *userdata = haze_sdl_get_window_event_userdata(window);
         if (userdata) {
-          g_haze_trampolines.keyDown(ctx, userdata, (int)event.key.scancode,
+          g_haze_trampolines.keyDown(ctx, userdata,
+                                     (int)haze_sdl_layout_key((hzstd_int_t)event.key.scancode, (hzstd_int_t)event.key.key),
                                      (bool)event.key.repeat);
         }
       }
@@ -1760,7 +1774,8 @@ void haze_sdl_pollEvents(hzstd_context_t ctx) {
       if (window && g_haze_trampolines.keyUp) {
         void *userdata = haze_sdl_get_window_event_userdata(window);
         if (userdata) {
-          g_haze_trampolines.keyUp(ctx, userdata, (int)event.key.scancode,
+          g_haze_trampolines.keyUp(ctx, userdata,
+                                   (int)haze_sdl_layout_key((hzstd_int_t)event.key.scancode, (hzstd_int_t)event.key.key),
                                    (bool)event.key.repeat);
         }
       }

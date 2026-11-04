@@ -1,0 +1,66 @@
+// ============================================================================
+// REGRESSION TEST: a real, load-bearing test, not a placeholder.
+//
+// Bug: a failed json.parse built its error message by strlen()ing the pointer
+// cJSON_GetErrorPtr() returns. That pointer points INTO the input, which is a
+// slice with no terminator, so the message ran past the end of the input
+// into whatever memory followed; and for an empty input cJSON records no
+// position at all, the pointer is NULL, and the parse segfaulted. Reading an
+// empty file and parsing it is exactly what an app does on a settings file a
+// crash left at zero bytes, so the app crashed on every start.
+//
+// Fix: the error is reported as a byte offset into the input, taken from the
+// parse itself rather than from cJSON's process-wide last error.
+// ============================================================================
+
+namespace cases_json_parse_errors {
+
+    export fn register(s: mut testsuite.Suite) {
+
+        s.run(
+            "json parse errors: empty, truncated and invalid input fail with an offset",
+            """
+struct Notes {
+    notes: []str = [];
+}
+
+fn show(label: str, text: str) {
+    let parsed = json.parse<Notes>(text);
+    if parsed {
+        fmt.println(f"{label}: parsed");
+    } else {
+        fmt.println(f"{label}: {parsed}");
+    }
+}
+
+fn main(): int {
+    show("empty", "");
+    show("invalid", "{ this is not json");
+    show("truncated", \"\"\"{"notes":["half a no\"\"\");
+    // A slice of a longer string: the error must not reach past the slice.
+    let whole = \"\"\"{"notes":[1,{"notes": ["tail that must not appear in the error"]}\"\"\";
+    show("slice", whole.slice(0, 12));
+    show("valid", \"\"\"{"notes":["a"]}\"\"\");
+    // What reading a zero-byte file hands over: no data at all.
+    let base = "/tmp";
+    if let t = env.get("TMPDIR") { base = t; }
+    if let t = env.get("TEMP") { base = t; }
+    let path = f"{base}/cases-json-parse-errors-empty.json";
+    fs.writeText(path, "");
+    if let text = fs.readText(path) {
+        show("empty file", text);
+    }
+    fs.removeFile(path);
+    return 0;
+}
+""",
+            """
+empty: json error: empty input
+invalid: json error: invalid JSON at byte 3
+truncated: json error: invalid JSON at byte 11
+slice: json error: invalid JSON at byte 11
+valid: parsed
+empty file: json error: empty input
+""");
+    }
+}

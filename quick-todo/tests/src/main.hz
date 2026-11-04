@@ -1,0 +1,1050 @@
+import quick_todo_ui
+import ui_components
+import ui_elements
+import ui_layout
+
+// Quick Todo's own components, driven headlessly: the real UIContext, the
+// real Clay layout and the real notes store, with a fixed-advance text measure
+// in place of a font, synthetic pointer/wheel/key input, and a store on a
+// scratch file. Nothing here knows where the user's notes live.
+//
+// What is checked is only what a user could see or lose: where text is drawn
+// and whether it is inside the list's clip, what the notes hold, and what is
+// on disk. Every scenario starts from a fresh file and a fresh UI.
+//
+// Run:  __haze__/quick_todo_tests/bin/quick_todo_tests [scenario]
+// Without a scenario it runs all of them; the exit code is the failure count.
+
+const WIDTH = 360;
+const HEIGHT = 440;
+const CHAR = 8.0;
+const FONT_SIZE = 14.0;
+// What NoteItem gives a note's box: the font of the shown text.
+const EDIT_FONT_SIZE = 14.0;
+const STEP = 0.016;
+// Fonts differ in line height, as real ones do: the icon font (the only one a
+// component provides itself, codicons) is taller than the text font.
+const ICON_FONT = 1;
+fn lineFactor(fontId: int): real {
+    return fontId == ICON_FONT ? 1.7 : 1.3;
+}
+
+ref struct TextDraw {
+    text: str;
+    x: real;
+    y: real;
+    w: real;
+    h: real;
+    clip: ui_layout.ResolvedClip;
+}
+
+ref struct RectDraw {
+    x: real;
+    y: real;
+    w: real;
+    h: real;
+    color: Color;
+}
+
+ref struct Sim {
+    mouse: Vec2 = { x: -100.0, y: -100.0 };
+    leftHeld: bool = false;
+    pointerEdges: []ui_components.PointerEdge = [];
+    keyEdges: []ui_components.KeyEdge = [];
+    texts: []str = [];
+    wheel: Vec2 = {};
+    now: real = 1.0;
+    pass: int = 0;
+    clip: ui_layout.ResolvedClip = {};
+    textDraws: []TextDraw = [];
+    rectDraws: []RectDraw = [];
+    drawingTexts: []TextDraw = [];
+    drawingRects: []RectDraw = [];
+    autostartCalls: int = 0;
+    // The platform clipboard, as the real host provides one.
+    clipboard: str = "";
+    checks: int = 0;
+    failures: int = 0;
+    scenario: str = "";
+
+    mut fn check(name: str, ok: bool) {
+        this.checks = this.checks + 1;
+        if !ok {
+            this.failures = this.failures + 1;
+            fmt.println(f"FAIL [{this.scenario}] {name}");
+        }
+    }
+
+    mut fn checkStr(name: str, actual: str, expected: str) {
+        this.checks = this.checks + 1;
+        if actual != expected {
+            this.failures = this.failures + 1;
+            fmt.println(f"FAIL [{this.scenario}] {name}\n  expected '{expected}'\n  got      '{actual}'");
+        }
+    }
+
+    mut fn checkNear(name: str, actual: real, expected: real) {
+        this.checks = this.checks + 1;
+        let d = actual - expected;
+        if d > 0.5 || d < -0.5 {
+            this.failures = this.failures + 1;
+            fmt.println(f"FAIL [{this.scenario}] {name}: expected {expected}, got {actual}");
+        }
+    }
+}
+
+// The harness's window: a UIContext and a layout engine, stepped one frame at
+// a time exactly as ui_runtime.Runtime.render does, minus the GPU.
+ref struct Window {
+    sim: mut Sim;
+    ui: ui_components.UIContext;
+    layout: ui_layout.LayoutContext;
+
+    mut fn frame() {
+        let sim = this.sim;
+        sim.now = sim.now + STEP;
+        let tree = this.ui.process();
+        sim.wheel = Vec2(0.0, 0.0);
+        if !tree { return; }
+        if !this.ui.frameNeedsPaint() { return; }
+        sim.pass = this.ui.beginRenderFeedback();
+        sim.drawingTexts = [];
+        sim.drawingRects = [];
+        this.layout.render(tree, {
+            renderFilledRectangle: (position: Vec2, size: Vec2, color: Color, cornerRadius: ui_layout.CornerRadiusValues): void => {
+                sim.drawingRects.push({ x: position.x, y: position.y, w: size.x, h: size.y, color: color });
+            },
+            renderText: (element: ui_layout.ffi.hzui_draw_text_element_t): void => {
+                sim.drawingTexts.push({
+                    text: element.text, x: element.position.x, y: element.position.y,
+                    w: element.size.x, h: element.size.y, clip: sim.clip,
+                });
+            },
+            onBoundingBox: (element: ui_elements.Element, pos: Vec2, size: Vec2): void => {
+                ui_components.applyRenderFeedback(element, pos, size, sim.pass);
+            },
+            renderCanvas: (element: ui_elements.CanvasElement): void => {},
+            renderBorder: (position: Vec2, size: Vec2, borderColor: Color, cornerRadius: ui_layout.CornerRadiusValues, borderWidth: ui_layout.ffi.hzui_border_widths_t): void => {},
+            setClip: (clip: ui_layout.ResolvedClip): void => {
+                sim.clip = clip;
+            },
+        });
+        sim.textDraws = sim.drawingTexts;
+        sim.rectDraws = sim.drawingRects;
+    }
+
+    mut fn frames(count: int) {
+        for (let i = 0; i < count; i++) {
+            this.frame();
+        }
+    }
+
+    mut fn moveTo(pos: Vec2) {
+        this.sim.mouse = pos;
+        this.sim.pointerEdges.push({ button: ui_components.PointerButton.None, kind: ui_components.PointerEdgeKind.Moved, pos: pos });
+        this.frames(2);
+    }
+
+    mut fn press(pos: Vec2) {
+        this.sim.mouse = pos;
+        this.sim.leftHeld = true;
+        this.sim.pointerEdges.push({ button: ui_components.PointerButton.Left, kind: ui_components.PointerEdgeKind.Pressed, pos: pos });
+        this.frame();
+    }
+
+    mut fn release(pos: Vec2) {
+        this.sim.mouse = pos;
+        this.sim.leftHeld = false;
+        this.sim.pointerEdges.push({ button: ui_components.PointerButton.Left, kind: ui_components.PointerEdgeKind.Released, pos: pos });
+        this.frame();
+    }
+
+    // A single click, far enough in time from any earlier one that it can
+    // never count as the second half of a double click.
+    mut fn click(pos: Vec2) {
+        this.sim.now = this.sim.now + 2.0;
+        this.moveTo(pos);
+        this.press(pos);
+        this.release(pos);
+        this.frames(2);
+    }
+
+    mut fn key(k: ui_components.Key, mods: KeyModifiers = KeyModifiers.None) {
+        this.sim.keyEdges.push({ key: k, kind: ui_components.KeyEdgeKind.Pressed, repeat: false, modifiers: mods });
+        this.frame();
+        this.sim.keyEdges.push({ key: k, kind: ui_components.KeyEdgeKind.Released, repeat: false, modifiers: mods });
+        this.frames(2);
+    }
+
+    // Committed text, as the platform delivers it after the key that typed it.
+    mut fn type(text: str) {
+        this.sim.texts.push(text);
+        this.frames(2);
+    }
+
+    mut fn wheel(notches: real) {
+        this.sim.wheel = Vec2(0.0, notches);
+        this.frame();
+    }
+}
+
+fn openWindow(sim: mut Sim): mut Window {
+    let layout = ui_layout.LayoutContext({
+        width: WIDTH,
+        height: HEIGHT,
+        fonts: [{ name: "default", id: 0 }, { name: "roboto", id: 0 }],
+        getFontLineHeight: (fontId: int, fontSize: real): real => fontSize * lineFactor(fontId),
+        measureText: (fontId: int, fontSize: real, text: str): Vec2 => Vec2(text.length as real * CHAR, fontSize * lineFactor(fontId)),
+    });
+    layout.setLayoutSize(WIDTH, HEIGHT);
+    let activation = rx.reactive<int>(0);
+    let ui = ui_components.UIContext({
+        ui: (ui: ui_components.UIContext) => {
+            quick_todo_ui.QuickTodoComponent(ui, { id: 0, activation: activation });
+        },
+        mousePos: () => sim.mouse,
+        clock: () => sim.now,
+        pointerButtons: ui_components.PointerHeldCallbacks {
+            leftHeld: () => sim.leftHeld,
+            middleHeld: () => false,
+            rightHeld: () => false,
+            edgesThisFrame: (): []ui_components.PointerEdge => {
+                let out: []ui_components.PointerEdge = [];
+                for e in sim.pointerEdges { out.push(e); }
+                sim.pointerEdges.clear();
+                return out;
+            },
+            reportsMotion: true,
+        },
+        inputExtras: ui_components.InputExtrasCallbacks {
+            wheelDelta: () => sim.wheel,
+            modifiers: () => KeyModifiers.None,
+        },
+        keyboard: ui_components.KeyboardCallbacks {
+            keyEdgesThisFrame: (): []ui_components.KeyEdge => {
+                let out: []ui_components.KeyEdge = [];
+                for e in sim.keyEdges { out.push(e); }
+                sim.keyEdges.clear();
+                return out;
+            },
+            textInputThisFrame: (): []str => {
+                let out: []str = [];
+                for t in sim.texts { out.push(t); }
+                sim.texts.clear();
+                return out;
+            },
+        },
+        clipboard: ui_components.ClipboardCallbacks {
+            getText: (): str => { return sim.clipboard; },
+            setText: (text: str): bool => { sim.clipboard = text; return true; },
+        },
+        measureText: (fontFamily: str, fontSize: real, text: str): Vec2 => {
+            return layout.measureText(fontFamily, fontSize, text);
+        },
+        provideFont: (name: str, bytes: Bytes): void => {
+            layout.registerFont(name, ICON_FONT);
+        },
+    });
+    let w = Window { sim: sim, ui: ui, layout: layout };
+    w.frames(5);
+    return w;
+}
+
+// ── Fixtures ─────────────────────────────────────────────────────────
+
+// A file of its own for every scenario, in a directory no earlier run used
+// (created here, so the next call cannot pick it again).
+fn fixturePath(): str {
+    let base = "/tmp";
+    if let t = env.get("TMPDIR") { base = t; }
+    if let t = env.get("TEMP") { base = t; }
+    for (let i = 0; i < 100000; i++) {
+        let dir = f"{base}/quick-todo-tests-{i}";
+        if let present = fs.exists(dir) {
+            if !present {
+                fs.createDirectory(dir);
+                return f"{dir}/notes.json";
+            }
+        }
+    }
+    sys.panic("no free fixture directory");
+}
+
+// Words of four letters, so a line breaks at a known width: each word and
+// its space is 5 characters, 40 px.
+fn noteText(index: int, length: int): str {
+    let words: []str = ["able", "bake", "cold", "dune", "east", "fern", "gold", "hill", "iron", "jade"];
+    let text = index < 10 ? f"n0{index}" : f"n{index}";
+    let w = 0;
+    while text.length < length {
+        text = text + " " + words[w % words.length];
+        w = w + 1;
+    }
+    return text;
+}
+
+// The lengths of the user's real notes (aggregates only), so the list is as
+// tall as theirs.
+fn realLengths(): []int {
+    return [43, 60, 446, 250, 304, 90, 50, 104, 240, 93, 188, 68, 142];
+}
+
+fn fixtureTexts(): []str {
+    let texts: []str = [];
+    let lengths = realLengths();
+    for (let i = 0; i < lengths.length; i++) {
+        texts.push(noteText(i, lengths[i]));
+    }
+    return texts;
+}
+
+fn notesJson(texts: []str): str {
+    let body = "";
+    for (let i = 0; i < texts.length; i++) {
+        if i > 0 { body = body + ","; }
+        body = body + "{\"text\":\"" + texts[i] + "\",\"done\":false}";
+    }
+    return "{\"notes\":[" + body + "],\"history\":[],\"autostart\":false}";
+}
+
+fn openFixture(sim: mut Sim, texts: []str): str {
+    let path = fixturePath();
+    fs.writeText(path, notesJson(texts));
+    let opened = quick_todo_ui.openNotes(path, (enabled: bool): none => {
+        sim.autostartCalls = sim.autostartCalls + 1;
+    });
+    if !opened {
+        sys.panic(f"fixture did not open: {path}");
+    }
+    return path;
+}
+
+fn storedTexts(): []str {
+    let out: []str = [];
+    for note in quick_todo_ui.notes().list() {
+        out.push(note.text);
+    }
+    return out;
+}
+
+fn joined(list: []str): str {
+    let s = "";
+    for (let i = 0; i < list.length; i++) {
+        if i > 0 { s = s + " | "; }
+        s = s + list[i];
+    }
+    return s;
+}
+
+// ── Reading the screen ───────────────────────────────────────────────
+
+// The first drawn run of a note (its text starts with its "nNN" tag).
+fn findText(sim: mut Sim, prefix: str): TextDraw | none {
+    for d in sim.textDraws {
+        if d.text.startsWith(prefix) {
+            return d;
+        }
+    }
+    return none;
+}
+
+fn textY(sim: mut Sim, prefix: str): real {
+    if let d = findText(sim, prefix) {
+        return d.y;
+    }
+    return -99999.0;
+}
+
+// Wholly inside the list's clip.
+fn tag(i: int): str {
+    return i < 10 ? f"n0{i}" : f"n{i}";
+}
+
+// Where every note's first run is drawn; -99999 for one that is not drawn
+// (Clay culls what lies outside the window).
+fn positions(sim: mut Sim): []real {
+    let out: []real = [];
+    for (let i = 0; i < 20; i++) {
+        out.push(textY(sim, tag(i)));
+    }
+    return out;
+}
+
+// How far the list moved between two snapshots, read off a note drawn in both.
+fn shift(before: []real, after: []real): real {
+    for (let i = 0; i < before.length; i++) {
+        if before[i] > -90000.0 && after[i] > -90000.0 {
+            return after[i] - before[i];
+        }
+    }
+    return -99999.0;
+}
+
+// The remove button of a hovered note: the run drawn at the right edge of its
+// row, which spans from the note's first run to the next note's.
+fn removeButtonOf(sim: mut Sim, index: int): Vec2 {
+    let top = textY(sim, tag(index)) - 12.0;
+    let bottom = textY(sim, tag(index + 1));
+    if bottom < -90000.0 { bottom = HEIGHT as real; }
+    for d in sim.textDraws {
+        if d.x > WIDTH as real - 60.0 && d.y >= top && d.y < bottom - 4.0 {
+            return Vec2(d.x + d.w / 2.0, d.y + d.h / 2.0);
+        }
+    }
+    return Vec2(-1.0, -1.0);
+}
+
+fn visible(sim: mut Sim, prefix: str): bool {
+    if let d = findText(sim, prefix) {
+        return d.clip.active && d.y >= d.clip.minY - 0.5 && d.y + d.h <= d.clip.maxY + 0.5;
+    }
+    return false;
+}
+
+fn centerOf(sim: mut Sim, prefix: str): Vec2 {
+    if let d = findText(sim, prefix) {
+        return Vec2(d.x + 12.0, d.y + d.h / 2.0);
+    }
+    sys.panic(f"'{prefix}' is not drawn");
+}
+
+fn sameColor(a: Color, hex: str): bool {
+    let b = Color(hex);
+    let close = (x: real, y: real): bool => x - y < 0.01 && y - x < 0.01;
+    return close(a.r, b.r) && close(a.g, b.g) && close(a.b, b.b) && close(a.a, b.a);
+}
+
+// The 1 px wide rectangle TextInput draws as its caret.
+fn caret(sim: mut Sim): RectDraw | none {
+    for r in sim.rectDraws {
+        if r.w > 0.5 && r.w < 1.5 && r.h > 5.0 {
+            return r;
+        }
+    }
+    return none;
+}
+
+// The scrollbar's thumb: the narrow rect at the right edge in the thumb colour.
+fn thumb(sim: mut Sim): RectDraw | none {
+    for r in sim.rectDraws {
+        if r.x >= WIDTH as real - 11.0 && r.w > 9.0 && r.w < 11.0 && sameColor(r.color, "#FFFFFF33") {
+            return r;
+        }
+    }
+    return none;
+}
+
+// ── D1: scrolling ────────────────────────────────────────────────────
+
+fn scenarioScroll(sim: mut Sim) {
+    openFixture(sim, fixtureTexts());
+    let w = openWindow(sim);
+    sim.check("the first note is visible at start", visible(sim, "n00"));
+    // The wheel goes to what is under the pointer.
+    w.moveTo(Vec2(150.0, 250.0));
+
+    let before = positions(sim);
+    w.wheel(-1.0);
+    w.wheel(-1.0);
+    w.wheel(-1.0);
+    w.frames(10);
+    sim.checkNear("three wheel notches scroll 180 px and stay there", shift(before, positions(sim)), -180.0);
+
+    // j moves the selection to note 1, which is now above the view: it is
+    // revealed once, and the wheel then works again from there.
+    w.key(ui_components.Key.J);
+    w.frames(3);
+    sim.check("j reveals the newly selected note", visible(sim, "n01"));
+    let afterReveal = positions(sim);
+    w.wheel(-1.0);
+    w.wheel(-1.0);
+    w.frames(10);
+    sim.checkNear("the wheel works after a reveal", shift(afterReveal, positions(sim)), -120.0);
+
+    w.key(ui_components.Key.G, KeyModifiers.Shift);
+    w.frames(3);
+    sim.check("G reveals the last note", visible(sim, "n12"));
+    let atEnd = positions(sim);
+    w.wheel(1.0);
+    w.wheel(1.0);
+    w.frames(10);
+    sim.checkNear("the wheel scrolls up from the end and stays", shift(atEnd, positions(sim)), 120.0);
+
+    // Dragging the scrollbar's thumb.
+    if let t = thumb(sim) {
+        let grab = Vec2(t.x + t.w / 2.0, t.y + t.h / 2.0);
+        let start = positions(sim);
+        w.moveTo(grab);
+        w.press(grab);
+        for (let i = 1; i <= 5; i++) {
+            w.sim.mouse = Vec2(grab.x, grab.y - 10.0 * i as real);
+            w.sim.pointerEdges.push({ button: ui_components.PointerButton.None, kind: ui_components.PointerEdgeKind.Moved, pos: w.sim.mouse, buttons: ui_components.PointerButtons.Left });
+            w.frame();
+        }
+        w.release(w.sim.mouse);
+        w.moveTo(Vec2(150.0, 250.0));
+        w.frames(10);
+        sim.check("dragging the thumb up scrolls the list down and it stays", shift(start, positions(sim)) > 20.0);
+    } else {
+        sim.check("a scrollbar thumb is drawn", false);
+    }
+}
+
+// Typing at the bottom of the view keeps the caret on screen.
+fn scenarioCaretVisible(sim: mut Sim) {
+    openFixture(sim, fixtureTexts());
+    let w = openWindow(sim);
+    w.key(ui_components.Key.G, KeyModifiers.Shift);
+    w.key(ui_components.Key.Return);
+    for (let i = 0; i < 12; i++) {
+        w.type(" more words here");
+        if let c = caret(sim) {
+            sim.check(f"caret visible after chunk {i} (caret {c.y}..{c.y + c.h})", c.y >= 30.0 - 0.5 && c.y + c.h <= HEIGHT as real + 0.5);
+        } else {
+            sim.check(f"caret drawn after chunk {i}", false);
+        }
+    }
+}
+
+// ── D2: an edit writes only to the note it began on ─────────────────
+
+fn scenarioEditThenClickOther(sim: mut Sim) {
+    let texts = fixtureTexts();
+    openFixture(sim, texts);
+    let w = openWindow(sim);
+    w.click(centerOf(sim, "n01"));
+    w.key(ui_components.Key.Return);
+    w.type("W1");
+    sim.checkStr("typing edits the note", storedTexts()[1], texts[1] + "W1");
+
+    w.click(centerOf(sim, "n00"));
+    w.type("W2");
+    w.frames(3);
+    let expected = texts;
+    expected[1] = texts[1] + "W1";
+    sim.checkStr("a click on another note ends the edit; nothing else changes", joined(storedTexts()), joined(expected));
+
+    // The edit is over, so the list's keys work again on the clicked note.
+    w.key(ui_components.Key.X);
+    sim.check("x after the click toggles the clicked note", quick_todo_ui.notes().list()[0].done);
+}
+
+fn scenarioEditThenRemoveAbove(sim: mut Sim) {
+    let texts = fixtureTexts();
+    openFixture(sim, texts);
+    let w = openWindow(sim);
+    w.click(centerOf(sim, "n02"));
+    w.key(ui_components.Key.Return);
+    w.type("W1");
+    sim.checkStr("typing edits the note", storedTexts()[2], texts[2] + "W1");
+
+    // Typing at the end of the long note scrolled the top of the list away:
+    // the wheel brings it back, while the edit goes on.
+    w.moveTo(Vec2(150.0, 250.0));
+    w.wheel(1.0);
+    w.wheel(1.0);
+    w.frames(5);
+    sim.check("the wheel scrolls the list while a note is edited", visible(sim, "n00"));
+
+    // Remove note 0, two above the one being edited, with its own button.
+    w.moveTo(centerOf(sim, "n00"));
+    let x = removeButtonOf(sim, 0);
+    sim.check("the hovered note shows its remove button", x.x > 0.0);
+    if x.x > 0.0 {
+        w.click(x);
+    }
+    // Every remaining note shows its own text: none was replaced on screen by
+    // the edited note's draft.
+    let drafts = 0;
+    for d in sim.textDraws {
+        if d.text.startsWith("n02") { drafts = drafts + 1; }
+    }
+    sim.check("note 1 is still shown after the removal", findText(sim, "n01") is TextDraw);
+    sim.checkStr("the edited note is shown once", f"{drafts}", "1");
+    w.type("W2");
+    w.frames(3);
+    let expected: []str = [];
+    for (let i = 1; i < texts.length; i++) {
+        expected.push(i == 2 ? texts[2] + "W1" : texts[i]);
+    }
+    sim.checkStr("removing a note above the edited one changes no other note", joined(storedTexts()), joined(expected));
+}
+
+// ── D6: the selection always names a note ────────────────────────────
+
+fn scenarioRemoveSelectedLast(sim: mut Sim) {
+    let texts = fixtureTexts();
+    openFixture(sim, texts);
+    let w = openWindow(sim);
+    w.key(ui_components.Key.G, KeyModifiers.Shift);
+    w.frames(3);
+    w.moveTo(centerOf(sim, "n12"));
+    let x = removeButtonOf(sim, 12);
+    sim.check("the last note shows its remove button", x.x > 0.0);
+    if x.x > 0.0 { w.click(x); }
+    sim.check("the last note was removed", storedTexts().length == texts.length - 1);
+    w.moveTo(Vec2(-100.0, -100.0));
+    w.key(ui_components.Key.X);
+    let list = quick_todo_ui.notes().list();
+    sim.check("x toggles the note that is now last", list[list.length - 1].done);
+}
+
+// ── D3: an unreadable file is never overwritten ──────────────────────
+
+fn unchangedAfterOpen(sim: mut Sim, name: str, content: str) {
+    let path = fixturePath();
+    fs.writeText(path, content);
+    let opened = quick_todo_ui.openNotes(path, (enabled: bool): none => {});
+    if opened {
+        // What the host does right after opening.
+        quick_todo_ui.notes().setAutostart(true);
+        quick_todo_ui.notes().insertNew(0);
+    }
+    sim.check(f"{name}: opening fails", !opened);
+    let after = fs.readText(path);
+    if after {
+        sim.checkStr(f"{name}: the file is untouched", after, content);
+    } else {
+        sim.check(f"{name}: the file still exists", false);
+    }
+}
+
+fn scenarioUnreadable(sim: mut Sim) {
+    unchangedAfterOpen(sim, "not json", "{ this is not json");
+    unchangedAfterOpen(sim, "truncated", "{\"notes\":[{\"text\":\"half a no");
+    unchangedAfterOpen(sim, "empty", "");
+    // Valid JSON, but not what Quick Todo writes: every file it ever saved
+    // holds all three keys.
+    unchangedAfterOpen(sim, "no keys", "{}");
+    unchangedAfterOpen(sim, "renamed key", "{\"todos\":[{\"text\":\"a\",\"done\":false}],\"history\":[],\"autostart\":true}");
+
+    // A missing file is a first start: it opens empty and saves.
+    let path = fixturePath();
+    let opened = quick_todo_ui.openNotes(path, (enabled: bool): none => {});
+    sim.check("missing file: opens", opened as bool);
+    sim.check("missing file: starts empty", quick_todo_ui.notes().list().length == 0);
+}
+
+// ── D4/D5: saving replaces the file whole, or not at all ─────────────
+
+fn scenarioAtomicSave(sim: mut Sim) {
+    let texts = fixtureTexts();
+    let path = openFixture(sim, texts);
+    let original = fs.readText(path);
+
+    // Nothing can be written beside the file: the save must leave it alone.
+    let blocker = f"{path}.saving";
+    fs.createDirectory(blocker);
+    quick_todo_ui.notes().toggleDone(quick_todo_ui.notes().list()[0].id);
+    let during = fs.readText(path);
+    if original && during {
+        sim.checkStr("a save that cannot complete leaves the file as it was", during, original);
+    }
+    sim.check("the change is still in memory", quick_todo_ui.notes().list()[0].done);
+
+    // Once it can, the next save writes everything, including that change.
+    fs.move(blocker, f"{path}.moved-away", { overwrite: false });
+    quick_todo_ui.notes().toggleDone(quick_todo_ui.notes().list()[1].id);
+    if let text = fs.readText(path) {
+        let parsed = json.parse<quick_todo_ui.NotesFile>(text);
+        if parsed {
+            sim.check("the next save holds the earlier change", parsed.notes[0].done);
+            sim.check("the next save holds the new change", parsed.notes[1].done);
+            sim.check("the next save holds every note", parsed.notes.length == texts.length);
+        } else {
+            sim.check("the saved file parses", false);
+        }
+    }
+    if let leftover = fs.exists(blocker) {
+        sim.check("no temporary file is left behind", !leftover);
+    }
+}
+
+// ── D7: a multiline edit wraps like a textarea ───────────────────────
+
+fn editedRuns(sim: mut Sim, top: real, bottom: real): []TextDraw {
+    let out: []TextDraw = [];
+    for d in sim.textDraws {
+        if d.y >= top - 0.5 && d.y < bottom && d.x < WIDTH as real - 60.0 {
+            out.push(d);
+        }
+    }
+    return out;
+}
+
+fn scenarioWrap(sim: mut Sim) {
+    let texts = fixtureTexts();
+    openFixture(sim, texts);
+    let w = openWindow(sim);
+    w.click(centerOf(sim, "n02"));
+    let top = textY(sim, "n02");
+    w.key(ui_components.Key.Return);
+    w.frames(3);
+
+    // Every run of the edited note stays inside the list's width.
+    let widest = 0.0;
+    let rows = 0;
+    let lastY = -1.0;
+    for d in sim.textDraws {
+        if d.y >= top - 0.5 && d.y < top + 400.0 && d.text.length > 0 && d.x < WIDTH as real - 60.0 {
+            widest = max(widest, d.x + d.w);
+            if d.y > lastY + 1.0 { rows = rows + 1; lastY = d.y; }
+        }
+    }
+    sim.check(f"the edited note's runs fit the box (right edge {widest})", widest <= WIDTH as real - 6.0);
+    sim.check(f"the 446-character note wraps into many rows ({rows})", rows >= 10);
+
+    // Up moves one visual row, within the same paragraph.
+    if let before = caret(sim) {
+        w.key(ui_components.Key.Up);
+        if let after = caret(sim) {
+            sim.checkNear("Up moves the caret one row up", after.y, before.y - EDIT_FONT_SIZE * 1.3);
+            sim.check("Up keeps the caret's column roughly", after.x - before.x < CHAR * 5.0 && before.x - after.x < CHAR * 5.0);
+        } else {
+            sim.check("caret drawn after Up", false);
+        }
+        w.key(ui_components.Key.Down);
+        if let back = caret(sim) {
+            sim.checkNear("Down comes back to the last row", back.y, before.y);
+        }
+    } else {
+        sim.check("caret drawn while editing", false);
+    }
+
+    // A click at the start of the second row puts the caret there.
+    let second = -1.0;
+    let secondX = 0.0;
+    for d in sim.textDraws {
+        if d.y > top + 1.0 && d.y < top + 30.0 && d.x < WIDTH as real - 60.0 {
+            second = d.y;
+            secondX = d.x;
+            break;
+        }
+    }
+    sim.check("a second row is drawn", second > 0.0);
+    if second > 0.0 {
+        let at = Vec2(secondX + 1.0, second + 4.0);
+        w.sim.now = w.sim.now + 2.0;
+        w.press(at);
+        w.release(at);
+        w.frames(2);
+        w.type("Q");
+        let found = false;
+        for d in sim.textDraws {
+            if d.y > second - 0.5 && d.y < second + 0.5 && d.text.startsWith("Q") { found = true; }
+        }
+        sim.check("typing after a click at the second row's start inserts there", found);
+    }
+}
+
+// ── D8: hovering a note does not move the list ───────────────────────
+
+fn scenarioHoverStable(sim: mut Sim) {
+    // A note of one line, so its height is set by the tallest thing in its row:
+    // the remove button (its icon font is taller than the text's) must not be
+    // what decides it only while hovered.
+    let texts = fixtureTexts();
+    texts[0] = noteText(0, 18);
+    openFixture(sim, texts);
+    let w = openWindow(sim);
+    w.moveTo(Vec2(-100.0, -100.0));
+    let tags: []str = ["n01", "n02", "n03"];
+    let before: []real = [];
+    for t in tags { before.push(textY(sim, t)); }
+    w.moveTo(centerOf(sim, "n00"));
+    w.frames(3);
+    for (let i = 0; i < tags.length; i++) {
+        sim.checkNear(f"{tags[i]} stays put while note 0 is hovered", textY(sim, tags[i]), before[i]);
+    }
+}
+
+// ── Found by the review (2026-11-04) ─────────────────────────────────
+
+// The last note whose first run is fully visible while the note itself runs
+// past the bottom of the list. -1 when there is none.
+fn noteCutAtBottom(sim: mut Sim): int {
+    let found = -1;
+    for (let i = 0; i < 13; i++) {
+        if visible(sim, tag(i)) {
+            let next = textY(sim, tag(i + 1));
+            if let d = findText(sim, tag(i)) {
+                if next < -90000.0 || next > d.clip.maxY { found = i; }
+            }
+        }
+    }
+    return found;
+}
+
+// A press selects a note where it is: it must not scroll the list.
+fn scenarioClickNoReveal(sim: mut Sim) {
+    openFixture(sim, fixtureTexts());
+    let w = openWindow(sim);
+    w.moveTo(Vec2(150.0, 250.0));
+    w.wheel(-1.0);
+    w.wheel(-1.0);
+    w.frames(5);
+    let i = noteCutAtBottom(sim);
+    sim.check("a note runs past the bottom", i >= 0);
+    if i < 0 { return; }
+    let before = positions(sim);
+    w.click(centerOf(sim, tag(i)));
+    w.frames(5);
+    sim.checkNear("clicking a note does not scroll the list", shift(before, positions(sim)), 0.0);
+}
+
+// Starting an edit shows its caret, without waiting for a keystroke.
+fn scenarioEditRevealsCaret(sim: mut Sim) {
+    let texts = fixtureTexts();
+    texts[12] = noteText(12, 446);
+    openFixture(sim, texts);
+    let w = openWindow(sim);
+    w.key(ui_components.Key.G, KeyModifiers.Shift);
+    w.key(ui_components.Key.Return);
+    w.frames(5);
+    if let c = caret(sim) {
+        sim.check(f"the caret is visible when the edit starts ({c.y}..{c.y + c.h})", c.y >= 30.0 - 0.5 && c.y + c.h <= HEIGHT as real + 0.5);
+    } else {
+        sim.check("the caret is drawn when the edit starts", false);
+    }
+}
+
+// Typing never scrolls a wrapped box sideways: no run starts left of where
+// the note's text starts.
+fn scenarioNoSidewaysScroll(sim: mut Sim) {
+    let texts = fixtureTexts();
+    openFixture(sim, texts);
+    let w = openWindow(sim);
+    let left = 0.0;
+    if let d = findText(sim, "n00") { left = d.x; }
+    w.click(centerOf(sim, "n00"));
+    w.key(ui_components.Key.Return);
+    let typed = " ab cd ef gh ij kl mn op qr st uv wx yz ab cd ef gh ij kl mn op qr st uv wx";
+    let worst = 99999.0;
+    for (let i = 0; i < typed.length; i++) {
+        w.type(typed.slice(i, i + 1));
+        for d in sim.textDraws {
+            if d.text.length > 0 && d.x < WIDTH as real - 60.0 && d.x > 20.0 {
+                worst = min(worst, d.x);
+            }
+        }
+    }
+    sim.checkNear("no row of the edited note is shifted left", worst, left);
+}
+
+// A word longer than a row is broken between characters; End and a selection
+// to the end of such a row reach its last character.
+fn scenarioBrokenWordRowEnd(sim: mut Sim) {
+    let word = "n00";
+    while word.length < 100 { word = word + "x"; }
+    let texts = fixtureTexts();
+    texts[0] = word;
+    openFixture(sim, texts);
+    let w = openWindow(sim);
+    w.click(centerOf(sim, "n00"));
+    w.key(ui_components.Key.Return);
+    // The first row as the edit box draws it (no selection: one run).
+    let firstRow = 0;
+    if let d = findText(sim, "n00") { firstRow = d.text.length; }
+    sim.check(f"the long word is broken into rows ({firstRow} characters first)", firstRow > 0 && firstRow < word.length);
+    for (let i = 0; i < 5; i++) { w.key(ui_components.Key.Up); }
+    w.key(ui_components.Key.End, KeyModifiers.Shift);
+    w.key(ui_components.Key.Delete);
+    let rest = storedTexts()[0];
+    sim.checkStr("Shift+End then Delete removes the whole first row", rest, word.slice(firstRow, word.length));
+}
+
+// Copying does not move the caret, so it does not scroll the list to it.
+fn scenarioCopyNoJump(sim: mut Sim) {
+    openFixture(sim, fixtureTexts());
+    let w = openWindow(sim);
+    w.click(centerOf(sim, "n02"));
+    w.key(ui_components.Key.Return);
+    w.moveTo(Vec2(150.0, 250.0));
+    w.wheel(-1.0);
+    w.wheel(-1.0);
+    w.wheel(-1.0);
+    w.frames(5);
+    let before = positions(sim);
+    w.key(ui_components.Key.C, KeyModifiers.Ctrl);
+    w.frames(5);
+    sim.checkNear("Ctrl+C does not scroll the list", shift(before, positions(sim)), 0.0);
+}
+
+// Escape and a character arriving in the same frame: the character belongs
+// to no edit, and no note changes.
+fn scenarioEscapeAndTextOneFrame(sim: mut Sim) {
+    let texts = fixtureTexts();
+    openFixture(sim, texts);
+    let w = openWindow(sim);
+    w.click(centerOf(sim, "n01"));
+    w.key(ui_components.Key.Return);
+    w.sim.keyEdges.push({ key: ui_components.Key.Escape, kind: ui_components.KeyEdgeKind.Pressed, repeat: false, modifiers: KeyModifiers.None });
+    w.sim.texts.push("Z");
+    w.frames(3);
+    sim.checkStr("no note changed", joined(storedTexts()), joined(texts));
+}
+
+// A clicked button keeps the keyboard, but only Enter and Space press it.
+fn scenarioSettingsEscape(sim: mut Sim) {
+    openFixture(sim, fixtureTexts());
+    let w = openWindow(sim);
+    w.moveTo(Vec2(-100.0, -100.0));
+    w.key(ui_components.Key.S);
+    let before = rx.get(quick_todo_ui.notes().autostart);
+    let on = findText(sim, before ? "On" : "Off");
+    sim.check("the autostart button is drawn", on is TextDraw);
+    if let d = on {
+        w.click(Vec2(d.x + d.w / 2.0, d.y + d.h / 2.0));
+    }
+    sim.check("the click toggled autostart", rx.get(quick_todo_ui.notes().autostart) != before);
+    w.key(ui_components.Key.Escape);
+    sim.check("Escape does not press the button again", rx.get(quick_todo_ui.notes().autostart) != before);
+    sim.check("Escape goes back to the notes", findText(sim, "n00") is TextDraw);
+}
+
+// A double click on a history row's trash button restores nothing.
+fn scenarioHistoryTrashDoubleClick(sim: mut Sim) {
+    // Rows of one height, so the row that moves up under the pointer has its
+    // buttons exactly where the removed one had them.
+    let texts: []str = [];
+    for (let i = 0; i < 6; i++) { texts.push(noteText(i, 30)); }
+    openFixture(sim, texts);
+    for (let i = 0; i < 3; i++) {
+        quick_todo_ui.notes().remove(quick_todo_ui.notes().list()[0].id);
+    }
+    let w = openWindow(sim);
+    w.moveTo(Vec2(-100.0, -100.0));
+    // The newest deletion comes first: n02.
+    w.key(ui_components.Key.H);
+    let row = centerOf(sim, "n02");
+    w.moveTo(row);
+    let trash = Vec2(-1.0, -1.0);
+    if let r = findText(sim, "n02") {
+        for d in sim.textDraws {
+            if d.x > WIDTH as real - 60.0 && d.y >= r.y - 12.0 && d.y < textY(sim, "n01") - 4.0 && d.x > trash.x {
+                trash = Vec2(d.x + d.w / 2.0, d.y + d.h / 2.0);
+            }
+        }
+    }
+    sim.check("the trash button is drawn", trash.x > 0.0);
+    if trash.x < 0.0 { return; }
+    let notesBefore = quick_todo_ui.notes().list().length;
+    w.sim.now = w.sim.now + 2.0;
+    w.moveTo(trash);
+    w.press(trash);
+    w.release(trash);
+    w.press(trash);
+    w.release(trash);
+    w.frames(3);
+    sim.checkStr("a double click on trash forgets one entry", f"{quick_todo_ui.notes().historyList().length}", "2");
+    sim.checkStr("a double click on trash restores no note", f"{quick_todo_ui.notes().list().length}", f"{notesBefore}");
+}
+
+// Ctrl+Z undoes an edit, as in any text field: here, pasting the note into
+// itself. Ctrl+Shift+Z redoes it.
+fn scenarioUndoPaste(sim: mut Sim) {
+    let texts = fixtureTexts();
+    // Several lines, as in the user's longer notes.
+    texts[1] = "n01 first line\nsecond line\nthird";
+    openFixture(sim, texts);
+    let w = openWindow(sim);
+    w.click(centerOf(sim, "n01"));
+    w.key(ui_components.Key.Return);
+    w.key(ui_components.Key.A, KeyModifiers.Ctrl);
+    w.key(ui_components.Key.C, KeyModifiers.Ctrl);
+    w.key(ui_components.Key.Right);
+    w.key(ui_components.Key.V, KeyModifiers.Ctrl);
+    sim.checkStr("the paste doubled the note", storedTexts()[1], texts[1] + texts[1]);
+    w.key(ui_components.Key.Z, KeyModifiers.Ctrl);
+    sim.checkStr("Ctrl+Z removes the paste", storedTexts()[1], texts[1]);
+    w.key(ui_components.Key.Z, KeyModifiers.Ctrl | KeyModifiers.Shift);
+    sim.checkStr("Ctrl+Shift+Z puts it back", storedTexts()[1], texts[1] + texts[1]);
+}
+
+// Entering an edit changes nothing on screen but the box around the note: on
+// no frame does the note change its height (the next note would move) or its
+// font size.
+fn scenarioEditNoJump(sim: mut Sim) {
+    openFixture(sim, fixtureTexts());
+    let w = openWindow(sim);
+    w.click(centerOf(sim, "n01"));
+    w.frames(3);
+    let next = textY(sim, "n02");
+    let size = 0.0;
+    if let d = findText(sim, "n01") { size = d.h; }
+    sim.check("the next note is drawn", next > -90000.0);
+    w.sim.keyEdges.push({ key: ui_components.Key.Return, kind: ui_components.KeyEdgeKind.Pressed, repeat: false, modifiers: KeyModifiers.None });
+    for (let i = 0; i < 6; i++) {
+        w.frame();
+        sim.checkNear(f"frame {i}: the next note stays", textY(sim, "n02"), next);
+        if let d = findText(sim, "n01") {
+            sim.checkNear(f"frame {i}: same line height (font size)", d.h, size);
+        }
+    }
+    sim.check("the note is being edited", caret(sim) is RectDraw);
+}
+
+// What a frame of scrolling costs with every note's box mounted: printed, so
+// a regression shows as a number.
+fn scenarioScrollCost(sim: mut Sim) {
+    openFixture(sim, fixtureTexts());
+    let w = openWindow(sim);
+    w.moveTo(Vec2(150.0, 250.0));
+    let start = time.now();
+    for (let i = 0; i < 60; i++) {
+        w.wheel(i < 30 ? -0.25 : 0.25);
+    }
+    let perFrame = (time.now() - start) * 1000.0 / 60.0;
+    fmt.println(f"scroll frame: {perFrame} ms (stub font)");
+    sim.check(f"a scrolling frame stays far below a 60 Hz frame ({perFrame} ms)", perFrame < 4.0);
+}
+
+// ── Round trip of a copy of real data ────────────────────────────────
+
+// Opens the given COPY and saves it again unchanged (what a start does),
+// for the runner to compare with the original.
+fn resave(path: str): int {
+    let opened = quick_todo_ui.openNotes(path, (enabled: bool): none => {});
+    if !opened {
+        fmt.println(f"resave: could not open the copy");
+        return 1;
+    }
+    quick_todo_ui.notes().setAutostart(rx.get(quick_todo_ui.notes().autostart));
+    return 0;
+}
+
+fn main(): int {
+    let args = sys.args();
+    if args.length >= 3 && args[1] == "resave" {
+        return resave(args[2]);
+    }
+    let only = args.length >= 2 ? args[1] : "";
+    let sim = Sim {};
+    let run = (name: str, body: (s: mut Sim) => none): none => {
+        if only.length > 0 && only != name { return; }
+        sim.scenario = name;
+        body(sim);
+    };
+    run("scroll", (s: mut Sim) => { scenarioScroll(s); });
+    run("caret-visible", (s: mut Sim) => { scenarioCaretVisible(s); });
+    run("edit-then-click-other", (s: mut Sim) => { scenarioEditThenClickOther(s); });
+    run("edit-then-remove-above", (s: mut Sim) => { scenarioEditThenRemoveAbove(s); });
+    run("unreadable", (s: mut Sim) => { scenarioUnreadable(s); });
+    run("atomic-save", (s: mut Sim) => { scenarioAtomicSave(s); });
+    run("wrap", (s: mut Sim) => { scenarioWrap(s); });
+    run("hover-stable", (s: mut Sim) => { scenarioHoverStable(s); });
+    run("remove-selected-last", (s: mut Sim) => { scenarioRemoveSelectedLast(s); });
+    run("click-no-reveal", (s: mut Sim) => { scenarioClickNoReveal(s); });
+    run("edit-reveals-caret", (s: mut Sim) => { scenarioEditRevealsCaret(s); });
+    run("no-sideways-scroll", (s: mut Sim) => { scenarioNoSidewaysScroll(s); });
+    run("broken-word-row-end", (s: mut Sim) => { scenarioBrokenWordRowEnd(s); });
+    run("copy-no-jump", (s: mut Sim) => { scenarioCopyNoJump(s); });
+    run("escape-and-text-one-frame", (s: mut Sim) => { scenarioEscapeAndTextOneFrame(s); });
+    run("settings-escape", (s: mut Sim) => { scenarioSettingsEscape(s); });
+    run("history-trash-double-click", (s: mut Sim) => { scenarioHistoryTrashDoubleClick(s); });
+    run("undo-paste", (s: mut Sim) => { scenarioUndoPaste(s); });
+    run("edit-no-jump", (s: mut Sim) => { scenarioEditNoJump(s); });
+    run("scroll-cost", (s: mut Sim) => { scenarioScrollCost(s); });
+    fmt.println(f"{sim.checks - sim.failures}/{sim.checks} checks passed");
+    return sim.failures;
+}

@@ -2,6 +2,7 @@ from ui_widgets import ButtonComponent
 
 @emit
 close: ();
+quit: ();
 
 @setup
 let toggleAutostart = () => {
@@ -13,7 +14,7 @@ let removeDone = () => {
 };
 
 let quit = () => {
-    quitApp();
+    emits.quit();
 };
 
 let autostartLabel = computed((): str => rx.get(notes().autostart) ? "On" : "Off");

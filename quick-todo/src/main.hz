@@ -4,6 +4,8 @@ import image
 import ui_runtime
 import ui_components
 import single_instance
+import autostart
+import quick_todo_ui
 
 struct Activation {
     args: []str;
@@ -92,7 +94,25 @@ fn main(): int {
         tray.addEntry("Quit");
         sdl.registerGlobalHotkey(KeyModifiers.Ctrl | KeyModifiers.Alt, sdl.Key.Space, "Show or hide Quick Todo");
 
-        notes().setAutostart(rx.get(notes().autostart));
+        // The login entry starts the INSTALLED program (`haze install`, see
+        // [scripts.linux] install), never this copy: a build in __haze__ would
+        // otherwise point it into a build folder. Not installed: no entry.
+        let applyAutostart = (enabled: bool): none => {
+            if enabled {
+                if let installed = app.installedExecutable("quick-todo") {
+                    if let present = fs.exists(installed) {
+                        if present {
+                            autostart.enable("quick-todo", installed, "--background");
+                            return;
+                        }
+                    }
+                }
+            }
+            autostart.disable("quick-todo");
+        };
+        quick_todo_ui.openNotes(sdl.prefPath("haze", "quick-todo") + "notes.json", applyAutostart)?!;
+        // Starting writes nothing to the notes: only a change by the user does.
+        applyAutostart(rx.get(quick_todo_ui.notes().autostart));
 
         let activation = rx.reactive<int>(0);
         let pointerEdgeScratch: mut []ui_components.PointerEdge = [];
@@ -146,7 +166,7 @@ fn main(): int {
                     a.commitWindowRegions();
                 },
             },
-            ui: (ui: ui_components.UIContext) => { QuickTodoComponent(ui, { id: 0, activation: activation }); },
+            ui: (ui: ui_components.UIContext) => { quick_todo_ui.QuickTodoComponent(ui, { id: 0, activation: activation, onQuit: () => { quitApp(); } }); },
         });
 
         let show = () => {

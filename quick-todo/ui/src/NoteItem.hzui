@@ -1,0 +1,152 @@
+from ui_widgets import ButtonComponent, TextInput, TextInputComponent
+
+@props
+noteId: int;
+text: str;
+done: bool;
+selected: bool;
+editing: bool;
+revealSerial: int;
+
+@emit
+select: (int,);
+edit: (int,);
+// The edit ended from the keyboard (Ctrl+Enter).
+finish: (int,);
+// Focus left the edit box: the edit is over.
+left: (int,);
+remove: (int,);
+// The edit box's text changed.
+edited: (int, str,);
+reveal: (real, real,);
+
+@setup
+let rootRef = elementRef<DivElement>();
+let inputRef = ui.componentRef<TextInput>();
+let hovered = computed(() => rootRef?.hover() ?? false);
+// The note's text as its box shows it. The box is the same one whether the
+// note is edited or not (it only lets itself be edited while it is): one
+// renderer, so starting an edit changes nothing on screen but the frame
+// around the note -- same font, same line breaks, no frame laid out before
+// the box knew its width.
+let text = reactive<str>(props.text);
+// Which reveal request this note last answered, and whether the caret moved
+// since the last frame. Both are answered on the NEXT frame: the hooks run
+// before this frame's input, so only then does the layout show the selection
+// or the caret where it now is.
+let answeredSerial = reactive<int>(-1);
+let caretMoved = reactive<bool>(false);
+
+// The store's text, whenever the note is not being edited (the row may now
+// show another note, or the text changed elsewhere). While it is edited the
+// box is where the text comes from.
+ui.watch(() => props.text, (value, old) => {
+    if !props.editing && rx.get(text) != props.text {
+        text := props.text;
+    }
+});
+
+ui.watch(() => props.editing, (value, old) => {
+    if props.editing {
+        if let input = rx.get(inputRef) {
+            input.focus();
+            input.moveCaretToEnd();
+        }
+    } else if rx.get(text) != props.text {
+        text := props.text;
+    }
+});
+
+let background = computed((): str => {
+    if props.selected { return "#26262F"; }
+    if hovered { return "#1E1E25"; }
+    return "#00000000";
+});
+
+let textColor = computed((): str => props.done ? "#71717A" : "#E4E4E7");
+
+let press = (event: PointerEvent) => {
+    emits.select(props.noteId);
+};
+
+let doubleClick = (event: PointerEvent) => {
+    emits.edit(props.noteId);
+};
+
+let toggle = () => {
+    notes().toggleDone(props.noteId);
+};
+
+let remove = () => {
+    emits.remove(props.noteId);
+};
+
+let change = (value: str) => {
+    emits.edited(props.noteId, value);
+};
+
+let submit = (value: str) => {
+    emits.finish(props.noteId);
+};
+
+let moved = () => {
+    caretMoved := true;
+};
+
+let focusLeft = (event: FocusEvent) => {
+    if props.editing { emits.left(props.noteId); }
+};
+
+// Shows the selected note once per request, and while it is edited, the
+// caret once per move. Never otherwise: whatever the user scrolled to stays.
+ui.onFrame(() => {
+    let requested = props.revealSerial != rx.get(answeredSerial);
+    let typed = rx.get(caretMoved);
+    if !requested && !typed { return; }
+    // Every note takes note of every request, selected or not: a request is
+    // for the selection it was made with, and a note a click selects later
+    // must not answer an old one as its own.
+    answeredSerial := props.revealSerial;
+    caretMoved := false;
+    if !props.selected { return; }
+    if props.editing {
+        if let input = rx.get(inputRef) {
+            if let caret = input.caretBox() {
+                emits.reveal(caret.top, caret.height);
+                return;
+            }
+        }
+    }
+    let root = rx.get(rootRef);
+    if !root { return; }
+    if let pos = root.position() {
+        if let size = root.size() {
+            emits.reveal(pos.y, size.y);
+        }
+    }
+});
+
+@template [
+        row w-grow h-fit items-center gap-3 px-3 py-2 rounded-[6]px bg-[background]
+        border-[1] border-color-[props.editing ? "#6D5BD0" : "#00000000"]
+    ]
+    ref=rootRef
+    @pointerdown=press
+    @dblclick=doubleClick
+    @focusout=focusLeft
+
+Checkbox [] checked=[props.done] @toggle=toggle {}
+
+// Not enabled while the note is not edited: a press then goes to the row
+// (select, double click to edit), and the text is drawn in the note's color.
+TextInput [] ref=inputRef text=[text] multiline=[true] enabled=[props.editing]
+    backgroundColor="#00000000" borderWidth=[0] paddingX=[0] paddingY=[0] focusRing=[0]
+    fontSize=[14] textColor="#E4E4E7" textColorDisabled=[rx.get(textColor)]
+    @change=change @submit=submit @caretMoved=moved {}
+
+// Always laid out, shown only while hovered: what the row is made of never
+// depends on the pointer, so neither does its height nor where its text
+// breaks. Disabled while hidden, so a press there goes to the row.
+Button [] icon="close" paddingX=[4] paddingY=[2] focusRing=[0] ignoreDoubleClick=[true]
+    enabled=[rx.get(hovered) && !props.editing] textColor="#71717A" textColorDisabled="#00000000"
+    bg="#00000000" @click=remove {}

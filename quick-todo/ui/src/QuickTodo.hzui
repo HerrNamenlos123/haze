@@ -1,7 +1,12 @@
+@export
+
 enum View { Notes, History, Settings }
 
 @props
 activation: Reactive<int>;
+
+@emit
+quit: ();
 
 @setup
 let view = reactive<View>(View.Notes);
@@ -32,6 +37,10 @@ ui.watch(() => rx.get(props.activation), (value, old) => {
     view := View.Notes;
 });
 
+let quit = () => {
+    emits.quit();
+};
+
 let keyPressed = (event: KeyboardEvent) => {
     if event.key == Key.Escape {
         event.stopPropagation();
@@ -46,4 +55,4 @@ TitleBar [] historyOpen=[rx.get(view) == View.History] settingsOpen=[rx.get(view
 NoteList if=[rx.get(view) == View.Notes] [] activation=[props.activation] createRequested=[createRequested]
     @openHistory=toggleHistory @openSettings=toggleSettings {}
 History else-if=[rx.get(view) == View.History] [] @close=showNotes {}
-Settings else [] @close=showNotes {}
+Settings else [] @close=showNotes @quit=quit {}

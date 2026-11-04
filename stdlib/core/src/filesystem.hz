@@ -32,6 +32,7 @@ namespace ffi {
     extern C fn hzstd_write_file_text(allocator: Allocator, path: str, input: str): hzstd_fs_error_t :: final;
     extern C fn hzstd_create_file_text(allocator: Allocator, path: str, input: str): hzstd_fs_error_t :: final;
     extern C fn hzstd_remove_file(path: str): hzstd_fs_error_t :: final;
+    extern C fn hzstd_replace_file_text(path: str, input: str): hzstd_fs_error_t :: final;
     extern C fn hzstd_move_to_trash(path: str): hzstd_fs_error_t :: final;
     extern C fn hzstd_write_file_binary(allocator: Allocator, path: str, buffer: cptr, length: int): hzstd_fs_error_t :: final;
 
@@ -231,6 +232,23 @@ export namespace fs {
         else {
             return Result<none, Error>.Err(mapErrorEnum(result.code));
         }
+    }
+
+    // Replaces the file at `path` with `text` as one step: afterwards it holds
+    // either all of the old content or all of the new, whatever happens in
+    // between -- a crash, a full disk, a power cut. writeText() truncates the
+    // file first and then writes, so an interruption there leaves it empty or
+    // half written. This writes `<path>.saving` beside it, flushes it to the
+    // disk and renames it over the file; on an error the file is left exactly
+    // as it was and `<path>.saving` is removed again. Not move(): when a
+    // rename is refused, move() copies over the destination instead, which is
+    // the in-place write this exists to avoid.
+    export fn replaceText(path: str, text: str): Result<none, Error> {
+        let result = ffi.hzstd_replace_file_text(path, text);
+        if result.code == ffi.hzstd_fs_error_code_none {
+            return Result<none, Error>.Ok(none);
+        }
+        return Result<none, Error>.Err(mapErrorEnum(result.code));
     }
 
     // Writes `text` to a NEW file at `path`, creating the folders it goes in

@@ -50,5 +50,6 @@ div [w-grow h-fit] {
 
 div if=[rx.get(hovered) || props.selected] [row h-fit gap-1] {
     Button [] icon="discard" paddingX=[4] paddingY=[2] textColor="#71717A" focusRing=[0] @click=restore {}
-    Button [] icon="trash" paddingX=[4] paddingY=[2] bgHover="#C42B1C" textColor="#71717A" focusRing=[0] @click=forget {}
+    Button [] icon="trash" paddingX=[4] paddingY=[2] bgHover="#C42B1C" textColor="#71717A" focusRing=[0]
+        ignoreDoubleClick=[true] @click=forget {}
 }

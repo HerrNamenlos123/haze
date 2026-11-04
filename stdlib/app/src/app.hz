@@ -198,6 +198,29 @@ fn windowStatePath(appId: str): str | none {
     return none;
 }
 
+// Where a program named `name` is installed for the current user: the one
+// place that knows it. Install scripts put it there (stdlib/app/install-windows.ps1,
+// and an app's [scripts.linux] install), and whatever must start the installed
+// program -- a login entry above all -- names this path, never the copy that
+// happens to be running (a build in __haze__, say). None when the platform
+// gives no home for it. Whether a program is actually there is fs.exists().
+export fn installedExecutable(name: str): str | none {
+    if sys.isWin32() {
+        if let local = env.get("LOCALAPPDATA") {
+            if local.length > 0 {
+                return f"{local}\\Programs\\{name}\\{name}.exe";
+            }
+        }
+        return none;
+    }
+    if let home = env.get("HOME") {
+        if home.length > 0 {
+            return f"{home}/.local/bin/{name}";
+        }
+    }
+    return none;
+}
+
 // What the file at `path` remembers: none when there is no file yet, and
 // none for a file that is unreadable or holds what no window could have been
 // (it is then replaced by the next save).

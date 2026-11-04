@@ -52,6 +52,7 @@ import {
 } from "../shared/Workspace";
 import { PluginHost } from "../Plugins/PluginInterface";
 import type { ASTRoot } from "../shared/AST";
+import { outputPathMapFlags } from "../shared/OutputPaths";
 import {
   BUILD_SETTINGS_FILENAME,
   type BuildSettings,
@@ -2289,6 +2290,10 @@ export class ModuleCompiler {
     }
     if (this.settings.optimize) {
       compilerFlags.addAll("-O3");
+    }
+    // A build without debug info carries no absolute paths: see OutputPaths.
+    if (!this.settings.debugInfo) {
+      compilerFlags.addAll(outputPathMapFlags());
     }
 
     const [

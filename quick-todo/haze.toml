@@ -7,7 +7,7 @@ authors = ["HerrNamenlos123"]
 type = "exe"
 
 [app]
-appId = "io.github.herrnamenlos123.QuickTodo"
+appId = "io.github.hazelang.QuickTodo"
 displayName = "Quick Todo"
 icon = "../resources/haze-logo.png"
 categories = ["Utility"]
@@ -21,10 +21,21 @@ categories = ["Utility"]
 install = '''
 haze build --release &&
 install -Dm755 __haze__/quick-todo/bin/quick-todo ~/.local/bin/quick-todo &&
-install -Dm644 __haze__/quick-todo/bin/io.github.herrnamenlos123.QuickTodo.desktop ~/.local/share/applications/io.github.herrnamenlos123.QuickTodo.desktop &&
-install -Dm644 __haze__/quick-todo/bin/io.github.herrnamenlos123.QuickTodo.png ~/.local/share/icons/hicolor/512x512/apps/io.github.herrnamenlos123.QuickTodo.png &&
+install -Dm644 __haze__/quick-todo/bin/io.github.hazelang.QuickTodo.desktop ~/.local/share/applications/io.github.hazelang.QuickTodo.desktop &&
+install -Dm644 __haze__/quick-todo/bin/io.github.hazelang.QuickTodo.png ~/.local/share/icons/hicolor/512x512/apps/io.github.hazelang.QuickTodo.png &&
 gtk-update-icon-cache -f -t ~/.local/share/icons/hicolor
 '''
+# The same, then starts the installed Quick Todo (detached from this shell).
+install-run = 'haze install && setsid -f ~/.local/bin/quick-todo >/dev/null 2>&1'
+
+[scripts.win32]
+# Release build, installed for the current user where the login entry looks for
+# it (%LOCALAPPDATA%\Programs\quick-todo, see ../stdlib/app/install-windows.ps1), with a Start menu
+# entry. Works while Quick Todo is running, which keeps the old version until it
+# is quit and started again.
+install = 'haze build --release && powershell -NoProfile -ExecutionPolicy Bypass -File ../stdlib/app/install-windows.ps1 -Name quick-todo -DisplayName "Quick Todo"'
+# The same, then starts the installed Quick Todo.
+install-run = 'haze build --release && powershell -NoProfile -ExecutionPolicy Bypass -File ../stdlib/app/install-windows.ps1 -Name quick-todo -DisplayName "Quick Todo" -Run'
 
 [linker.win32]
 flags = ["-Wl,/SUBSYSTEM:WINDOWS", "-Wl,/ENTRY:mainCRTStartup"]
@@ -32,14 +43,9 @@ flags = ["-Wl,/SUBSYSTEM:WINDOWS", "-Wl,/ENTRY:mainCRTStartup"]
 [dependencies]
 ui_components = { path = "../stdlib/ui_components" }
 ui_runtime = { path = "../stdlib/ui_runtime" }
-ui_widgets = { path = "../stdlib/ui_widgets" }
-codicons = { path = "../stdlib/codicons" }
 app = { path = "../stdlib/app" }
 sdl = { path = "../stdlib/sdl" }
 image = { path = "../stdlib/image" }
 single_instance = { path = "../stdlib/single_instance" }
 autostart = { path = "../stdlib/autostart" }
-hzui = { path = "../stdlib/hzui" }
-
-[plugins]
-hzui = { path = "../stdlib/hzui" }
+quick_todo_ui = { path = "ui" }

@@ -396,6 +396,148 @@ hzstd_fs_error_t hzstd_create_file_text(hzstd_allocator_t allocator, hzstd_str_t
   while (left > 0) {
 #if defined(HAZE_PLATFORM_WIN32)
     int written = _write(fd, data, left > INT_MAX ? INT_MAX : (unsigned int)left);
+// Replaces the file at `path` with `input` so that, whatever happens -- a
+// crash, a full disk, a power cut -- it holds either all of its old content or
+// all of the new. The new content goes to `<path>.saving`, is flushed to the
+// disk (a rename can otherwise reach the disk before the data it renames, and
+// a power cut then leaves an empty file where the old one was), and is renamed
+// over `path`. Every failure removes `<path>.saving` and leaves `path` as it
+// was: unlike hzstd_fs_move, nothing here ever falls back to copying over the
+// destination, which would write it in place.
+#if defined(HAZE_PLATFORM_WIN32)
+static inline hzstd_str_t hzstd_fs_windows_error(DWORD err);
+#endif
+hzstd_fs_error_t hzstd_replace_file_text(hzstd_str_t path, hzstd_str_t input)
+{
+  HZSTD_SCRATCH_CSTR(target, path);
+  size_t targetLength = target ? strlen(target) : 0;
+  char* partial = target ? malloc(targetLength + sizeof(".saving")) : NULL;
+  if (!partial) {
+    return (hzstd_fs_error_t) { .code = hzstd_fs_error_code_out_of_memory, .message = HZSTD_STRING("out of memory", 13) };
+  }
+  memcpy(partial, target, targetLength);
+  memcpy(partial + targetLength, ".saving", sizeof(".saving"));
+
+  hzstd_mkdir_recursive(hzstd_fs_parent_dir(target));
+  FILE* f = fopen(partial, "wb");
+  if (!f) {
+    int err = errno;
+    free(partial);
+    return (hzstd_fs_error_t) { .code = hzstd_fs_error_from_errno(err), .message = hzstd_fs_errno_message(err) };
+  }
+  int failed = 0;
+  int err = 0;
+  if (input.length > 0 && fwrite(input.data, 1, input.length, f) < input.length) {
+    failed = 1;
+    err = errno;
+  }
+  if (!failed && fflush(f) != 0) {
+    failed = 1;
+    err = errno;
+  }
+#if defined(HAZE_PLATFORM_WIN32)
+  if (!failed && !FlushFileBuffers((HANDLE)_get_osfhandle(_fileno(f)))) {
+    failed = 1;
+    err = EIO;
+  }
+#elif defined(HAZE_PLATFORM_LINUX)
+  if (!failed && fsync(fileno(f)) != 0) {
+    failed = 1;
+    err = errno;
+  }
+#endif
+  if (fclose(f) != 0 && !failed) {
+    failed = 1;
+    err = errno;
+  }
+  if (failed) {
+    remove(partial);
+    free(partial);
+    return (hzstd_fs_error_t) { .code = hzstd_fs_error_code_io_error, .message = hzstd_fs_errno_message(err) };
+  }
+
+#if defined(HAZE_PLATFORM_WIN32)
+  // Renamed by handle with POSIX semantics: the old file is unlinked even
+  // while a reader holds it open (with delete sharing), and that reader keeps
+  // reading the old content -- MoveFileEx refuses exactly that case (error 5).
+  // Only a filesystem without POSIX semantics (FAT, exFAT, some network
+  // drives) rejects it; there MoveFileEx is all there is.
+  DWORD moveErr = 0;
+  int renamed = 0;
+  int posixRejected = 0;
+  HANDLE handle = CreateFileA(partial, DELETE | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                              NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+  if (handle == INVALID_HANDLE_VALUE) {
+    moveErr = GetLastError();
+  } else {
+    wchar_t full[HAZE_MAX_PATH_LENGTH * 4];
+    wchar_t wide[HAZE_MAX_PATH_LENGTH * 4];
+    int wideLength = MultiByteToWideChar(CP_ACP, 0, target, -1, wide, (int)(sizeof(wide) / sizeof(wide[0])));
+    DWORD fullLength = wideLength > 0 ? GetFullPathNameW(wide, (DWORD)(sizeof(full) / sizeof(full[0])), full, NULL) : 0;
+    if (fullLength == 0 || fullLength >= sizeof(full) / sizeof(full[0])) {
+      moveErr = wideLength > 0 ? GetLastError() : ERROR_FILENAME_EXCED_RANGE;
+    } else {
+      size_t infoSize = sizeof(FILE_RENAME_INFO) + fullLength * sizeof(wchar_t);
+      FILE_RENAME_INFO* info = calloc(1, infoSize);
+      if (!info) {
+        moveErr = ERROR_NOT_ENOUGH_MEMORY;
+      } else {
+        info->Flags = FILE_RENAME_FLAG_REPLACE_IF_EXISTS | FILE_RENAME_FLAG_POSIX_SEMANTICS;
+        info->RootDirectory = NULL;
+        info->FileNameLength = (DWORD)(fullLength * sizeof(wchar_t));
+        memcpy(info->FileName, full, fullLength * sizeof(wchar_t));
+        if (SetFileInformationByHandle(handle, FileRenameInfoEx, info, (DWORD)infoSize)) {
+          renamed = 1;
+          // The rename is metadata of this file: flushed with it.
+          FlushFileBuffers(handle);
+        } else {
+          moveErr = GetLastError();
+          posixRejected = moveErr == ERROR_INVALID_PARAMETER || moveErr == ERROR_NOT_SUPPORTED;
+        }
+        free(info);
+      }
+    }
+    CloseHandle(handle);
+  }
+  if (!renamed && posixRejected) {
+    if (MoveFileExA(partial, target, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+      renamed = 1;
+    } else {
+      moveErr = GetLastError();
+    }
+  }
+  if (!renamed) {
+    DeleteFileA(partial);
+    free(partial);
+    return (hzstd_fs_error_t) { .code = hzstd_fs_error_from_windows_error(moveErr), .message = hzstd_fs_windows_error(moveErr) };
+  }
+#else
+  if (rename(partial, target) != 0) {
+    int renameErr = errno;
+    remove(partial);
+    free(partial);
+    return (hzstd_fs_error_t) { .code = hzstd_fs_error_from_errno(renameErr), .message = hzstd_fs_errno_message(renameErr) };
+  }
+  // The rename itself is an entry in the folder: flushed with the folder.
+  {
+    hzstd_str_t parent = hzstd_fs_parent_dir(target);
+    char* folder = malloc(parent.length + 2);
+    if (folder) {
+      memcpy(folder, parent.length > 0 ? parent.data : ".", parent.length > 0 ? parent.length : 1);
+      folder[parent.length > 0 ? parent.length : 1] = '\0';
+      int fd = open(folder, O_RDONLY);
+      if (fd >= 0) {
+        fsync(fd);
+        close(fd);
+      }
+      free(folder);
+    }
+  }
+#endif
+  free(partial);
+  return (hzstd_fs_error_t) { .code = hzstd_fs_error_code_none, .message = HZSTD_STRING(NULL, 0) };
+}
+
 #else
     ssize_t written = write(fd, data, (size_t)left);
     if (written < 0 && errno == EINTR) {

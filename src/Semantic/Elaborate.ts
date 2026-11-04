@@ -19,6 +19,7 @@ import {
   EStorageClass,
 } from "../shared/AST";
 import { getModuleGlobalNamespaceName } from "../shared/Config";
+import { mapOutputPath } from "../shared/OutputPaths";
 import {
   EMethodType,
   EPrimitive,
@@ -16512,7 +16513,10 @@ export class SemanticElaborator {
     typeUseId: Semantic.TypeUseId,
     site: SourceLoc
   ): [Semantic.StructLiteralExpr, Semantic.ExprId] {
-    const filename = site?.filename ?? "";
+    // As the binary states it: without debug info, no absolute path of the
+    // machine that built it (see OutputPaths).
+    const sourceFile = site?.filename ?? "";
+    const filename = this.sr.moduleCompiler.settings.debugInfo ? sourceFile : mapOutputPath(sourceFile);
     const line = site?.start?.line ?? 0;
     const column = site ? site.start.column + 1 : 0;
 
