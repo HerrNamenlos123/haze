@@ -4,6 +4,7 @@ import { randomBytes } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
 import { parse } from "@ltd/j-toml";
 import { getCurrentPlatform } from "../ModuleCompiler/ModuleCompiler";
+import { isSubsystemFlag } from "../ModuleCompiler/WindowsAppManifest";
 import type { Collect } from "../SymbolCollection/SymbolCollection";
 import { assert, GeneralError } from "./Errors";
 import { type Arch, detectHost, Platform } from "./HostPlatform";
@@ -164,7 +165,9 @@ export type GeneratorGraphNode = {
 };
 
 // [app] -- how an executable presents itself on the desktop. The compiler
-// turns it into a desktop entry next to the binary (see DesktopEntry.ts).
+// turns it into a desktop entry next to the binary (see DesktopEntry.ts), and
+// on Windows links it as a console program that Windows starts without a
+// console window (see WindowsAppManifest.ts).
 export type AppConfig = {
   appId: string;
   displayName: string;
@@ -880,6 +883,21 @@ export class ConfigParser {
       (linker?.linux && this.getOptionalStringArray(linker.linux, "flags")) ||
         []
     );
+    // haze chooses how an [app] is linked on Windows (WindowsAppManifest.ts):
+    // a subsystem flag of the module's own would contradict that.
+    if (config.app) {
+      const own = [
+        ...config.linkerFlags.getAll(),
+        ...config.linkerFlags.getWin32(),
+      ].find(isSubsystemFlag);
+      if (own !== undefined) {
+        throw new GeneralError(
+          `File ${this.configPath} declares an [app] but links with '${own}': haze links ` +
+            `every [app] on Windows as a console program that Windows starts without a ` +
+            `console window (src/ModuleCompiler/WindowsAppManifest.ts). Remove the flag.`
+        );
+      }
+    }
 
     const compiler = toml["compiler"] as any;
     config.compilerFlags.addAll(

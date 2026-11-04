@@ -21,9 +21,6 @@ install = 'haze build --release && powershell -NoProfile -ExecutionPolicy Bypass
 # The same, then starts the installed program (unless the previous version still runs).
 install-run = 'haze build --release && powershell -NoProfile -ExecutionPolicy Bypass -File ../stdlib/app/install-windows.ps1 -Name claude-account-switcher -DisplayName "Claude Account Switcher" -Run'
 
-[linker.win32]
-flags = ["-Wl,/SUBSYSTEM:WINDOWS", "-Wl,/ENTRY:mainCRTStartup"]
-
 [dependencies]
 ui_components = { path = "../stdlib/ui_components" }
 ui_runtime = { path = "../stdlib/ui_runtime" }

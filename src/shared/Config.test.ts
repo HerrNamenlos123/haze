@@ -147,3 +147,48 @@ describe("a module is an executable unless it opts into being a library", () => 
     );
   });
 });
+
+// haze links an [app] executable as a Windows console program with a manifest
+// that keeps Windows from opening a console for it (WindowsAppManifest.ts). A
+// subsystem flag of its own would contradict that, so it is refused.
+describe("an [app] executable leaves the Windows subsystem to haze", () => {
+  const APP = `\n[app]\nappId = "io.example.App"\ndisplayName = "App"\n`;
+
+  test("a GUI subsystem flag under [linker.win32] is rejected", async () => {
+    const promise = parse(
+      "app_win32_subsystem",
+      `${APP}\n[linker.win32]\nflags = ["-Wl,/SUBSYSTEM:WINDOWS", "-Wl,/ENTRY:mainCRTStartup"]\n`,
+      "exe"
+    );
+    await expect(promise).rejects.toThrow(
+      /\[app\].*-Wl,\/SUBSYSTEM:WINDOWS.*console program/s
+    );
+  });
+
+  test("so is one under [linker], in any case", async () => {
+    const promise = parse(
+      "app_all_subsystem",
+      `${APP}\n[linker]\nflags = ["-Wl,/subsystem:windows"]\n`,
+      "exe"
+    );
+    await expect(promise).rejects.toThrow(/\[app\].*-Wl,\/subsystem:windows/s);
+  });
+
+  test("without an [app] table the flag is the module's own business", async () => {
+    const config = await parse(
+      "plain_subsystem",
+      `\n[linker.win32]\nflags = ["-Wl,/SUBSYSTEM:WINDOWS"]\n`,
+      "exe"
+    );
+    expect(config.linkerFlags.getWin32()).toEqual(["-Wl,/SUBSYSTEM:WINDOWS"]);
+  });
+
+  test("an [app] with other linker flags parses", async () => {
+    const config = await parse(
+      "app_other_flags",
+      `${APP}\n[linker.win32]\nflags = ["-Wl,/ENTRY:mainCRTStartup"]\n`,
+      "exe"
+    );
+    expect(config.app?.appId).toBe("io.example.App");
+  });
+});

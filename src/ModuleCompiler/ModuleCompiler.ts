@@ -110,6 +110,11 @@ import {
   UnreachableCode,
 } from "../shared/Errors";
 import { ProjectCompiler } from "../ProjectCompiler/ProjectCompiler";
+import {
+  appManifestResource,
+  isWindowsApp,
+  windowsAppLinkFlags,
+} from "./WindowsAppManifest";
 import { Mutex } from "../utils";
 import {
   type CLIPrinter,
@@ -612,7 +617,7 @@ export class FileChangeCache {
 type ModuleBuildCacheEntry = {
   /** Everything the module's compile read, stamped before it read them. */
   files: Record<string, FileStamp>;
-  /** An executable's: everything its link read (see linkInputFiles). */
+  /** An executable's: everything its link read (see prepareLinkInputs). */
   linkFiles?: Record<string, FileStamp>;
   compilerKey?: string;
 };
@@ -1974,6 +1979,8 @@ export class ModuleCompiler {
     return {
       moduleCFile: join(dir, `${name}-${platform}.c`),
       moduleOFile: join(dir, `${name}-${platform}.o`),
+      /** An [app]'s Windows resources: its manifest (WindowsAppManifest.ts). */
+      windowsResourceFile: join(dir, `${name}-${platform}.res`),
       moduleAFile: join(dir, `${name}-${platform}.a`),
       /** What clang read for the module's C (-MMD -MF). */
       depFile: join(dir, `${name}-${platform}.d`),
@@ -2062,7 +2069,7 @@ export class ModuleCompiler {
       // finished.
       const link = check.buildCache.checkLink(
         this.config.name,
-        await this.linkInputFiles()
+        await this.prepareLinkInputs(paths)
       );
 
       const linkCmd = prepared.linkCmd;
@@ -2268,6 +2275,11 @@ export class ModuleCompiler {
     linkerFlags.addWin32("-lkernel32");
     linkerFlags.addWin32("-luser32");
     linkerFlags.addWin32("-ladvapi32");
+    // An [app] is a console program Windows starts without a console window
+    // (WindowsAppManifest.ts); its resource file is written before the link.
+    if (isWindowsApp(this.config)) {
+      linkerFlags.addWin32(windowsAppLinkFlags(paths.windowsResourceFile));
+    }
 
     compilerFlags.addWin32("-DHAZE_PLATFORM_WIN32");
     compilerFlags.addLinux("-DHAZE_PLATFORM_LINUX");
@@ -2599,10 +2611,14 @@ export class ModuleCompiler {
    * Everything an executable's link reads from the modules it depends on,
    * directly or not: each one's static library and metadata (linker flags),
    * and the native libraries its generators left in bin/lib and bin/lib64.
-   * The executable's own bin/lib too.
+   * The executable's own bin/lib too, and the inputs it generates itself
+   * (writeGeneratedLinkInputs), which are written here, before the caller
+   * stamps the list, so the stamps are those of what the link reads.
    */
-  private async linkInputFiles(): Promise<string[]> {
-    const files: string[] = [];
+  private async prepareLinkInputs(
+    paths: ReturnType<ModuleCompiler["computeBuildPaths"]>
+  ): Promise<string[]> {
+    const files: string[] = this.writeGeneratedLinkInputs(paths);
     const addLibraryDirs = (moduleName: string) => {
       for (const sub of ["lib", "lib64"]) {
         files.push(
@@ -2631,6 +2647,26 @@ export class ModuleCompiler {
   }
 
   /**
+   * The link inputs this module writes itself: on Windows, an [app]'s
+   * resource file with its manifest (WindowsAppManifest.ts). Rewritten only
+   * when its bytes differ, so an unchanged app never relinks for it.
+   */
+  private writeGeneratedLinkInputs(
+    paths: ReturnType<ModuleCompiler["computeBuildPaths"]>
+  ): string[] {
+    if (PLATFORM !== Platform.Win32 || !isWindowsApp(this.config)) {
+      return [];
+    }
+    const file = paths.windowsResourceFile;
+    const resource = appManifestResource();
+    if (!existsSync(file) || !readFileSync(file).equals(resource)) {
+      mkdirSync(dirname(file), { recursive: true });
+      writeFileSync(file, resource);
+    }
+    return [file];
+  }
+
+  /**
    * An executable whose own code is up to date still needs a new link when a
    * library it links changed. That is only known once every dependency has
    * finished. True if it linked.
@@ -2643,7 +2679,7 @@ export class ModuleCompiler {
     await this.awaitDependencies("wait for libraries");
     const link = check.buildCache.checkLink(
       this.config.name,
-      await this.linkInputFiles()
+      await this.prepareLinkInputs(paths)
     );
     if (!link.changed) {
       check.buildCache.refreshLinkStamps(this.config.name, link.stamps);
