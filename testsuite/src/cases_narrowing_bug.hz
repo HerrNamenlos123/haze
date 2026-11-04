@@ -18,7 +18,8 @@
 //   // `result.result || result.error` (at least one is present) — never
 //   // that BOTH are. Neither may be narrowed individually.
 //
-// Root cause (src/Semantic/Constraint.ts, ConstraintSet.inverse()): before
+// Root cause (src/Semantic/Constraint.ts, ConstraintSet.complement(), then
+// named inverse()): before
 // inverting `A && B` into `!A && !B` (only sound when A and B constrain the
 // very same thing), the code checked "how many distinct things does this
 // constrain" by grouping path-based constraints by their PATH'S ROOT SYMBOL

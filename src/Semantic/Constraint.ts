@@ -285,8 +285,6 @@ export class ConstraintSet {
     { path: ConstraintPath; value: ConstraintValue }
   >;
 
-  private _inverse?: ConstraintSet;
-
   private constructor(
     map?: Map<string, Constraint>,
     pathMap?: Map<string, { path: ConstraintPath; value: ConstraintValue }>
@@ -320,7 +318,6 @@ export class ConstraintSet {
       path: path,
       value: value,
     });
-    this._inverse = undefined;
     return this;
   }
 
@@ -352,7 +349,6 @@ export class ConstraintSet {
       }
     }
 
-    this._inverse = undefined;
     return this;
   }
 
@@ -378,7 +374,6 @@ export class ConstraintSet {
       }
     }
 
-    this._inverse = undefined;
     return this;
   }
 
@@ -386,7 +381,6 @@ export class ConstraintSet {
 
   add(c: Constraint): this {
     this.map.set(constraintKey(c), c);
-    this._inverse = undefined; // invalidate cache
     return this;
   }
 
@@ -399,7 +393,6 @@ export class ConstraintSet {
     for (const [key, value] of other.pathMap) {
       this.pathMap.set(key, value);
     }
-    this._inverse = undefined;
     return this;
   }
 
@@ -437,7 +430,7 @@ export class ConstraintSet {
    * symbol (e.g. `result.result` and `result.error`) must count as distinct
    * targets here: they are independent facts, not two constraints on the
    * same thing, so `A && B` over them cannot be soundly inverted into
-   * `!A && !B` (see inverse()).
+   * `!A && !B` (see complement()).
    *
    * Legacy (variableSymbol-based) and path-based constraints are keyed
    * through the same pathToKey() format — a legacy constraint on a plain
@@ -445,7 +438,7 @@ export class ConstraintSet {
    * matching root) must land on the same key, since both are commonly
    * recorded for the exact same simple-variable guard (see the "Legacy:
    * also add symbol-based constraint for backward compatibility" comment in
-   * buildLogicalConstraintSet). Prefixing them into separate namespaces
+   * Elaborator.conditionFacts()). Prefixing them into separate namespaces
    * would double-count a single variable as two distinct targets and
    * wrongly block narrowing on the most common single-symbol guard clause.
    */
@@ -465,22 +458,20 @@ export class ConstraintSet {
     return targets.size;
   }
 
-  // ---- inversion -----------------------------------------------------------
+  // ---- complement ----------------------------------------------------------
 
-  inverse(): ConstraintSet {
-    if (this._inverse) {
-      return this._inverse;
-    }
-
-    // If there are multiple distinct symbols with constraints (A && B), we cannot properly invert them
-    // because the correct inverse would be (!A || !B), which is not representable
-    // in the constraint system. So we return an empty constraint set instead of
-    // an incorrect inversion (!A && !B).
+  /**
+   * The facts that hold exactly when this conjunction does not, or null when
+   * that is not a conjunction itself. Only meaningful for a set that is
+   * EQUIVALENT to its condition (see ConditionFacts): the complement of a set
+   * that merely follows from the condition claims more than is known.
+   */
+  complement(): ConstraintSet | null {
+    assert(!this.isEmpty());
+    // Facts about several values (A && B) complement to (!A || !B), which a
+    // constraint set cannot say.
     if (this.distinctSymbolCount() > 1) {
-      const empty = ConstraintSet.empty();
-      empty._inverse = this;
-      this._inverse = empty;
-      return empty;
+      return null;
     }
 
     // Every entry is about the one value. A legacy entry on a plain variable
@@ -500,8 +491,12 @@ export class ConstraintSet {
       facts.set(valueKey(entry.value), entry.value);
     }
 
+    const inverted = invertFacts([...facts.values()]);
+    if (inverted.length === 0) {
+      return null;
+    }
     const inv = new ConstraintSet();
-    for (const value of invertFacts([...facts.values()])) {
+    for (const value of inverted) {
       if (legacySymbol !== undefined) {
         inv.add({ variableSymbol: legacySymbol, constraintValue: value });
       }
@@ -509,11 +504,6 @@ export class ConstraintSet {
         inv.addPath(path, value);
       }
     }
-
-    // cache both directions
-    inv._inverse = this;
-    this._inverse = inv;
-
     return inv;
   }
 
@@ -524,7 +514,6 @@ export class ConstraintSet {
         this.map.delete(key);
       }
     }
-    this._inverse = undefined;
     return this;
   }
 
@@ -561,32 +550,87 @@ export class ConstraintSet {
   }
 }
 
-export class ConditionChain {
-  private readonly conditions: ConstraintSet[] = [];
+/**
+ * What a boolean condition tells about values, for each of its outcomes:
+ * `whenTrue` holds wherever the condition is true, `whenFalse` wherever it is
+ * false. Both are built together from the condition's structure; neither is
+ * derived from the other, because a side usually knows less than its
+ * condition says, and the complement of such a side claims more than is
+ * known: `c && flag()` knows `c isNot none` when true, but when false `c`
+ * may still be anything.
+ *
+ * A side is `exact` when it is also EQUIVALENT to its outcome (it holds only
+ * there), which is what makes its complement the other side. Only a leaf
+ * with facts starts out exact; `&&`, `||` and `!` keep track of it.
+ *
+ * The sets are shared between facts and must not be mutated: add them to
+ * another set instead.
+ */
+export class ConditionFacts {
+  private constructor(
+    readonly whenTrue: ConstraintSet,
+    readonly whenFalse: ConstraintSet,
+    private readonly trueExact: boolean,
+    private readonly falseExact: boolean
+  ) {}
 
-  add(condition: ConstraintSet): void {
-    this.conditions.push(condition);
+  /** A condition nothing is known about, e.g. a call or a bool variable. */
+  static opaque(): ConditionFacts {
+    return new ConditionFacts(
+      ConstraintSet.empty(),
+      ConstraintSet.empty(),
+      false,
+      false
+    );
   }
 
-  /** All previous conditions inverted (used for else / else-if guards) */
-  private invertedPrefix(): ConstraintSet {
-    const out = ConstraintSet.empty();
-    for (const c of this.conditions) {
-      // Each condition on its own: a later branch is entered with every
-      // earlier condition false, `!A && !B`. One that has no inverse (see
-      // ConstraintSet.inverse()) contributes nothing.
-      const inverted = c.inverse();
-      if (!inverted.isEmpty()) {
-        out.addAll(inverted);
-      }
+  /**
+   * A leaf condition and its facts, which hold exactly when it is true
+   * (`x is none`, `n > 2`, the truthiness of `x: T | none`). No facts means
+   * nothing is known about it.
+   */
+  static leaf(facts: ConstraintSet): ConditionFacts {
+    if (facts.isEmpty()) {
+      return ConditionFacts.opaque();
     }
-    return out;
+    const complement = facts.complement();
+    return new ConditionFacts(
+      facts,
+      complement ?? ConstraintSet.empty(),
+      true,
+      complement !== null
+    );
   }
 
-  /** All previous conditions inverted + this condition */
-  branchConstraints(current: ConstraintSet): ConstraintSet {
-    const out = this.invertedPrefix();
-    out.addAll(current);
-    return out;
+  /** `!X`: the outcomes swap. */
+  not(): ConditionFacts {
+    return new ConditionFacts(
+      this.whenFalse,
+      this.whenTrue,
+      this.falseExact,
+      this.trueExact
+    );
+  }
+
+  /**
+   * `X && Y`: true only where both are, so the true sides add up. False
+   * where either is false, `!X || !Y`: known only as the complement of an
+   * exact true side.
+   */
+  and(other: ConditionFacts): ConditionFacts {
+    const whenTrue = this.whenTrue.withAll(other.whenTrue);
+    const trueExact = this.trueExact && other.trueExact;
+    const complement = trueExact ? whenTrue.complement() : null;
+    return new ConditionFacts(
+      whenTrue,
+      complement ?? ConstraintSet.empty(),
+      trueExact,
+      complement !== null
+    );
+  }
+
+  /** `X || Y`, the dual of and(): `!(!X && !Y)`. */
+  or(other: ConditionFacts): ConditionFacts {
+    return this.not().and(other.not()).not();
   }
 }
