@@ -91,4 +91,10 @@ hzstd_open_dir_result_t hzstd_open_dir(hzstd_str_t path);
 hzstd_dir_entry_t hzstd_read_next_dir_entry(void* handle);
 void hzstd_close_dir(void* handle);
 
+// One directory, never its parents; already_exists when anything is at the path
+// (one atomic step, so of concurrent creators exactly one succeeds).
+hzstd_fs_error_t hzstd_create_directory_exclusive(hzstd_str_t path);
+// Removes an empty directory; not_empty when it holds anything.
+hzstd_fs_error_t hzstd_remove_empty_directory(hzstd_str_t path);
+
 #endif // HZSTD_FILESYSTEM_H

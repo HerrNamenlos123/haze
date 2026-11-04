@@ -1,11 +1,68 @@
 namespace ffi {
     extern C fn os_sleep_ns(nanoseconds: u64): void :: final;
     extern C fn hzstd_time_now(): real :: final;
+    extern C fn hzstd_time_wall_ms(): int :: final;
 }
 
 namespace time {
     export fn now() {
         return ffi.hzstd_time_now();
+    }
+
+    // Milliseconds since 1970-01-01 00:00 UTC, from the system clock. Unlike
+    // now() it jumps when the clock is set (by the user, or by NTP), so it is
+    // for moments other programs read, such as a time stamp in a file; a
+    // duration is measured with now().
+    export fn wallClockMs(): int {
+        return ffi.hzstd_time_wall_ms();
+    }
+
+    // A wallClockMs() value as ISO 8601 in UTC, to the millisecond:
+    // "2026-11-04T21:40:00.000Z". Before 1970 works too (negative values).
+    export fn formatUtcIso8601(ms: int): str {
+        let msPerDay = 86400000;
+        // Floor division: a negative ms is a moment before midnight of the
+        // day before, not after it.
+        let days = ms / msPerDay;
+        if ms % msPerDay < 0 {
+            days = days - 1;
+        }
+        let msOfDay = ms - days * msPerDay;
+
+        // Days since 1970-01-01 to a civil date (Howard Hinnant's
+        // days_from_civil, inverted: eras of 400 years, 146097 days).
+        let z = days + 719468;
+        let era = z / 146097;
+        if z % 146097 < 0 {
+            era = era - 1;
+        }
+        let dayOfEra = z - era * 146097;
+        let yearOfEra = (dayOfEra - dayOfEra / 1460 + dayOfEra / 36524 - dayOfEra / 146096) / 365;
+        let dayOfYear = dayOfEra - (365 * yearOfEra + yearOfEra / 4 - yearOfEra / 100);
+        let mp = (5 * dayOfYear + 2) / 153;
+        let day = dayOfYear - (153 * mp + 2) / 5 + 1;
+        let month = mp < 10 ? mp + 3 : mp - 9;
+        let year = yearOfEra + era * 400;
+        if month <= 2 {
+            year = year + 1;
+        }
+
+        let hour = msOfDay / 3600000;
+        let minute = msOfDay / 60000 % 60;
+        let second = msOfDay / 1000 % 60;
+        let milli = msOfDay % 1000;
+        return f"{pad(year, 4)}-{pad(month, 2)}-{pad(day, 2)}T{pad(hour, 2)}:{pad(minute, 2)}:{pad(second, 2)}.{pad(milli, 3)}Z";
+    }
+
+    // `value` with leading zeros up to `width` digits; a negative year keeps
+    // its sign in front.
+    fn pad(value: int, width: int): str {
+        let magnitude = value < 0 ? -value : value;
+        let digits = f"{magnitude}";
+        while digits.length < width {
+            digits = "0" + digits;
+        }
+        return value < 0 ? "-" + digits : digits;
     }
 
     export fn sleep(seconds: real) {

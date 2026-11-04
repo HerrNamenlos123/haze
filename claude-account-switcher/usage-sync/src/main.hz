@@ -1,0 +1,110 @@
+import claude_usage
+
+// claude-usage-sync: on a machine that has no switcher of its own (the VM),
+// keeps Claude Code's usage cache entry (~/.claude.json) current from the
+// host switcher's usage.json, which a shared folder brings in at
+// <state folder>/share/usage.json. Every 15 s it writes the entry the file
+// asks for (claude_usage.cacheEntryFor, the same rule the switcher uses on
+// the host): the active account's numbers while its probe is fresh, nothing
+// otherwise. It sends no request itself.
+//
+// NOT DEPLOYED YET (2026-11-04). The VM runs a Python workaround instead
+// (profile repo, tools/claude-usage-sync), because no Linux machine at hand
+// could build Haze quickly: WSL's Ubuntu 22.04 has a libdwarf too old for
+// hzstd, and the user wants no haze checkout in the VM. This program is
+// the intended solution and replaces the workaround once building for the
+// VM is easy and fast; see CONTRACT.md, "The VM".
+//
+//   claude-usage-sync           run until stopped
+//   claude-usage-sync --once    one round, then exit (exit code 1 if it failed)
+
+fn describe(result: Result<claude_usage.CacheWrite, str>): str {
+    if !result {
+        return f"failed: {result}";
+    }
+    let outcome: claude_usage.CacheWrite = result;
+    if outcome == claude_usage.CacheWrite.Written { return "writing the entry"; }
+    if outcome == claude_usage.CacheWrite.Removed { return "removed the entry"; }
+    if outcome == claude_usage.CacheWrite.Unchanged { return "no entry"; }
+    return "locked by Claude Code";
+}
+
+// One round: what it did, and whether that was a failure.
+fn round(usagePath: str, configPath: str): Result<claude_usage.CacheWrite, str> {
+    let read = claude_usage.readUsageFile(usagePath);
+    let entry: claude_usage.CacheEntry | none = none;
+    let problem = "";
+    if !read {
+        problem = f"{read}";
+    }
+    else {
+        let file: claude_usage.UsageFile | none = read;
+        if let f = file {
+            entry = claude_usage.cacheEntryFor(f, time.wallClockMs());
+        }
+        else {
+            problem = f"{usagePath} is missing (is the shared folder mounted?)";
+        }
+    }
+    // Without a usable file there are no current numbers: the entry goes, so
+    // the extension shows its own error instead of old numbers as live.
+    let result = claude_usage.setClaudeUsageCache(configPath, entry);
+    if problem.length > 0 {
+        if !result {
+            return Result<claude_usage.CacheWrite, str>.Err(f"{problem}; {result}");
+        }
+        return Result<claude_usage.CacheWrite, str>.Err(problem);
+    }
+    return result;
+}
+
+fn main(): int {
+    let once = false;
+    for arg in sys.args() {
+        if arg == "--once" {
+            once = true;
+        }
+    }
+    let usage = claude_usage.usageFilePath();
+    if !usage {
+        fmt.println("claude-usage-sync: no state folder (HOME or XDG_STATE_HOME, LOCALAPPDATA on Windows)");
+        return 2;
+    }
+    let config = claude_usage.claudeConfigPath();
+    if !config {
+        fmt.println("claude-usage-sync: no home folder, so no Claude Code config");
+        return 2;
+    }
+    let usagePath: str = usage;
+    let configPath: str = config;
+
+    if once {
+        let result = round(usagePath, configPath);
+        fmt.println(f"claude-usage-sync: {describe(result)}");
+        if !result {
+            return 1;
+        }
+        return 0;
+    }
+
+    fmt.println(f"claude-usage-sync: {usagePath} -> {configPath}");
+    let last = "";
+    while true {
+        let result = round(usagePath, configPath);
+        let said = describe(result);
+        // "writing the entry" every 15 s is one state, not news.
+        if said != last {
+            fmt.println(f"claude-usage-sync: {said}");
+            last = said;
+        }
+        let wait = 15.0;
+        if result {
+            let outcome: claude_usage.CacheWrite = result;
+            if outcome == claude_usage.CacheWrite.Locked {
+                wait = 1.0;
+            }
+        }
+        time.sleep(wait);
+    }
+    return 0;
+}

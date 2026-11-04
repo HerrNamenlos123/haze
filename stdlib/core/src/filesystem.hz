@@ -14,6 +14,7 @@ namespace ffi {
         hzstd_fs_error_code_name_too_long,
         hzstd_fs_error_code_io_error, // generic read/write failure
         hzstd_fs_error_code_out_of_memory,
+        hzstd_fs_error_code_not_empty, // a directory that still holds entries
     };
 
     extern C noemit struct hzstd_fs_error_t {
@@ -43,6 +44,8 @@ namespace ffi {
     extern C fn hzstd_file_read_some(allocator: Allocator, handle: cptr, dest: cptr, max_bytes: int, out_read: cptr): hzstd_fs_error_t :: final;
 
     extern C fn hzstd_mkdir_recursive(path: str): hzstd_fs_error_t :: final;
+    extern C fn hzstd_create_directory_exclusive(path: str): hzstd_fs_error_t :: final;
+    extern C fn hzstd_remove_empty_directory(path: str): hzstd_fs_error_t :: final;
 
     extern C noemit struct hzstd_fs_exists_result_t {
         exists: bool;
@@ -112,6 +115,7 @@ export namespace fs {
         NameTooLong,
         IOError,
         OutOfMemory,
+        NotEmpty,
     }
 
     fn mapErrorEnum(error: ffi.hzstd_fs_error_code_t): Error {
@@ -144,6 +148,9 @@ export namespace fs {
         }
         else if error == ffi.hzstd_fs_error_code_out_of_memory {
             return Error.OutOfMemory;
+        }
+        else if error == ffi.hzstd_fs_error_code_not_empty {
+            return Error.NotEmpty;
         }
 
         // If this ever triggers, C and Haze enums are out of sync.
@@ -547,6 +554,31 @@ export namespace fs {
 
     export fn createDirectory(path: str): Result<none, Error> {
         let result = ffi.hzstd_mkdir_recursive(path);
+        if result.code == ffi.hzstd_fs_error_code_none {
+            return Result<none, Error>.Ok(none);
+        }
+        return Result<none, Error>.Err(mapErrorEnum(result.code));
+    }
+
+    // Creates the one directory `path` names, never its parents (a missing
+    // parent is NotFound). Anything already at the path, a directory or a
+    // file, is AlreadyExists. The check and the creation are one step, so of
+    // several programs creating the same directory at once exactly one
+    // succeeds: a lock that other programs take by creating a directory
+    // (proper-lockfile, which Claude Code uses) is taken this way.
+    export fn createDirectoryExclusive(path: str): Result<none, Error> {
+        let result = ffi.hzstd_create_directory_exclusive(path);
+        if result.code == ffi.hzstd_fs_error_code_none {
+            return Result<none, Error>.Ok(none);
+        }
+        return Result<none, Error>.Err(mapErrorEnum(result.code));
+    }
+
+    // Removes the directory at `path` if it is empty; one that still holds
+    // anything is NotEmpty and stays as it is. A file there is
+    // NotADirectory.
+    export fn removeEmptyDirectory(path: str): Result<none, Error> {
+        let result = ffi.hzstd_remove_empty_directory(path);
         if result.code == ffi.hzstd_fs_error_code_none {
             return Result<none, Error>.Ok(none);
         }

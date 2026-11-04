@@ -931,6 +931,13 @@ double hzstd_time_now(void)
   return (double)delta_ns / 1e9;
 }
 
+hzstd_int_t hzstd_time_wall_ms(void)
+{
+  struct timespec ts;
+  clock_gettime(CLOCK_REALTIME, &ts);
+  return (hzstd_int_t)ts.tv_sec * 1000 + (hzstd_int_t)(ts.tv_nsec / 1000000);
+}
+
 void os_sleep_ns(uint64_t ns)
 {
   struct timespec ts;

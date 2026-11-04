@@ -1,0 +1,768 @@
+import claude
+import claude_usage
+
+// claude_usage against recorded replies and scratch folders. Nothing here
+// reaches the network or the real ~/.claude.json: every path is under the
+// folder in CLAUDE_USAGE_TEST_DIR (default: a folder in the system temp).
+//
+// Run:  __haze__/claude_usage_tests/bin/claude_usage_tests [scenario]
+// Without a scenario it runs all of them; the exit code is the failure count.
+
+ref struct T {
+    checks: int = 0;
+    failures: int = 0;
+    scenario: str = "";
+
+    mut fn check(name: str, ok: bool) {
+        this.checks = this.checks + 1;
+        if !ok {
+            this.failures = this.failures + 1;
+            fmt.println(f"FAIL [{this.scenario}] {name}");
+        }
+    }
+
+    mut fn equal(name: str, got: str, want: str) {
+        this.checks = this.checks + 1;
+        if got != want {
+            this.failures = this.failures + 1;
+            fmt.println(f"FAIL [{this.scenario}] {name}\n  got:  {got}\n  want: {want}");
+        }
+    }
+}
+
+// The reply the API gave the probe on 2026-11-04 (HTTP/2, curl 8 on
+// Windows), headers in curl's order, cut to the ones that matter plus a few
+// around them.
+const RECORDED_OK = "HTTP/1.1 200 OK\r\ndate: Wed, 04 Nov 2026 17:25:03 GMT\r\ncontent-type: application/json\r\nanthropic-ratelimit-unified-5h-reset: 1793828400\r\nanthropic-ratelimit-unified-5h-status: allowed\r\nanthropic-ratelimit-unified-5h-utilization: 0.4\r\nanthropic-ratelimit-unified-7d-reset: 1793973600\r\nAnthropic-Ratelimit-Unified-7d-Status: allowed\r\nanthropic-ratelimit-unified-7d-utilization: 0.19\r\nanthropic-ratelimit-unified-status: allowed\r\n\r\n{\"id\":\"msg_x\",\"type\":\"message\"}";
+
+const RECORDED_DISGUISED_429 = "HTTP/2 429 \r\ncontent-type: application/json\r\nretry-after: 7\r\n\r\n{\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\",\"message\":\"Error\"}}";
+
+// A header value as text, "<none>" when absent.
+fn text(value: str | none): str {
+    if let v = value {
+        return v;
+    }
+    return "<none>";
+}
+
+fn testCurlConfig(t: mut T) {
+    t.equal("plain", claude.curlConfigQuote("abc"), "\"abc\"");
+    t.equal("escapes", claude.curlConfigQuote("a\\b\"c\nd\re\tf"), "\"a\\\\b\\\"c\\nd\\re\\tf\"");
+    let config = claude.curlPostConfig("https://x/y", [claude.HttpHeader { name: "Authorization", value: "Bearer sk-ant-1" }], "{\"a\":1}", 20);
+    t.equal("config", config, "silent\nshow-error\nmax-time = 20\nrequest = \"POST\"\ndump-header = \"-\"\nurl = \"https://x/y\"\nheader = \"Authorization: Bearer sk-ant-1\"\ndata-binary = \"{\\\"a\\\":1}\"\n");
+}
+
+fn testParseReply(t: mut T) {
+    let ok = claude.parseCurlReply(RECORDED_OK);
+    t.check("ok status", ok.status == 200);
+    t.equal("ok body", ok.body, "{\"id\":\"msg_x\",\"type\":\"message\"}");
+    t.equal("header ignores case", text(ok.header("ANTHROPIC-RATELIMIT-UNIFIED-7D-STATUS")), "allowed");
+    t.check("missing header", !ok.header("x-nothing"));
+
+    // An interim answer and a proxy's CONNECT answer come first; the last
+    // block is the reply.
+    let chained = claude.parseCurlReply("HTTP/1.1 200 Connection established\r\n\r\nHTTP/1.1 100 Continue\r\n\r\nHTTP/2 403 \r\nx-a: 1\r\n\r\nbody");
+    t.check("chained status", chained.status == 403);
+    t.equal("chained body", chained.body, "body");
+    t.equal("chained header", text(chained.header("x-a")), "1");
+
+    let lf = claude.parseCurlReply("HTTP/1.1 204 No Content\nx-b: 2\n\n");
+    t.check("lf status", lf.status == 204);
+    t.equal("lf header", text(lf.header("x-b")), "2");
+
+    t.check("no reply", claude.parseCurlReply("").error.length > 0);
+    t.check("no end", claude.parseCurlReply("HTTP/1.1 200 OK\r\nx: y").error.length > 0);
+    t.check("bad status", claude.parseCurlReply("HTTP/1.1 abc\r\n\r\n").error.length > 0);
+}
+
+fn testSample(t: mut T) {
+    let sample = claude_usage.sampleFromReply(claude.parseCurlReply(RECORDED_OK));
+    t.check("sample present", sample as bool);
+    if let s = sample {
+        if let five = s.fiveHour {
+            t.check("5h percent", five.percent > 39.999 && five.percent < 40.001);
+            t.check("5h reset", five.resetsAtMs == 1793828400000);
+            t.equal("5h status", five.status, "allowed");
+        }
+        else {
+            t.check("5h present", false);
+        }
+        if let seven = s.sevenDay {
+            t.check("7d percent", seven.percent > 18.999 && seven.percent < 19.001);
+            t.check("7d reset", seven.resetsAtMs == 1793973600000);
+        }
+        else {
+            t.check("7d present", false);
+        }
+    }
+
+    // The percent is exact to two decimals: 1.11 is 111, not 111.00000000000001,
+    // and 0.07 is 7.
+    let over = claude.parseCurlReply("HTTP/2 200 \r\nanthropic-ratelimit-unified-5h-utilization: 1.11\r\nanthropic-ratelimit-unified-5h-reset: 1793828400\r\nanthropic-ratelimit-unified-7d-utilization: 0.07\r\nanthropic-ratelimit-unified-7d-reset: 1793828400\r\n\r\n");
+    if let s = claude_usage.sampleFromReply(over) {
+        if let five = s.fiveHour {
+            t.equal("1.11 is 111", f"{five.percent}", "111");
+        }
+        if let seven = s.sevenDay {
+            t.equal("0.07 is 7", f"{seven.percent}", "7");
+        }
+    }
+    else {
+        t.check("over-limit sample", false);
+    }
+
+    // At the limit the API answers 429 with the headers: still a sample.
+    let limited = claude.parseCurlReply("HTTP/2 429 \r\nanthropic-ratelimit-unified-5h-utilization: 1.0\r\nanthropic-ratelimit-unified-5h-reset: 1793828400\r\nanthropic-ratelimit-unified-5h-status: rejected\r\n\r\n{}");
+    let limitedSample = claude_usage.sampleFromReply(limited);
+    t.check("429 with headers is a sample", limitedSample as bool);
+    if let s = limitedSample {
+        t.check("only 5h", s.fiveHour as bool && !s.sevenDay);
+    }
+
+    // A window with a garbled number is left out, never guessed.
+    let garbled = claude.parseCurlReply("HTTP/2 200 \r\nanthropic-ratelimit-unified-5h-utilization: lots\r\nanthropic-ratelimit-unified-5h-reset: 1793828400\r\n\r\n");
+    t.check("garbled is no sample", !claude_usage.sampleFromReply(garbled));
+
+    // The 429 a token gets without Claude Code's system prompt.
+    let disguised = claude.parseCurlReply(RECORDED_DISGUISED_429);
+    t.check("disguised 429 is no sample", !claude_usage.sampleFromReply(disguised));
+    let e = claude_usage.errorFromReply(disguised);
+    t.check("disguised kind", e.kind == claude_usage.ProbeErrorKind.RateLimited);
+    t.check("retry-after", e.retryAfterSeconds == 7);
+    t.equal("message from body", e.message, "HTTP 429: Error");
+
+    let auth = claude_usage.errorFromReply(claude.parseCurlReply("HTTP/2 403 \r\n\r\n{\"error\":{\"type\":\"permission_error\",\"message\":\"no scope\"}}"));
+    t.check("403 is auth", auth.kind == claude_usage.ProbeErrorKind.Auth);
+    t.equal("403 message", auth.message, "HTTP 403: no scope");
+
+    let headerless = claude_usage.errorFromReply(claude.parseCurlReply("HTTP/2 200 \r\n\r\n{}"));
+    t.check("200 without headers", headerless.kind == claude_usage.ProbeErrorKind.NoUsageHeaders);
+
+    let server = claude_usage.errorFromReply(claude.parseCurlReply("HTTP/2 529 \r\n\r\nnot json"));
+    t.check("529 is http", server.kind == claude_usage.ProbeErrorKind.Http);
+    t.equal("529 message", server.message, "HTTP 529");
+
+    let network = claude_usage.errorFromReply(claude.HttpReply { error: "Could not resolve host" });
+    t.check("network", network.kind == claude_usage.ProbeErrorKind.Network);
+    t.equal("network message", network.message, "Could not resolve host");
+}
+
+// ── scratch folders ─────────────────────────────────────────────────────────
+
+fn scratchRoot(): str {
+    if let dir = env.get("CLAUDE_USAGE_TEST_DIR") {
+        if dir.length > 0 {
+            return dir;
+        }
+    }
+    if let tmp = env.get("TEMP") {
+        return f"{tmp}/claude-usage-tests";
+    }
+    return "/tmp/claude-usage-tests";
+}
+
+// A fresh, empty folder for one scenario. Folders are emptied file by file
+// (fs has no recursive removal), so a scenario only creates files directly
+// inside its folder and the lock folder.
+fn scratch(name: str): str {
+    let dir = f"{scratchRoot()}/{name}";
+    fs.createDirectory(dir);
+    if let entries = fs.listDir(dir) {
+        for e in entries {
+            if e.isFile {
+                fs.removeFile(e.path);
+            }
+            else {
+                fs.removeEmptyDirectory(e.path);
+            }
+        }
+    }
+    return dir;
+}
+
+fn readOr(path: str, otherwise: str): str {
+    if let text = fs.readText(path) {
+        return text;
+    }
+    return otherwise;
+}
+
+fn exists(path: str): bool {
+    if let present = fs.exists(path) {
+        return present;
+    }
+    return false;
+}
+
+fn window(percent: real, resetsAtMs: int): claude_usage.WindowUsage {
+    return claude_usage.WindowUsage { percent: percent, resetsAtMs: resetsAtMs, status: "allowed" };
+}
+
+// ── usage.json ──────────────────────────────────────────────────────────────
+
+fn testUsageFile(t: mut T) {
+    let dir = scratch("file");
+    let path = f"{dir}/usage.json";
+
+    let missing = claude_usage.readUsageFile(path);
+    t.check("missing file reads as none", missing as bool);
+    if missing {
+        // Through a typed local: see the ledger entry on if-let over a
+        // Result holding Ok(none).
+        let m: claude_usage.UsageFile | none = missing;
+        t.check("missing is none", !m);
+    }
+
+    let file = claude_usage.UsageFile { writtenAtMs: 1793806695123, active: "personal-2" };
+    file.accounts.push(claude_usage.AccountUsage {
+        id: "personal-2",
+        staleAfterMs: 180000,
+        probedAtMs: 1793806690000,
+        fiveHour: window(40.0, 1793828400000),
+        sevenDay: window(19.5, 1793973600000),
+        attemptedAtMs: 1793806689000,
+    });
+    file.accounts.push(claude_usage.AccountUsage {
+        id: "tailoryoung",
+        staleAfterMs: 1800000,
+        attemptedAtMs: 1793806000000,
+        error: claude_usage.ProbeFailure { kind: claude_usage.ProbeErrorKind.RateLimited, message: "HTTP 429: \"slow\"\nnow", atMs: 1793806000500, retryAfterSeconds: 30 },
+    });
+    file.accounts.push(claude_usage.AccountUsage { id: "fresh" });
+    t.check("written", claude_usage.writeUsageFile(path, file) as bool);
+
+    let back = claude_usage.readUsageFile(path);
+    t.check("reads back", back as bool);
+    if let r = back {
+        if let f = r {
+            t.check("writtenAtMs", f.writtenAtMs == 1793806695123);
+            t.equal("active", text(f.active), "personal-2");
+            t.check("three accounts", f.accounts.length == 3);
+            if let a = f.account("personal-2") {
+                t.check("probedAtMs", a.probedAtMs as bool);
+                t.check("own staleAfterMs", a.staleAfterMs == 180000);
+                if let five = a.fiveHour {
+                    t.check("5h", five.percent == 40.0 && five.resetsAtMs == 1793828400000 && five.status == "allowed");
+                }
+                else {
+                    t.check("5h present", false);
+                }
+                if let seven = a.sevenDay {
+                    t.check("7d", seven.percent == 19.5);
+                }
+                t.check("no error", !a.error);
+            }
+            if let b = f.account("tailoryoung") {
+                t.check("no numbers", !b.probedAtMs && !b.fiveHour && !b.sevenDay);
+                t.check("its own staleAfterMs", b.staleAfterMs == 1800000);
+                if let e = b.error {
+                    t.check("error kind", e.kind == claude_usage.ProbeErrorKind.RateLimited);
+                    t.equal("error message survives quotes and newlines", e.message, "HTTP 429: \"slow\"\nnow");
+                    t.check("error at and retry", e.atMs == 1793806000500 && e.retryAfterSeconds == 30);
+                }
+                else {
+                    t.check("error present", false);
+                }
+            }
+            if let c = f.account("fresh") {
+                t.check("never probed", !c.probedAtMs && !c.attemptedAtMs && !c.error);
+            }
+        }
+    }
+
+    // No active account is written as null and read back as none.
+    let empty = claude_usage.UsageFile { writtenAtMs: 1 };
+    claude_usage.writeUsageFile(path, empty);
+    if let r = claude_usage.readUsageFile(path) {
+        if let f = r {
+            t.check("active none", !f.active && f.accounts.length == 0);
+        }
+    }
+
+    // What is not a usage file of this version is refused, never half read.
+    t.check("not json", !claude_usage.parseUsageFile("nope"));
+    // A complete account, so each refusal below has exactly one cause.
+    t.check("a complete file parses", claude_usage.parseUsageFile("{\"version\":2,\"writtenAtMs\":1,\"active\":null,\"accounts\":[{\"id\":\"a\",\"staleAfterMs\":1,\"probedAtMs\":null,\"fiveHour\":null,\"sevenDay\":null,\"attemptedAtMs\":null,\"error\":null}]}") as bool);
+    t.check("version 1 (one staleness for all)", !claude_usage.parseUsageFile("{\"version\":1,\"writtenAtMs\":1,\"staleAfterMs\":1,\"active\":null,\"accounts\":[]}"));
+    t.check("other version", !claude_usage.parseUsageFile("{\"version\":3,\"writtenAtMs\":1,\"active\":null,\"accounts\":[]}"));
+    t.check("missing field", !claude_usage.parseUsageFile("{\"version\":2,\"active\":null,\"accounts\":[]}"));
+    t.check("account without staleAfterMs", !claude_usage.parseUsageFile("{\"version\":2,\"writtenAtMs\":1,\"active\":null,\"accounts\":[{\"id\":\"a\",\"probedAtMs\":null,\"fiveHour\":null,\"sevenDay\":null,\"attemptedAtMs\":null,\"error\":null}]}"));
+    t.check("account without error field", !claude_usage.parseUsageFile("{\"version\":2,\"writtenAtMs\":1,\"active\":null,\"accounts\":[{\"id\":\"a\",\"staleAfterMs\":1,\"probedAtMs\":null,\"fiveHour\":null,\"sevenDay\":null,\"attemptedAtMs\":null}]}"));
+    t.check("unknown error kind", !claude_usage.parseUsageFile("{\"version\":2,\"writtenAtMs\":1,\"active\":null,\"accounts\":[{\"id\":\"a\",\"staleAfterMs\":1,\"probedAtMs\":null,\"fiveHour\":null,\"sevenDay\":null,\"attemptedAtMs\":null,\"error\":{\"kind\":\"x\",\"message\":\"\",\"atMs\":1,\"retryAfterSeconds\":0}}]}"));
+
+    // Freshness: a probe counts for its account's staleAfterMs, not a
+    // millisecond longer,
+    // and one stamped in the future does not count.
+    let a = claude_usage.AccountUsage { id: "a", staleAfterMs: 180000, probedAtMs: 1000000 };
+    t.check("fresh at once", claude_usage.isFresh(a, 1000000));
+    t.check("fresh just before", claude_usage.isFresh(a, 1179999));
+    t.check("stale at the limit", !claude_usage.isFresh(a, 1180000));
+    t.check("a little in the future is fresh (another machine's clock)", claude_usage.isFresh(a, 940001));
+    t.check("a minute in the future is stale (a clock set back)", !claude_usage.isFresh(a, 940000));
+    t.check("staleness 0 is never fresh", !claude_usage.isFresh(claude_usage.AccountUsage { id: "z", probedAtMs: 1000000 }, 1000000));
+
+    // The share folder hangs off the switcher's own app id.
+    let manifest = readOr("claude-account-switcher/haze.toml", "");
+    t.check("app id matches the switcher's haze.toml", manifest.contains(f"appId = \"{claude_usage.switcherAppId()}\""));
+    t.check("never probed is stale", !claude_usage.isFresh(claude_usage.AccountUsage { id: "b", staleAfterMs: 180000 }, 1000000));
+}
+
+// ── Claude Code's cache entry ───────────────────────────────────────────────
+
+// A config shaped like Claude Code's, with what a careless rewrite would
+// break: a key differing from ours only in case, unicode, nested objects,
+// big integers, an array, and the order of keys.
+const SAMPLE_CONFIG = "{\n  \"numStartups\": 412,\n  \"CachedUsageUtilization\": \"not ours\",\n  \"projects\": {\n    \"C:/Users/x/Projects/h\\u00e4ze\": {\n      \"allowedTools\": [],\n      \"lastCost\": 0.1234567890123,\n      \"history\": [\"a\", {\"b\": null}]\n    }\n  },\n  \"firstStartTime\": \"2025-01-01T00:00:00.000Z\",\n  \"userID\": \"0123456789abcdef\",\n  \"tipsHistory\": {\"x\": 1793806695000},\n  \"emoji\": \"\u00e9\u2713\"\n}\n";
+
+fn withoutOurKey(text: str): str {
+    if let node = claude.parseJson(text) {
+        while node.remove("cachedUsageUtilization") {}
+        return claude.stringify(node);
+    }
+    return "<not json>";
+}
+
+fn testClaudeCache(t: mut T) {
+    let dir = scratch("cache");
+    let config = f"{dir}/.claude.json";
+    let lock = f"{config}.lock";
+    let entry = claude_usage.CacheEntry { fetchedAtMs: 1793806695000, fiveHour: window(40.0, 1793828400000), sevenDay: window(19.0, 1793973600000) };
+
+    // No config: Claude Code creates it, never this.
+    t.check("missing config is an error", !claude_usage.setClaudeUsageCache(config, entry));
+    t.check("missing config stays missing", !exists(config));
+    t.check("lock released after a missing config", !exists(lock));
+
+    fs.writeText(config, SAMPLE_CONFIG);
+    let written = claude_usage.setClaudeUsageCache(config, entry);
+    t.check("written", written as bool);
+    if let w = written {
+        t.check("outcome Written", w == claude_usage.CacheWrite.Written);
+    }
+    t.check("lock released", !exists(lock));
+    let after = readOr(config, "");
+    t.equal("everything else unchanged", withoutOurKey(after), withoutOurKey(SAMPLE_CONFIG));
+    if let node = claude.parseJson(after) {
+        t.check("one entry", node.memberCount("cachedUsageUtilization") == 1);
+        t.check("the case-variant key is still there", node.memberCount("CachedUsageUtilization") == 1);
+        if let e = node.member("cachedUsageUtilization") {
+            t.equal("the entry", claude.stringify(e), "{\"fetchedAtMs\":1793806695000,\"utilization\":{\"five_hour\":{\"utilization\":40,\"resets_at\":\"2026-11-04T21:40:00.000Z\"},\"seven_day\":{\"utilization\":19,\"resets_at\":\"2026-11-06T14:00:00.000Z\"}}}");
+        }
+    }
+
+    // A second write replaces the entry, never adds one.
+    let later = claude_usage.CacheEntry { fetchedAtMs: 1793806710000, fiveHour: window(41.0, 1793828400000) };
+    claude_usage.setClaudeUsageCache(config, later);
+    if let node = claude.parseJson(readOr(config, "")) {
+        t.check("still one entry", node.memberCount("cachedUsageUtilization") == 1);
+        if let e = node.member("cachedUsageUtilization") {
+            t.equal("replaced, a missing window is null", claude.stringify(e), "{\"fetchedAtMs\":1793806710000,\"utilization\":{\"five_hour\":{\"utilization\":41,\"resets_at\":\"2026-11-04T21:40:00.000Z\"},\"seven_day\":null}}");
+        }
+    }
+
+    // Claude Code holds the lock: nothing is read or written, and its lock
+    // stays.
+    let before = readOr(config, "");
+    fs.createDirectoryExclusive(lock);
+    let locked = claude_usage.setClaudeUsageCache(config, entry);
+    t.check("locked is no error", locked as bool);
+    if let l = locked {
+        t.check("outcome Locked", l == claude_usage.CacheWrite.Locked);
+    }
+    t.equal("file untouched while locked", readOr(config, ""), before);
+    t.check("their lock stays", exists(lock));
+    fs.removeEmptyDirectory(lock);
+
+    // Removing: Removed once, then Unchanged without writing.
+    let removed = claude_usage.setClaudeUsageCache(config, none);
+    if let r = removed {
+        t.check("outcome Removed", r == claude_usage.CacheWrite.Removed);
+    }
+    else {
+        t.check("removed", false);
+    }
+    let gone = readOr(config, "");
+    if let node = claude.parseJson(gone) {
+        t.check("entry gone", node.memberCount("cachedUsageUtilization") == 0);
+    }
+    t.equal("everything else still unchanged", withoutOurKey(gone), withoutOurKey(SAMPLE_CONFIG));
+    let again = claude_usage.setClaudeUsageCache(config, none);
+    if let r = again {
+        t.check("outcome Unchanged", r == claude_usage.CacheWrite.Unchanged);
+    }
+    t.equal("unchanged is not rewritten", readOr(config, ""), gone);
+
+    // A /login account keeps the entry itself: refused, file untouched.
+    let loggedIn = "{\"oauthAccount\":{\"accountUuid\":\"u\"},\"a\":1}";
+    fs.writeText(config, loggedIn);
+    t.check("oauthAccount refused", !claude_usage.setClaudeUsageCache(config, entry));
+    t.equal("oauthAccount file untouched", readOr(config, ""), loggedIn);
+    let loggedOut = "{\"oauthAccount\":null,\"a\":1}";
+    fs.writeText(config, loggedOut);
+    t.check("oauthAccount null is fine", claude_usage.setClaudeUsageCache(config, entry) as bool);
+
+    // A file that is not JSON is never written over.
+    fs.writeText(config, "{ half");
+    t.check("not json refused", !claude_usage.setClaudeUsageCache(config, entry));
+    t.equal("not json untouched", readOr(config, ""), "{ half");
+    t.check("lock released after an error", !exists(lock));
+    fs.writeText(config, "[1,2]");
+    t.check("an array refused", !claude_usage.setClaudeUsageCache(config, entry));
+}
+
+// ── the entry a usage file asks for ─────────────────────────────────────────
+
+fn testCacheEntryFor(t: mut T) {
+    let file = claude_usage.UsageFile { active: "a" };
+    file.accounts.push(claude_usage.AccountUsage { id: "a", staleAfterMs: 180000, probedAtMs: 1000000, fiveHour: window(10.0, 5000000) });
+    file.accounts.push(claude_usage.AccountUsage { id: "b" });
+
+    if let e = claude_usage.cacheEntryFor(file, 1100000) {
+        t.check("stamped now", e.fetchedAtMs == 1100000);
+        t.check("active's numbers", e.fiveHour as bool && !e.sevenDay);
+    }
+    else {
+        t.check("entry while fresh", false);
+    }
+    t.check("none once stale", !claude_usage.cacheEntryFor(file, 1180000));
+    file.active = "b";
+    t.check("none for an account without numbers", !claude_usage.cacheEntryFor(file, 1100000));
+    file.active = none;
+    t.check("none without an active account", !claude_usage.cacheEntryFor(file, 1100000));
+    file.active = "gone";
+    t.check("none for an unknown account", !claude_usage.cacheEntryFor(file, 1100000));
+}
+
+// ── the tracker ─────────────────────────────────────────────────────────────
+
+// A scheme curl does not know: it fails at once ("Protocol not supported"),
+// so a real probe (a real curl, its config on stdin) runs end to end without
+// the network. A closed local port would do the same, but Windows retries a
+// refused connection for about 2 s.
+const DEAD_URL = "nosuchscheme://127.0.0.1/v1/messages";
+
+fn waitForProbe(tracker: mut claude_usage.UsageTracker, nowMs: int, mono: real): bool {
+    let start = time.now();
+    while time.now() - start < 15.0 {
+        tracker.tick(nowMs, mono);
+        if tracker.probes.length == 0 {
+            return true;
+        }
+        time.sleep(0.02);
+    }
+    return false;
+}
+
+fn testTracker(t: mut T) {
+    let dir = scratch("tracker");
+    let usagePath = f"{dir}/usage.json";
+    let config = f"{dir}/.claude.json";
+    fs.writeText(config, "{\"numStartups\":1}");
+    let settings = claude_usage.TrackerSettings { probeUrl: DEAD_URL };
+    let tracker = claude_usage.UsageTracker(usagePath, config, settings);
+    let accounts: []claude_usage.AccountToken = [
+        claude_usage.AccountToken { id: "a", token: "sk-ant-a" },
+        claude_usage.AccountToken { id: "b", token: "sk-ant-b" },
+    ];
+    tracker.setAccounts(accounts, "a");
+    // Each account goes stale after three of its own intervals.
+    if let a = tracker.usage("a") {
+        t.check("active: stale after 3 min", a.staleAfterMs == 180000);
+    }
+    if let b = tracker.usage("b") {
+        t.check("other: stale after 30 min", b.staleAfterMs == 1800000);
+    }
+
+    let t0 = 1793806695000;
+    let m0 = 100.0;
+    t.check("unknown id cannot refresh", tracker.refreshWaitSeconds("nobody", t0, m0) == -1.0);
+    t.check("first tick changes", tracker.tick(t0, m0));
+    t.check("active probed first", tracker.isProbing("a"));
+    t.check("no refresh while probing", tracker.refreshWaitSeconds("a", t0, m0) == -1.0);
+    t.check("probe ends", waitForProbe(tracker, t0, m0));
+    if let a = tracker.usage("a") {
+        t.check("attempt stamped", a.attemptedAtMs as bool);
+        t.check("no numbers from a dead port", !a.probedAtMs);
+        if let e = a.error {
+            t.check("network error", e.kind == claude_usage.ProbeErrorKind.Network);
+        }
+        else {
+            t.check("error recorded", false);
+        }
+    }
+    t.check("usage.json written", exists(usagePath));
+    if let r = claude_usage.readUsageFile(usagePath) {
+        if let f = r {
+            t.equal("file names the active account", text(f.active), "a");
+        }
+    }
+
+    // The 5 s gap holds for everyone, the refresh button included.
+    t.check("refresh waits for the gap", tracker.refreshWaitSeconds("b", t0 + 1000, m0 + 1.0) > 3.9);
+    t.check("refresh refused in the gap", !tracker.refresh("b", t0 + 1000, m0 + 1.0));
+    t.check("nothing starts in the gap", !tracker.tick(t0 + 1000, m0 + 1.0) && !tracker.isProbing("b"));
+
+    // After the gap the other account, never probed, is due.
+    tracker.tick(t0 + 5000, m0 + 5.0);
+    t.check("other account after the gap", tracker.isProbing("b"));
+    waitForProbe(tracker, t0 + 5000, m0 + 5.0);
+
+    // Not due again before its interval: the active one after 60 s, the
+    // other after 10 min.
+    tracker.tick(t0 + 30000, m0 + 30.0);
+    t.check("nothing due at 30 s", tracker.probes.length == 0);
+    tracker.tick(t0 + 60000, m0 + 60.0);
+    t.check("active due after 60 s", tracker.isProbing("a"));
+    waitForProbe(tracker, t0 + 60000, m0 + 60.0);
+    tracker.tick(t0 + 120000, m0 + 120.0);
+    t.check("again after 120 s, still the active one", tracker.isProbing("a"));
+    waitForProbe(tracker, t0 + 120000, m0 + 120.0);
+
+    // Numbers arrive: usage.json holds them and the cache entry follows on
+    // the next tick, stamped with the time of that tick.
+    let sample = claude_usage.UsageSample { fiveHour: window(40.0, 1793828400000), sevenDay: window(19.0, 1793973600000) };
+    tracker.applyProbeResult("a", sample, claude_usage.ProbeError {}, t0 + 121000);
+    tracker.tick(t0 + 122000, m0 + 122.0);
+    if let node = claude.parseJson(readOr(config, "")) {
+        if let e = node.member("cachedUsageUtilization") {
+            t.check("entry stamped at the feed", claude.getIntOr(e, "fetchedAtMs", 0) == t0 + 122000);
+        }
+        else {
+            t.check("entry written", false);
+        }
+        t.check("other keys kept", claude.getIntOr(node, "numStartups", 0) == 1);
+    }
+    // Rewritten every 15 s with a new stamp while the numbers are fresh.
+    tracker.tick(t0 + 130000, m0 + 130.0);
+    tracker.tick(t0 + 137500, m0 + 137.5);
+    if let node = claude.parseJson(readOr(config, "")) {
+        if let e = node.member("cachedUsageUtilization") {
+            t.check("restamped after 15 s", claude.getIntOr(e, "fetchedAtMs", 0) == t0 + 137500);
+        }
+    }
+
+    // A switch: the new account is due at once (after the gap), and the
+    // cache entry is removed until it has numbers of its own.
+    tracker.setAccounts(accounts, "b");
+    if let a = tracker.usage("a") {
+        t.check("switch: the old one now 30 min", a.staleAfterMs == 1800000);
+        // Its numbers from t0+121 s stay current as an inactive account.
+        t.check("inactive numbers stay fresh", claude_usage.isFresh(a, t0 + 900000));
+    }
+    if let b = tracker.usage("b") {
+        t.check("switch: the new one now 3 min", b.staleAfterMs == 180000);
+    }
+    tracker.tick(t0 + 138000, m0 + 138.0);
+    if let node = claude.parseJson(readOr(config, "")) {
+        t.check("entry removed after a switch", node.memberCount("cachedUsageUtilization") == 0);
+    }
+    t.check("switched account probed at once", tracker.isProbing("b"));
+    waitForProbe(tracker, t0 + 138000, m0 + 138.0);
+
+    // The API asks for a pause: no probe of that account before it ends,
+    // and the button says how long.
+    // b (active, attempted at t0+138 s) is due again at t0+198 s by its
+    // interval, but the API asked for 120 s from t0+140 s.
+    let limited = claude_usage.ProbeError { kind: claude_usage.ProbeErrorKind.RateLimited, message: "HTTP 429", retryAfterSeconds: 120 };
+    tracker.applyProbeResult("b", none, limited, t0 + 140000);
+    t.check("refresh waits for retry-after", tracker.refreshWaitSeconds("b", t0 + 150000, m0 + 150.0) > 109.9);
+    tracker.tick(t0 + 200000, m0 + 200.0);
+    t.check("due by interval, held by retry-after", tracker.probes.length == 0);
+    t.check("refresh refused during retry-after", !tracker.refresh("b", t0 + 200000, m0 + 200.0));
+    tracker.tick(t0 + 260000, m0 + 260.0);
+    t.check("probed once retry-after ends", tracker.isProbing("b"));
+    waitForProbe(tracker, t0 + 260000, m0 + 260.0);
+    t.check("refresh allowed after the gap", tracker.refreshWaitSeconds("b", t0 + 265000, m0 + 265.0) == 0.0);
+    t.check("refresh starts a probe", tracker.refresh("b", t0 + 265000, m0 + 265.0) && tracker.isProbing("b"));
+    waitForProbe(tracker, t0 + 265000, m0 + 265.0);
+
+    // A clock set back makes every attempt lie in the future: due at once.
+    tracker.tick(t0 - 3600000, m0 + 270.0);
+    t.check("clock set back: due", tracker.probes.length == 1);
+    waitForProbe(tracker, t0 - 3600000, m0 + 270.0);
+
+    // The window opens: every account is due now, one after another with
+    // the gap, the active one first; one attempted under 30 s ago is left.
+    // (At this point b, the active one, was attempted at t0-3600 s: in the
+    // past, so it is not under 30 s.)
+    if let a = tracker.usage("a") {
+        a.attemptedAtMs = t0 + 280000;
+    }
+    tracker.probeAllSoon(t0 + 290000);
+    tracker.tick(t0 + 290000, m0 + 290.0);
+    t.check("open: the active one first", tracker.isProbing("b"));
+    waitForProbe(tracker, t0 + 290000, m0 + 290.0);
+    tracker.tick(t0 + 296000, m0 + 296.0);
+    t.check("open: a was attempted 16 s ago, left as it is", tracker.probes.length == 0);
+    if let a = tracker.usage("a") {
+        a.attemptedAtMs = t0 + 100000;
+    }
+    tracker.probeAllSoon(t0 + 297000);
+    tracker.tick(t0 + 297000, m0 + 297.0);
+    t.check("open again: a probed after the gap", tracker.isProbing("a"));
+    waitForProbe(tracker, t0 + 297000, m0 + 297.0);
+    tracker.probeAllSoon(t0 + 299000);
+    tracker.tick(t0 + 305000, m0 + 305.0);
+    t.check("reopened at once: nothing probed again", tracker.probes.length == 0);
+
+    // An account whose token is gone is dropped and never probed.
+    tracker.setAccounts([claude_usage.AccountToken { id: "b", token: "sk-ant-b" }], "b");
+    t.check("removed account dropped", !tracker.usage("a"));
+
+    // Quitting removes the entry: nobody would keep it current. (The
+    // attempt is set by hand: applyProbeResult stands for a probe's end,
+    // and the clock-set-back probe above left an attempt in the past.)
+    if let b = tracker.usage("b") {
+        b.attemptedAtMs = t0 + 300000;
+    }
+    tracker.applyProbeResult("b", sample, claude_usage.ProbeError {}, t0 + 300000);
+    tracker.tick(t0 + 300500, m0 + 300.5);
+    tracker.shutdown();
+    if let node = claude.parseJson(readOr(config, "")) {
+        t.check("entry removed at shutdown", node.memberCount("cachedUsageUtilization") == 0);
+    }
+
+    // A restart reads usage.json back: the numbers are there at once and
+    // nothing is due before its interval.
+    let restarted = claude_usage.UsageTracker(usagePath, config, settings);
+    restarted.setAccounts([claude_usage.AccountToken { id: "b", token: "sk-ant-b" }], "b");
+    if let b = restarted.usage("b") {
+        t.check("numbers survive a restart", b.probedAtMs as bool && b.fiveHour as bool);
+    }
+    t.check("nothing due right after a restart", !restarted.tick(t0 + 301000, m0 + 400.0) && restarted.probes.length == 0);
+    t.check("wake-up within the feed interval", restarted.nextWakeSeconds(t0 + 301000, m0 + 400.0) <= 15.0);
+}
+
+// One real probe against the API, only when asked for by name (`live`):
+// the token comes from the file in CLAUDE_USAGE_LIVE_TOKEN_FILE and is never
+// printed. Proves the request shape (headers, system prompt, curl config on
+// stdin) is accepted, which no recorded reply can.
+fn testLive(t: mut T) {
+    let path = env.get("CLAUDE_USAGE_LIVE_TOKEN_FILE");
+    if !path {
+        t.check("CLAUDE_USAGE_LIVE_TOKEN_FILE is set", false);
+        return;
+    }
+    let p: str = path;
+    let read = fs.readText(p);
+    if !read {
+        t.check("token file readable", false);
+        return;
+    }
+    let token: str = read;
+    let started = claude_usage.Probe(token.trim());
+    if !started {
+        let e: claude_usage.ProbeError = started;
+        t.equal("probe starts", e.message, "");
+        return;
+    }
+    let probe: mut claude_usage.Probe = started;
+    let start = time.now();
+    while probe.poll() == claude_usage.ProbeState.Running && time.now() - start < 30.0 {
+        time.sleep(0.02);
+    }
+    let elapsed = time.now() - start;
+    if let s = probe.sample() {
+        if let five = s.fiveHour {
+            fmt.println(f"live: 5h {five.percent}% resets {time.formatUtcIso8601(five.resetsAtMs)}, {five.status}");
+        }
+        if let seven = s.sevenDay {
+            fmt.println(f"live: 7d {seven.percent}% resets {time.formatUtcIso8601(seven.resetsAtMs)}, {seven.status}");
+        }
+        fmt.println(f"live: {elapsed} s");
+        t.check("both windows", s.fiveHour as bool && s.sevenDay as bool);
+    }
+    else {
+        let e = probe.error();
+        t.equal("live probe brings numbers", f"{claude_usage.probeErrorKindName(e.kind)}: {e.message}", "");
+    }
+}
+
+// Writes an entry into the config copy named by CLAUDE_USAGE_ROUNDTRIP_COPY
+// and saves the result beside it (.with-entry), then removes the entry
+// again: a script compares both with the original (only on request: it
+// works on a copy of a real ~/.claude.json).
+fn testRoundtrip(t: mut T) {
+    let path = env.get("CLAUDE_USAGE_ROUNDTRIP_COPY");
+    if !path {
+        t.check("CLAUDE_USAGE_ROUNDTRIP_COPY is set", false);
+        return;
+    }
+    let p: str = path;
+    let entry = claude_usage.CacheEntry { fetchedAtMs: 1793806695000, fiveHour: window(40.0, 1793828400000), sevenDay: window(19.0, 1793973600000) };
+    let written = claude_usage.setClaudeUsageCache(p, entry);
+    if !written {
+        fmt.println(f"write refused: {written}");
+    }
+    t.check("written", written as bool);
+    fs.writeText(f"{p}.with-entry", readOr(p, ""));
+    let removed = claude_usage.setClaudeUsageCache(p, none);
+    if !removed {
+        fmt.println(f"remove refused: {removed}");
+    }
+    t.check("removed", removed as bool);
+}
+
+// Writes the entry into the config named by CLAUDE_USAGE_ROUNDTRIP_COPY
+// every 50 ms for CLAUDE_USAGE_HAMMER_SECONDS (default 10), while another
+// program saves the same file under the same lock; prints the outcomes.
+// Only on request (`hammer`): the other side is a script.
+fn testHammer(t: mut T) {
+    let path = env.get("CLAUDE_USAGE_ROUNDTRIP_COPY");
+    if !path {
+        t.check("CLAUDE_USAGE_ROUNDTRIP_COPY is set", false);
+        return;
+    }
+    let p: str = path;
+    let seconds = 10.0;
+    if let s = env.get("CLAUDE_USAGE_HAMMER_SECONDS") {
+        if let v = real(s) {
+            seconds = v;
+        }
+    }
+    let written = 0;
+    let locked = 0;
+    let failed = 0;
+    let start = time.now();
+    while time.now() - start < seconds {
+        let entry = claude_usage.CacheEntry { fetchedAtMs: time.wallClockMs(), fiveHour: window(40.0, 1793828400000) };
+        let result = claude_usage.setClaudeUsageCache(p, entry);
+        if !result {
+            failed = failed + 1;
+            fmt.println(f"refused: {result}");
+        }
+        else {
+            let outcome: claude_usage.CacheWrite = result;
+            if outcome == claude_usage.CacheWrite.Locked {
+                locked = locked + 1;
+            }
+            else {
+                written = written + 1;
+            }
+        }
+        time.sleep(0.05);
+    }
+    fmt.println(f"hammer: {written} written, {locked} locked, {failed} refused");
+    t.check("never refused", failed == 0);
+    t.check("wrote", written > 0);
+}
+
+fn main(): int {
+    let only = "";
+    let args = sys.args();
+    if args.length > 1 {
+        only = args[1];
+    }
+    let t = T {};
+    if only == "" || only == "curl" { t.scenario = "curl"; testCurlConfig(t); testParseReply(t); }
+    if only == "" || only == "sample" { t.scenario = "sample"; testSample(t); }
+    if only == "" || only == "file" { t.scenario = "file"; testUsageFile(t); }
+    if only == "" || only == "cache" { t.scenario = "cache"; testClaudeCache(t); }
+    if only == "" || only == "entry" { t.scenario = "entry"; testCacheEntryFor(t); }
+    if only == "" || only == "tracker" { t.scenario = "tracker"; testTracker(t); }
+    if only == "live" { t.scenario = "live"; testLive(t); }
+    if only == "roundtrip" { t.scenario = "roundtrip"; testRoundtrip(t); }
+    if only == "hammer" { t.scenario = "hammer"; testHammer(t); }
+    fmt.println(f"{t.checks - t.failures}/{t.checks} checks passed");
+    return t.failures;
+}

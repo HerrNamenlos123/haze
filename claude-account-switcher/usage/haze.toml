@@ -1,0 +1,10 @@
+name = "claude_usage"
+id = "CuSaGe41"
+version = "1.0.0"
+description = "Claude plan usage for claude-account-switcher: the 1-token probe, the schedule, the shared usage.json and the cache entry Claude Code and the VS Code usage extension read"
+license = "MIT"
+authors = ["HerrNamenlos123"]
+type = "lib"
+
+[dependencies]
+claude = { path = "../../stdlib/claude" }

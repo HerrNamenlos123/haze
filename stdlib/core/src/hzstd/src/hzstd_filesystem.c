@@ -2175,3 +2175,73 @@ void hzstd_close_dir(void* handle)
 }
 
 #endif
+
+// The path as a C string for the two directory calls below, or the error that
+// stops them: a NUL inside the path would cut it short and name a different
+// directory.
+#define HZSTD_FS_DIRECTORY_PATH(name, path)                                                                    \
+  if ((path).length > 0 && memchr((path).data, '\0', (size_t)(path).length)) {                                 \
+    return (hzstd_fs_error_t) { .code = hzstd_fs_error_code_invalid_path, .message = HZSTD_STRING("invalid path", 12) }; \
+  }                                                                                                            \
+  HZSTD_SCRATCH_CSTR(name, path);                                                                              \
+  if (!name) {                                                                                                 \
+    return (hzstd_fs_error_t) { .code = hzstd_fs_error_code_out_of_memory, .message = HZSTD_STRING("out of memory", 13) }; \
+  }
+
+// Creates the one directory `path` names; its parent must exist. Anything at
+// the path already is already_exists. One system call, so of several programs
+// creating it at once exactly one succeeds (a lock directory).
+hzstd_fs_error_t hzstd_create_directory_exclusive(hzstd_str_t path)
+{
+  HZSTD_FS_DIRECTORY_PATH(nullTermPath, path);
+#if defined(HAZE_PLATFORM_WIN32)
+  if (!CreateDirectoryA(nullTermPath, NULL)) {
+    DWORD err = GetLastError();
+    hzstd_fs_error_code_t code = hzstd_fs_error_from_windows_error(err);
+    // CreateDirectory reports a file or a directory already at the path as
+    // ERROR_ALREADY_EXISTS, which the shared mapping does not know.
+    if (err == ERROR_ALREADY_EXISTS) {
+      code = hzstd_fs_error_code_already_exists;
+    }
+    return (hzstd_fs_error_t) { .code = code, .message = hzstd_fs_windows_error(err) };
+  }
+#else
+  if (mkdir(nullTermPath, 0777) != 0) {
+    int err = errno;
+    return (hzstd_fs_error_t) { .code = hzstd_fs_error_from_errno(err), .message = hzstd_fs_errno_message(err) };
+  }
+#endif
+  return (hzstd_fs_error_t) { .code = hzstd_fs_error_code_none, .message = HZSTD_STRING(NULL, 0) };
+}
+
+// Removes the directory at `path` if it is empty: not_empty when it holds
+// anything, not_a_directory when a file is there.
+hzstd_fs_error_t hzstd_remove_empty_directory(hzstd_str_t path)
+{
+  HZSTD_FS_DIRECTORY_PATH(nullTermPath, path);
+#if defined(HAZE_PLATFORM_WIN32)
+  if (!RemoveDirectoryA(nullTermPath)) {
+    DWORD err = GetLastError();
+    hzstd_fs_error_code_t code = hzstd_fs_error_from_windows_error(err);
+    if (err == ERROR_DIR_NOT_EMPTY) {
+      code = hzstd_fs_error_code_not_empty;
+    } else if (err == ERROR_DIRECTORY) {
+      code = hzstd_fs_error_code_not_a_directory;
+    }
+    return (hzstd_fs_error_t) { .code = code, .message = hzstd_fs_windows_error(err) };
+  }
+#else
+  if (rmdir(nullTermPath) != 0) {
+    int err = errno;
+    hzstd_fs_error_code_t code = hzstd_fs_error_from_errno(err);
+    // POSIX allows either for a directory that is not empty.
+    if (err == ENOTEMPTY || err == EEXIST) {
+      code = hzstd_fs_error_code_not_empty;
+    }
+    return (hzstd_fs_error_t) { .code = code, .message = hzstd_fs_errno_message(err) };
+  }
+#endif
+  return (hzstd_fs_error_t) { .code = hzstd_fs_error_code_none, .message = HZSTD_STRING(NULL, 0) };
+}
+
+#undef HZSTD_FS_DIRECTORY_PATH

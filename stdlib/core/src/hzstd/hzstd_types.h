@@ -603,6 +603,7 @@ typedef enum {
   hzstd_fs_error_code_name_too_long,
   hzstd_fs_error_code_io_error, // generic read/write failure
   hzstd_fs_error_code_out_of_memory,
+  hzstd_fs_error_code_not_empty, // a directory that still holds entries
 } hzstd_fs_error_code_t;
 
 typedef struct {

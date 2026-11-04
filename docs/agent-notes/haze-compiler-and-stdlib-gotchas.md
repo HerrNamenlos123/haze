@@ -5,6 +5,8 @@ Language quirks and stdlib facts that were re-checked against the current tree; 
 Verified 2026-11-04 against d35a505e.
 
 - Reserved words that cannot be identifiers: `from`, `plain`, `emit` (`src/Parser/grammar/HazeLexer.g4`), and `export`. The parse error for a reserved word is often an unhelpful "no viable alternative at input" covering the whole enclosing function.
+- An f-string inside an f-string's `{}` (`f"{g(f\"{x}\")}"`) does not parse: H1000 "Unexpected character" at the inner `f`. Bind the inner string to a variable first. (Verified 2026-11-04 against 3165b22f.)
+- A plain `const` used as a struct field default fails with H3002 "Symbol ... was not declared in this scope" at the struct; `const comptime` works there. (Verified 2026-11-04 against 3165b22f.)
 - `break` and `continue` exist (lexer tokens `BREAK`, `CONTINUE`). Older advice to emulate them with `return` is stale.
 - `math.min` / `math.max` are generic `fn`s inside `namespace math` but NOT exported (`stdlib/core/src/math.hz`), so `math.min(...)` does not resolve from another package. `renderer.gfx` uses a local `max<T>`.
 - `sys.exit()` does not exist; use `sys.panic(msg)` (`stdlib/core/src/system.hz`) or a return code. Command-line args: [[feedback-args-global-utf8]].

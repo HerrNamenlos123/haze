@@ -13,6 +13,7 @@ and against which commit it was verified; re-check a note against the code befor
 - [Array insert/remove and string loops](reference_haze_array_string_mutation.md) - in-place edits, narrow mut-subscript rule, quadratic concat
 - [No glyph fallback](reference_haze_ui_font_glyphs.md) - tofu for uncovered chars; tabs have no glyph
 - [stdlib/claude](project_claude_module.md) - Haze client for the Claude CLI; zero-alloc idle path; test suites
+- [Claude usage tracking](claude-usage-tracking.md) - 1-token probe, Claude Code's usage cache entry and its lock; contract in claude-account-switcher/usage
 - [stdlib/clipboard](project_clipboard_module.md) - backends, files, tests, what could not be verified
 - [codeeditor save and conflict model](project_codeeditor_saving.md) - diverged vs conflict flags, registry, ex commands
 - [codeeditor workspace and LSP](project_codeeditor_workspace_lsp.md) - servers belong to the workspace; projectRootPath rule
