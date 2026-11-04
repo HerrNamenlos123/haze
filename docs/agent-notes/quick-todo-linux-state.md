@@ -1,0 +1,13 @@
+# quick-todo on Linux: framework behaviour found while fixing it
+
+Framework-level facts from the quick-todo Linux/Wayland work (2026-10-13): focus rule, `--background`, SDL upgrade instead of patches, install script, a CLI progress-printer bug.
+
+Verified 2026-11-04 against d35a505e. (symbols checked in quick-todo, stdlib/app, stdlib/sdl, src/ModuleCompiler/CLIPrinter.ts; desktop-session measurements are from 2026-10-13 sandbox runs and were not re-run)
+
+- **Never present into an unmapped window** is a framework rule: see [[wayland-never-present-unmapped]]. (An app drawing its first frame into a still-hidden Wayland window crashed GNOME Shell 48 when the tray menu opened it.)
+- **`--background`** is read from `sys.args()` (stdlib/core/src/system.hz `args()`, via `hzstd_arg_count/at`; quick-todo/src/main.hz). The Windows half is unverified.
+- **Tray icon**: SDL 3.2.8 wrote BMP icons; upstream SDL already wrote PNG, so the fix was upgrading SDL (now release-3.4.18), not a patch. On GNOME the tray icon opens a menu and needs the AppIndicator extension.
+- **Global hotkey**: xdg-desktop-portal-gnome 48.0 answered a successful BindShortcuts with response 2 (uninitialized `response`, fixed upstream in 49.0+); the app must not trust that response to end its listener (the session's lifetime decides listening; ListShortcuts decides whether to log). The desktop entry must be installed with `quick-todo` on PATH so the portal can identify the app.
+- **Focus on Wayland** is the compositor's xdg_toplevel `activated` state (stdlib/sdl/patches/wayland-activated.patch, `SDL_PROP_WINDOW_WAYLAND_ACTIVATED_BOOLEAN`), not keyboard focus (GNOME keeps the keyboard while its tray menu closes). A show that ends unactivated is reported by `App` as `justLostFocus` (sdl `consumeFocusRefused`, decided at the first frame callback after show), which quick-todo uses to hide ("never open without focus"). Other platforms report no refusal. Activation tokens were not needed. haze's own Wayland titlebar path (double-click maximize, window menu) used to be dead in every App because `haze_sdl_wayland_init` required an xdg_toplevel on a still-hidden window.
+- **Install**: quick-todo/haze.toml has `[scripts.linux] install` (release build, binary to ~/.local/bin, desktop entry and icon). The installed toolchain must be new enough to have `sys.args`/`hzstd_app_id`.
+- **Compiler bug fixed**: a build whose generator re-ran exited 1 silently when output was not a TTY: cli-progress `MultiBar.create` skips `start()` off-TTY, so new rows had an empty payload and the redraw threw in `renderRow`; fixed in CLIPrinter by refreshing the payload on create.

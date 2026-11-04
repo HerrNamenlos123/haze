@@ -1,0 +1,12 @@
+# codeeditor semantic tokens: two data routes
+
+Where Vue/TS semantic-token data comes from in codeeditor's hybrid-mode setup, and why highlighting is opt-in per theme.
+
+Verified 2026-11-04 against d35a505e. (bridge call and theme flag checked in codeeditor/src; the volar library line references are from 2026-08-12 and were not re-read)
+
+1. **Direct tsserver**: command `encodedSemanticClassifications-full`, args `{file, start, length, format: "2020"}`, sent by codeeditor/src/vue_lsp_bridge.hz. `@volar/typescript` (proxyLanguageService) maps `.vue` spans back to source offsets, so it covers both `.vue` and plain `.ts`. Returns `body.spans` = flat triples of whole-file UTF-16 offsets `[start, length, encoded]`; `type = (encoded >> 8) - 1`, `modifiers = encoded & 0xFF`. Type table (index order): class, enum, interface, namespace, typeParameter, type, parameter, variable, enumMember, property, function, method. Modifier bits: 0 declaration, 1 static, 2 async, 3 readonly, 4 defaultLibrary, 5 local. tsserver does NOT emit spans in source order.
+2. **LSP `textDocument/semanticTokens/full`** against vue-language-server (registered unconditionally, legend in the initialize response). Gives line/char deltas (UTF-16) and adds the Vue-only `component` token type for template tags, but yields nothing for plain `.ts` (no embedded document uri).
+
+The editor uses route 1; colours come from mapping each token type/modifier to a TextMate scope (`semanticScopeFor`, codeeditor/src/editor_theme.hz, used in line_tokens.hz) and reusing `getScopeColor`, because the default theme has no `semanticTokenColors`. Document changes are forwarded as line-granular range replacements to both `textDocument/didChange` and tsserver `updateOpen` (`VueLspBridge.changeDocument()`); open is deferred until `isReady()`. Positions are BYTES, not UTF-16: every forwarded range uses column 0 except an edit running to EOF, which needs the old last line's byte length (`lspLastLineLength`, EditorView.hzui).
+
+Semantic highlighting is opt-in per theme, as in VS Code (`editor.semanticHighlighting.enabled` defaults to "configuredByTheme"): tokens apply only when the theme sets `"semanticHighlighting": true` (`semanticHighlighting?: bool` in editor_theme.hz; catppuccin-mocha.json sets it, the default theme does not). Applying them unconditionally repaints what the theme deliberately styled (object-literal keys stop being `meta.object-literal.key`). VS Code applies TS semantic tokens only inside `<script>` of a `.vue`.

@@ -1,0 +1,14 @@
+# app.AppOptions.rememberWindowState
+
+Opt-in window size/maximized/position persistence: what is stored where, the SDL floating-rect patch, platform behaviour and the on-screen rule.
+
+Verified 2026-11-04 against d35a505e. (options, file names, patch and tests checked; verification scenarios are from the original work)
+
+- `AppOptions.rememberWindowState: bool` (stdlib/app/src/app.hz; opt-in; haze-notes turns it on in main.hz). Needs `[app] appId`: the constructor returns an Err without one. `sys.appId(): str | none` (stdlib/core/src/system.hz) reads the compiler-emitted `hzstd_app_id`.
+- File: `$XDG_STATE_HOME` (absolute only) or `~/.local/state`, `%LOCALAPPDATA%` on Windows, then `/<appId>/window-state.json`. JSON `app.RememberedWindow {width, height, maximized, placement?: {x, y, workArea}}`. Written atomically (`.saving` + fs.move) once geometry is unchanged for 0.5 s, plus on close, hide() and destroy().
+- Size comes from SDL's internal `window->floating` rect (excludes maximized AND tiled), exposed by stdlib/sdl/patches/window-floating-rect.patch -> `SDL_HazeGetWindowFloatingRect` -> `sdl.Window.getRestoreRect()`. Not sampled while hidden or minimized (Windows clears MAXIMIZED on minimize).
+- Position only where `sdl.applicationPlacesWindows()` (not Wayland). Restore runs `app.placeOnDisplays` (pure, exported): display = most overlap else nearest (MonitorFromRect rule, ties to primary); unchanged display -> exact restore, pulled back only so the titlebar is not above the work area and at least 100x50 stays visible; changed display and not fitting -> wholly inside, shrunk to the work area. Without a placement the size is capped to the largest display.
+- Wayland: `haze_sdl_showWindow` does `SDL_SyncWindow` when showing a maximized window, else the first frame is drawn at the restore size and the window jumps. A Wayland client cannot learn or set its global position; the official route would be xdg-session-management, which SDL 3.4.18 does not support (restoring a toplevel session must happen before the initial commit that SDL does in `Wayland_ShowWindow`, so it needs an SDL patch hook).
+- Tests: stdlib/app/tests/window-state-tests.hz (examples plus 200k random property cases).
+- Known gaps: on X11 and Windows SDL applies a pending maximize only after mapping, so a window restored maximized maps at its restore size first. Windows: SDL's floating rect does not exclude Aero Snap, a maximized window moved to another monitor reopens on the monitor of its restore rect, and positions are physical pixels (not DPI-adjusted).
+- Found on the way: union `==`/`!=` compiled struct variants to C `==` (invalid C) and `!=` across variants was false (`5 != none`); fixed in `compareElaboratedExprs`, case in testsuite/src/cases_value_equality.hz. A private type in an exported opaque struct's field fails importers with H7105.

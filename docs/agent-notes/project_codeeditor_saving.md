@@ -1,0 +1,14 @@
+# codeeditor save / autosave / conflict model
+
+The registry in codeeditor/src/documents.hz and the rule that `diverged` and `conflict` are two separate flags.
+
+Verified 2026-11-04 against d35a505e. (documents.hz, file_buffer.hz and EditorView.hzui checked for the named symbols; the original note is from 2026-08-23 and codeeditor was refactored since, so poll interval, line counts and test totals are not carried over)
+
+- `codeeditor/src/documents.hz` is the registry: each editor view publishes closures (save / checkDisk / the conflict answers) under its TAB KEY, so the tab strip, ctrl+s, the window-blur sweep and the modal can all reach a document whose state lives inside one component's setup closure. It also owns `parseExCommand()` (pure, hence testable; used from EditorView.hzui).
+- **`diverged` and `conflict` are two flags, not one** (`diverged` is a reactive per entry in documents.hz). `conflict` = the modal is on screen. `diverged` = the buffer and the file have both moved since they last agreed. Cancel clears only `conflict`. Collapsing them re-arms the autosave, and the next blur silently performs the overwrite the user declined. `diverged` is cleared only by a write, a reload, or the file turning out to hold the same text after all.
+- Behaviour: clean buffer + changed file -> silent reload (keeps two editors on one file in step; caret clamped, not reset). Dirty buffer + unchanged file -> silent save on blur / window blur / close. Both -> `diverged`: automatic writes are skipped silently (documents.hz), explicit ones (ctrl+s, `:w`, closing the tab) raise the modal, so `closeTab` can REFUSE. Deleted file = keep the buffer, ask nothing.
+- Own writes must record the disk state immediately (`rememberDiskState()`, codeeditor/src/file_buffer.hz) or every save looks like an external edit. Disk changes are detected by polling `fs.statFile` (mtime AND size; a `touch` or identical-bytes rewrite is not a change), not `fs.watch`.
+- OS window focus: `stdlib/app` has `justLostFocus()`/`justGainedFocus()`; an editor's `onBlur` does NOT fire when switching to another application.
+- Vim `:` lives in stdlib/vim_behavior as a flag + buffer, not as a `textedit_behavior.Mode` (a Mode decides caret clamping; a command line changes neither). It bypasses the remap matcher in `handleKey` (otherwise `nnoremap j jzz` rewrites a `j` typed into a command line). The engine executes nothing; `onExCommand` hands the text to the host.
+- Indentation is one app-wide setting, 2 or 4 SPACES (`indentString()` in codeeditor/src/settings.hz). In stdlib/vim_behavior, the removal width of `<` and insert-mode `<Tab>` derive from `indentUnit` via `indentColumns()`; the engine default stays `"\t"` worth 8 columns, which is what the neovim differential suites check.
+- Headless self-tests: `CODEEDITOR_SELFTEST` (see codeeditor/src/*_selftest.hz). Related: [[project_vim_textedit_scope]], [[reference_haze_ui_font_glyphs]].

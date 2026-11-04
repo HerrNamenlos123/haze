@@ -1,0 +1,78 @@
+# Agent notes
+
+Objective, verified facts about this repo for coding agents and developers: language, compiler,
+stdlib and framework behaviour, invariants, traps, recipes. One note per file, each stating when
+and against which commit it was verified; re-check a note against the code before relying on it.
+
+- [Args and UTF-8](feedback-args-global-utf8.md) - sys.args() []str UTF-8; main takes no args
+- [Never freeze](feedback-never-freeze.md) - standing requirement: bounded per-frame work
+- [Compiler regression suite](feedback-tdd-loop-for-compiler-bugs.md) - testsuite/src/cases_*.hz via scripts/run-tests.sh
+- [Value vs shared state](feedback_value_vs_shared_state.md) - never mix value fields and handles in one copied struct
+- [Zero allocation per frame](feedback_zero_allocation_rule.md) - standing requirement and coding rules
+- [Editor click vs drag](reference_editor_mouse_drag_detection.md) - detect drags in pixels; pass the font to measureText
+- [Array insert/remove and string loops](reference_haze_array_string_mutation.md) - in-place edits, narrow mut-subscript rule, quadratic concat
+- [No glyph fallback](reference_haze_ui_font_glyphs.md) - tofu for uncovered chars; tabs have no glyph
+- [stdlib/claude](project_claude_module.md) - Haze client for the Claude CLI; zero-alloc idle path; test suites
+- [stdlib/clipboard](project_clipboard_module.md) - backends, files, tests, what could not be verified
+- [codeeditor save and conflict model](project_codeeditor_saving.md) - diverged vs conflict flags, registry, ex commands
+- [codeeditor workspace and LSP](project_codeeditor_workspace_lsp.md) - servers belong to the workspace; projectRootPath rule
+- [Native Haze parser](project_haze_native_parser.md) - contracts, --parser modes, transport, performance lessons
+- [Touch gestures](project_touch_controls.md) - pan/fling/tap/long-press recognizer, touch-action
+- [Vim/textedit engine](project_vim_textedit_scope.md) - architecture, neovim differential gates, neovim facts
+- [ANTLR autogen goes stale](antlr-autogen-goes-stale.md) - gitignored ANTLR output goes stale on .g4 pulls; hash stamp + auto-regeneration
+- [Build settings, [app], [scripts]](build-settings-and-desktop-entry.md) - --release preset over optimize/debug/debugInfo; build_settings.hz; desktop entry
+- [ByteBuffer design](bytebuffer-overhaul.md) - nocopy build/commit/read phases, growable/fixed/measuring, pushFmt, rotate
+- [Bytes from uninitialized reads zero](bytes-from-uninitialized-reads-zero.md) - C-built Bytes must start from Bytes(), not uninitialized
+- [CacheFile flush froze](cachefile-flush-dependency-loss.md) - _writeToDisk must serialize before the disable flag
+- [CacheFile reload keeps cells](cachefile-reload-swaps-field-cells.md) - own writes skipped by stat, external via rx.assign
+- [Cleanup handlers](cleanup-handler-known-issues.md) - unused hzstd recovery-frame cleanup handlers and their bugs
+- [haze-notes image paste](clipboard-image-paste.md) - readPngAsync, SDL Wayland clipboard patch, test recipe
+- [codeeditor find/search](codeeditor-find-search-workspaces.md) - Ctrl+F, rg search, preview tabs, workspaces, codicon trap
+- [codeeditor completion](codeeditor-lsp-completion.md) - tsserver completion/auto-import session, diagnostics, tests
+- [codeeditor panels and agent](codeeditor-panels-and-agent.md) - file tree, splitters, process-wide agent session
+- [Component crash recovery](component-crash-recovery.md) - runComponentCode isolates panics per component
+- [Fiber library](fiber-stack-switching-library.md) - fiber.h stack switching, targets, tests, Windows lessons
+- [fs.exists truthiness](fs-exists-result-truthiness.md) - if fs.exists(p) tests the call, not the bool
+- [Gotchas (verified subset)](haze-compiler-and-stdlib-gotchas.md) - reserved words, math.min/max, H7214/H7215, lambdas, narrowing
+- [haze-notes create/keep/show-all](haze-notes-create-keep-showall.md) - create notes, .hznotekeep, ghosts, trash, not-a-note
+- [haze-notes memory](haze-notes-memory-profile.md) - GPU hint patch, idle GC unmap, backends, libdecor
+- [haze-notes never-freeze architecture](haze-notes-never-freeze-architecture.md) - tile budgets, incremental save/load
+- [haze-notes PDF export](haze-notes-pdf-export.md) - real-size export, bit-exact perfect_freehand port
+- [Shape page ownership](haze-notes-shape-page-ownership.md) - shape lives on the page of its bbox middle
+- [haze-notes UI](haze-notes-ui-architecture.md) - theme, components, flat FileTree, vault index, sessions
+- [Headless UI testing](headless-ui-testing-technique.md) - real Clay layout without GPU
+- [Hidden context](hidden-context-implemented.md) - context keyword, clone/init, extern C ABI, error codes
+- [Hit geometry](hit-geometry-rules.md) - clipping and per-pass boxes for hit testing
+- [hzstd scratch C strings](hzstd-scratch-cstr.md) - HZSTD_SCRATCH_CSTR, errno views, spawn blocks
+- [hzui id spaces](hzui-component-id-spaces.md) - negative component ids, loop keys
+- [hzui large trees](hzui-large-trees-and-recursion.md) - Clay 8192 cap, windowing, recursive components
+- [hzui render gate](hzui-render-gate.md) - idle frame skipping and what must feed it
+- [hzui slot content stays live](hzui-slot-content-needs-a-varying-prop.md) - slot bodies track parent props; __dynamicSlots, rx.untracked, tests
+- [hzui template: no state variants, canvas model](hzui-unimplemented-template-features.md) - hover:/active:/focus: unimplemented; canvas draws on demand
+- [hzui untracked props need a revision prop](hzui-untracked-props-need-a-revision.md) - untracked prop alone never re-runs a template
+- [Immediate callable parameters](immediate-callables.md) - non-retaining contract, escape tracking, stack env for lambdas
+- [Incremental build rules](incremental-build-rules.md) - stamps, variants, relink, publish, forget-before-write
+- [json.stringify save performance](json-stringify-save-perf.md) - Schubfach, 1 KiB arenas, GC divisor; measurement techniques
+- [nocopy enforcement](nocopy-enforcement-holes.md) - H7180 everywhere, H7218 dangling-this closures
+- [Off-thread image/base64 pipeline](off-thread-image-pipeline.md) - worker-thread decode, async texture upload, GC rules
+- [Eager struct method elaboration](order-dependent-struct-method-elaboration.md) - build can depend on readdir order and project name
+- [Building in extra worktrees](parallel-worktree-builds.md) - reflink the gitignored build inputs
+- [Parameter pack spread](parameter-pack-spread.md) - ...pack desugars to pack[i]; capture rule and gotchas
+- [Pen and touch pointer model](pen-touch-pointer-model.md) - sdl -> app -> ui_components edges, capture, barrel button
+- [Finding freezes in a GUI app](perf-measurement-technique.md) - isolated bench build, GC stats, profiler bursts
+- [quick-todo Linux findings](quick-todo-linux-state.md) - focus rule, --background, hotkey portal, install script
+- [Recovery frames in codegen](recovery-frame-leak-codegen.md) - attempt frames are stack storage; every exit must pop
+- [Running stdlib module tests](running-stdlib-module-tests.md) - throwaway project, relative dep paths, not haze exec
+- [SDL click-through](sdl-focus-clickthrough.md) - activating click is dropped unless the hint is set
+- [SDL hit-test per backend](sdl-hittest-backend-behavior.md) - what DRAGGABLE gives on Windows vs Wayland
+- [Semantic token routes](semantic-tokens-routes.md) - tsserver vs LSP; opt-in per theme
+- [hzui SFC plugin design](sfc-plugin-design.md) - plugin interface, #source mapping, format rules, quirks
+- [Shared __haze__ workspace ping-pong](shared-haze-workspace-rebuild-pingpong.md) - different compilers rebuild each other's stdlib
+- [Storage classes](storage-classes-implemented.md) - value structs, ref/stackref, nocopy, closure capture rules
+- [Stroke outline path](stroke-outline-compute-path.md) - shared perfect_freehand context, alloc-free bbox
+- [Timing graph and main-thread lock](timing-graph-and-main-thread-lock.md) - --timing-graph and the build lock
+- [Vault tree order](vault-tree-order-tsk-rules.md) - folders, dates, numeric German collation, byte-order ties
+- [Wayland hide needs sync](wayland-hide-needs-sync.md) - SDL_HideWindow only queues; SyncWindow after
+- [Never present unmapped](wayland-never-present-unmapped.md) - framework rule; on Wayland show first
+- [wgpu vsync and locks](wgpu-vsync-blocking-and-threading.md) - acquire blocks, fence lock coupling on v27/v29
+- [Remembered window state](window-state-remembering.md) - storage, placement rule, SDL patch, gaps

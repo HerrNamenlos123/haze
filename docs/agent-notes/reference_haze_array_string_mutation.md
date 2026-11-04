@@ -1,0 +1,12 @@
+# Array insert/remove, in-place String edits, quadratic string accumulation
+
+Dynamic arrays have real `insert`/`remove` primitives, `mut []T` element subscripts are mutable for struct elements, and string accumulation in a loop is quadratic.
+
+Verified 2026-11-04 against d35a505e. (macros, String formatter and arraySubscript located; the narrow-condition detail and timings are from the original change and were not re-measured)
+
+- `array.insert(index, element)` / `array.remove(index)` are hzstd primitives alongside `push`/`pop`/`length`: `hzstd_dynamic_array_insert/_remove` in stdlib/core/src/hzstd/src/hzstd_array.c, `HZSTD_ARRAY_INSERT/_REMOVE` macros in stdlib/core/src/hzstd/include/hzstd_array.h (bounds-check + panic), synthetic-function bindings in src/Semantic/Elaborate.ts modelled on `push`/`pop`. `remove` returns the removed element.
+- Subscripting a `mut []T` yields a mutable element (`lines[i].insert(...)`), implemented in `arraySubscript()` (Elaborate.ts). It was made narrow on purpose: dynamic array, array `Mut`, and element is a StructDatatype. Widening to all subscripts (int/str elements) re-mangles common value types and makes generic stdlib functions like `fmt.format_to` monomorphize twice, showing up as duplicate-symbol C errors inside the generated stdlib import.hz, far from the edit.
+- The array must be declared `mut`: `let lines: mut []String = [...]; lines[1].insert(3, "-X"); lines.insert(1, String("new")); lines.remove(0);`.
+- Interpolating a `String` must not freeze it: `fmt.format_to(.., String, ..)` (stdlib/core/src/string.hz) reads a copy ("Read a COPY rather than committing"), so printing a String does not make a later `.insert()` panic with "mutation attempted on a ByteBuffer that was already committed". If that panic reappears, look for a path that calls `.commit()` on something still being edited.
+- **String accumulation in a loop is quadratic**: `result = f"{result}{line}"` reallocates and copies everything each iteration (2000 lines took 6.5 s as measured originally). Use `let buffer = String(); buffer.reserve(totalBytes); buffer.append(line.cloneString()); ... buffer.cloneString()` (3.5 ms for the same input).
+- An argument is evaluated even when the callee early-returns: guard at the call site when building the argument is expensive. Do not re-derive a value already held (reading a file, splitting into lines, then joining them back).

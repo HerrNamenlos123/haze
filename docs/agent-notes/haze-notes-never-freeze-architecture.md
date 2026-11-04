@@ -1,0 +1,15 @@
+# haze-notes: how it stays responsive with 50 MB documents
+
+Budgeted tile rendering with fallback levels, incremental save/load, viewport changes never autosave, plus the generic stdlib fixes it needed.
+
+Verified 2026-11-04 against d35a505e. (symbols and constants checked in `haze-notes/src`; measurements are from the original build)
+
+- `render.hz`: per page a `level` + `tiles` list. Zoom-in keeps the old level (stretched) until `zoomSettleFrames` (8); zoom-out switches at once (a stale fine level needs unbounded tiles; it once exploded to 575 tiles and OOM-crashed). Old-level tiles with content stay under the new ones (`maxFallbackTiles` = 96). Dirty tiles are drawn nearest-centre first within `tileWorkBudgetSeconds` (0.006); `prepareTile` tessellates / decodes images one unit at a time against the deadline. `liveShapes` draws edited shapes live until their tiles are redrawn. `hasPendingWork()` keeps the canvas invalidating.
+- `tiles.hz`: `Tile` knows (level, tx, ty); `TilePool.trim` destroys unused canvases; tiles use `alwaysClears: true`.
+- `documents.hz`: `Outline` ref struct with `[[json.serialize/parse]]` hooks: flat `[]Vec2` in memory, `[[x,y],...]` in the file (296k tiny arrays were the GC's whole workload). Max 2 tessellation levels cached per stroke.
+- `persistence.hz`: `DocumentSave` snapshots page arrays and streams shapes via `fs.FileWriter` to `<path>.saving`, then `fs.move` (atomic rename); `DocumentLoad` reads chunks via `fs.FileReader`, a resumable byte scanner finds shape spans, parses the skeleton with shapes cut out, then `json.parse<Shape>` per span.
+- `controls.hz`: `open(path)` starts a load (reuses the in-memory doc if a save of that path is pending); one save stepped per frame (3 ms; load gets 8 ms); `viewportUnsaved`: pan/zoom never trigger a save (a full re-serialize ate 74% of CPU); the view is written with the next content save / doc switch / Ctrl+S / exit. `main.hz` `onExit` runs `finishSaves` after hiding the window.
+- Generic stdlib fixes it needed: `json.parse<T>` built results in the parse arena (every parsed value pinned its cJSON tree; heap 581 MB to 40 MB); `parseJsonArray` was O(n^2); lyon/perfect_freehand were built in debug mode; font atlas re-uploaded whole every frame (now a dirty rect); ByteBuffer resize/writeAt were per-byte loops; no wgpu object was ever released (added `release()`, `Canvas.destroy`, per-frame releases); depth + MSAA attachments pooled per size (`acquireAttachment`); `fs.move` was copy+delete.
+- Paper look: pages match technicalsketcher.web: `resources/paper-texture.jpg` drawn "cover" via TextureOpts.uvMin/uvMax, horizontal lines every 10 mm, 0.2 mm; layering by zIndex (paper -2, lines -1, content 0) because a Renderer draws all rects/textures before all triangles; `DocumentRenderer.drawPaper` draws into every tile AND on screen under the tiles.
+- Known leftovers (original note): loading a legacy bloated file still has 10-30 ms steps; occasional 33 ms frames are the compositor holding swapchain images (FIFO present mode).
+- Requirement behind all of it: [[feedback-never-freeze]].

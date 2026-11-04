@@ -1,0 +1,13 @@
+# SDL hit-test (custom titlebar) behaviour per backend
+
+What SDL_SetWindowHitTest actually gives per backend, read from SDL release-3.4.x and main sources (2026-08-30).
+
+Verified 2026-11-04 against d35a505e: the SDL claims below are from SDL's own sources as read on 2026-08-30 and were not re-read; the repo pin is release-3.4.18 (stdlib/sdl/scripts/build-sdl.hz).
+
+- **Windows** (SDL_windowsevents.c): `SDL_HITTEST_DRAGGABLE` answers `WM_NCHITTEST` with `HTCAPTION`, so drag, Aero Snap, Shake, double-click maximize, the window menu and keyboard move/resize come free, and the press never reaches the app.
+- **Wayland** (SDL_waylandevents.c, `Wayland_ProcessHitTest`): `DRAGGABLE` calls `xdg_toplevel_move` (or `libdecor_frame_move`), `RESIZE_*` calls `xdg_toplevel_resize`. The compositor gives move/resize/snap/tile, nothing else: xdg-shell has no caption bar, so no double-click maximize and no window menu. `pointer_handle_button_common` also does `return; // don't pass this event on to app` for a left press in a draggable region, so the app cannot implement the gesture itself (only the press is swallowed; whether the release survives the compositor grab is unverified).
+- The callback runs on pointer motion, not on press (the press reads a cached `hit_test_result`), and is skipped while `SDL_WINDOW_MOUSE_CAPTURE` is set, so it cannot count clicks or flip its answer mid-gesture.
+- SDL exposes `SDL_PROP_WINDOW_WAYLAND_XDG_TOPLEVEL_POINTER` but not the `wl_seat` or an input serial, so `xdg_toplevel_move` cannot be called directly through SDL's public API.
+- Wayland cannot position a toplevel: `Wayland_SetWindowPosition` ends in `SDL_SetError("wayland cannot position non-popup windows")`, and `Wayland_GetGlobalMouseState` is only meaningful while the pointer is over one of the app's windows. Anything placing a window at the cursor (tray popups) is dead on Wayland.
+- Measured under GNOME 48.8 (conflicting): an early run (SDL 3.2.8, live session) saw `SDL_WINDOW_INPUT_FOCUS` dropped on titlebar press before any motion; a later sealed-sandbox run (SDL 3.4.18) saw no `wl_keyboard.leave` during `xdg_toplevel_move`; window menu plus click on another window passes the click through and activates that window (so a "grab latch" would get stuck). Since 2026-10-13 window focus on Wayland is the compositor's `activated` state anyway (wayland-activated.patch in stdlib/sdl/patches).
+- Guidance: do not promise full titlebar semantics from `SDL_SetWindowHitTest` alone. Publish the drag regions for move/resize/snap and keep a `@doubleclick` -> `ui.window.toggleMaximize()` fallback for backends that deliver the press (dead on Wayland, correct elsewhere). Related: [[sdl-focus-clickthrough]].

@@ -1,0 +1,14 @@
+# Touch gesture layer (ui_components)
+
+Browser-model touch handling: primary-touch gesture recognizer with pan-scroll, fling, tap, long-press context menu and a touch-action style.
+
+Verified 2026-11-04 against d35a505e. (design elements located in stdlib/ui_components, stdlib/ui_styling, stdlib/headwind, stdlib/app, stdlib/sdl; sizes and counts are from the original work and were not re-run)
+
+- Pipeline: SDL finger/pen events -> `app.PointerEdge` (pointerType Touch, primary = first finger) -> ui_components captured pointers. The recognizer lives in `UIContext`, primary touch only (design comment near the top of ui_components.hz).
+- Down: pointerdown is dispatched at once, but the focus change and pointerdown-outside dismissal are DEFERRED to tap or long press (a pan must not focus a text field). Moving past the slop pans if the hit path's effective touch-action allows: a cancelled Up (pointercancel) goes to the capture path, then pixel-mode WheelEvents (`WheelDeltaMode.Pixel`) along the down path, latched to the first consumer. Release with velocity flings (per-frame pixel wheels, stops when nobody consumes; constants FLING_* in ui_components.hz). Long press (LONG_PRESS_SECONDS) calls onContextMenu with button Right and produces no click.
+- `touch-action` is a style like `cursor`: `ui_styling.TouchAction`, headwind `touchAuto/touchNone/touchPanX/touchPanY` (classes `touch-auto|none|pan-x|pan-y`); the innermost explicit value on the hit path wins.
+- Widgets that act on pointerdown (Button, Tabs, dropdown rows) must act on click for touch: `PointerEvent.activatesOnPress()` is true for mouse/pen, false for touch.
+- Other pieces: `ScrollState.handleWheelEvent`/pixel variants (scroll.hz); `KeyboardCallbacks.setTextInputActive` -> `app.setTextInputActive` -> `haze_sdl_setTextInputActive` (the on-screen keyboard only while a focused element has a text handler); `app.fingerLifted` ends hover when a touch lifts; SDL fingers are filtered to DIRECT devices; custom-titlebar touch on Wayland uses its own wl_touch for down serials (move after slop, double tap maximize, long press window menu).
+- SDL facts: Windows SDL sets TABLET_DISABLE_PRESSANDHOLD (no OS right-click emulation, so the long press is needed) and has no desktop on-screen-keyboard support; Wayland touch-down runs no hit test; X11 marks touchpads (XIDependentTouch) INDIRECT_RELATIVE.
+- Not done: pinch-zoom as a framework gesture, pen long-press, X11 titlebar touch, IME/OSK text-area positioning (`SDL_SetTextInputArea`). The horizontal wheel sign in ScrollState follows SDL (x > 0 = scroll right); pans are encoded as (-dx, +dy).
+- Tests: stdlib/ui_components/tests/touch-gesture-tests.hz (includes a zero-allocation idle check), pen-touch-tests.hz, pointer-click-tests.hz, focus-tests.hz, reactive-gate-tests.hz. See [[running-stdlib-module-tests]].

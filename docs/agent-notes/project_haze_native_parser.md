@@ -1,0 +1,23 @@
+# Native (self-hosted) Haze parser: contracts and integration
+
+The lexer/parser in compiler/haze-parser is written in Haze, emits compact JSON, and is revived into the same AST the ANTLR parser produces; `--parser antlr|native|assert` selects or cross-checks it.
+
+Verified 2026-11-04 against d35a505e. (integration points and files checked; the contract rules below were verified by probe when written on 2026-08-11/12 and the parser was rewritten on 2026-10-16, so scripts/parser-equivalence.ts and `--parser assert` are the guard, not this text)
+
+**Why:** ANTLR parsing measured ~13 ms per line (wgpu import.hz 237 KB: 3.4 s; json.hz: 2.9 s). The native parser parses the same file in tens of ms (about 15x overall).
+
+**Files:** compiler/haze-parser/src/{tokens,lexer,strings,json,parser,main}.hz; src/Parser/ParserMode.ts (mode state; `antlr` is the bootstrap/oracle only, `native` is what builds use, `assert` runs both and throws with the exact JSON path on divergence), src/Parser/NativeParser.ts (reviveAST, source-hash bootstrap, long-lived stdio server, one-shot `parseTextNativeSync`), src/Parser/ASTDiff.ts (deep diff with JSON paths; ignores key order, Set order and undefined-vs-absent), scripts/parser-equivalence.ts. `Parser.parseTextToAST` dispatches on the mode; `parseTextToASTAsync` goes through the server (`TEXT <byteLen> <filename>\n<bytes>` request, `OK <byteLen>\n<json>` / `ERR ...` reply, `__quit__` exits; the child is `unref()`d and shut down in a `finally` in main.ts). The parser binary is built once and cached by source hash. Grammar of record: src/Parser/grammar/HazeLexer.g4 and HazeParser.g4; AST types: src/shared/AST.ts.
+
+**Contracts (do not simplify):**
+- `SourceLoc` = `{filename, start:{line,column}, end?}`, line 1-based, column 0-based. `end` is the START position of the node's LAST token (ANTLR's stop token), not the end of that token; a single-token node has start == end.
+- Integer literals are `bigint`: the JSON carries a decimal string revived to BigInt (`reviveAST`); regex flags are an array revived to a Set. Literals can exceed u64 (`0xFFFFFFFFFFFFFFFFFF` is preserved exactly), so a u64 accumulator wraps silently and a JSON number loses precision above 2^53. ANTLR normalizes (`007` -> `7`, `0x0f` -> `15`, `1.50` -> `1.5`, `100.0` -> `100`), so verbatim passthrough is wrong too: the lexer does arbitrary-precision decimal (digits as `[]u8`, hex to decimal by repeated `*16 + nibble`). Negative literals are `UnaryExpr(Minus)` around a positive literal.
+- Wire format is an envelope `{"f":"<filename>","d":[...]}`; `sourceloc` is `"L":[startLine,startCol,endLine,endCol]` (end pair omitted when absent; `"F"` only inside a `#source` override); the filename is sent once; `generics` is omitted when empty (`NODES_WITH_GENERICS` in NativeParser.ts lists variants whose `generics` must be defaulted back to `[]`).
+- Struct/enum/function definitions carry `originalSourcecode` (raw source span). JSON key order does not matter (deep-equal ignores it), which is what allows streaming JSON in one forward pass.
+- Source locations follow the ANTLR rule spans: declarations start at the first MODIFIER (`export fn` starts at `export`); binary precedence levels are flat rules, so every node of a chain shares the whole chain's span (`a + b + c`: the inner `a+b` reports the whole chain); postfix nodes anchor at their own operator token; member access anchors at the NAME, not the dot.
+- `collectImmediate` is called from synchronous elaboration (SemanticBuilder) and stays on the sync path (it parses a tiny synthetic source).
+
+**Language constraints hit while writing a recursive-descent parser in Haze:** mutually recursive functions need `:: final` plus an explicit return type (H7023); struct field defaults cannot contain function calls (H7022); enums do not convert to int; no escaped quotes inside f-strings (bind to a local first); narrowing `int` to `u8` needs a visible range refinement.
+
+**Performance lessons:** appending to `String`/`ByteBuffer` was one byte per `hzstd_dynamic_array_push` call (~15 MB/s), which dominated JSON text materialisation; per-level capture copies and left-folding binary chains by re-capturing made a 400-term sum take 2.6 s (O(N^2)). Captures that return raw buffer offsets do not work with a single shared writer, because `binaryLevel` holds every operand of a chain as a live capture at once (a try without a `truncate` grew to 1.35 GB for a 10 KB source: always compare `w.length()` with the JSON size on a tiny file before any bench loop). Benchmarks taken at load average above ~2 are inflated 1.5-2x.
+
+**Trap:** `rm -rf __haze__/<proj>` alone does not force a rebuild (other caches still say current: "Done 0ms", no binary); add `--full-rebuild`.
