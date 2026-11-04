@@ -103,6 +103,7 @@ let backgroundColor = computed(() => {
 // same reason.
 @template [
         row items-center gap-0 px-[props.paddingX]px py-[props.paddingY]px bg-[backgroundColor]
+        text-color-[props.enabled ? props.textColor : props.textColorDisabled]
         rounded-[props.rounded]px h-fit [props.enabled]?cursor-pointer w-fit [props.grow]?w-grow
         [ringVisible]?outline-[props.focusRing]
         [ringVisible]?outline-color-[props.focusRingColor]
@@ -117,8 +118,9 @@ let backgroundColor = computed(() => {
 
 slot content label=[props.label] icon=[props.icon] {
     Codicon if=[props.icon] [] icon=[props.icon] {}
+    // The colour is the button's (on its root), for the icon and the label.
     text if=[props.label.length > 0] [
-        text-color-[props.enabled ? props.textColor : props.textColorDisabled] text-nowrap
+        text-nowrap
         [props.fontSize]?font-size-[props.fontSize]
     ] [props.label]
 }

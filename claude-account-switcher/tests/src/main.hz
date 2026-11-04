@@ -1,4 +1,5 @@
 import claude_account_switcher_ui
+import claude_usage
 import image
 import ui_components
 import ui_elements
@@ -16,7 +17,7 @@ import ui_layout
 // Run:  __haze__/claude_account_switcher_tests/bin/claude_account_switcher_tests [scenario]
 // Without a scenario it runs all of them; the exit code is the failure count.
 
-const WIDTH = 380;
+const WIDTH = 340;
 const HEIGHT = 420;
 const CHAR = 8.0;
 const STEP = 0.016;
@@ -31,6 +32,16 @@ ref struct TextDraw {
     y: real;
     w: real;
     h: real;
+    // Lowercase hex, without '#' (Color.hex()).
+    color: str = "";
+}
+
+ref struct RectDraw {
+    x: real;
+    y: real;
+    w: real;
+    h: real;
+    color: str;
 }
 
 ref struct Sim {
@@ -43,6 +54,8 @@ ref struct Sim {
     pass: int = 0;
     textDraws: []TextDraw = [];
     drawingTexts: []TextDraw = [];
+    rectDraws: []RectDraw = [];
+    drawingRects: []RectDraw = [];
     // What the store asked the host to pick, and what the test answers.
     picks: []claude_account_switcher_ui.PickKind = [];
     pickBusy: bool = false;
@@ -90,6 +103,8 @@ fn freshDir(name: str): str {
 
 ref struct Fixture {
     state: str;
+    // <state>/share: active.token and usage.json.
+    share: str;
     repo: str;
     // An icon file to pick: 100x50, opaque red.
     iconFile: str;
@@ -118,6 +133,7 @@ fn newFixture(sim: mut Sim): Fixture {
     let root = freshDir(sim.scenario);
     let f = Fixture {
         state: f"{root}/state",
+        share: f"{root}/state/share",
         repo: f"{root}/profile",
         iconFile: f"{root}/icon.png",
         notImage: f"{root}/notes.txt",
@@ -131,7 +147,10 @@ fn newFixture(sim: mut Sim): Fixture {
 fn open(sim: mut Sim, f: Fixture): bool {
     // Like the host's: refused while one is open (pickBusy); otherwise
     // answered at once with `answer` (none when it is empty, a cancel).
-    let opened = claude_account_switcher_ui.openSwitcher(f.state, (kind: claude_account_switcher_ui.PickKind): bool => {
+    // The tracker never reaches a network: a probe fails at once (curl knows
+    // no such scheme), and the numbers come from applyProbeResult.
+    let settings = claude_usage.TrackerSettings { probeUrl: "nosuchscheme://x" };
+    let opened = claude_account_switcher_ui.openSwitcher(f.state, f.share, none, settings, (kind: claude_account_switcher_ui.PickKind): bool => {
         if sim.pickBusy { return false; }
         sim.picks.push(kind);
         let answer = sim.answer;
@@ -239,7 +258,7 @@ fn scenarioAddFirstBecomesActive(sim: mut Sim) {
     sim.checkStr("accounts.json", readOr(f"{f.synced()}/accounts.json", "<missing>"),
         "{\"accounts\":[{\"id\":\"personal-max\",\"name\":\"Personal Max\"}]}");
     sim.checkStr("token stored trimmed", readOr(f"{f.state}/tokens/personal-max.token", "<missing>"), TOKEN_A);
-    sim.checkStr("active.token is exactly the token", readOr(f"{f.state}/active.token", "<missing>"), TOKEN_A);
+    sim.checkStr("active.token is exactly the token", readOr(f"{f.share}/active.token", "<missing>"), TOKEN_A);
     sim.checkStr("active", activeId(), "personal-max");
     sim.check("token not in the repo", !readOr(f"{f.synced()}/accounts.json", "").contains("sk-ant"));
 
@@ -264,7 +283,7 @@ fn scenarioAddFirstBecomesActive(sim: mut Sim) {
     sim.check("second added", s().addAccount("Personal Max", f.iconFile, TOKEN_B));
     sim.checkStr("same name gets its own id", ids(), "personal-max+,personal-max-2+");
     sim.checkStr("first stays active", activeId(), "personal-max");
-    sim.checkStr("active.token unchanged", readOr(f"{f.state}/active.token", "<missing>"), TOKEN_A);
+    sim.checkStr("active.token unchanged", readOr(f"{f.share}/active.token", "<missing>"), TOKEN_A);
 }
 
 fn scenarioAddRefused(sim: mut Sim) {
@@ -283,7 +302,7 @@ fn scenarioAddRefused(sim: mut Sim) {
     sim.check("each refusal is shown", s().hasProblem());
     sim.check("nothing synced", !exists(f.synced()));
     sim.check("no token written", !exists(f"{f.state}/tokens"));
-    sim.check("nothing active", !exists(f"{f.state}/active.token"));
+    sim.check("nothing active", !exists(f"{f.share}/active.token"));
 }
 
 // ── Switching ────────────────────────────────────────────────────────
@@ -293,12 +312,12 @@ fn scenarioSwitchCycles(sim: mut Sim) {
     sim.checkStr("a active", activeId(), "a");
     sim.check("switch", s().switchToNext());
     sim.checkStr("then b", activeId(), "b");
-    sim.checkStr("b's token is active", readOr(f"{f.state}/active.token", ""), TOKEN_B);
+    sim.checkStr("b's token is active", readOr(f"{f.share}/active.token", ""), TOKEN_B);
     s().switchToNext();
     sim.checkStr("then c", activeId(), "c");
     s().switchToNext();
     sim.checkStr("wraps to a", activeId(), "a");
-    sim.checkStr("a's token is active", readOr(f"{f.state}/active.token", ""), TOKEN_A);
+    sim.checkStr("a's token is active", readOr(f"{f.share}/active.token", ""), TOKEN_A);
     sim.checkStr("remembered", readOr(f"{f.state}/settings.json", ""),
         json.stringify(claude_account_switcher_ui.SettingsFile { profileRepo: f.repo, active: "a" }));
 
@@ -319,7 +338,7 @@ fn scenarioSwitchSingleAndNone(sim: mut Sim) {
     s().addAccount("Only", f.iconFile, TOKEN_A);
     sim.check("single account switches to itself", s().switchToNext());
     sim.checkStr("still only", activeId(), "only");
-    sim.checkStr("its token", readOr(f"{f.state}/active.token", ""), TOKEN_A);
+    sim.checkStr("its token", readOr(f"{f.share}/active.token", ""), TOKEN_A);
 }
 
 // ── Tokens ───────────────────────────────────────────────────────────
@@ -328,9 +347,9 @@ fn scenarioReplaceActiveToken(sim: mut Sim) {
     let f = threeAccounts(sim);
     sim.check("replaced", s().setToken("a", TOKEN_C));
     sim.checkStr("token file", readOr(f"{f.state}/tokens/a.token", ""), TOKEN_C);
-    sim.checkStr("active.token follows", readOr(f"{f.state}/active.token", ""), TOKEN_C);
+    sim.checkStr("active.token follows", readOr(f"{f.share}/active.token", ""), TOKEN_C);
     sim.check("inactive replaced", s().setToken("b", TOKEN_A));
-    sim.checkStr("active.token not touched", readOr(f"{f.state}/active.token", ""), TOKEN_C);
+    sim.checkStr("active.token not touched", readOr(f"{f.share}/active.token", ""), TOKEN_C);
     sim.check("bad token refused", !s().setToken("b", "nope"));
     sim.checkStr("old one kept", readOr(f"{f.state}/tokens/b.token", ""), TOKEN_A);
     sim.check("unknown account refused", !s().setToken("zzz", TOKEN_A));
@@ -348,14 +367,14 @@ fn scenarioSyncedFromElsewhere(sim: mut Sim) {
     sim.check("reloads", s().reload());
     sim.checkStr("listed, no tokens", ids(), "work-,home-");
     sim.checkStr("nothing active", activeId(), "<none>");
-    sim.check("no active.token", !exists(f"{f.state}/active.token"));
+    sim.check("no active.token", !exists(f"{f.share}/active.token"));
     sim.check("work has its icon", s().iconOf("work") ? true : false);
     sim.check("home has none", s().iconOf("home") ? false : true);
     sim.check("switch has nothing", !s().switchToNext());
 
     sim.check("token entered", s().setToken("home", TOKEN_B));
     sim.checkStr("home now active", activeId(), "home");
-    sim.checkStr("its token", readOr(f"{f.state}/active.token", ""), TOKEN_B);
+    sim.checkStr("its token", readOr(f"{f.share}/active.token", ""), TOKEN_B);
     sim.checkStr("accounts.json untouched by a token", readOr(f"{f.synced()}/accounts.json", ""),
         "{\"accounts\":[{\"id\":\"work\",\"name\":\"Work\"},{\"id\":\"home\",\"name\":\"Home\"}]}");
 }
@@ -372,11 +391,11 @@ fn scenarioRemove(sim: mut Sim) {
 
     sim.check("remove active", s().removeAccount("a"));
     sim.checkStr("c takes over", activeId(), "c");
-    sim.checkStr("c's token active", readOr(f"{f.state}/active.token", ""), TOKEN_C);
+    sim.checkStr("c's token active", readOr(f"{f.share}/active.token", ""), TOKEN_C);
 
     sim.check("remove last", s().removeAccount("c"));
     sim.checkStr("none active", activeId(), "<none>");
-    sim.check("active.token removed", !exists(f"{f.state}/active.token"));
+    sim.check("active.token removed", !exists(f"{f.share}/active.token"));
     sim.checkStr("empty list saved", readOr(f"{f.synced()}/accounts.json", ""), "{\"accounts\":[]}");
 }
 
@@ -387,7 +406,7 @@ fn scenarioRemovedElsewhere(sim: mut Sim) {
     sim.check("reloads", s().reload());
     sim.checkStr("a gone", ids(), "b+,c+");
     sim.checkStr("b takes over", activeId(), "b");
-    sim.checkStr("b's token active", readOr(f"{f.state}/active.token", ""), TOKEN_B);
+    sim.checkStr("b's token active", readOr(f"{f.share}/active.token", ""), TOKEN_B);
     sim.check("a's orphan token removed", !exists(f"{f.state}/tokens/a.token"));
 }
 
@@ -414,7 +433,7 @@ fn scenarioBadAccountsFile(sim: mut Sim) {
         sim.check(f"switch refused: {content}", !s().switchToNext());
         sim.checkStr(f"file untouched: {content}", readOr(path, "<missing>"), content);
         sim.check(f"tokens kept: {content}", exists(f"{f.state}/tokens/a.token") && exists(f"{f.state}/tokens/c.token"));
-        sim.checkStr(f"active.token kept: {content}", readOr(f"{f.state}/active.token", ""), TOKEN_A);
+        sim.checkStr(f"active.token kept: {content}", readOr(f"{f.share}/active.token", ""), TOKEN_A);
     }
     sim.check("no file escaped the folders", !exists(f"{f.repo}/../evil.png"));
 }
@@ -424,7 +443,7 @@ fn scenarioBadAccountsFile(sim: mut Sim) {
 // active.token is the active account's token, or absent while none is: the
 // invariant every operation must leave behind.
 fn checkConsistent(sim: mut Sim, f: Fixture, name: str) {
-    let active = readOr(f"{f.state}/active.token", "<missing>");
+    let active = readOr(f"{f.share}/active.token", "<missing>");
     if let id = rx.get(s().active) {
         sim.checkStr(f"{name}: active.token is {id}'s token", active, readOr(f"{f.state}/tokens/{id}.token", "<no token file>"));
         let settings = readOr(f"{f.state}/settings.json", "");
@@ -443,9 +462,9 @@ fn scenarioAccountsFileMissing(sim: mut Sim) {
     sim.check("reload refuses", !s().reload());
     sim.check("shown", s().hasProblem());
     sim.check("tokens kept", exists(f"{f.state}/tokens/a.token") && exists(f"{f.state}/tokens/b.token") && exists(f"{f.state}/tokens/c.token"));
-    sim.checkStr("active.token kept", readOr(f"{f.state}/active.token", "<missing>"), TOKEN_A);
+    sim.checkStr("active.token kept", readOr(f"{f.share}/active.token", "<missing>"), TOKEN_A);
     sim.check("switch refused", !s().switchToNext());
-    sim.checkStr("still a's token", readOr(f"{f.state}/active.token", "<missing>"), TOKEN_A);
+    sim.checkStr("still a's token", readOr(f"{f.share}/active.token", "<missing>"), TOKEN_A);
     sim.check("add refused", !s().addAccount("D", f.iconFile, TOKEN_A));
     sim.check("no accounts.json made", !exists(path));
 
@@ -454,7 +473,7 @@ fn scenarioAccountsFileMissing(sim: mut Sim) {
     fs.createDirectory(other);
     s().setProfileRepo(other);
     sim.check("wrong folder: tokens kept", exists(f"{f.state}/tokens/a.token"));
-    sim.checkStr("wrong folder: active.token kept", readOr(f"{f.state}/active.token", "<missing>"), TOKEN_A);
+    sim.checkStr("wrong folder: active.token kept", readOr(f"{f.share}/active.token", "<missing>"), TOKEN_A);
 }
 
 // An empty list pulled from another machine removes every account there, so
@@ -473,14 +492,14 @@ fn scenarioEmptyListPulled(sim: mut Sim) {
 // it from the active account's token.
 fn scenarioActiveTokenRestored(sim: mut Sim) {
     let f = threeAccounts(sim);
-    fs.removeFile(f"{f.state}/active.token");
+    fs.removeFile(f"{f.share}/active.token");
     s().reload();
     checkConsistent(sim, f, "after delete");
-    fs.writeText(f"{f.state}/active.token", TOKEN_C);
+    fs.writeText(f"{f.share}/active.token", TOKEN_C);
     s().reload();
     checkConsistent(sim, f, "after foreign token");
     // Opened again from disk (a restart), too.
-    fs.writeText(f"{f.state}/active.token", TOKEN_B);
+    fs.writeText(f"{f.share}/active.token", TOKEN_B);
     open(sim, f);
     checkConsistent(sim, f, "after restart");
     sim.checkStr("still a", activeId(), "a");
@@ -500,7 +519,7 @@ fn scenarioBadTokenFile(sim: mut Sim) {
     sim.check("switch to b fails", !s().switchToNext());
     sim.check("shown", s().hasProblem());
     sim.checkStr("a stays", activeId(), "a");
-    sim.checkStr("a's token stays", readOr(f"{f.state}/active.token", "<missing>"), TOKEN_A);
+    sim.checkStr("a's token stays", readOr(f"{f.share}/active.token", "<missing>"), TOKEN_A);
     checkConsistent(sim, f, "after failed switch");
 }
 
@@ -509,7 +528,7 @@ fn scenarioBadTokenFile(sim: mut Sim) {
 // the reader goes on reading what it opened.
 fn scenarioSwitchWhileRead(sim: mut Sim) {
     let f = threeAccounts(sim);
-    let opened = fs.openRead(f"{f.state}/active.token");
+    let opened = fs.openRead(f"{f.share}/active.token");
     if opened is fs.Error {
         sim.check("reader opened", false);
         return;
@@ -517,13 +536,13 @@ fn scenarioSwitchWhileRead(sim: mut Sim) {
     let reader: mut fs.FileReader = opened;
     sim.check("switch while read", s().switchToNext());
     sim.checkStr("switched", activeId(), "b");
-    sim.checkStr("new token in place", readOr(f"{f.state}/active.token", "<missing>"), TOKEN_B);
+    sim.checkStr("new token in place", readOr(f"{f.share}/active.token", "<missing>"), TOKEN_B);
     while !reader.done() {
         reader.readSome(4096);
     }
     sim.checkStr("reader saw the old token", reader.text(), TOKEN_A);
     // And a read that is still open while the file is replaced twice.
-    let again = fs.openRead(f"{f.state}/active.token");
+    let again = fs.openRead(f"{f.share}/active.token");
     if again is fs.Error {
         sim.check("second reader opened", false);
         return;
@@ -823,10 +842,13 @@ ref struct Window {
         if !this.ui.frameNeedsPaint() { return; }
         sim.pass = this.ui.beginRenderFeedback();
         sim.drawingTexts = [];
+        sim.drawingRects = [];
         this.layout.render(tree, {
-            renderFilledRectangle: (position: Vec2, size: Vec2, color: Color, cornerRadius: ui_layout.CornerRadiusValues): void => {},
+            renderFilledRectangle: (position: Vec2, size: Vec2, color: Color, cornerRadius: ui_layout.CornerRadiusValues): void => {
+                sim.drawingRects.push({ x: position.x, y: position.y, w: size.x, h: size.y, color: color.hex() });
+            },
             renderText: (element: ui_layout.ffi.hzui_draw_text_element_t): void => {
-                sim.drawingTexts.push({ text: element.text, x: element.position.x, y: element.position.y, w: element.size.x, h: element.size.y });
+                sim.drawingTexts.push({ text: element.text, x: element.position.x, y: element.position.y, w: element.size.x, h: element.size.y, color: element.color.hex() });
             },
             onBoundingBox: (element: ui_elements.Element, pos: Vec2, size: Vec2): void => {
                 ui_components.applyRenderFeedback(element, pos, size, sim.pass);
@@ -836,6 +858,7 @@ ref struct Window {
             setClip: (clip: ui_layout.ResolvedClip): void => {},
         });
         sim.textDraws = sim.drawingTexts;
+        sim.rectDraws = sim.drawingRects;
     }
 
     mut fn frames(count: int) {
@@ -1045,7 +1068,7 @@ fn scenarioWindowRowClickActivates(sim: mut Sim) {
     sim.checkStr("a active", activeId(), "a");
     w.click(centerOf(sim, "C"));
     sim.checkStr("c active after its row was clicked", activeId(), "c");
-    sim.checkStr("c's token in use", readOr(f"{f.state}/active.token", ""), TOKEN_C);
+    sim.checkStr("c's token in use", readOr(f"{f.share}/active.token", ""), TOKEN_C);
     w.click(centerOf(sim, "C"));
     sim.checkStr("a second click changes nothing", activeId(), "c");
     fs.removeFile(f"{f.state}/tokens/b.token");
@@ -1079,7 +1102,7 @@ fn scenarioWindowMenuEdits(sim: mut Sim) {
     w.type(TOKEN_C);
     w.key(ui_components.Key.Return);
     sim.checkStr("a's new token", readOr(f"{f.state}/tokens/a.token", ""), TOKEN_C);
-    sim.checkStr("in use at once (a is active)", readOr(f"{f.state}/active.token", ""), TOKEN_C);
+    sim.checkStr("in use at once (a is active)", readOr(f"{f.share}/active.token", ""), TOKEN_C);
     sim.check("token box gone", !shows(sim, "sk-ant-oat01-..."));
     sim.check("token never drawn", !shows(sim, TOKEN_C));
 }
@@ -1190,6 +1213,388 @@ fn scenarioWindowReloadsOnOpen(sim: mut Sim) {
     sim.checkStr("active moved to c", activeId(), "c");
 }
 
+// ── Usage ────────────────────────────────────────────────────────────
+
+const NOW = 1800000000000;
+const MINUTE = 60000;
+const HOUR = 3600000;
+const DAY = 86400000;
+// The colours the usage is drawn in (theme.hz), as Color.hex() gives them.
+const NORMAL = "eeeff1";
+const DIM = "8a8e98";
+const ORANGE = "f0883e";
+const RED = "f2646d";
+const BAR_NORMAL = "b3b6be";
+const BUTTON_ENABLED = "b3b6be";
+const BUTTON_DISABLED = "8a8e98";
+// The refresh and loading codicons, as the icon font draws them.
+const REFRESH_GLYPH = "";
+const LOADING_GLYPH = "";
+
+fn windowUsage(percent: real, resetsAtMs: int): claude_usage.WindowUsage {
+    return claude_usage.WindowUsage { percent: percent, resetsAtMs: resetsAtMs, status: "allowed" };
+}
+
+// `id`'s probe at `atMs` brought these numbers.
+fn probed(id: str, five: claude_usage.WindowUsage | none, seven: claude_usage.WindowUsage | none, atMs: int) {
+    s().usage.applyProbeResult(id, claude_usage.UsageSample { fiveHour: five, sevenDay: seven }, claude_usage.ProbeError {}, atMs);
+}
+
+// No account is due for a probe until `atMs` plus its interval, so a tick
+// starts none on its own.
+fn noneDue(atMs: int) {
+    for account in s().list() {
+        if let u = s().usage.usage(account.id) {
+            u.attemptedAtMs = atMs;
+        }
+    }
+}
+
+fn colorOf(sim: mut Sim, text: str): str {
+    if let d = findText(sim, text) {
+        return d.color;
+    }
+    return "<not drawn>";
+}
+
+fn tokensSeen(): str {
+    let out = "";
+    for t in s().usage.tokens {
+        if out.length > 0 { out = out + ","; }
+        out = out + t.id + "=" + t.token;
+    }
+    return out;
+}
+
+fn trackedActive(): str {
+    if let id = s().usage.file.active { return id; }
+    return "<none>";
+}
+
+// `v` to the nearest whole pixel, as the bars are drawn.
+fn rounded(v: real): real {
+    return ((v + 0.5) as int) as real;
+}
+
+// A bar's filled part: drawn h px high, w px wide (to 0.01), in `color`.
+fn hasBar(sim: mut Sim, h: real, w: real, color: str): bool {
+    for r in sim.rectDraws {
+        if r.h == h && r.color == color && r.w > w - 0.01 && r.w < w + 0.01 {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn scenarioUsageFormat(sim: mut Sim) {
+    sim.checkStr("hours and minutes", claude_account_switcher_ui.countdown(3 * HOUR + 37 * MINUTE + 59000), "3h 37m");
+    sim.checkStr("days and hours", claude_account_switcher_ui.countdown(2 * DAY + 5 * HOUR + 59 * MINUTE), "2d 5h");
+    sim.checkStr("one hour", claude_account_switcher_ui.countdown(HOUR), "1h 0m");
+    sim.checkStr("just under an hour", claude_account_switcher_ui.countdown(HOUR - 1), "59m");
+    sim.checkStr("one day", claude_account_switcher_ui.countdown(DAY), "1d 0h");
+    sim.checkStr("just under a day", claude_account_switcher_ui.countdown(DAY - 1), "23h 59m");
+    sim.checkStr("under a minute", claude_account_switcher_ui.countdown(59999), "0m");
+    sim.checkStr("past", claude_account_switcher_ui.countdown(-5000), "0m");
+    sim.check("59.99 normal", claude_account_switcher_ui.usageLevel(59.99) == claude_account_switcher_ui.UsageLevel.Normal);
+    sim.check("60 orange", claude_account_switcher_ui.usageLevel(60.0) == claude_account_switcher_ui.UsageLevel.Warning);
+    sim.check("79.99 orange", claude_account_switcher_ui.usageLevel(79.99) == claude_account_switcher_ui.UsageLevel.Warning);
+    sim.check("80 red", claude_account_switcher_ui.usageLevel(80.0) == claude_account_switcher_ui.UsageLevel.Critical);
+    sim.check("over 100 red", claude_account_switcher_ui.usageLevel(130.0) == claude_account_switcher_ui.UsageLevel.Critical);
+}
+
+// active.token lives in share/; one at the old place (the state folder) moves
+// there once, and is gone after.
+fn scenarioUsageShareFolder(sim: mut Sim) {
+    let f = threeAccounts(sim);
+    sim.checkStr("in share/", readOr(f"{f.share}/active.token", "<missing>"), TOKEN_A);
+    sim.check("not in the state folder", !exists(f"{f.state}/active.token"));
+    sim.check("tokens stay outside share/", exists(f"{f.state}/tokens/a.token") && !exists(f"{f.share}/tokens"));
+    sim.check("settings stay outside share/", exists(f"{f.state}/settings.json") && !exists(f"{f.share}/settings.json"));
+
+    // An older version's layout: the token at the old place only.
+    fs.writeText(f"{f.state}/active.token", TOKEN_A);
+    fs.removeFile(f"{f.share}/active.token");
+    sim.check("opens", open(sim, f));
+    sim.checkStr("moved to share/", readOr(f"{f.share}/active.token", "<missing>"), TOKEN_A);
+    sim.check("old one gone", !exists(f"{f.state}/active.token"));
+    checkConsistent(sim, f, "after the move");
+
+    // Both there: the one in share/ is this version's and stays.
+    fs.writeText(f"{f.state}/active.token", TOKEN_B);
+    sim.check("opens with both", open(sim, f));
+    sim.checkStr("share/ kept", readOr(f"{f.share}/active.token", "<missing>"), TOKEN_A);
+    sim.check("old one gone again", !exists(f"{f.state}/active.token"));
+
+    // Also when the accounts cannot be read, so nothing rewrites it after.
+    let accountsFile = f"{f.synced()}/accounts.json";
+    let accounts = readOr(accountsFile, "");
+    fs.writeText(accountsFile, "{");
+    fs.writeText(f"{f.state}/active.token", TOKEN_B);
+    sim.check("opens with both, accounts unreadable", open(sim, f));
+    sim.check("the accounts did not load", s().hasProblem());
+    sim.checkStr("share/ kept, nothing rewrote it", readOr(f"{f.share}/active.token", "<missing>"), TOKEN_A);
+    sim.check("old one gone, accounts unreadable", !exists(f"{f.state}/active.token"));
+    fs.writeText(accountsFile, accounts);
+    open(sim, f);
+
+    // The old one without share/ at all.
+    fs.removeFile(f"{f.share}/active.token");
+    fs.removeFile(f"{f.share}/usage.json");
+    fs.removeEmptyDirectory(f.share);
+    sim.check("share/ gone for the test", !exists(f.share));
+    fs.writeText(f"{f.state}/active.token", TOKEN_A);
+    sim.check("opens without share/", open(sim, f));
+    sim.checkStr("share/ made", readOr(f"{f.share}/active.token", "<missing>"), TOKEN_A);
+    sim.check("old one gone, too", !exists(f"{f.state}/active.token"));
+}
+
+// The tracker knows the accounts with a token here, in order, each with its
+// token, and the active one; it follows every change.
+fn scenarioUsageTrackerAccounts(sim: mut Sim) {
+    let f = threeAccounts(sim);
+    sim.checkStr("all three", tokensSeen(), f"a={TOKEN_A},b={TOKEN_B},c={TOKEN_C}");
+    sim.checkStr("a active", trackedActive(), "a");
+    s().switchToNext();
+    sim.checkStr("switch followed", trackedActive(), "b");
+    s().activateAccount("c");
+    sim.checkStr("row click followed", trackedActive(), "c");
+    s().setToken("a", TOKEN_B);
+    sim.checkStr("new token", tokensSeen(), f"a={TOKEN_B},b={TOKEN_B},c={TOKEN_C}");
+    // A token file written by hand, with a line break: the tracker gets
+    // the token without it.
+    fs.writeText(f"{f.state}/tokens/b.token", f"  {TOKEN_B}\r\n");
+    s().reload();
+    sim.checkStr("trimmed", tokensSeen(), f"a={TOKEN_B},b={TOKEN_B},c={TOKEN_C}");
+    fs.removeFile(f"{f.state}/tokens/b.token");
+    s().reload();
+    sim.checkStr("no token, not tracked", tokensSeen(), f"a={TOKEN_B},c={TOKEN_C}");
+    sim.check("its usage gone", !s().usage.usage("b"));
+    s().removeAccount("c");
+    sim.checkStr("removed", tokensSeen(), f"a={TOKEN_B}");
+    sim.checkStr("the next one active", trackedActive(), "a");
+    s().removeAccount("a");
+    sim.checkStr("none left", tokensSeen(), "");
+    sim.checkStr("none active", trackedActive(), "<none>");
+}
+
+// The active account's numbers at the bottom, its rows' bars, the colours
+// at 60 and 80, and the countdown going on.
+fn scenarioWindowUsageShown(sim: mut Sim) {
+    let f = threeAccounts(sim);
+    let activation = rx.reactive<int>(0);
+    let w = openWindow(sim, activation);
+    noneDue(NOW);
+    probed("a", windowUsage(42.7, NOW + 3 * HOUR + 37 * MINUTE + 20000), windowUsage(85.2, NOW + 2 * DAY + 5 * HOUR), NOW);
+    probed("c", windowUsage(12.0, NOW + HOUR), windowUsage(60.0, NOW + DAY), NOW);
+    s().tickUsage(NOW, 100.0);
+    w.frames(3);
+    sim.check("5h label", shows(sim, "5h"));
+    sim.check("7d label", shows(sim, "7d"));
+    sim.checkStr("5h percent, normal", colorOf(sim, "42%"), NORMAL);
+    sim.check("5h left", shows(sim, "3h 37m"));
+    sim.checkStr("7d percent, red", colorOf(sim, "85%"), RED);
+    sim.check("7d left", shows(sim, "2d 5h"));
+    sim.check("a's row: 5h bar", hasBar(sim, 4.0, rounded(28.0 * 0.427), BAR_NORMAL));
+    sim.check("a's row: 7d bar", hasBar(sim, 4.0, rounded(28.0 * 0.852), RED));
+    sim.check("c's row: 7d bar orange", hasBar(sim, 4.0, rounded(28.0 * 0.6), ORANGE));
+    sim.check("b's row: no bars without numbers", !hasBar(sim, 4.0, 0.0, BAR_NORMAL));
+    sim.check("panel: 5h bar", hasBar(sim, 4.0, rounded(132.0 * 0.427), BAR_NORMAL));
+    sim.check("c's numbers not in the panel", !shows(sim, "12%"));
+    // Everything fits the window: the panel's right end is inside it.
+    let fits = false;
+    if let button = findText(sim, REFRESH_GLYPH) {
+        fits = button.x + button.w <= (WIDTH as real) - 8.0;
+        if !fits { fmt.println(f"  refresh button at x={button.x} w={button.w}"); }
+    }
+    sim.check("the refresh button inside the window", fits);
+    // The rows' bars line up, whether a row has the check or not.
+    let tracks = 0;
+    let firstX = -1.0;
+    let aligned = true;
+    for r in sim.rectDraws {
+        if r.h == 4.0 && r.w == 28.0 {
+            tracks = tracks + 1;
+            if firstX < 0.0 { firstX = r.x; }
+            else if r.x != firstX { aligned = false; }
+        }
+    }
+    sim.check("bars of two rows drawn", tracks >= 4);
+    // Every bar on whole pixels: an edge between two is drawn smeared.
+    let whole = (v: real): bool => v == ((v + 0.5) as int) as real;
+    let crisp = true;
+    for r in sim.rectDraws {
+        if r.h == 4.0 && !(whole(r.x) && whole(r.y) && whole(r.w)) {
+            crisp = false;
+            fmt.println(f"  bar off the pixel grid: x={r.x} y={r.y} w={r.w}");
+        }
+    }
+    sim.check("bars on whole pixels", crisp);
+    sim.check("the rows' bars line up", aligned);
+
+    // The countdown goes on by itself, every 30 s, and not more often.
+    let revision = rx.get(s().usageRevision);
+    s().tickUsage(NOW + 10000, 110.0);
+    sim.check("no new view after 10 s", rx.get(s().usageRevision) == revision);
+    noneDue(NOW + 10 * MINUTE);
+    s().tickUsage(NOW + 10 * MINUTE, 130.0);
+    w.frames(3);
+    sim.check("a new view after 30 s", rx.get(s().usageRevision) == revision + 1);
+    sim.check("counted down", shows(sim, "3h 27m"));
+
+    // A click on c's row: c is active, the panel shows c.
+    probed("c", windowUsage(12.0, NOW + HOUR), windowUsage(60.0, NOW + DAY), NOW + 10 * MINUTE);
+    w.click(centerOf(sim, "C"));
+    w.frames(3);
+    sim.checkStr("c active", activeId(), "c");
+    sim.checkStr("c's 5h", colorOf(sim, "12%"), NORMAL);
+    sim.checkStr("c's 7d at 60: orange", colorOf(sim, "60%"), ORANGE);
+    sim.check("a's numbers gone", !shows(sim, "42%"));
+
+    // Just under 60 and 80: the rounded-down number and its colour agree.
+    probed("c", windowUsage(59.99, NOW + HOUR), windowUsage(79.99, NOW + DAY), NOW + 10 * MINUTE);
+    s().showUsageAt(NOW + 10 * MINUTE, 131.0);
+    w.frames(3);
+    sim.checkStr("59.99: 59, normal", colorOf(sim, "59%"), NORMAL);
+    sim.checkStr("79.99: 79, orange", colorOf(sim, "79%"), ORANGE);
+    probed("c", windowUsage(80.0, NOW + HOUR), windowUsage(100.0, NOW + DAY), NOW + 10 * MINUTE);
+    s().showUsageAt(NOW + 10 * MINUTE, 132.0);
+    w.frames(3);
+    sim.checkStr("80: red", colorOf(sim, "80%"), RED);
+    sim.checkStr("100: red", colorOf(sim, "100%"), RED);
+
+    // No active account: no panel.
+    s().deactivate();
+    w.frames(3);
+    sim.check("nothing without an active account", !shows(sim, "5h"));
+}
+
+// Old numbers are dimmed, a missing or reset window shows none, a failed
+// probe says its kind and, under the pointer, its message.
+fn scenarioWindowUsageStaleAndError(sim: mut Sim) {
+    let f = threeAccounts(sim);
+    let activation = rx.reactive<int>(0);
+    let w = openWindow(sim, activation);
+    noneDue(NOW);
+    probed("a", windowUsage(42.0, NOW + HOUR), windowUsage(85.0, NOW + DAY), NOW - 179999);
+    s().tickUsage(NOW, 100.0);
+    w.frames(3);
+    sim.checkStr("just within: current", colorOf(sim, "42%"), NORMAL);
+    probed("a", windowUsage(42.0, NOW + HOUR), windowUsage(85.0, NOW + DAY), NOW - 180000);
+    s().showUsageAt(NOW, 100.5);
+    w.frames(3);
+    sim.checkStr("stale 5h dimmed", colorOf(sim, "42%"), DIM);
+    sim.checkStr("stale 7d dimmed, not red", colorOf(sim, "85%"), DIM);
+    sim.check("a stale row bar keeps its colour", hasBar(sim, 4.0, rounded(28.0 * 0.85), RED));
+    sim.check("the stale panel bar is dimmed", hasBar(sim, 4.0, rounded(132.0 * 0.85), DIM) && !hasBar(sim, 4.0, rounded(132.0 * 0.85), RED));
+
+    probed("a", windowUsage(42.0, NOW + HOUR), none, NOW - 1000);
+    s().showUsageAt(NOW, 101.0);
+    w.frames(3);
+    sim.checkStr("fresh again", colorOf(sim, "42%"), NORMAL);
+    sim.check("no 7d number", !shows(sim, "85%") && shows(sim, "-"));
+
+    probed("a", windowUsage(42.0, NOW - 1), windowUsage(30.0, NOW + DAY), NOW - 1000);
+    s().showUsageAt(NOW, 102.0);
+    w.frames(3);
+    sim.check("a reset window shows no number", !shows(sim, "42%") && shows(sim, "30%"));
+
+    sim.check("no marker yet", !shows(sim, "auth"));
+    s().usage.applyProbeResult("a", none, claude_usage.ProbeError { kind: claude_usage.ProbeErrorKind.Auth, message: "HTTP 401: invalid token" }, NOW);
+    s().showUsageAt(NOW, 103.0);
+    w.frames(3);
+    sim.check("auth marker", shows(sim, "auth"));
+    sim.check("the last numbers stay", shows(sim, "30%"));
+    sim.check("message only on hover", !shows(sim, "HTTP 401: invalid token"));
+    w.hover(centerOf(sim, "auth"));
+    sim.check("message on hover", shows(sim, "HTTP 401: invalid token"));
+    w.hover(Vec2(10.0, 60.0));
+    sim.check("gone again", !shows(sim, "HTTP 401: invalid token"));
+
+    probed("a", windowUsage(20.0, NOW + HOUR), windowUsage(30.0, NOW + DAY), NOW + 1000);
+    s().showUsageAt(NOW + 1000, 104.0);
+    w.frames(3);
+    sim.check("marker gone with numbers", !shows(sim, "auth"));
+}
+
+// The refresh button probes the active account; it shows the probe, then
+// waits out the gap between requests (and a retry-after), and comes back
+// by itself.
+fn scenarioWindowUsageRefresh(sim: mut Sim) {
+    let f = threeAccounts(sim);
+    let activation = rx.reactive<int>(0);
+    let w = openWindow(sim, activation);
+    noneDue(NOW);
+    probed("a", windowUsage(42.0, NOW + HOUR), windowUsage(10.0, NOW + DAY), NOW);
+    s().tickUsage(NOW, 100.0);
+    w.frames(3);
+    sim.checkStr("ready", colorOf(sim, REFRESH_GLYPH), BUTTON_ENABLED);
+
+    w.click(centerOf(sim, REFRESH_GLYPH));
+    sim.check("probing", s().usage.isProbing("a"));
+    sim.checkStr("shows the probe, disabled", colorOf(sim, LOADING_GLYPH), BUTTON_DISABLED);
+    for (let i = 0; i < 400 && s().usage.isProbing("a"); i++) {
+        time.sleep(0.025);
+        s().tickUsage(NOW, 100.0);
+    }
+    w.frames(3);
+    sim.check("probe done", !s().usage.isProbing("a"));
+    sim.check("its failure shown", shows(sim, "network"));
+    sim.checkStr("waits out the gap", colorOf(sim, REFRESH_GLYPH), BUTTON_DISABLED);
+    w.click(centerOf(sim, REFRESH_GLYPH));
+    sim.check("a click while waiting does nothing", !s().usage.isProbing("a"));
+    s().tickUsage(NOW + 2000, 102.0);
+    w.frames(3);
+    sim.checkStr("still waiting at 2 s", colorOf(sim, REFRESH_GLYPH), BUTTON_DISABLED);
+    s().tickUsage(NOW + 5000, 105.0);
+    w.frames(3);
+    sim.checkStr("back by itself after 5 s", colorOf(sim, REFRESH_GLYPH), BUTTON_ENABLED);
+
+    // A retry-after holds it longer than the gap.
+    s().usage.applyProbeResult("a", none, claude_usage.ProbeError { kind: claude_usage.ProbeErrorKind.RateLimited, message: "HTTP 429", retryAfterSeconds: 60 }, NOW + 5000);
+    s().tickUsage(NOW + 5000, 105.0);
+    w.frames(3);
+    sim.check("rate_limited marker", shows(sim, "rate_limited"));
+    sim.checkStr("held by the retry-after", colorOf(sim, REFRESH_GLYPH), BUTTON_DISABLED);
+    s().tickUsage(NOW + 30000, 130.0);
+    w.frames(3);
+    sim.checkStr("still held at 25 s", colorOf(sim, REFRESH_GLYPH), BUTTON_DISABLED);
+    noneDue(NOW + 65000);
+    s().tickUsage(NOW + 65000, 165.0);
+    w.frames(3);
+    sim.checkStr("free after 60 s", colorOf(sim, REFRESH_GLYPH), BUTTON_ENABLED);
+}
+
+// Opening the window probes every account, one after another (the active
+// one first, 5 s apart); opening it again at once probes none again.
+fn scenarioUsageProbeAllOnOpen(sim: mut Sim) {
+    let f = threeAccounts(sim);
+    noneDue(NOW);
+    let at = NOW + 2 * MINUTE;
+    let finish = (id: str, mono: real) => {
+        for (let i = 0; i < 400 && s().usage.isProbing(id); i++) {
+            time.sleep(0.025);
+            s().tickUsage(at, mono);
+        }
+    };
+    s().usageWindowOpened(at, 100.0);
+    sim.check("the active one first", s().usage.isProbing("a"));
+    finish("a", 100.0);
+    s().tickUsage(at, 104.0);
+    sim.check("then the gap", !s().usage.isProbing("b"));
+    s().tickUsage(at, 105.0);
+    sim.check("then b", s().usage.isProbing("b"));
+    finish("b", 105.0);
+    s().tickUsage(at, 110.0);
+    sim.check("then c", s().usage.isProbing("c"));
+    finish("c", 110.0);
+    s().tickUsage(at, 115.0);
+    sim.check("and nothing more", !s().usage.isProbing("a") && !s().usage.isProbing("b") && !s().usage.isProbing("c"));
+
+    s().usageWindowOpened(at + 20000, 120.0);
+    s().tickUsage(at + 20000, 130.0);
+    sim.check("opened again at once: no probe", !s().usage.isProbing("a") && !s().usage.isProbing("b") && !s().usage.isProbing("c"));
+}
+
 fn main(): int {
     let args = sys.args();
     let only = args.length >= 2 ? args[1] : "";
@@ -1237,6 +1642,13 @@ fn main(): int {
     run("window-rename-ends-on-click-outside", (s: mut Sim) => { scenarioWindowRenameEndsOnClickOutside(s); });
     run("window-menu-button-is-not-a-row-click", (s: mut Sim) => { scenarioWindowMenuButtonIsNotARowClick(s); });
     run("window-menu-covers-rows", (s: mut Sim) => { scenarioWindowMenuCoversRows(s); });
+    run("usage-format", (s: mut Sim) => { scenarioUsageFormat(s); });
+    run("usage-share-folder", (s: mut Sim) => { scenarioUsageShareFolder(s); });
+    run("usage-tracker-accounts", (s: mut Sim) => { scenarioUsageTrackerAccounts(s); });
+    run("window-usage-shown", (s: mut Sim) => { scenarioWindowUsageShown(s); });
+    run("window-usage-stale-and-error", (s: mut Sim) => { scenarioWindowUsageStaleAndError(s); });
+    run("window-usage-refresh", (s: mut Sim) => { scenarioWindowUsageRefresh(s); });
+    run("usage-probe-all-on-open", (s: mut Sim) => { scenarioUsageProbeAllOnOpen(s); });
     fmt.println(f"{sim.checks - sim.failures}/{sim.checks} checks passed");
     return sim.failures;
 }

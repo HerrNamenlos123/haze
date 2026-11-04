@@ -12,6 +12,7 @@ ui_widgets = { path = "../../stdlib/ui_widgets" }
 codicons = { path = "../../stdlib/codicons" }
 image = { path = "../../stdlib/image" }
 renderer = { path = "../../stdlib/renderer" }
+claude_usage = { path = "../usage" }
 # The SFC transformer below generates `from hzui import ...` into every
 # .hzui file in this module, so hzui is a real dependency, not only a plugin.
 hzui = { path = "../../stdlib/hzui" }

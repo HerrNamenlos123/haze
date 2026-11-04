@@ -7,8 +7,8 @@ import filedialog
 import single_instance
 import autostart
 import claude_account_switcher_ui
+import claude_usage
 
-const appId = "io.github.hazelang.ClaudeAccountSwitcher";
 // The program's file name, its login entry and its single-instance name.
 const programName = "claude-account-switcher";
 
@@ -134,12 +134,12 @@ fn applyAutostart() {
 }
 
 // Claude Code's credential command (apiKeyHelper): the active account's token
-// on stdout, exactly. Nothing else starts. The read shares the file for
+// (share/active.token) on stdout, exactly. Nothing else starts. The read shares the file for
 // delete, so a switch that replaces it meanwhile is never refused. Without an
 // active account it prints nothing and fails: anything printed would be taken
 // as the token.
 fn printToken(): int {
-    if let dir = app.stateDirectory(appId) {
+    if let dir = claude_usage.shareDirectory() {
         let token = fs.readText(f"{dir}/active.token");
         if token {
             let text: str = token;
@@ -167,8 +167,12 @@ fn main(): int {
             return si.send({ args: sys.args() }).exitCode;
         }
 
-        let stateDir = app.stateDirectory(appId);
+        // The [app] appId of haze.toml (a test of claude_usage checks), so
+        // shareDir is `<stateDir>/share`.
+        let stateDir = sys.stateDirectory(claude_usage.switcherAppId());
         if !stateDir { raise "This system names no folder for the program's own files"; }
+        let shareDir = claude_usage.shareDirectory();
+        if !shareDir { raise "This system names no folder for the program's own files"; }
 
         let picker = OpenPicker {};
         let pick = (kind: claude_account_switcher_ui.PickKind): bool => {
@@ -181,13 +185,13 @@ fn main(): int {
             }
             return true;
         };
-        claude_account_switcher_ui.openSwitcher(stateDir as str, pick)?!;
+        claude_account_switcher_ui.openSwitcher(stateDir as str, shareDir as str, claude_usage.claudeConfigPath(), claude_usage.TrackerSettings {}, pick)?!;
         applyAutostart();
 
         let a = app.App({
             title: "Claude Account Switcher",
             nativeTitlebar: false,
-            size: { width: 380, height: 420 },
+            size: { width: 340, height: 420 },
             startHidden: true,
             hideOnClose: true,
         })?!;
@@ -324,9 +328,11 @@ fn main(): int {
             ui: (ui: ui_components.UIContext) => { claude_account_switcher_ui.RootComponent(ui, { id: 0, activation: activation, onQuit: () => { quitApp(); } }); },
         });
 
-        // Opens the window at the tray icon on the accounts, read again.
+        // Opens the window at the tray icon on the accounts, read again, and
+        // the usage as of now.
         let show = () => {
             activation := rx.get(activation) + 1;
+            claude_account_switcher_ui.switcher().usageWindowOpened(time.wallClockMs(), time.now());
             a.window.moveToTray(tray);
             a.show();
         };
@@ -378,6 +384,12 @@ fn main(): int {
             }
             updateTray();
             updateClaudeSettings();
+            // Every pass, hidden too: probes and the cache feed must go on
+            // while the program sits in the tray. a.idle() returns after at
+            // most 100 ms without an event, which is far below anything the
+            // tracker schedules (its shortest wait is the 0.1 s poll of a
+            // running probe), so no extra wake-up is needed.
+            claude_account_switcher_ui.switcher().tickUsage(time.wallClockMs(), time.now());
 
             if a.resized {
                 runtime.resize(a.windowState);
@@ -394,6 +406,8 @@ fn main(): int {
             }
         }
 
+        // Takes the cache entry away: nobody keeps those numbers current now.
+        claude_account_switcher_ui.switcher().usage.shutdown();
         tray.destroy();
         si.release();
         a.destroy();

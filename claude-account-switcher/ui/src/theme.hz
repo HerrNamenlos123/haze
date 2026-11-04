@@ -7,6 +7,8 @@ export const panel = "#141518";
 export const raised = "#1A1B1F";
 export const hover = "#1E2024";
 export const pressed = "#25272C";
+// A menu item under the pointer: clearly brighter than the menu (`raised`).
+export const menuHover = "#2E3139";
 export const border = "#25272C";
 export const borderStrong = "#353840";
 export const text1 = "#EEEFF1";
@@ -22,6 +24,10 @@ export const danger = "#F2646D";
 export const dangerHover = "#F57C84";
 // Behind a problem: a faint red over the canvas.
 export const dangerTint = "#1D1214";
+// Usage from 60 %: orange, clearly apart from the amber accent.
+export const warning = "#F0883E";
+// The empty part of a usage bar: clearly there, so the bar's end shows.
+export const barTrack = "#3A3D45";
 export const transparent = "#00000000";
 
 export const radiusControl = 3.0;
@@ -35,3 +41,29 @@ export const fontMono = "geist-mono";
 export const textSize = 13.0;
 export const smallSize = 12.0;
 export const keySize = 11.0;
+
+// A usage window's number and bar: by its level (red is `danger`), the
+// number dimmed while it is not current.
+export fn usageTextColor(w: WindowView): str {
+    if !w.current { return text3; }
+    if w.level == UsageLevel.Critical { return danger; }
+    if w.level == UsageLevel.Warning { return warning; }
+    return text1;
+}
+
+// `dimStale`: a number that is not current is drawn dimmed (the panel); the
+// rows show every account's last known level as it is.
+export fn usageBarColor(w: WindowView, dimStale: bool): str {
+    if dimStale && !w.current { return text3; }
+    if w.level == UsageLevel.Critical { return danger; }
+    if w.level == UsageLevel.Warning { return warning; }
+    return text2;
+}
+
+// The filled part of a usage bar `width` px wide, in whole pixels: an end
+// between two pixels is drawn smeared.
+export fn usageBarFill(w: WindowView, width: real): real {
+    if !w.shown { return 0.0; }
+    let fill = clamp<real>(w.percent, 0.0, 100.0) * width / 100.0;
+    return ((fill + 0.5) as int) as real;
+}

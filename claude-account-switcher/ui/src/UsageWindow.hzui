@@ -1,0 +1,20 @@
+// One usage window of the active account in the usage panel, as one line:
+// its name, a bar, the percentage and the time until it resets. Every part
+// has a fixed width, so the 5h and the 7d line align column by column.
+
+@props
+label: str;
+window: WindowView;
+
+@template [row w-fit h-[18]px items-center gap-[10]px]
+
+div [w-[20]px h-fit] {
+    text [text-nowrap text-color-[text3] font-size-[keySize] font-family-[fontMono]] [props.label]
+}
+UsageBar [] window=[props.window] width=[132] height=[4] {}
+div [row w-[38]px h-fit justify-end] {
+    text [text-nowrap font-size-[textSize] font-family-[fontMedium] text-color-[usageTextColor(props.window)]] [props.window.shown ? props.window.percentText : "-"]
+}
+div [row w-[56]px h-fit justify-end] {
+    text if=[props.window.shown] [text-nowrap text-color-[text3] font-size-[keySize] font-family-[fontMono]] [props.window.left]
+}

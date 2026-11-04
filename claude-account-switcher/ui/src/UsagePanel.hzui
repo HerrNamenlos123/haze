@@ -1,0 +1,40 @@
+from ui_widgets import ButtonComponent
+
+// The active account's usage, under the accounts: one line per window, the
+// refresh button beside them, and why the last probe failed when it did (the
+// kind; the message while the pointer is on it).
+
+@props
+accountId: str;
+view: UsageView;
+
+@setup
+let markerRef = elementRef<DivElement>();
+let markerHovered = computed(() => markerRef?.hover() ?? false);
+
+let refresh = () => {
+    switcher().refreshUsage(props.accountId);
+};
+
+@template [col w-grow h-fit px-[12]px py-[10]px gap-[6]px border-t-[1] border-color-[border] relative]
+
+// 316 px inside: two lines of 20 + 132 + 38 + 56 and their gaps (276), then
+// the button.
+div [row w-grow h-fit gap-[10]px items-center] {
+    div [col w-fit h-fit gap-[6]px] {
+        UsageWindow [] label="5h" window=[props.view.fiveHour] {}
+        UsageWindow [] label="7d" window=[props.view.sevenDay] {}
+    }
+    div [row w-grow h-fit justify-end] {
+        Button [] icon=[props.view.refresh == RefreshState.Probing ? "loading" : "refresh"]
+            enabled=[props.view.refresh == RefreshState.Ready] paddingX=[3] paddingY=[3] rounded=[radiusControl]
+            bgHover=[hover] bgActive=[pressed] textColor=[text2] textColorDisabled=[text3] focusRing=[0] @click=refresh {}
+    }
+}
+div if=[props.view.error != ""] [row w-fit h-fit] ref=markerRef {
+    text [text-nowrap text-color-[danger] font-size-[keySize] font-family-[fontMono]] [props.view.error]
+}
+// Last, so it draws over the lines.
+div if=[props.view.error != "" && rx.get(markerHovered)] [absolute left-[8] top-[6] w-[290]px h-fit px-[8]px py-[6]px rounded-[radiusFloat]px bg-[raised] border-[1] border-color-[borderStrong]] {
+    text [text-color-[text1] font-size-[smallSize]] [props.view.errorMessage]
+}

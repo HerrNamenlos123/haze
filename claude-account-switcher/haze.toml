@@ -43,3 +43,4 @@ filedialog = { path = "../stdlib/filedialog" }
 single_instance = { path = "../stdlib/single_instance" }
 autostart = { path = "../stdlib/autostart" }
 claude_account_switcher_ui = { path = "ui" }
+claude_usage = { path = "usage" }

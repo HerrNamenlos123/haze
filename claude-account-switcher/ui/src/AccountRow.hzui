@@ -6,6 +6,8 @@ account: Account;
 active: bool;
 // What this row is doing.
 mode: RowMode;
+// Its usage, for a rough idea: the 5h window over the 7d one.
+usage: UsageView;
 
 @emit
 // The row's menu, at a point in the window.
@@ -132,14 +134,19 @@ div [row w-grow h-[32]px items-center gap-[10]px pl-[10]px pr-[6]px cursor-point
         text [text-nowrap text-color-[text1] font-size-[textSize] font-family-[props.active ? fontMedium : fontRegular]] [props.account.name]
     }
     text if=[!props.account.hasToken && props.mode == RowMode.Normal] [text-nowrap text-color-[danger] font-size-[smallSize]] ["no token"]
+    div if=[props.mode == RowMode.Normal && props.account.hasToken && (props.usage.fiveHour.shown || props.usage.sevenDay.shown)] [col h-fit gap-[4]px] {
+        UsageBar [] window=[props.usage.fiveHour] width=[28] dimStale=[false] {}
+        UsageBar [] window=[props.usage.sevenDay] width=[28] dimStale=[false] {}
+    }
     div if=[props.mode == RowMode.ConfirmRemove] [row h-fit gap-[4]px items-center] {
         Button [] label="Remove" bg=[danger] bgHover=[dangerHover] bgActive=[danger] textColor=[accentInk]
             paddingX=[10] paddingY=[4] rounded=[radiusControl] focusRing=[0] @click=remove {}
         Button [] icon="close" paddingX=[5] paddingY=[5] rounded=[radiusControl] bgHover=[hover] textColor=[text2] focusRing=[0] @click=cancel {}
     }
     div else-if=[props.mode == RowMode.Normal] [row h-fit gap-[4]px items-center] {
-        div if=[props.active] [text-color-[accent]] {
-            Codicon [] icon="check" {}
+        // Always laid out, so what is left of it stays put on every row.
+        div [w-[16]px h-[16]px text-color-[accent]] {
+            Codicon if=[props.active] [] icon="check" {}
         }
         // Always laid out, so the name keeps its width whether it shows.
         div [w-[22]px h-[22]px items-center justify-center] ref=moreRef {

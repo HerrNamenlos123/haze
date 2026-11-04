@@ -1,0 +1,12 @@
+// How full one usage window is, as a bar `width` px wide.
+
+@props
+window: WindowView;
+width: real;
+height: real = 4.0;
+// See usageBarColor.
+dimStale: bool = true;
+
+@template [row w-[props.width]px h-[props.height]px rounded-[props.height / 2.0]px bg-[barTrack]]
+
+div [w-[usageBarFill(props.window, props.width)]px h-grow rounded-[props.height / 2.0]px bg-[usageBarColor(props.window, props.dimStale)]] {}
