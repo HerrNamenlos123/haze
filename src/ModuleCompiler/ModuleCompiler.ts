@@ -110,6 +110,7 @@ import {
   UnreachableCode,
 } from "../shared/Errors";
 import { ProjectCompiler } from "../ProjectCompiler/ProjectCompiler";
+import { clangCommand } from "./ResponseFile";
 import {
   appManifestResource,
   isWindowsApp,
@@ -1981,6 +1982,9 @@ export class ModuleCompiler {
       moduleOFile: join(dir, `${name}-${platform}.o`),
       /** An [app]'s Windows resources: its manifest (WindowsAppManifest.ts). */
       windowsResourceFile: join(dir, `${name}-${platform}.res`),
+      /** The arguments of the compile and the link on Windows (ResponseFile.ts). */
+      compileResponseFile: join(dir, `${name}-${platform}.compile.rsp`),
+      linkResponseFile: join(dir, `${name}-${platform}.link.rsp`),
       moduleAFile: join(dir, `${name}-${platform}.a`),
       /** What clang read for the module's C (-MMD -MF). */
       depFile: join(dir, `${name}-${platform}.d`),
@@ -2345,11 +2349,11 @@ export class ModuleCompiler {
     const platformLinkerFlags = linkerFlags.combineForPlatform();
 
     const compileFlags = platformCompilerFlags.join(" ");
-    const compileCmd = `"${HAZE_C_COMPILER}" "${paths.moduleCFile}" -c -o "${paths.moduleOFile}" ${compileFlags}`;
+    const compileArgs = `"${paths.moduleCFile}" -c -o "${paths.moduleOFile}" ${compileFlags}`;
     compileCommands.push({
       directory: cwd(),
       file: paths.moduleCFile,
-      command: compileCmd,
+      command: `"${HAZE_C_COMPILER}" ${compileArgs}`,
       output: paths.moduleOFile,
     });
     await this.writeCompileCommands(isTopLevelModule, compileCommands);
@@ -2358,11 +2362,23 @@ export class ModuleCompiler {
       ...archives.map((l) => `"${l}"`),
       ...platformLinkerFlags,
     ].join(" ");
-    const linkCmd = `"${HAZE_C_COMPILER}" "${paths.moduleOFile}" -o "${paths.moduleExecutable}" ${linkFlags}`;
+    const linkArgs = `"${paths.moduleOFile}" -o "${paths.moduleExecutable}" ${linkFlags}`;
 
+    // Both grow with every dependency: on Windows they run from a response
+    // file, past cmd.exe's command line limit (ResponseFile.ts).
     return {
-      compileCmd: compileCmd,
-      linkCmd: linkCmd,
+      compileCmd: clangCommand(
+        HAZE_C_COMPILER,
+        compileArgs,
+        paths.compileResponseFile,
+        PLATFORM
+      ),
+      linkCmd: clangCommand(
+        HAZE_C_COMPILER,
+        linkArgs,
+        paths.linkResponseFile,
+        PLATFORM
+      ),
       compileCommands: compileCommands,
       includeDirs: includeDirs,
       interfaceMacros: interfaceMacros,
