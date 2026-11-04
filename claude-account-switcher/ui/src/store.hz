@@ -1,0 +1,885 @@
+// The accounts, their tokens and which one is active: everything the switcher
+// keeps, and every file it writes. The host decides where the folders are;
+// nothing in this module knows a real path.
+//
+// Two folders:
+// - `stateDir`, this machine's own: settings.json, tokens/<id>.token and
+//   active.token. Never synced: a token belongs to one machine.
+// - `<profile repo>/claude-account-switcher`, synced through git: accounts.json
+//   and icons/<id>.png. Everything about an account except its token.
+//
+// active.token is the active account's token, copied. It is the one file
+// Claude Code reads (its apiKeyHelper prints it before requests), so it is
+// only ever replaced as a whole (fs.replaceText): a reader sees the old token
+// or the new one, never a mix.
+
+import image
+
+// settings.json, the file format. No field has a default: every file the
+// switcher ever wrote holds both, and a file of another shape must not open as
+// "no profile repo" that the next save writes over. `active` is none (null)
+// while no account is active.
+export struct SettingsFile {
+    profileRepo: str;
+    active: str | none;
+}
+
+// One entry of accounts.json, the file format. `id` names the account's icon
+// and token files and never changes; `name` is what the user sees.
+export struct StoredAccount {
+    id: str;
+    name: str;
+}
+
+// accounts.json. The order is the order a click goes through them.
+export struct AccountsFile {
+    accounts: []StoredAccount;
+}
+
+// An account's decoded icon (see Switcher.icons).
+export struct IconEntry {
+    id: str;
+    icon: image.Image;
+}
+
+// An account as the window shows it. Its icon is Switcher.iconOf(id).
+export struct Account {
+    id: str;
+    name: str;
+    // This machine has a token for it.
+    hasToken: bool;
+}
+
+// Side of every stored icon, in pixels: big enough for the tray at any
+// scale, small enough to keep the repo small.
+export const iconSize = 64;
+
+const syncedFolderName = "claude-account-switcher";
+
+// What a native picker is asked for: an image file for an icon, or the
+// profile repo's folder.
+export enum PickKind { Icon, Folder }
+
+// The id the add form's icon preview draws under (no account can have it:
+// ids are slugs without underscores).
+export const draftIconId = "_draft";
+
+export ref struct Switcher {
+    stateDir: str;
+    // The host's: opens a native picker, which may take long; its answer
+    // comes back through picked().
+    pick: (kind: PickKind) => none;
+    // The last image file picked for a new account, and it as the icon it
+    // becomes (none when it is no image).
+    pickedIcon: rx.Reactive<str | none>;
+    pickedIconImage: rx.Reactive<image.Image | none>;
+    pickedFolder: rx.Reactive<str | none>;
+    // none until the user chose the profile repo (settings.json is not there).
+    profileRepo: rx.Reactive<str | none>;
+    accounts: rx.ShallowReactive<[]Account>;
+    // The id of the active account, none while no account is active.
+    active: rx.Reactive<str | none>;
+    // Why the last thing the user asked for did not happen, or why the
+    // accounts could not be read; none when everything is fine. The window
+    // shows it where it happened.
+    problem: rx.Reactive<str | none>;
+    // accounts.json was read (or is not there yet). Until it was, nothing may
+    // write to it, to an icon or to a token: saving over a file that was not
+    // loaded would lose the accounts in it.
+    accountsLoaded: bool = false;
+    // icons/<id>.png of every listed account, decoded to iconSize x iconSize
+    // RGBA. An account without one (the file is missing or no image) shows
+    // an empty square.
+    icons: []IconEntry = [];
+    // Bumped whenever an icon may have changed (`icons` is not reactive), for
+    // whoever shows them or caches their pixels on the GPU.
+    iconVersion: rx.Reactive<int>;
+
+    // The icon to show for `id`; draftIconId is the add form's picked one.
+    fn iconOf(id: str): image.Image | none {
+        if id == draftIconId {
+            return rx.get(this.pickedIconImage);
+        }
+        for entry in this.icons {
+            if entry.id == id {
+                return entry.icon;
+            }
+        }
+        return none;
+    }
+
+    fn settingsPath(): str { return f"{this.stateDir}/settings.json"; }
+    fn tokensDir(): str { return f"{this.stateDir}/tokens"; }
+    fn tokenPath(id: str): str { return f"{this.stateDir}/tokens/{id}.token"; }
+    fn activeTokenPath(): str { return f"{this.stateDir}/active.token"; }
+
+    fn syncedDir(): str | none {
+        if let repo = rx.get(this.profileRepo) {
+            return f"{repo}/{syncedFolderName}";
+        }
+        return none;
+    }
+
+    fn list(): []Account {
+        let list: []Account = rx.get(this.accounts);
+        return list;
+    }
+
+    fn indexOf(id: str): int {
+        let list = this.list();
+        for (let i = 0; i < list.length; i++) {
+            if list[i].id == id {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    fn activeAccount(): Account | none {
+        if let id = rx.get(this.active) {
+            let index = this.indexOf(id);
+            if index >= 0 {
+                return this.list()[index];
+            }
+        }
+        return none;
+    }
+
+    fn hasProfileRepo(): bool {
+        if rx.get(this.profileRepo) {
+            return true;
+        }
+        return false;
+    }
+
+    fn isActive(id: str): bool {
+        if let current = rx.get(this.active) {
+            return current == id;
+        }
+        return false;
+    }
+
+    fn hasProblem(): bool {
+        if rx.get(this.problem) {
+            return true;
+        }
+        return false;
+    }
+
+    // For showing it; "" while there is none.
+    fn problemText(): str {
+        if let message = rx.get(this.problem) {
+            return message;
+        }
+        return "";
+    }
+
+    // Nothing listed, and nothing may write to the accounts.
+    mut fn clearAccounts() {
+        let empty: []Account = [];
+        this.accounts := empty;
+        this.icons = [];
+        this.accountsLoaded = false;
+    }
+
+    fn fail(message: str): bool {
+        this.problem := message;
+        return false;
+    }
+
+    fn clearProblem() {
+        this.problem := none;
+    }
+
+    // ── Pickers ────────────────────────────────────────────────────────────
+
+    fn requestPick(kind: PickKind) {
+        this.pick(kind);
+    }
+
+    // The host's answer to pick(): the path chosen, none when the picker was
+    // cancelled (which changes nothing).
+    fn picked(kind: PickKind, path: str | none) {
+        let chosen = path;
+        if !chosen {
+            return;
+        }
+        let file = chosen as str;
+        if kind == PickKind.Folder {
+            this.pickedFolder := file;
+            return;
+        }
+        this.pickedIcon := file;
+        let bytes = fs.readBinary(file);
+        if !bytes {
+            this.pickedIconImage := none;
+            this.fail(f"{file} could not be read: {bytes}");
+            return;
+        }
+        let decoded = image.decode(bytes, 4);
+        if !decoded {
+            this.pickedIconImage := none;
+            this.fail(f"{file} is not an image this program can read");
+            return;
+        }
+        this.pickedIconImage := normalizedIcon(decoded);
+        this.iconVersion := rx.get(this.iconVersion) + 1;
+        this.clearProblem();
+    }
+
+    // The add form is done (added or abandoned): nothing picked stays.
+    fn clearPicked() {
+        this.pickedIcon := none;
+        this.pickedIconImage := none;
+    }
+
+    // ── Loading ────────────────────────────────────────────────────────────
+
+    // Reads accounts.json, the icons and which tokens this machine has, again:
+    // a git pull may have changed them since. Then makes the active account
+    // one that exists and has a token (see reconcile). False when
+    // accounts.json cannot be read; `problem` says why and nothing writes to
+    // the accounts until a reload succeeds.
+    mut fn reload(): bool {
+        let synced = this.syncedDir();
+        if !synced {
+            this.clearAccounts();
+            return true;
+        }
+        let dir = synced as str;
+        let path = f"{dir}/accounts.json";
+        let stored: []StoredAccount = [];
+        let text = fs.readText(path);
+        if text {
+            let parsed = json.parse<AccountsFile>(text);
+            if !parsed {
+                this.clearAccounts();
+                return this.fail(f"{path} is not an accounts file: {parsed}");
+            }
+            let file: AccountsFile = parsed;
+            stored = file.accounts;
+        } else if text != fs.Error.NotFound {
+            this.clearAccounts();
+            return this.fail(f"{path} could not be read: {text}");
+        } else if rx.get(this.active) || this.hasAnyTokenFile() {
+            // Not there although this machine has accounts: the folder was
+            // moved, is not checked out, or is the wrong one. Reading that as
+            // "no accounts" would delete every token here.
+            this.clearAccounts();
+            return this.fail(f"{path} is not there");
+        }
+        let problem = invalidAccounts(stored);
+        if let message = problem {
+            this.clearAccounts();
+            return this.fail(f"{path}: {message}");
+        }
+
+        let accounts: []Account = [];
+        this.icons = [];
+        for entry in stored {
+            let tokenPath = this.tokenPath(entry.id);
+            let present = fs.exists(tokenPath);
+            if !present {
+                this.clearAccounts();
+                return this.fail(f"{tokenPath} could not be checked: {present}");
+            }
+            let hasToken: bool = present;
+            accounts.push(Account {
+                id: entry.id,
+                name: entry.name,
+                hasToken: hasToken,
+            });
+            if let icon = loadIcon(f"{dir}/icons/{entry.id}.png") {
+                this.icons.push(IconEntry { id: entry.id, icon: icon });
+            }
+        }
+        this.accounts := accounts;
+        this.accountsLoaded = true;
+        this.iconVersion := rx.get(this.iconVersion) + 1;
+        this.removeOrphanTokens();
+        return this.reconcile();
+    }
+
+    // Whether tokens/ holds any token file (an unreadable folder counts as
+    // holding some: nothing may then be taken as "no accounts").
+    fn hasAnyTokenFile(): bool {
+        let entries = fs.listDir(this.tokensDir());
+        if !entries {
+            return entries != fs.Error.NotFound;
+        }
+        let list: []fs.DirEntry = entries;
+        for entry in list {
+            if entry.isFile && entry.name.endsWith(".token") {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // Tokens of accounts that are gone (removed on another machine and
+    // synced): nothing can use them any more. Only called once accounts.json
+    // was read.
+    fn removeOrphanTokens() {
+        let entries = fs.listDir(this.tokensDir());
+        if !entries {
+            return;
+        }
+        let list: []fs.DirEntry = entries;
+        for entry in list {
+            if !entry.isFile || !entry.name.endsWith(".token") {
+                continue;
+            }
+            let id = entry.name.slice(0, entry.name.length - ".token".length);
+            if this.indexOf(id) < 0 {
+                let removed = fs.removeFile(entry.path);
+                if !removed {
+                    fmt.println(f"Claude Account Switcher could not remove {entry.path}: {removed}");
+                }
+            }
+        }
+    }
+
+    // The active account must be listed and have a token on this machine.
+    // When it does not (removed, or its token deleted), the next one that has
+    // a token becomes active, and with none, no account is active and
+    // active.token is removed: Claude Code then fails loudly instead of
+    // carrying on with a token the switcher no longer shows.
+    // An active account that stays active gets its token into active.token
+    // again whenever active.token holds anything else or is missing (deleted
+    // by hand, or a write that failed half way through a switch).
+    mut fn reconcile(): bool {
+        if let current = this.activeAccount() {
+            if current.hasToken {
+                let token = fs.readText(this.tokenPath(current.id));
+                let copied = fs.readText(this.activeTokenPath());
+                if token && copied {
+                    let a: str = token;
+                    let b: str = copied;
+                    if a == b {
+                        return true;
+                    }
+                }
+                return this.activate(current.id);
+            }
+        }
+        if let next = this.nextWithToken(rx.get(this.active)) {
+            return this.activate(next);
+        }
+        if rx.get(this.active) {
+            return this.deactivate();
+        }
+        // Nothing active and nothing to activate. active.token is only ever
+        // there while an account is active.
+        return true;
+    }
+
+    // ── Switching ──────────────────────────────────────────────────────────
+
+    // The first account after `after` in the list that has a token, wrapping
+    // around; the whole list from the top when `after` is none or not listed.
+    // `after` itself comes last, so a single account with a token switches
+    // to itself. None when no account has a token.
+    fn nextWithToken(after: str | none): str | none {
+        let list = this.list();
+        let start = 0;
+        if let id = after {
+            let index = this.indexOf(id);
+            if index >= 0 {
+                start = index + 1;
+            }
+        }
+        for (let i = 0; i < list.length; i++) {
+            let account = list[(start + i) % list.length];
+            if account.hasToken {
+                return account.id;
+            }
+        }
+        return none;
+    }
+
+    // What a click on the tray icon does: the next account with a token
+    // becomes active. False when there is none to switch to (the host then
+    // opens the window) or the switch failed (`problem` says why).
+    mut fn switchToNext(): bool {
+        if !this.reload() {
+            return false;
+        }
+        if let next = this.nextWithToken(rx.get(this.active)) {
+            if this.activate(next) {
+                this.clearProblem();
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // `id`'s token becomes active.token, then `id` the active account. The
+    // order matters: when copying fails, the account that stays active is
+    // the one whose token Claude Code still reads. When saving the settings
+    // fails after the copy, the previous account is active again, in memory
+    // now and in active.token with the next reconcile.
+    mut fn activate(id: str): bool {
+        let read = fs.readText(this.tokenPath(id));
+        if !read {
+            return this.fail(f"The token of {id} could not be read: {read}");
+        }
+        let token: str = read;
+        if let message = invalidToken(token) {
+            return this.fail(f"The token of {id} is not a token: {message}");
+        }
+        let written = fs.replaceText(this.activeTokenPath(), token);
+        if !written {
+            return this.fail(f"{this.activeTokenPath()} could not be written: {written}");
+        }
+        let previous = rx.get(this.active);
+        this.active := id;
+        if !this.saveSettings() {
+            this.active := previous;
+            return false;
+        }
+        return true;
+    }
+
+    mut fn deactivate(): bool {
+        let removed = fs.removeFile(this.activeTokenPath());
+        if !removed && removed != fs.Error.NotFound {
+            return this.fail(f"{this.activeTokenPath()} could not be removed: {removed}");
+        }
+        this.active := none;
+        return this.saveSettings();
+    }
+
+    // ── Settings ───────────────────────────────────────────────────────────
+
+    fn saveSettings(): bool {
+        let repo = rx.get(this.profileRepo);
+        if !repo {
+            return true;
+        }
+        let saved = fs.replaceText(this.settingsPath(), json.stringify(SettingsFile {
+            profileRepo: repo as str,
+            active: rx.get(this.active),
+        }));
+        if !saved {
+            return this.fail(f"{this.settingsPath()} could not be saved: {saved}");
+        }
+        return true;
+    }
+
+    // Where the profile repo is checked out on this machine. It must be a
+    // folder that exists; its claude-account-switcher folder is created with
+    // the first account.
+    mut fn setProfileRepo(path: str): bool {
+        let trimmed = withoutTrailingSlash(path.trim());
+        if trimmed.length == 0 {
+            return this.fail("No folder given");
+        }
+        let entries = fs.listDir(trimmed);
+        if !entries {
+            return this.fail(f"{trimmed} is not a folder: {entries}");
+        }
+        this.profileRepo := trimmed;
+        this.clearProblem();
+        if !this.saveSettings() {
+            return false;
+        }
+        return this.reload();
+    }
+
+    // ── Accounts ───────────────────────────────────────────────────────────
+
+    // A new account at the end of the list, with its icon from the image file
+    // at `iconFile` and this machine's token. It becomes active when none is.
+    mut fn addAccount(name: str, iconFile: str, token: str): bool {
+        if !this.reload() {
+            return false;
+        }
+        let synced = this.syncedDir();
+        if !synced {
+            return this.fail("Choose the profile repo first");
+        }
+        let dir = synced as str;
+        let trimmedName = name.trim();
+        if trimmedName.length == 0 {
+            return this.fail("The account needs a name");
+        }
+        let cleanToken = token.trim();
+        if let message = invalidToken(cleanToken) {
+            return this.fail(message);
+        }
+        let png = iconPngFromFile(iconFile);
+        if png is str {
+            return this.fail(png);
+        }
+
+        let id = uniqueId(slugOf(trimmedName), this.list());
+        let iconsDir = f"{dir}/icons";
+        let madeIcons = fs.createDirectory(iconsDir);
+        if !madeIcons {
+            return this.fail(f"{iconsDir} could not be created: {madeIcons}");
+        }
+        let iconPath = f"{iconsDir}/{id}.png";
+        let wroteIcon = fs.writeBinary(iconPath, png as Bytes);
+        if !wroteIcon {
+            return this.fail(f"{iconPath} could not be written: {wroteIcon}");
+        }
+        let stored = storedOf(this.list());
+        stored.push(StoredAccount { id: id, name: trimmedName });
+        if !this.saveAccounts(stored) {
+            return false;
+        }
+        // After the list: a token file is only ever there for a listed
+        // account (one that is not is an orphan, see removeOrphanTokens).
+        if !this.writeToken(id, cleanToken) {
+            return false;
+        }
+        this.clearProblem();
+        // reload() reconciles: with none active, this account (it has a
+        // token) becomes the active one.
+        return this.reload();
+    }
+
+    // This machine's token for `id`, new or replacing the old one. When `id`
+    // is active, Claude Code uses the new token from its next request on.
+    mut fn setToken(id: str, token: str): bool {
+        if !this.reload() {
+            return false;
+        }
+        if this.indexOf(id) < 0 {
+            return this.fail("That account is gone");
+        }
+        let cleanToken = token.trim();
+        if let message = invalidToken(cleanToken) {
+            return this.fail(message);
+        }
+        if !this.writeToken(id, cleanToken) {
+            return false;
+        }
+        this.clearProblem();
+        // reload() reconciles: an active `id` gets its new token into
+        // active.token, and with none active, `id` becomes active.
+        return this.reload();
+    }
+
+    // The account, its icon and this machine's token, gone. On the other
+    // machines it is gone after their next pull.
+    mut fn removeAccount(id: str): bool {
+        if !this.reload() {
+            return false;
+        }
+        if this.indexOf(id) < 0 {
+            return true;
+        }
+        let stored: []StoredAccount = [];
+        for account in this.list() {
+            if account.id != id {
+                stored.push(StoredAccount { id: account.id, name: account.name });
+            }
+        }
+        if !this.saveAccounts(stored) {
+            return false;
+        }
+        let synced = this.syncedDir();
+        if !synced {
+            return this.fail("Choose the profile repo first");
+        }
+        let dir = synced as str;
+        let icon = fs.removeFile(f"{dir}/icons/{id}.png");
+        if !icon && icon != fs.Error.NotFound {
+            fmt.println(f"Claude Account Switcher could not remove the icon of {id}: {icon}");
+        }
+        let removedToken = fs.removeFile(this.tokenPath(id));
+        if !removedToken && removedToken != fs.Error.NotFound {
+            return this.fail(f"{this.tokenPath(id)} could not be removed: {removedToken}");
+        }
+        this.clearProblem();
+        return this.reload();
+    }
+
+    fn writeToken(id: str, token: str): bool {
+        let made = fs.createDirectory(this.tokensDir());
+        if !made {
+            return this.fail(f"{this.tokensDir()} could not be created: {made}");
+        }
+        let written = fs.replaceText(this.tokenPath(id), token);
+        if !written {
+            return this.fail(f"{this.tokenPath(id)} could not be written: {written}");
+        }
+        return true;
+    }
+
+    fn saveAccounts(stored: []StoredAccount): bool {
+        if !this.accountsLoaded {
+            return this.fail("The accounts were not read, so they are not written");
+        }
+        let synced = this.syncedDir();
+        if !synced {
+            return this.fail("Choose the profile repo first");
+        }
+        let dir = synced as str;
+        let made = fs.createDirectory(dir);
+        if !made {
+            return this.fail(f"{dir} could not be created: {made}");
+        }
+        let path = f"{dir}/accounts.json";
+        let saved = fs.replaceText(path, json.stringify(AccountsFile { accounts: stored }));
+        if !saved {
+            return this.fail(f"{path} could not be saved: {saved}");
+        }
+        return true;
+    }
+}
+
+fn storedOf(accounts: []Account): []StoredAccount {
+    let out: []StoredAccount = [];
+    for account in accounts {
+        out.push(StoredAccount { id: account.id, name: account.name });
+    }
+    return out;
+}
+
+// Why the accounts in a file cannot be used, none when they can: every id
+// must be a slug (it names files) and appear once, every name be non-empty.
+fn invalidAccounts(accounts: []StoredAccount): str | none {
+    for (let i = 0; i < accounts.length; i++) {
+        let id = accounts[i].id;
+        if isReservedName(id) {
+            return f"the account id {id} is a name Windows keeps for a device";
+        }
+        if id.length == 0 || slugOf(id) != id {
+            return f"the account id \"{id}\" is not a file name of lowercase letters, digits and dashes";
+        }
+        if accounts[i].name.trim().length == 0 {
+            return f"the account {id} has no name";
+        }
+        for (let j = 0; j < i; j++) {
+            if accounts[j].id == id {
+                return f"the account id {id} is there twice";
+            }
+        }
+    }
+    return none;
+}
+
+// Why `token` cannot be a token, none when it can be one. Only its shape is
+// checked: whether Claude accepts it shows on the first request.
+export fn invalidToken(token: str): str | none {
+    if token.length == 0 {
+        return "The token is empty";
+    }
+    if !token.startsWith("sk-ant-") {
+        return "A token starts with sk-ant-";
+    }
+    let bytes = ByteBuffer(token);
+    for (let i = 0; i < bytes.length(); i++) {
+        let b = bytes.getAt(i);
+        if b == 32 || b == 9 || b == 10 || b == 13 {
+            return "A token has no spaces or line breaks";
+        }
+    }
+    return none;
+}
+
+// Names Windows gives to devices in every folder, whatever follows the
+// first dot: tokens/nul.token is not a file there. Lowercase, as ids are.
+fn isReservedName(id: str): bool {
+    let fixed: []str = ["con", "prn", "aux", "nul"];
+    for name in fixed {
+        if id == name { return true; }
+    }
+    if id.length == 4 && (id.startsWith("com") || id.startsWith("lpt")) {
+        let digit = ByteBuffer(id).getAt(3);
+        return digit >= 48 && digit <= 57;
+    }
+    return false;
+}
+
+fn loadIcon(path: str): image.Image | none {
+    let bytes = fs.readBinary(path);
+    if !bytes {
+        return none;
+    }
+    let decoded = image.decode(bytes, 4);
+    if !decoded {
+        return none;
+    }
+    let icon: image.Image = decoded;
+    if icon.width != iconSize || icon.height != iconSize {
+        return normalizedIcon(icon);
+    }
+    return icon;
+}
+
+// The image file at `path` as a stored icon's PNG, or why it cannot be one.
+export fn iconPngFromFile(path: str): Bytes | str {
+    if path.trim().length == 0 {
+        return "Choose an icon";
+    }
+    let bytes = fs.readBinary(path);
+    if !bytes {
+        return f"{path} could not be read: {bytes}";
+    }
+    let decoded = image.decode(bytes, 4);
+    if !decoded {
+        return f"{path} is not an image this program can read";
+    }
+    let png = image.encodePng(normalizedIcon(decoded));
+    if !png {
+        return "The icon could not be encoded";
+    }
+    let out: Bytes = png;
+    return out;
+}
+
+// `source` (RGBA) scaled to fit inside iconSize x iconSize, keeping its
+// aspect ratio, centred on transparency.
+export fn normalizedIcon(source: image.Image): image.Image {
+    if source.channels != 4 {
+        sys.panic(f"normalizedIcon: an RGBA image, not {source.channels} channels");
+    }
+    let width = iconSize;
+    let height = iconSize;
+    if source.width > source.height {
+        height = max<int>(1, (source.height * iconSize + source.width / 2) / source.width);
+    } else if source.height > source.width {
+        width = max<int>(1, (source.width * iconSize + source.height / 2) / source.height);
+    }
+    let scaled = image.resize(source, width, height);
+    let left = (iconSize - width) / 2;
+    let top = (iconSize - height) / 2;
+    let out = ByteBuffer(iconSize * iconSize * 4);
+    let pixels = scaled.pixels;
+    for (let y = 0; y < iconSize; y++) {
+        for (let x = 0; x < iconSize; x++) {
+            let sx = x - left;
+            let sy = y - top;
+            if sx >= 0 && sx < width && sy >= 0 && sy < height {
+                let at = (sy * width + sx) * 4;
+                out.push(pixels[at]);
+                out.push(pixels[at + 1]);
+                out.push(pixels[at + 2]);
+                out.push(pixels[at + 3]);
+            } else {
+                out.push(0 as u8);
+                out.push(0 as u8);
+                out.push(0 as u8);
+                out.push(0 as u8);
+            }
+        }
+    }
+    out.commit();
+    return image.Image.fromPixels(iconSize, iconSize, 4, out.bytes());
+}
+
+// Lowercase ASCII letters and digits of `name`, every other run of
+// characters one dash, none at either end; "account" when nothing is left.
+export fn slugOf(name: str): str {
+    let source = ByteBuffer(name);
+    let out = ByteBuffer();
+    let pendingDash = false;
+    for (let i = 0; i < source.length(); i++) {
+        let b = source.getAt(i);
+        // ASCII upper case to lower case.
+        let c: u8 = b;
+        if b >= 65 && b <= 90 {
+            c = b + (32 as u8);
+        }
+        let keep = (c >= 97 && c <= 122) || (c >= 48 && c <= 57);
+        if keep {
+            if pendingDash && out.length() > 0 {
+                out.push(45 as u8);
+            }
+            pendingDash = false;
+            out.push(c);
+        } else {
+            pendingDash = true;
+        }
+    }
+    out.commit();
+    if out.length() == 0 {
+        return "account";
+    }
+    return out.string();
+}
+
+// `slug`, or `slug-2`, `slug-3` and on: the first no account has.
+export fn uniqueId(slug: str, accounts: []Account): str {
+    let taken = (id: str): bool => {
+        if isReservedName(id) {
+            return true;
+        }
+        for account in accounts {
+            if account.id == id {
+                return true;
+            }
+        }
+        return false;
+    };
+    if !taken(slug) {
+        return slug;
+    }
+    let n = 2;
+    while taken(f"{slug}-{n}") {
+        n++;
+    }
+    return f"{slug}-{n}";
+}
+
+fn withoutTrailingSlash(path: str): str {
+    let result = path;
+    while result.length > 1 && (result.endsWith("/") || result.endsWith("\\")) && !result.endsWith(":\\") && !result.endsWith(":/") {
+        result = result.slice(0, result.length - 1);
+    }
+    return result;
+}
+
+let switcherStore: mut Switcher | none = none;
+
+// Opens the switcher for the whole program, with this machine's folder at
+// `stateDir`. Only a settings.json that is not there starts without a profile
+// repo. One that is there but cannot be read or understood is an error, and
+// nothing in this module will ever write to it.
+export fn openSwitcher(stateDir: str, pick: (kind: PickKind) => none): Result<none, str> {
+    let settings = SettingsFile { profileRepo: "", active: none };
+    let hasSettings = false;
+    let path = f"{stateDir}/settings.json";
+    let text = fs.readText(path);
+    if text {
+        let parsed = json.parse<SettingsFile>(text);
+        if !parsed {
+            return Result<none, str>.Err(f"{path} is not a settings file: {parsed}");
+        }
+        settings = parsed;
+        hasSettings = true;
+    } else if text != fs.Error.NotFound {
+        return Result<none, str>.Err(f"{path} could not be read: {text}");
+    }
+
+    let store = Switcher {
+        stateDir: stateDir,
+        pick: pick,
+        pickedIcon: rx.reactive<str | none>(none),
+        pickedIconImage: rx.reactive<image.Image | none>(none),
+        pickedFolder: rx.reactive<str | none>(none),
+        profileRepo: rx.reactive<str | none>(none),
+        accounts: rx.shallowReactive<[]Account>([]),
+        active: rx.reactive<str | none>(settings.active),
+        problem: rx.reactive<str | none>(none),
+        iconVersion: rx.reactive<int>(0),
+    };
+    if hasSettings {
+        store.profileRepo := settings.profileRepo;
+    }
+    switcherStore = store;
+    // A problem here (accounts.json unreadable, say) is shown in the window,
+    // not a reason not to start.
+    store.reload();
+    return Result<none, str>.Ok(none);
+}
+
+export fn switcher(): mut Switcher {
+    if let existing = switcherStore {
+        return existing;
+    }
+    sys.panic("switcher() before openSwitcher()");
+}

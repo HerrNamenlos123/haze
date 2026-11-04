@@ -12,6 +12,9 @@ namespace ffi {
 	extern C fn haze_sdl_createTray(pixels: cptr, width: int, height: int, tooltip: str): SDL_Tray | none :: final;
 	extern C fn haze_sdl_addTrayEntry(tray: SDL_Tray, label: str): int :: final;
 	extern C fn haze_sdl_takeTrayClick(): int :: final;
+	extern C fn haze_sdl_takeTrayIconClick(): int :: final;
+	extern C fn haze_sdl_setTrayIcon(tray: SDL_Tray, pixels: cptr, width: int, height: int): void :: final;
+	extern C fn haze_sdl_setTrayTooltip(tray: SDL_Tray, tooltip: str): void :: final;
 	extern C fn haze_sdl_destroyTray(tray: SDL_Tray): void :: final;
 	extern C fn haze_sdl_takeGlobalHotkey(): bool :: final;
 	extern C fn haze_sdl_moveWindowToTray(window: SDL_Window, tray: SDL_Tray): void :: final;
@@ -1280,6 +1283,13 @@ export fn getTime(): real {
 	return ffi.getTime() as real;
 }
 
+// A click on the tray icon itself. sdl_impl.c queues them as 0, 1 and 2.
+export enum TrayClick { Left, Right, Middle }
+
+// A tray icon, with a menu that has no entries until addEntry. A left click
+// never opens the menu; a right click opens it once it has entries. Every
+// click on the icon is also reported by takeIconClick, on Windows only: on
+// Linux a click always opens the menu and is not reported.
 export ref struct Tray {
 	handle: ffi.SDL_Tray;
 
@@ -1287,10 +1297,36 @@ export ref struct Tray {
 		return ffi.haze_sdl_addTrayEntry(this.handle, label);
 	}
 
+	// The menu entry the user chose, by the index addEntry returned.
 	fn takeClicked(): int | none {
 		let index = ffi.haze_sdl_takeTrayClick();
 		if index < 0 { return none; }
 		return index;
+	}
+
+	// The oldest click on the icon not taken yet, none once all are taken.
+	// Clicks queue up: a frame takes them in a loop.
+	fn takeIconClick(): TrayClick | none {
+		let click = ffi.haze_sdl_takeTrayIconClick();
+		if click == 0 { return TrayClick.Left; }
+		if click == 1 { return TrayClick.Right; }
+		if click == 2 { return TrayClick.Middle; }
+		if click < 0 { return none; }
+		sys.panic(f"sdl_impl.c queued an unknown tray icon click {click}");
+	}
+
+	// `rgbaPixels` is width * height * 4 bytes; SDL copies them.
+	fn setIcon(rgbaPixels: Bytes, width: int, height: int) {
+		if rgbaPixels.length != width * height * 4 {
+			sys.panic(f"A {width}x{height} tray icon needs {width * height * 4} bytes, not {rgbaPixels.length}");
+		}
+		let pixels = none as cptr;
+		__c__("pixels = rgbaPixels.basePtr + rgbaPixels.offset;");
+		ffi.haze_sdl_setTrayIcon(this.handle, pixels, width, height);
+	}
+
+	fn setTooltip(tooltip: str) {
+		ffi.haze_sdl_setTrayTooltip(this.handle, tooltip);
 	}
 
 	fn destroy() {

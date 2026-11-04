@@ -1,0 +1,20 @@
+name = "claude_account_switcher_ui"
+id = "CasUi7Qm"
+version = "1.0.0"
+description = "Claude Account Switcher's accounts, tokens and user interface, without the window, the tray or the system integration"
+license = "MIT"
+authors = ["HerrNamenlos123"]
+type = "lib"
+
+[dependencies]
+ui_components = { path = "../../stdlib/ui_components" }
+ui_widgets = { path = "../../stdlib/ui_widgets" }
+codicons = { path = "../../stdlib/codicons" }
+image = { path = "../../stdlib/image" }
+renderer = { path = "../../stdlib/renderer" }
+# The SFC transformer below generates `from hzui import ...` into every
+# .hzui file in this module, so hzui is a real dependency, not only a plugin.
+hzui = { path = "../../stdlib/hzui" }
+
+[plugins]
+hzui = { path = "../../stdlib/hzui" }

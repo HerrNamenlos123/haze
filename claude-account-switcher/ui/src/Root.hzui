@@ -1,0 +1,98 @@
+@export
+
+from ui_widgets import ScrollView, ScrollViewComponent, ScrollViewSlotContent
+
+// The whole window. Until the profile repo is chosen it asks for nothing
+// else; after that it shows the accounts, the add form and the settings.
+
+enum View { Accounts, Add, Settings }
+
+@props
+// Bumped by the host each time the window opens: it opens on the accounts,
+// read again from disk.
+activation: Reactive<int>;
+
+@emit
+quit: ();
+
+@setup
+let view = reactive<View>(View.Accounts);
+let confirmingRemove = reactive<str>("");
+
+let hasRepo = computed((): bool => switcher().hasProfileRepo());
+let items = computed((): []Account => switcher().list());
+
+// The problem stays: the window may open because a switch failed, and then
+// it is what the user needs to see.
+ui.watch(() => rx.get(props.activation), (value, old) => {
+    view := View.Accounts;
+    confirmingRemove := "";
+    switcher().reload();
+});
+
+let toggle = (target: View) => {
+    view := rx.get(view) == target ? View.Accounts : target;
+    confirmingRemove := "";
+    switcher().clearProblem();
+    if rx.get(view) != View.Add {
+        switcher().clearPicked();
+    }
+};
+
+let toggleAdd = () => {
+    toggle(View.Add);
+};
+
+let toggleSettings = () => {
+    toggle(View.Settings);
+};
+
+let showAccounts = () => {
+    view := View.Accounts;
+};
+
+let askRemove = (id: str) => {
+    confirmingRemove := id;
+};
+
+let cancelRemove = () => {
+    confirmingRemove := "";
+};
+
+let quit = () => {
+    emits.quit();
+};
+
+let keyPressed = (event: KeyboardEvent) => {
+    if event.key == Key.Escape {
+        event.stopPropagation();
+        ui.window.close();
+    }
+};
+
+@template [col w-grow h-grow bg-["#17171C"] text-color-["#E4E4E7"] font-size-14] @keydown=keyPressed
+
+TitleBar [] accountsAvailable=[rx.get(hasRepo)] addOpen=[rx.get(view) == View.Add]
+    settingsOpen=[rx.get(view) == View.Settings] @toggleAdd=toggleAdd @toggleSettings=toggleSettings {}
+
+div if=[!rx.get(hasRepo)] [col w-grow h-grow p-4 gap-4] {
+    ProfileRepo [] @done=showAccounts {}
+}
+Settings else-if=[rx.get(view) == View.Settings] [] @close=showAccounts @quit=quit {}
+ScrollView else [] padding=[6] {
+    #content {
+        div [col w-grow h-fit gap-1] {
+            AddAccount if=[rx.get(view) == View.Add] [] @added=showAccounts {}
+            AccountRow for=[account, i in items] key=[i] []
+                account=[account] active=[switcher().isActive(account.id)]
+                confirmingRemove=[rx.get(confirmingRemove) == account.id]
+                @askRemove=askRemove @cancelRemove=cancelRemove {}
+            div if=[items.length == 0 && rx.get(view) != View.Add] [col w-grow items-center py-10] {
+                text [text-color-["#71717A"]] ["No accounts"]
+            }
+        }
+    }
+}
+div if=[switcher().hasProblem()] [w-grow h-fit px-4 py-2 bg-["#2A1517"]] {
+    text [text-color-["#F87171"] font-size-12] [switcher().problemText()]
+}

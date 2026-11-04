@@ -2115,17 +2115,111 @@ static void SDLCALL haze_sdl_tray_entry_clicked(void *userdata,
   haze_sdl_wake();
 }
 
+/* Clicks on the tray icon itself, in the order they came, until the program
+   takes them: two clicks between two frames are two clicks. The values are
+   the Haze TrayClick members. SDL calls the click callbacks on the main
+   thread, from the event pump (and on Linux not at all: there a click always
+   opens the menu). One queue for the program: with two trays, their clicks
+   would mix (no program has two). */
+#define HAZE_TRAY_ICON_CLICKS_MAX 64
+static int g_haze_tray_icon_clicks[HAZE_TRAY_ICON_CLICKS_MAX];
+static int g_haze_tray_icon_click_first = 0;
+static int g_haze_tray_icon_click_count = 0;
+
+static void haze_sdl_push_tray_icon_click(int click) {
+  if (g_haze_tray_icon_click_count == HAZE_TRAY_ICON_CLICKS_MAX) {
+    SDL_Log("haze: more than %d tray icon clicks were never taken; dropping "
+            "this one",
+            HAZE_TRAY_ICON_CLICKS_MAX);
+    return;
+  }
+  int slot = (g_haze_tray_icon_click_first + g_haze_tray_icon_click_count) %
+             HAZE_TRAY_ICON_CLICKS_MAX;
+  g_haze_tray_icon_clicks[slot] = click;
+  g_haze_tray_icon_click_count++;
+  haze_sdl_wake();
+}
+
+/* A left click is the program's alone: it never opens the menu. */
+static bool SDLCALL haze_sdl_tray_left_clicked(void *userdata, SDL_Tray *tray) {
+  (void)userdata;
+  (void)tray;
+  haze_sdl_push_tray_icon_click(0);
+  return false;
+}
+
+/* A right click opens the menu when the tray has one with entries. */
+static bool SDLCALL haze_sdl_tray_right_clicked(void *userdata,
+                                                SDL_Tray *tray) {
+  (void)userdata;
+  haze_sdl_push_tray_icon_click(1);
+  int entries = 0;
+  SDL_TrayMenu *menu = SDL_GetTrayMenu(tray);
+  if (menu) {
+    SDL_GetTrayEntries(menu, &entries);
+  }
+  return entries > 0;
+}
+
+static bool SDLCALL haze_sdl_tray_middle_clicked(void *userdata,
+                                                 SDL_Tray *tray) {
+  (void)userdata;
+  (void)tray;
+  haze_sdl_push_tray_icon_click(2);
+  return false;
+}
+
 SDL_Tray *haze_sdl_createTray(void *pixels, hzstd_int_t width,
                               hzstd_int_t height, hzstd_str_t tooltip) {
+  SDL_PropertiesID props = SDL_CreateProperties();
+  if (!props) {
+    return NULL;
+  }
   SDL_Surface *icon =
       SDL_CreateSurfaceFrom((int)width, (int)height, SDL_PIXELFORMAT_RGBA32,
                             pixels, (int)width * 4);
-  SDL_Tray *tray = SDL_CreateTray(icon, HZSTD_CSTR(tooltip));
+  SDL_SetPointerProperty(props, SDL_PROP_TRAY_CREATE_ICON_POINTER, icon);
+  SDL_SetStringProperty(props, SDL_PROP_TRAY_CREATE_TOOLTIP_STRING,
+                        HZSTD_CSTR(tooltip));
+  SDL_SetPointerProperty(props, SDL_PROP_TRAY_CREATE_LEFTCLICK_CALLBACK_POINTER,
+                         (void *)haze_sdl_tray_left_clicked);
+  SDL_SetPointerProperty(props,
+                         SDL_PROP_TRAY_CREATE_RIGHTCLICK_CALLBACK_POINTER,
+                         (void *)haze_sdl_tray_right_clicked);
+  SDL_SetPointerProperty(props,
+                         SDL_PROP_TRAY_CREATE_MIDDLECLICK_CALLBACK_POINTER,
+                         (void *)haze_sdl_tray_middle_clicked);
+  SDL_Tray *tray = SDL_CreateTrayWithProperties(props);
+  SDL_DestroyProperties(props);
   SDL_DestroySurface(icon);
   if (tray) {
     SDL_CreateTrayMenu(tray);
   }
   return tray;
+}
+
+hzstd_int_t haze_sdl_takeTrayIconClick(void) {
+  if (g_haze_tray_icon_click_count == 0) {
+    return -1;
+  }
+  int click = g_haze_tray_icon_clicks[g_haze_tray_icon_click_first];
+  g_haze_tray_icon_click_first =
+      (g_haze_tray_icon_click_first + 1) % HAZE_TRAY_ICON_CLICKS_MAX;
+  g_haze_tray_icon_click_count--;
+  return click;
+}
+
+void haze_sdl_setTrayIcon(SDL_Tray *tray, void *pixels, hzstd_int_t width,
+                          hzstd_int_t height) {
+  SDL_Surface *icon =
+      SDL_CreateSurfaceFrom((int)width, (int)height, SDL_PIXELFORMAT_RGBA32,
+                            pixels, (int)width * 4);
+  SDL_SetTrayIcon(tray, icon);
+  SDL_DestroySurface(icon);
+}
+
+void haze_sdl_setTrayTooltip(SDL_Tray *tray, hzstd_str_t tooltip) {
+  SDL_SetTrayTooltip(tray, HZSTD_CSTR(tooltip));
 }
 
 hzstd_int_t haze_sdl_addTrayEntry(SDL_Tray *tray, hzstd_str_t label) {

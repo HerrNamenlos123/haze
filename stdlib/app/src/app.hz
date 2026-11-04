@@ -173,27 +173,36 @@ export fn placeOnDisplays(rect: sdl.Rect, savedArea: sdl.Rect, areas: []sdl.Rect
     return result;
 }
 
-// <state directory>/<appId>/window-state.json, none without a state
-// directory. The XDG state directory on Linux (XDG_STATE_HOME, which must be
-// an absolute path, or ~/.local/state), %LOCALAPPDATA% on Windows.
-fn windowStatePath(appId: str): str | none {
+// The folder where the app `appId` keeps what belongs to this machine and
+// this user only (it never roams with a profile), without a trailing slash;
+// none when the system names no such folder. The XDG state directory on
+// Linux (XDG_STATE_HOME, which must be an absolute path, or ~/.local/state),
+// %LOCALAPPDATA% on Windows. The folder itself may not exist yet.
+export fn stateDirectory(appId: str): str | none {
     if sys.isWin32() {
         if let local = env.get("LOCALAPPDATA") {
             if local.length > 0 {
-                return f"{local}/{appId}/window-state.json";
+                return f"{local}/{appId}";
             }
         }
         return none;
     }
     if let dir = env.get("XDG_STATE_HOME") {
         if dir.startsWith("/") {
-            return f"{dir}/{appId}/window-state.json";
+            return f"{dir}/{appId}";
         }
     }
     if let home = env.get("HOME") {
         if home.length > 0 {
-            return f"{home}/.local/state/{appId}/window-state.json";
+            return f"{home}/.local/state/{appId}";
         }
+    }
+    return none;
+}
+
+fn windowStatePath(appId: str): str | none {
+    if let dir = stateDirectory(appId) {
+        return f"{dir}/window-state.json";
     }
     return none;
 }

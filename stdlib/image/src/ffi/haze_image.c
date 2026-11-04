@@ -18,6 +18,13 @@
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
 
+// stb_image_resize2 v2.18, nothings/stb at 904aa67e1e2d1dec92959df63e700b166d5c1022
+// (the last version there before it moved to its own repository). Static
+// like stb_image_write.
+#define STB_IMAGE_RESIZE_STATIC
+#define STB_IMAGE_RESIZE_IMPLEMENTATION
+#include "stb_image_resize2.h"
+
 #include "public/haze_image.h"
 
 // stb_image decodes into a plain malloc'd buffer (STBI_MALLOC). We copy the
@@ -125,6 +132,33 @@ haze_image_png_result_t haze_image_encode_png(hzstd_cptr_t pixels, hzstd_int_t w
   result.data = gcPng;
   result.length = length;
   return result;
+}
+
+// Resamples 8-bit pixels, gamma-correct (sRGB) and with alpha weighting for 2
+// and 4 channels, into a new GC-owned buffer of width * height * channels
+// bytes. NULL when stb_image_resize2 fails, which with valid shapes only an
+// allocation can. The caller validates the shapes.
+void* haze_image_resize(hzstd_cptr_t pixels, hzstd_int_t width, hzstd_int_t height, hzstd_int_t channels,
+                        hzstd_int_t newWidth, hzstd_int_t newHeight)
+{
+  stbir_pixel_layout layout;
+  switch (channels) {
+  case 1: layout = STBIR_1CHANNEL; break;
+  case 2: layout = STBIR_RA; break;
+  case 3: layout = STBIR_RGB; break;
+  case 4: layout = STBIR_RGBA; break;
+  default: return NULL;
+  }
+  size_t size = (size_t)newWidth * (size_t)newHeight * (size_t)channels;
+  void* gcPixels = hzstd_heap_allocate_atomic(size, NULL);
+  if (!gcPixels) {
+    // Never NULL to stbir: it would allocate a buffer of its own instead.
+    return NULL;
+  }
+  unsigned char* done = stbir_resize_uint8_srgb((const unsigned char*)pixels, (int)width, (int)height,
+                                                (int)(width * channels), (unsigned char*)gcPixels, (int)newWidth,
+                                                (int)newHeight, (int)(newWidth * channels), layout);
+  return done ? gcPixels : NULL;
 }
 
 // What the file's header says, without decoding the pixels.

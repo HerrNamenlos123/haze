@@ -1,0 +1,23 @@
+from ui_widgets import ButtonComponent
+
+@emit
+close: ();
+quit: ();
+
+@setup
+let close = () => {
+    emits.close();
+};
+
+let quit = () => {
+    emits.quit();
+};
+
+@template [col w-grow h-grow p-4 gap-4]
+
+ProfileRepo [] @done=close {}
+div [w-grow h-grow] {}
+div [row w-grow h-fit] {
+    div [w-grow] {}
+    Button [] label="Quit" bgHover="#C42B1C" textColor="#E4E4E7" focusRing=[0] @click=quit {}
+}

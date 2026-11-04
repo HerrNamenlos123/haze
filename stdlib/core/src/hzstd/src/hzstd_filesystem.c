@@ -124,6 +124,55 @@ static hzstd_fs_error_code_t hzstd_fs_error_from_windows_error(DWORD err)
 }
 #endif
 
+#if defined(HAZE_PLATFORM_WIN32)
+static inline hzstd_str_t hzstd_fs_windows_error(DWORD err);
+#endif
+
+// Opens an existing file for reading, as fopen(path, mode) does. On Windows it
+// is also shared for delete: a rename over the file (fs.replaceText, or any
+// other program replacing it whole) then succeeds while it is open here, as it
+// does on Linux. fopen shares only read and write, and Windows refuses such a
+// rename for as long as a reader has the file open. The errors are the ones
+// fopen gave. NULL on failure, with *error set.
+static FILE* hzstd_fs_open_for_reading(const char* path, const char* mode, hzstd_fs_error_t* error)
+{
+#if defined(HAZE_PLATFORM_WIN32)
+  HANDLE handle = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
+                              OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+  if (handle == INVALID_HANDLE_VALUE) {
+    DWORD err = GetLastError();
+    hzstd_fs_error_code_t code = hzstd_fs_error_from_windows_error(err);
+    // fopen reported these as EACCES.
+    if (err == ERROR_SHARING_VIOLATION || err == ERROR_LOCK_VIOLATION) {
+      code = hzstd_fs_error_code_permission_denied;
+    }
+    *error = (hzstd_fs_error_t) { .code = code, .message = hzstd_fs_windows_error(err) };
+    return NULL;
+  }
+  int fd = _open_osfhandle((intptr_t)handle, _O_RDONLY | (strchr(mode, 'b') ? _O_BINARY : _O_TEXT));
+  if (fd < 0) {
+    CloseHandle(handle);
+    *error = (hzstd_fs_error_t) { .code = hzstd_fs_error_code_io_error, .message = HZSTD_STRING("no file descriptor for the file", 31) };
+    return NULL;
+  }
+  FILE* f = _fdopen(fd, mode);
+  if (!f) {
+    int err = errno;
+    _close(fd); // closes the handle with it
+    *error = (hzstd_fs_error_t) { .code = hzstd_fs_error_from_errno(err), .message = hzstd_fs_errno_message(err) };
+    return NULL;
+  }
+  return f;
+#else
+  FILE* f = fopen(path, mode);
+  if (!f) {
+    int err = errno;
+    *error = (hzstd_fs_error_t) { .code = hzstd_fs_error_from_errno(err), .message = hzstd_fs_errno_message(err) };
+  }
+  return f;
+#endif
+}
+
 // --- Helper: get parent directory from a path ---
 static hzstd_str_t hzstd_fs_parent_dir(const char* path)
 {
@@ -161,15 +210,12 @@ hzstd_read_file_text_result_t hzstd_read_file_text(hzstd_allocator_t allocator, 
     };
   }
 
-  FILE* f = fopen(nullTermPath, "r");
+  hzstd_fs_error_t openError;
+  FILE* f = hzstd_fs_open_for_reading(nullTermPath, "r", &openError);
   if (!f) {
-    int err = errno;
     return (hzstd_read_file_text_result_t) {
       .data = HZSTD_STRING(NULL, 0),
-      .error = {
-        .code = hzstd_fs_error_from_errno(err),
-        .message = hzstd_fs_errno_message(err),
-      },
+      .error = openError,
     };
   }
 
@@ -277,13 +323,10 @@ hzstd_fs_error_t hzstd_read_file_binary(hzstd_allocator_t allocator, hzstd_str_t
     };
   }
 
-  FILE* f = fopen(nullTermPath, "rb");
+  hzstd_fs_error_t openError;
+  FILE* f = hzstd_fs_open_for_reading(nullTermPath, "rb", &openError);
   if (!f) {
-    int err = errno;
-    return (hzstd_fs_error_t) {
-      .code = hzstd_fs_error_from_errno(err),
-      .message = hzstd_fs_errno_message(err),
-    };
+    return openError;
   }
 
   size_t totalRead = fread(buffer, 1, (size_t)length, f);
@@ -353,49 +396,6 @@ hzstd_fs_error_t hzstd_write_file_text(hzstd_allocator_t allocator, hzstd_str_t 
   };
 }
 
-// hzstd_write_file_text for a file that must not exist yet. The file is
-// created by the same call that checks for it (O_EXCL), so nothing at `path`,
-// a file or a folder, is ever replaced, and no other program can create the
-// file between a check and the write. Anything there is already_exists. A
-// write that fails part way removes the file it created.
-hzstd_fs_error_t hzstd_create_file_text(hzstd_allocator_t allocator, hzstd_str_t path, hzstd_str_t input)
-{
-  // A NUL inside the path would cut it short and name a different file.
-  if (path.length > 0 && memchr(path.data, '\0', (size_t)path.length)) {
-    return (hzstd_fs_error_t) {
-      .code = hzstd_fs_error_code_invalid_path,
-      .message = HZSTD_STRING("invalid path", 12),
-    };
-  }
-  HZSTD_SCRATCH_CSTR(nullTermPath, path);
-  if (!nullTermPath) {
-    return (hzstd_fs_error_t) {
-      .code = hzstd_fs_error_code_out_of_memory,
-      .message = HZSTD_STRING("out of memory", 13),
-    };
-  }
-
-  hzstd_str_t parent = hzstd_fs_parent_dir(nullTermPath);
-  hzstd_mkdir_recursive(parent);
-
-#if defined(HAZE_PLATFORM_WIN32)
-  int fd = _open(nullTermPath, _O_WRONLY | _O_CREAT | _O_EXCL | _O_BINARY, _S_IREAD | _S_IWRITE);
-#else
-  int fd = open(nullTermPath, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0666);
-#endif
-  if (fd < 0) {
-    int err = errno;
-    return (hzstd_fs_error_t) {
-      .code = hzstd_fs_error_from_errno(err),
-      .message = hzstd_fs_errno_message(err),
-    };
-  }
-
-  const char* data = input.data;
-  hzstd_int_t left = input.length;
-  while (left > 0) {
-#if defined(HAZE_PLATFORM_WIN32)
-    int written = _write(fd, data, left > INT_MAX ? INT_MAX : (unsigned int)left);
 // Replaces the file at `path` with `input` so that, whatever happens -- a
 // crash, a full disk, a power cut -- it holds either all of its old content or
 // all of the new. The new content goes to `<path>.saving`, is flushed to the
@@ -538,6 +538,49 @@ hzstd_fs_error_t hzstd_replace_file_text(hzstd_str_t path, hzstd_str_t input)
   return (hzstd_fs_error_t) { .code = hzstd_fs_error_code_none, .message = HZSTD_STRING(NULL, 0) };
 }
 
+// hzstd_write_file_text for a file that must not exist yet. The file is
+// created by the same call that checks for it (O_EXCL), so nothing at `path`,
+// a file or a folder, is ever replaced, and no other program can create the
+// file between a check and the write. Anything there is already_exists. A
+// write that fails part way removes the file it created.
+hzstd_fs_error_t hzstd_create_file_text(hzstd_allocator_t allocator, hzstd_str_t path, hzstd_str_t input)
+{
+  // A NUL inside the path would cut it short and name a different file.
+  if (path.length > 0 && memchr(path.data, '\0', (size_t)path.length)) {
+    return (hzstd_fs_error_t) {
+      .code = hzstd_fs_error_code_invalid_path,
+      .message = HZSTD_STRING("invalid path", 12),
+    };
+  }
+  HZSTD_SCRATCH_CSTR(nullTermPath, path);
+  if (!nullTermPath) {
+    return (hzstd_fs_error_t) {
+      .code = hzstd_fs_error_code_out_of_memory,
+      .message = HZSTD_STRING("out of memory", 13),
+    };
+  }
+
+  hzstd_str_t parent = hzstd_fs_parent_dir(nullTermPath);
+  hzstd_mkdir_recursive(parent);
+
+#if defined(HAZE_PLATFORM_WIN32)
+  int fd = _open(nullTermPath, _O_WRONLY | _O_CREAT | _O_EXCL | _O_BINARY, _S_IREAD | _S_IWRITE);
+#else
+  int fd = open(nullTermPath, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0666);
+#endif
+  if (fd < 0) {
+    int err = errno;
+    return (hzstd_fs_error_t) {
+      .code = hzstd_fs_error_from_errno(err),
+      .message = hzstd_fs_errno_message(err),
+    };
+  }
+
+  const char* data = input.data;
+  hzstd_int_t left = input.length;
+  while (left > 0) {
+#if defined(HAZE_PLATFORM_WIN32)
+    int written = _write(fd, data, left > INT_MAX ? INT_MAX : (unsigned int)left);
 #else
     ssize_t written = write(fd, data, (size_t)left);
     if (written < 0 && errno == EINTR) {
@@ -1268,13 +1311,10 @@ hzstd_file_open_read(hzstd_allocator_t allocator, hzstd_str_t path, void* out_ha
   // size, and a named pipe with no writer would block a plain open for ever.
   // So the open does not wait, and anything else is not_a_file.
 #if defined(HAZE_PLATFORM_WIN32)
-  FILE* f = fopen(nullTermPath, "rb");
+  hzstd_fs_error_t openError;
+  FILE* f = hzstd_fs_open_for_reading(nullTermPath, "rb", &openError);
   if (!f) {
-    int err = errno;
-    return (hzstd_fs_error_t) {
-      .code = hzstd_fs_error_from_errno(err),
-      .message = hzstd_fs_errno_message(err),
-    };
+    return openError;
   }
 #else
   int fd = open(nullTermPath, O_RDONLY | O_NONBLOCK | O_CLOEXEC);

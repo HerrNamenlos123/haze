@@ -1,0 +1,35 @@
+from ui_widgets import ButtonComponent
+
+@props
+// Whether the account buttons show: not before the profile repo is chosen.
+accountsAvailable: bool;
+addOpen: bool;
+settingsOpen: bool;
+
+@emit
+toggleAdd: ();
+toggleSettings: ();
+
+@setup
+let close = () => {
+    ui.window.close();
+};
+
+let toggleAdd = () => {
+    emits.toggleAdd();
+};
+
+let toggleSettings = () => {
+    emits.toggleSettings();
+};
+
+@template [os-titlebar row w-grow h-[30]px items-center pl-3 bg-["#1F1F26"]]
+
+text [text-nowrap text-color-["#71717A"] font-size-12] ["Claude Accounts"]
+div [w-grow] {}
+Button if=[props.accountsAvailable] [] icon="add" selected=[props.addOpen] paddingX=[9] paddingY=[7] rounded=[0]
+    textColor="#A1A1AA" focusRing=[0] @click=toggleAdd {}
+Button if=[props.accountsAvailable] [] icon="settings-gear" selected=[props.settingsOpen] paddingX=[9] paddingY=[7] rounded=[0]
+    textColor="#A1A1AA" focusRing=[0] @click=toggleSettings {}
+Button [] icon="chrome-close" paddingX=[10] paddingY=[7] rounded=[0]
+    bgHover="#C42B1C" bgActive="#B0271A" textColor="#A1A1AA" focusRing=[0] @click=close {}

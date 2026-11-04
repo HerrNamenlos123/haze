@@ -38,9 +38,11 @@ fn main(): int {
         //   which hands a clipboard transfer's pipe to the caller instead of
         //   reading it on the main thread as SDL_GetClipboardData does -- for
         //   the clipboard module, which reads it on a worker thread.
-        //   windows-tray: a left click on the tray icon clicks the menu's first
-        //   entry instead of opening the menu, as on Windows, and adds
-        //   SDL_HazeGetTrayIconRect, where the icon is on screen.
+        //   tray-click-callbacks: a backport of SDL_CreateTrayWithProperties
+        //   and its icon click callbacks from SDL main (3.6.0). Delete it as
+        //   soon as a release has it, and update to that release.
+        //   windows-tray: adds SDL_HazeGetTrayIconRect, where the icon is on
+        //   screen. Applies on top of tray-click-callbacks.
         //   wayland-activated: adds SDL_PROP_WINDOW_WAYLAND_ACTIVATED_BOOLEAN,
         //   the compositor's xdg_toplevel "activated" state -- which window
         //   the user is working in. SDL only reports the keyboard focus, and
@@ -53,6 +55,7 @@ fn main(): int {
         //   window's own geometry is not it.
         let patches: []str = [
             "wayland-clipboard-receive.patch",
+            "tray-click-callbacks.patch",
             "windows-tray.patch",
             "wayland-activated.patch",
             "window-floating-rect.patch",

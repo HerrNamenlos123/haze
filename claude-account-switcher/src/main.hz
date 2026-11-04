@@ -1,0 +1,323 @@
+import app
+import sdl
+import image
+import ui_runtime
+import ui_components
+import filedialog
+import single_instance
+import autostart
+import claude_account_switcher_ui
+
+const appId = "io.github.hazelang.ClaudeAccountSwitcher";
+// The program's file name, its login entry and its single-instance name.
+const programName = "claude-account-switcher";
+
+struct Activation {
+    args: []str;
+}
+
+// A native picker that is open, and what it was opened for. One at a time:
+// asking for another while one is open does nothing.
+ref struct OpenPicker {
+    dialog: filedialog.PendingDialog | none = none;
+    kind: claude_account_switcher_ui.PickKind = claude_account_switcher_ui.PickKind.Icon;
+}
+
+// What the tray icon shows, to change it only when that changes.
+ref struct TrayShows {
+    account: str = "";
+    iconVersion: int = -1;
+}
+
+let quitRequested = false;
+
+fn quitApp() {
+    quitRequested = true;
+}
+
+fn toUIPointerEdges(a: app.App, out: mut []ui_components.PointerEdge): []ui_components.PointerEdge {
+    let result = out;
+    result.clear();
+    for e in a.pointerEdges() {
+        let button = ui_components.PointerButton.None;
+        if e.button == 0 { button = ui_components.PointerButton.Left; }
+        else if e.button == 1 { button = ui_components.PointerButton.Middle; }
+        else if e.button == 2 { button = ui_components.PointerButton.Right; }
+        let kind = ui_components.PointerEdgeKind.Pressed;
+        if e.kind == app.PointerEdgeKind.Released { kind = ui_components.PointerEdgeKind.Released; }
+        else if e.kind == app.PointerEdgeKind.Moved { kind = ui_components.PointerEdgeKind.Moved; }
+        else if e.kind == app.PointerEdgeKind.Cancelled { kind = ui_components.PointerEdgeKind.Cancelled; }
+        result.push({
+            button: button,
+            kind: kind,
+            pos: e.pos,
+            buttons: ui_components.pointerButtonsFromBits(e.buttons),
+        });
+    }
+    return result;
+}
+
+fn sdlKeyToUIKey<T>(k: T): ui_components.Key :: final {
+    do unsafe {
+        let result: ui_components.Key = uninitialized;
+        __c__("result = (int)k;");
+        return result;
+    };
+}
+
+fn toUIKeyEdges(a: app.App, out: mut []ui_components.KeyEdge): []ui_components.KeyEdge {
+    let result = out;
+    result.clear();
+    for e in a.keyEdges() {
+        let kind = e.kind == app.KeyEdgeKind.Pressed ? ui_components.KeyEdgeKind.Pressed : ui_components.KeyEdgeKind.Released;
+        result.push({ key: sdlKeyToUIKey(e.key), kind: kind, repeat: e.repeat, modifiers: e.modifiers });
+    }
+    return result;
+}
+
+fn launchedInBackground(args: []str): bool {
+    for arg in args {
+        if arg == "--background" {
+            return true;
+        }
+    }
+    return false;
+}
+
+// The login entry names the installed program (see install.ps1), never a
+// build that happens to run: a build folder can be gone or rebuilt by then.
+fn applyAutostart() {
+    if let installed = app.installedExecutable(programName) {
+        if let present = fs.exists(installed) {
+            if present {
+                autostart.enable(programName, installed, "--background");
+                return;
+            }
+        }
+    }
+    autostart.disable(programName);
+}
+
+// Claude Code's credential command (apiKeyHelper): the active account's token
+// on stdout, exactly. Nothing else starts. The read shares the file for
+// delete, so a switch that replaces it meanwhile is never refused. Without an
+// active account it prints nothing and fails: anything printed would be taken
+// as the token.
+fn printToken(): int {
+    if let dir = app.stateDirectory(appId) {
+        let token = fs.readText(f"{dir}/active.token");
+        if token {
+            let text: str = token;
+            fmt.print(text);
+            return 0;
+        }
+    }
+    return 1;
+}
+
+fn main(): int {
+    for arg in sys.args() {
+        if arg == "--print-token" {
+            return printToken();
+        }
+    }
+    attempt {
+        let stackref activateRequested = Box<bool>(false);
+        let si = single_instance.init<Activation>({ appId: programName }, (activation) => {
+            activateRequested.value = !launchedInBackground(activation.args);
+            return 0;
+        });
+        if si.status == single_instance.Status.Error { return 1; }
+        if si.status == single_instance.Status.Secondary {
+            return si.send({ args: sys.args() }).exitCode;
+        }
+
+        let stateDir = app.stateDirectory(appId);
+        if !stateDir { raise "This system names no folder for the program's own files"; }
+
+        let picker = OpenPicker {};
+        let pick = (kind: claude_account_switcher_ui.PickKind): none => {
+            if picker.dialog { return; }
+            picker.kind = kind;
+            if kind == claude_account_switcher_ui.PickKind.Folder {
+                picker.dialog = filedialog.pickFolderAsync({});
+            } else {
+                picker.dialog = filedialog.pickFileAsync({ filters: "png,jpg,jpeg,bmp,gif,tga,psd" });
+            }
+        };
+        claude_account_switcher_ui.openSwitcher(stateDir as str, pick)?!;
+        applyAutostart();
+
+        let a = app.App({
+            title: "Claude Account Switcher",
+            nativeTitlebar: false,
+            size: { width: 380, height: 420 },
+            startHidden: true,
+            hideOnClose: true,
+        })?!;
+
+        let font = a.gfx.fontRenderer.fs.addFont("roboto-regular", embed.binary("resources/Roboto-Regular.ttf"));
+        let logo = image.decode(embed.binary("../resources/haze-logo.png"), 4);
+        if !logo { raise "The program's icon could not be decoded"; }
+        let defaultIcon = claude_account_switcher_ui.normalizedIcon(logo);
+        let tray = sdl.createTray(defaultIcon.pixels, defaultIcon.width, defaultIcon.height, "Claude Account Switcher")?!;
+
+        // The icon and tooltip of the active account, or the program's own
+        // while none is active.
+        let trayShows = TrayShows {};
+        let updateTray = () => {
+            let s = claude_account_switcher_ui.switcher();
+            let version = rx.get(s.iconVersion);
+            let activeId = "";
+            if let id = rx.get(s.active) { activeId = id; }
+            if activeId == trayShows.account && version == trayShows.iconVersion { return; }
+            trayShows.account = activeId;
+            trayShows.iconVersion = version;
+            if let account = s.activeAccount() {
+                if let icon = s.iconOf(account.id) {
+                    tray.setIcon(icon.pixels, icon.width, icon.height);
+                } else {
+                    tray.setIcon(defaultIcon.pixels, defaultIcon.width, defaultIcon.height);
+                }
+                tray.setTooltip(f"Claude: {account.name}");
+                return;
+            }
+            tray.setIcon(defaultIcon.pixels, defaultIcon.width, defaultIcon.height);
+            tray.setTooltip("Claude Account Switcher");
+        };
+        updateTray();
+
+        let activation = rx.reactive<int>(0);
+        let pointerEdgeScratch: mut []ui_components.PointerEdge = [];
+        let keyEdgeScratch: mut []ui_components.KeyEdge = [];
+        let textInputSwitch: ui_components.TextInputActiveCallback = (active: bool): void => {
+            a.setTextInputActive(active);
+        };
+
+        let runtime = ui_runtime.Runtime({
+            gfx: a.gfx,
+            windowState: a.windowState,
+            fonts: [
+                { name: "roboto", id: font },
+                { name: "default", id: font },
+            ],
+            mousePos: () => a.mousePos(),
+            mousePosKnown: () => a.mousePosKnown(),
+            pointerButtons: ui_components.PointerHeldCallbacks {
+                leftHeld: () => a.pointerLeftHeld(),
+                middleHeld: () => a.pointerMiddleHeld(),
+                rightHeld: () => a.pointerRightHeld(),
+                edgesThisFrame: () => toUIPointerEdges(a, pointerEdgeScratch),
+                reportsMotion: true,
+            },
+            inputExtras: ui_components.InputExtrasCallbacks {
+                wheelDelta: () => a.wheelDelta(),
+                modifiers: () => a.wheelModifiers(),
+            },
+            keyboard: ui_components.KeyboardCallbacks {
+                keyEdgesThisFrame: () => toUIKeyEdges(a, keyEdgeScratch),
+                textInputThisFrame: () => a.textInput(),
+                setTextInputActive: textInputSwitch,
+            },
+            setCursor: (index: int): void => { app.setCursor(index); },
+            clipboard: ui_components.ClipboardCallbacks {
+                getText: (): str => { return app.getClipboardText(); },
+                setText: (text: str): bool => { return app.setClipboardText(text); },
+            },
+            window: ui_components.WindowCallbacks {
+                requestClose: (): void => { a.hide(); },
+                minimize: (): void => { a.hide(); },
+                maximize: (): void => { a.maximize(); },
+                restore: (): void => { a.restore(); },
+                isMaximized: () => a.isMaximized(),
+                hasNativeTitlebar: () => a.hasNativeTitlebar(),
+                setRegions: (regions: []ui_components.WindowRegion): void => {
+                    a.beginWindowRegions();
+                    for r in regions {
+                        a.pushWindowRegion(r.pos, r.size, r.draggable);
+                    }
+                    a.commitWindowRegions();
+                },
+            },
+            ui: (ui: ui_components.UIContext) => { claude_account_switcher_ui.RootComponent(ui, { id: 0, activation: activation, onQuit: () => { quitApp(); } }); },
+        });
+
+        // Opens the window at the tray icon on the accounts, read again.
+        let show = () => {
+            activation := rx.get(activation) + 1;
+            a.window.moveToTray(tray);
+            a.show();
+        };
+
+        let background = launchedInBackground(sys.args());
+        if !background {
+            show();
+        }
+
+        let hiddenAt = 0.0;
+        while let frame = a.nextFrame() {
+            si.poll();
+            if activateRequested.value {
+                activateRequested.value = false;
+                show();
+            }
+            // The picker takes the focus: losing it to the picker is not the
+            // user leaving the window.
+            if a.justLostFocus() && !picker.dialog {
+                a.hide();
+                hiddenAt = sdl.getTime();
+            }
+            if let dialog = picker.dialog {
+                if dialog.done() {
+                    picker.dialog = none;
+                    let result = dialog.result();
+                    let path: str | none = none;
+                    if result is filedialog.DialogSuccess { path = result.path; }
+                    else if result is filedialog.DialogError { fmt.println(f"Claude Account Switcher: the picker failed: {result.error}"); }
+                    claude_account_switcher_ui.switcher().picked(picker.kind, path);
+                    // Back to the window, unless it was closed meanwhile.
+                    if a.isVisible() { a.show(); }
+                }
+            }
+            while let click = tray.takeIconClick() {
+                if click == sdl.TrayClick.Left {
+                    // Nothing to switch to (no account has a token here), or
+                    // the switch failed: the window shows what to do.
+                    if !claude_account_switcher_ui.switcher().switchToNext() && !a.isVisible() {
+                        show();
+                    }
+                } else if click == sdl.TrayClick.Right {
+                    // A click on the icon while the window is open first takes
+                    // the focus away and hides it: that click closes it.
+                    if !a.isVisible() && sdl.getTime() - hiddenAt > 0.3 {
+                        show();
+                    }
+                }
+            }
+            updateTray();
+
+            if a.resized {
+                runtime.resize(a.windowState);
+            }
+            if runtime.render(frame, a.canvas) {
+                frame.present();
+            }
+            else {
+                a.idle();
+            }
+
+            if quitRequested {
+                break;
+            }
+        }
+
+        tray.destroy();
+        si.release();
+        a.destroy();
+        return 0;
+    }
+    else e {
+        fmt.println("Claude Account Switcher failed: ", e);
+        return 1;
+    };
+}

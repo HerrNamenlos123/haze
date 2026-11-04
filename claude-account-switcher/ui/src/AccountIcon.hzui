@@ -1,0 +1,31 @@
+@props
+// The account whose icon this is (Switcher.iconOf), or draftIconId.
+accountId: str;
+size: real = 24.0;
+
+@setup
+let gpu = IconTexture {};
+
+let icon = computed((): image.Image | none => {
+    // Read so this recomputes when an icon changes: `icons` is not reactive.
+    rx.get(switcher().iconVersion);
+    return switcher().iconOf(props.accountId);
+});
+let hasIcon = computed((): bool => {
+    if rx.get(icon) { return true; }
+    return false;
+});
+
+let draw = (r: mut renderer.gfx.Renderer): void => {
+    if let pixels = rx.get(icon) {
+        gpu.draw(r, props.accountId, rx.get(switcher().iconVersion), pixels, props.size);
+    }
+};
+
+ui.onUnmount(() => {
+    gpu.release();
+});
+
+@template [w-[props.size]px h-[props.size]px rounded-[4]px bg-[rx.get(hasIcon) ? "#00000000" : "#2A2A33"]]
+
+canvas if=[rx.get(hasIcon)] [w-[props.size]px h-[props.size]px] @render=draw

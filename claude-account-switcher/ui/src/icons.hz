@@ -1,0 +1,36 @@
+import renderer
+import image
+
+// An account's icon on the GPU, for one AccountIcon. It knows which icon it
+// holds (the account and the store's iconVersion when it was uploaded) and
+// uploads again only when that changes: idle frames upload nothing.
+export ref struct IconTexture {
+    texture: renderer.gfx.Texture | none = none;
+    accountId: str = "";
+    version: int = -1;
+
+    fn draw(r: mut renderer.gfx.Renderer, accountId: str, version: int, icon: image.Image, size: real) {
+        if this.accountId != accountId || this.version != version {
+            this.release();
+            this.texture = r.canvas.gfx.createRGBATexture(icon.pixels, icon.width, icon.height, true);
+            this.accountId = accountId;
+            this.version = version;
+        }
+        if let texture = this.texture {
+            r.drawTexture({
+                texture: texture,
+                pos: Vec2(0.0, 0.0),
+                size: Vec2(size, size),
+            });
+        }
+    }
+
+    fn release() {
+        if let texture = this.texture {
+            texture.release();
+        }
+        this.texture = none;
+        this.accountId = "";
+        this.version = -1;
+    }
+}

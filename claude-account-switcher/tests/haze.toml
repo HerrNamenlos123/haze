@@ -1,0 +1,14 @@
+name = "claude_account_switcher_tests"
+id = "CasT3st5"
+version = "1.0.0"
+description = "Claude Account Switcher's store and user interface driven headlessly, against scratch folders"
+license = "MIT"
+authors = ["HerrNamenlos123"]
+type = "exe"
+
+[dependencies]
+claude_account_switcher_ui = { path = "../ui" }
+image = { path = "../../stdlib/image" }
+ui_components = { path = "../../stdlib/ui_components" }
+ui_elements = { path = "../../stdlib/ui_elements" }
+ui_layout = { path = "../../stdlib/ui_layout" }

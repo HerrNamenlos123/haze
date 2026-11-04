@@ -10,6 +10,7 @@ namespace ffi {
     export extern C fn haze_image_decode_result(job: cptr): haze_image_result_t :: final;
     export extern C fn haze_image_decode_failure(job: cptr): str :: final;
     export extern C fn haze_image_info(data: cptr, length: int): haze_image_info_t :: final;
+    export extern C fn haze_image_resize(pixels: cptr, width: int, height: int, channels: int, newWidth: int, newHeight: int): cptr :: final;
     export extern C fn haze_image_png_start(data: cptr, length: int, pixels: cptr, width: int, height: int, channels: int): cptr :: final;
     export extern C fn haze_image_png_done(job: cptr): bool :: final;
     export extern C fn haze_image_png_result(job: cptr): haze_image_png_result_t :: final;
@@ -262,6 +263,46 @@ fn pngOf(result: ffi.haze_image_png_result_t): Result<Bytes, Error> {
         __c__("png.offset = 0;");
         __c__("png.length = result.length;");
         return Result<Bytes, Error>.Ok(png);
+    };
+}
+
+// The image scaled to `width` x `height` (stb_image_resize2: gamma-correct,
+// alpha-weighted for grey with alpha and RGBA), with the same channel count.
+// The aspect ratio is the caller's: the result is exactly this size. Panics
+// on a size below 1, a programming error rather than bad input.
+export fn resize(img: Image, width: int, height: int): Image {
+    if width <= 0 || height <= 0 {
+        sys.panic(f"image.resize: invalid size {width}x{height}");
+    }
+    if img.channels < 1 || img.channels > 4 {
+        sys.panic(f"image.resize: {img.channels} channels, not 1 to 4");
+    }
+    let pixels = img.pixels;
+    let single: u8 = 0;
+    let ptr = none as cptr;
+    if pixels.length == 1 {
+        // A 1x1 grey image: the byte may be held inline (see decode).
+        single = pixels[0];
+        __c__("ptr = &single;");
+    }
+    else {
+        __c__("ptr = pixels.basePtr + pixels.offset;");
+    }
+    let resized = ffi.haze_image_resize(ptr, img.width, img.height, img.channels, width, height);
+    let valid = false;
+    __c__("valid = resized != NULL;");
+    if !valid {
+        sys.panic(f"image.resize: stb_image_resize2 failed for {img.width}x{img.height} to {width}x{height}");
+    }
+    let channels = img.channels;
+    let length = width * height * channels;
+    do unsafe {
+        // Bytes(), not `uninitialized`: see fromDecoded.
+        let out = Bytes();
+        __c__("out.basePtr = resized;");
+        __c__("out.offset = 0;");
+        __c__("out.length = length;");
+        return Image.fromPixels(width, height, channels, out);
     };
 }
 

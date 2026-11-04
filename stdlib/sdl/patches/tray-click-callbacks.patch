@@ -1,0 +1,538 @@
+Backport of upstream SDL's tray icon click callbacks, from SDL main:
+  70e16a8d1 tray: Add icon click callbacks for Windows and macOS (#14964)
+  cb0c7b01e tray: removed double click handling
+Cherry-picked onto release-3.4.18; the dynapi tables keep only
+SDL_CreateTrayWithProperties, and test/ is left out.
+
+Upstream marks the API "available since SDL 3.6.0". As soon as a release
+contains these commits, update SDL to that release and delete this patch.
+
+diff --git a/include/SDL3/SDL_tray.h b/include/SDL3/SDL_tray.h
+index 688278a1d..8586ce8c8 100644
+--- a/include/SDL3/SDL_tray.h
++++ b/include/SDL3/SDL_tray.h
+@@ -34,6 +34,7 @@
+ 
+ #include <SDL3/SDL_stdinc.h>
+ #include <SDL3/SDL_error.h>
++#include <SDL3/SDL_properties.h>
+ #include <SDL3/SDL_surface.h>
+ #include <SDL3/SDL_video.h>
+ 
+@@ -96,6 +97,22 @@ typedef Uint32 SDL_TrayEntryFlags;
+  */
+ typedef void (SDLCALL *SDL_TrayCallback)(void *userdata, SDL_TrayEntry *entry);
+ 
++/**
++ * A callback that is invoked when the tray icon is clicked.
++ *
++ * \param userdata an optional pointer to pass extra data to the callback when
++ *                 it will be invoked. May be NULL.
++ * \param tray the tray that was clicked.
++ * \returns true to show the tray menu after the callback returns, false to
++ *          skip showing the menu. This return value is only used for left and
++ *          right click callbacks; other mouse events ignore the return value.
++ *
++ * \since This datatype is available since SDL 3.6.0.
++ *
++ * \sa SDL_CreateTrayWithProperties
++ */
++typedef bool (SDLCALL *SDL_TrayClickCallback)(void *userdata, SDL_Tray *tray);
++
+ /**
+  * Create an icon to be placed in the operating system's tray, or equivalent.
+  *
+@@ -114,12 +131,64 @@ typedef void (SDLCALL *SDL_TrayCallback)(void *userdata, SDL_TrayEntry *entry);
+  *
+  * \since This function is available since SDL 3.2.0.
+  *
++ * \sa SDL_CreateTrayWithProperties
+  * \sa SDL_CreateTrayMenu
+  * \sa SDL_GetTrayMenu
+  * \sa SDL_DestroyTray
+  */
+ extern SDL_DECLSPEC SDL_Tray * SDLCALL SDL_CreateTray(SDL_Surface *icon, const char *tooltip);
+ 
++/**
++ * Create an icon to be placed in the operating system's tray, or equivalent.
++ *
++ * Many platforms advise not using a system tray unless persistence is a
++ * necessary feature. Avoid needlessly creating a tray icon, as the user may
++ * feel like it clutters their interface.
++ *
++ * Using tray icons require the video subsystem.
++ *
++ * These are the supported properties:
++ *
++ * - `SDL_PROP_TRAY_CREATE_ICON_POINTER`: an SDL_Surface to be used as the
++ *   tray icon. May be NULL.
++ * - `SDL_PROP_TRAY_CREATE_TOOLTIP_STRING`: a tooltip to be displayed when the
++ *   mouse hovers the icon in UTF-8 encoding. Not supported on all platforms.
++ *   May be NULL.
++ * - `SDL_PROP_TRAY_CREATE_USERDATA_POINTER`: an optional pointer to associate
++ *   with the tray, which will be passed to click callbacks. May be NULL.
++ * - `SDL_PROP_TRAY_CREATE_LEFTCLICK_CALLBACK_POINTER`: an
++ *   SDL_TrayClickCallback to be invoked when the tray icon is left-clicked.
++ *   Not supported on all platforms. The callback should return true to show
++ *   the default menu, or false to skip showing it. May be NULL.
++ * - `SDL_PROP_TRAY_CREATE_RIGHTCLICK_CALLBACK_POINTER`: an
++ *   SDL_TrayClickCallback to be invoked when the tray icon is right-clicked.
++ *   Not supported on all platforms. The callback should return true to show
++ *   the default menu, or false to skip showing it. May be NULL.
++ * - `SDL_PROP_TRAY_CREATE_MIDDLECLICK_CALLBACK_POINTER`: an
++ *   SDL_TrayClickCallback to be invoked when the tray icon is middle-clicked.
++ *   Not supported on all platforms. May be NULL.
++ *
++ * \param props the properties to use.
++ * \returns The newly created system tray icon.
++ *
++ * \threadsafety This function should only be called on the main thread.
++ *
++ * \since This function is available since SDL 3.6.0.
++ *
++ * \sa SDL_CreateTray
++ * \sa SDL_CreateTrayMenu
++ * \sa SDL_GetTrayMenu
++ * \sa SDL_DestroyTray
++ */
++extern SDL_DECLSPEC SDL_Tray * SDLCALL SDL_CreateTrayWithProperties(SDL_PropertiesID props);
++
++#define SDL_PROP_TRAY_CREATE_ICON_POINTER                 "SDL.tray.create.icon"
++#define SDL_PROP_TRAY_CREATE_TOOLTIP_STRING               "SDL.tray.create.tooltip"
++#define SDL_PROP_TRAY_CREATE_USERDATA_POINTER             "SDL.tray.create.userdata"
++#define SDL_PROP_TRAY_CREATE_LEFTCLICK_CALLBACK_POINTER   "SDL.tray.create.leftclick_callback"
++#define SDL_PROP_TRAY_CREATE_RIGHTCLICK_CALLBACK_POINTER  "SDL.tray.create.rightclick_callback"
++#define SDL_PROP_TRAY_CREATE_MIDDLECLICK_CALLBACK_POINTER "SDL.tray.create.middleclick_callback"
++
+ /**
+  * Updates the system tray icon's icon.
+  *
+diff --git a/src/dynapi/SDL_dynapi.sym b/src/dynapi/SDL_dynapi.sym
+index ec2e97beb..ab010a779 100644
+--- a/src/dynapi/SDL_dynapi.sym
++++ b/src/dynapi/SDL_dynapi.sym
+@@ -1271,6 +1271,7 @@ SDL3_0.0.0 {
+     SDL_LoadSurface_IO;
+     SDL_LoadSurface;
+     SDL_SetWindowFillDocument;
++    SDL_CreateTrayWithProperties;
+     # extra symbols go here (don't modify this line)
+   local: *;
+ };
+diff --git a/src/dynapi/SDL_dynapi_overrides.h b/src/dynapi/SDL_dynapi_overrides.h
+index bf8d64273..f5d6bcf26 100644
+--- a/src/dynapi/SDL_dynapi_overrides.h
++++ b/src/dynapi/SDL_dynapi_overrides.h
+@@ -1297,3 +1297,4 @@
+ #define SDL_LoadSurface_IO SDL_LoadSurface_IO_REAL
+ #define SDL_LoadSurface SDL_LoadSurface_REAL
+ #define SDL_SetWindowFillDocument SDL_SetWindowFillDocument_REAL
++#define SDL_CreateTrayWithProperties SDL_CreateTrayWithProperties_REAL
+diff --git a/src/dynapi/SDL_dynapi_procs.h b/src/dynapi/SDL_dynapi_procs.h
+index 78a896a54..f181ffdb0 100644
+--- a/src/dynapi/SDL_dynapi_procs.h
++++ b/src/dynapi/SDL_dynapi_procs.h
+@@ -1305,3 +1305,4 @@ SDL_DYNAPI_PROC(SDL_Surface*,SDL_RotateSurface,(SDL_Surface *a,float b),(a,b),re
+ SDL_DYNAPI_PROC(SDL_Surface*,SDL_LoadSurface_IO,(SDL_IOStream *a,bool b),(a,b),return)
+ SDL_DYNAPI_PROC(SDL_Surface*,SDL_LoadSurface,(const char *a),(a),return)
+ SDL_DYNAPI_PROC(bool,SDL_SetWindowFillDocument,(SDL_Window *a,bool b),(a,b),return)
++SDL_DYNAPI_PROC(SDL_Tray*,SDL_CreateTrayWithProperties,(SDL_PropertiesID a),(a),return)
+diff --git a/src/tray/cocoa/SDL_tray.m b/src/tray/cocoa/SDL_tray.m
+index 39442e4fa..eb0f5ea83 100644
+--- a/src/tray/cocoa/SDL_tray.m
++++ b/src/tray/cocoa/SDL_tray.m
+@@ -28,7 +28,17 @@
+ #include "../SDL_tray_utils.h"
+ #include "../../video/SDL_surface_c.h"
+ 
+-/* applicationDockMenu */
++/* Forward declaration */
++struct SDL_Tray;
++
++/* Objective-C helper class to handle status item button clicks */
++@interface SDLTrayClickHandler : NSObject
++@property (nonatomic, assign) struct SDL_Tray *tray;
++@property (nonatomic, strong) id middleClickMonitor;
++- (void)handleClick:(id)sender;
++- (void)startMonitoringMiddleClicks;
++- (void)stopMonitoringMiddleClicks;
++@end
+ 
+ struct SDL_TrayMenu {
+     NSMenu *nsmenu;
+@@ -56,8 +66,93 @@ struct SDL_Tray {
+     NSStatusItem *statusItem;
+ 
+     SDL_TrayMenu *menu;
++    SDLTrayClickHandler *clickHandler;
++
++    void *userdata;
++    SDL_TrayClickCallback left_click_callback;
++    SDL_TrayClickCallback right_click_callback;
++    SDL_TrayClickCallback middle_click_callback;
+ };
+ 
++@implementation SDLTrayClickHandler
++
++- (void)handleClick:(id)sender
++{
++    if (!self.tray) {
++        return;
++    }
++
++    NSEvent *event = [NSApp currentEvent];
++    NSUInteger buttonNumber = [event buttonNumber];
++
++    bool show_menu = false;
++
++    if (buttonNumber == 0) {
++        /* Left click */
++        if (self.tray->left_click_callback) {
++            show_menu = self.tray->left_click_callback(self.tray->userdata, self.tray);
++        } else {
++            show_menu = true;
++        }
++    } else if (buttonNumber == 1) {
++        /* Right click */
++        if (self.tray->right_click_callback) {
++            show_menu = self.tray->right_click_callback(self.tray->userdata, self.tray);
++        } else {
++            show_menu = true;
++        }
++    } else if (buttonNumber == 2) {
++        /* Middle click */
++        if (self.tray->middle_click_callback) {
++            self.tray->middle_click_callback(self.tray->userdata, self.tray);
++        }
++    }
++
++    if (show_menu && self.tray->menu) {
++        [self.tray->statusItem popUpStatusItemMenu:self.tray->menu->nsmenu];
++    }
++}
++
++- (void)startMonitoringMiddleClicks
++{
++    if (self.middleClickMonitor) {
++        return;
++    }
++
++    __weak SDLTrayClickHandler *weakSelf = self;
++    self.middleClickMonitor = [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskOtherMouseUp handler:^NSEvent *(NSEvent *event) {
++        SDLTrayClickHandler *strongSelf = weakSelf;
++        if (!strongSelf || !strongSelf.tray || [event buttonNumber] != 2) {
++            return event;
++        }
++
++        /* Check if the click is within the status item's button bounds */
++        NSPoint clickLocation = [event locationInWindow];
++        NSWindow *statusItemWindow = strongSelf.tray->statusItem.button.window;
++
++        if (statusItemWindow && event.window == statusItemWindow) {
++            NSPoint localPoint = [strongSelf.tray->statusItem.button convertPoint:clickLocation fromView:nil];
++            if (NSPointInRect(localPoint, strongSelf.tray->statusItem.button.bounds)) {
++                if (strongSelf.tray->middle_click_callback) {
++                    strongSelf.tray->middle_click_callback(strongSelf.tray->userdata, strongSelf.tray);
++                }
++            }
++        }
++
++        return event;
++    }];
++}
++
++- (void)stopMonitoringMiddleClicks
++{
++    if (self.middleClickMonitor) {
++        [NSEvent removeMonitor:self.middleClickMonitor];
++        self.middleClickMonitor = nil;
++    }
++}
++
++@end
++
+ static void DestroySDLMenu(SDL_TrayMenu *menu)
+ {
+     for (int i = 0; i < menu->nEntries; i++) {
+@@ -82,13 +177,16 @@ void SDL_UpdateTrays(void)
+ {
+ }
+ 
+-SDL_Tray *SDL_CreateTray(SDL_Surface *icon, const char *tooltip)
++SDL_Tray *SDL_CreateTrayWithProperties(SDL_PropertiesID props)
+ {
+     if (!SDL_IsMainThread()) {
+         SDL_SetError("This function should be called on the main thread");
+         return NULL;
+     }
+ 
++    SDL_Surface *icon = (SDL_Surface *)SDL_GetPointerProperty(props, SDL_PROP_TRAY_CREATE_ICON_POINTER, NULL);
++    const char *tooltip = SDL_GetStringProperty(props, SDL_PROP_TRAY_CREATE_TOOLTIP_STRING, NULL);
++
+     if (icon) {
+         icon = SDL_ConvertSurface(icon, SDL_PIXELFORMAT_RGBA32);
+         if (!icon) {
+@@ -102,6 +200,11 @@ SDL_Tray *SDL_CreateTray(SDL_Surface *icon, const char *tooltip)
+         return NULL;
+     }
+ 
++    tray->userdata = SDL_GetPointerProperty(props, SDL_PROP_TRAY_CREATE_USERDATA_POINTER, NULL);
++    tray->left_click_callback = (SDL_TrayClickCallback)SDL_GetPointerProperty(props, SDL_PROP_TRAY_CREATE_LEFTCLICK_CALLBACK_POINTER, NULL);
++    tray->right_click_callback = (SDL_TrayClickCallback)SDL_GetPointerProperty(props, SDL_PROP_TRAY_CREATE_RIGHTCLICK_CALLBACK_POINTER, NULL);
++    tray->middle_click_callback = (SDL_TrayClickCallback)SDL_GetPointerProperty(props, SDL_PROP_TRAY_CREATE_MIDDLECLICK_CALLBACK_POINTER, NULL);
++
+     tray->statusItem = nil;
+     tray->statusBar = [NSStatusBar systemStatusBar];
+     tray->statusItem = [tray->statusBar statusItemWithLength:NSVariableStatusItemLength];
+@@ -140,11 +243,40 @@ SDL_Tray *SDL_CreateTray(SDL_Surface *icon, const char *tooltip)
+         SDL_DestroySurface(icon);
+     }
+ 
++    /* Create click handler and set up button to receive clicks */
++    tray->clickHandler = [[SDLTrayClickHandler alloc] init];
++    tray->clickHandler.tray = tray;
++
++    [tray->statusItem.button setTarget:tray->clickHandler];
++    [tray->statusItem.button setAction:@selector(handleClick:)];
++    [tray->statusItem.button sendActionOn:(NSEventMaskLeftMouseUp | NSEventMaskRightMouseUp)];
++
++    /* Start monitoring for middle clicks since status items don't receive them via the normal action mechanism */
++    [tray->clickHandler startMonitoringMiddleClicks];
++
+     SDL_RegisterTray(tray);
+ 
+     return tray;
+ }
+ 
++SDL_Tray *SDL_CreateTray(SDL_Surface *icon, const char *tooltip)
++{
++    SDL_Tray *tray;
++    SDL_PropertiesID props = SDL_CreateProperties();
++    if (!props) {
++        return NULL;
++    }
++    if (icon) {
++        SDL_SetPointerProperty(props, SDL_PROP_TRAY_CREATE_ICON_POINTER, icon);
++    }
++    if (tooltip) {
++        SDL_SetStringProperty(props, SDL_PROP_TRAY_CREATE_TOOLTIP_STRING, tooltip);
++    }
++    tray = SDL_CreateTrayWithProperties(props);
++    SDL_DestroyProperties(props);
++    return tray;
++}
++
+ void SDL_SetTrayIcon(SDL_Tray *tray, SDL_Surface *icon)
+ {
+     if (!SDL_ObjectValid(tray, SDL_OBJECT_TYPE_TRAY)) {
+@@ -216,7 +348,7 @@ SDL_TrayMenu *SDL_CreateTrayMenu(SDL_Tray *tray)
+     NSMenu *nsmenu = [[NSMenu alloc] init];
+     [nsmenu setAutoenablesItems:FALSE];
+ 
+-    [tray->statusItem setMenu:nsmenu];
++    /* Don't set menu on statusItem - we handle menu display manually in the click handler */
+ 
+     tray->menu = menu;
+     menu->nsmenu = nsmenu;
+@@ -518,6 +650,12 @@ void SDL_DestroyTray(SDL_Tray *tray)
+         DestroySDLMenu(tray->menu);
+     }
+ 
++    if (tray->clickHandler) {
++        [tray->clickHandler stopMonitoringMiddleClicks];
++        tray->clickHandler.tray = NULL;
++        tray->clickHandler = nil;
++    }
++
+     SDL_free(tray);
+ }
+ 
+diff --git a/src/tray/dummy/SDL_tray.c b/src/tray/dummy/SDL_tray.c
+index 7bedbb3e9..71ac2da91 100644
+--- a/src/tray/dummy/SDL_tray.c
++++ b/src/tray/dummy/SDL_tray.c
+@@ -29,6 +29,12 @@ void SDL_UpdateTrays(void)
+ {
+ }
+ 
++SDL_Tray *SDL_CreateTrayWithProperties(SDL_PropertiesID props)
++{
++    SDL_Unsupported();
++    return NULL;
++}
++
+ SDL_Tray *SDL_CreateTray(SDL_Surface *icon, const char *tooltip)
+ {
+     SDL_Unsupported();
+diff --git a/src/tray/unix/SDL_tray.c b/src/tray/unix/SDL_tray.c
+index 719281fe1..d932dd375 100644
+--- a/src/tray/unix/SDL_tray.c
++++ b/src/tray/unix/SDL_tray.c
+@@ -239,7 +239,7 @@ void SDL_UpdateTrays(void)
+     }
+ }
+ 
+-SDL_Tray *SDL_CreateTray(SDL_Surface *icon, const char *tooltip)
++SDL_Tray *SDL_CreateTrayWithProperties(SDL_PropertiesID props)
+ {
+     if (!SDL_IsMainThread()) {
+         SDL_SetError("This function should be called on the main thread");
+@@ -250,6 +250,8 @@ SDL_Tray *SDL_CreateTray(SDL_Surface *icon, const char *tooltip)
+         return NULL;
+     }
+ 
++    SDL_Surface *icon = (SDL_Surface *)SDL_GetPointerProperty(props, SDL_PROP_TRAY_CREATE_ICON_POINTER, NULL);
++
+     SDL_Tray *tray = NULL;
+     SDL_GtkContext *gtk = SDL_Gtk_EnterContext();
+     if (!gtk) {
+@@ -327,6 +329,24 @@ tray_error:
+     return NULL;
+ }
+ 
++SDL_Tray *SDL_CreateTray(SDL_Surface *icon, const char *tooltip)
++{
++    SDL_Tray *tray;
++    SDL_PropertiesID props = SDL_CreateProperties();
++    if (!props) {
++        return NULL;
++    }
++    if (icon) {
++        SDL_SetPointerProperty(props, SDL_PROP_TRAY_CREATE_ICON_POINTER, icon);
++    }
++    if (tooltip) {
++        SDL_SetStringProperty(props, SDL_PROP_TRAY_CREATE_TOOLTIP_STRING, tooltip);
++    }
++    tray = SDL_CreateTrayWithProperties(props);
++    SDL_DestroyProperties(props);
++    return tray;
++}
++
+ void SDL_SetTrayIcon(SDL_Tray *tray, SDL_Surface *icon)
+ {
+     if (!SDL_ObjectValid(tray, SDL_OBJECT_TYPE_TRAY)) {
+diff --git a/src/tray/windows/SDL_tray.c b/src/tray/windows/SDL_tray.c
+index e293bd6d9..fd46b6e3f 100644
+--- a/src/tray/windows/SDL_tray.c
++++ b/src/tray/windows/SDL_tray.c
+@@ -62,6 +62,11 @@ struct SDL_Tray {
+     HWND hwnd;
+     HICON icon;
+     SDL_TrayMenu *menu;
++
++    void *userdata;
++    SDL_TrayClickCallback left_click_callback;
++    SDL_TrayClickCallback right_click_callback;
++    SDL_TrayClickCallback middle_click_callback;
+ };
+ 
+ static UINT_PTR get_next_id(void)
+@@ -119,10 +124,35 @@ LRESULT CALLBACK TrayWindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lPar
+ 
+     switch (uMsg) {
+         case WM_TRAYICON:
+-            if (LOWORD(lParam) == WM_CONTEXTMENU || LOWORD(lParam) == WM_LBUTTONUP) {
+-                SetForegroundWindow(hwnd);
++            {
++                bool show_menu = false;
++
++                switch (LOWORD(lParam)) {
++                    case WM_LBUTTONUP:
++                        if (tray->left_click_callback) {
++                            show_menu = tray->left_click_callback(tray->userdata, tray);
++                        } else {
++                            show_menu = true;
++                        }
++                        break;
++
++                    case WM_CONTEXTMENU:
++                        if (tray->right_click_callback) {
++                            show_menu = tray->right_click_callback(tray->userdata, tray);
++                        } else {
++                            show_menu = true;
++                        }
++                        break;
++
++                    case WM_MBUTTONUP:
++                        if (tray->middle_click_callback) {
++                            tray->middle_click_callback(tray->userdata, tray);
++                        }
++                        break;
++                }
+ 
+-                if (tray->menu) {
++                if (show_menu && tray->menu) {
++                    SetForegroundWindow(hwnd);
+                     TrackPopupMenu(tray->menu->hMenu, TPM_BOTTOMALIGN | TPM_RIGHTALIGN, GET_X_LPARAM(wParam), GET_Y_LPARAM(wParam), 0, hwnd, NULL);
+                 }
+             }
+@@ -267,7 +297,7 @@ static bool SDL_RegisterTrayClass(LPCWSTR className)
+     return true;
+ }
+ 
+-SDL_Tray *SDL_CreateTray(SDL_Surface *icon, const char *tooltip)
++SDL_Tray *SDL_CreateTrayWithProperties(SDL_PropertiesID props)
+ {
+     if (!SDL_IsMainThread()) {
+         SDL_SetError("This function should be called on the main thread");
+@@ -280,9 +310,18 @@ SDL_Tray *SDL_CreateTray(SDL_Surface *icon, const char *tooltip)
+         return NULL;
+     }
+ 
++    SDL_Surface *icon = (SDL_Surface *)SDL_GetPointerProperty(props, SDL_PROP_TRAY_CREATE_ICON_POINTER, NULL);
++    const char *tooltip = SDL_GetStringProperty(props, SDL_PROP_TRAY_CREATE_TOOLTIP_STRING, NULL);
++
++    tray->userdata = SDL_GetPointerProperty(props, SDL_PROP_TRAY_CREATE_USERDATA_POINTER, NULL);
++    tray->left_click_callback = (SDL_TrayClickCallback)SDL_GetPointerProperty(props, SDL_PROP_TRAY_CREATE_LEFTCLICK_CALLBACK_POINTER, NULL);
++    tray->right_click_callback = (SDL_TrayClickCallback)SDL_GetPointerProperty(props, SDL_PROP_TRAY_CREATE_RIGHTCLICK_CALLBACK_POINTER, NULL);
++    tray->middle_click_callback = (SDL_TrayClickCallback)SDL_GetPointerProperty(props, SDL_PROP_TRAY_CREATE_MIDDLECLICK_CALLBACK_POINTER, NULL);
++
+     tray->menu = NULL;
+     if (!SDL_RegisterTrayClass(TEXT("SDL_TRAY"))) {
+         SDL_SetError("Failed to register SDL_TRAY window class");
++        SDL_free(tray);
+         return NULL;
+     }
+     tray->hwnd = CreateWindowEx(0, TEXT("SDL_TRAY"), NULL, WS_OVERLAPPEDWINDOW,
+@@ -297,9 +336,13 @@ SDL_Tray *SDL_CreateTray(SDL_Surface *icon, const char *tooltip)
+     tray->nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP | NIF_SHOWTIP;
+     tray->nid.uCallbackMessage = WM_TRAYICON;
+     tray->nid.uVersion = NOTIFYICON_VERSION_4;
+-    wchar_t *tooltipw = WIN_UTF8ToStringW(tooltip);
+-    SDL_wcslcpy(tray->nid.szTip, tooltipw, sizeof(tray->nid.szTip) / sizeof(*tray->nid.szTip));
+-    SDL_free(tooltipw);
++    if (tooltip) {
++        wchar_t *tooltipw = WIN_UTF8ToStringW(tooltip);
++        if(tooltipw) {
++            SDL_wcslcpy(tray->nid.szTip, tooltipw, sizeof(tray->nid.szTip) / sizeof(*tray->nid.szTip));
++            SDL_free(tooltipw);
++        }
++    }
+ 
+     if (icon) {
+         tray->nid.hIcon = WIN_CreateIconFromSurface(icon);
+@@ -324,6 +367,24 @@ SDL_Tray *SDL_CreateTray(SDL_Surface *icon, const char *tooltip)
+     return tray;
+ }
+ 
++SDL_Tray *SDL_CreateTray(SDL_Surface *icon, const char *tooltip)
++{
++    SDL_Tray *tray;
++    SDL_PropertiesID props = SDL_CreateProperties();
++    if (!props) {
++        return NULL;
++    }
++    if (icon) {
++        SDL_SetPointerProperty(props, SDL_PROP_TRAY_CREATE_ICON_POINTER, icon);
++    }
++    if (tooltip) {
++        SDL_SetStringProperty(props, SDL_PROP_TRAY_CREATE_TOOLTIP_STRING, tooltip);
++    }
++    tray = SDL_CreateTrayWithProperties(props);
++    SDL_DestroyProperties(props);
++    return tray;
++}
++
+ void SDL_SetTrayIcon(SDL_Tray *tray, SDL_Surface *icon)
+ {
+     if (!SDL_ObjectValid(tray, SDL_OBJECT_TYPE_TRAY)) {

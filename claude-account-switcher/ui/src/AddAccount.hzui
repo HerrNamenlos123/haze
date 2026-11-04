@@ -1,0 +1,46 @@
+from ui_widgets import ButtonComponent, ButtonSlotContent, TextInputComponent
+
+@emit
+// The account was added.
+added: ();
+
+@setup
+let name = reactive<str>("");
+let token = reactive<str>("");
+
+let pickIcon = () => {
+    switcher().requestPick(PickKind.Icon);
+};
+
+let add = () => {
+    let iconFile = rx.get(switcher().pickedIcon) ?? "";
+    if switcher().addAccount(rx.get(name), iconFile, rx.get(token)) {
+        name := "";
+        token := "";
+        switcher().clearPicked();
+        emits.added();
+    }
+};
+
+let submit = (value: str) => {
+    add();
+};
+
+@template [col w-grow h-fit gap-2 px-3 py-3 rounded-[6]px bg-["#1B1B21"]]
+
+div [row w-grow h-fit gap-2 items-center] {
+    Button [] paddingX=[3] paddingY=[3] textColor="#A1A1AA" focusRing=[0] @click=pickIcon {
+        #content {
+            AccountIcon [] accountId=[draftIconId] size=[28] {}
+        }
+    }
+    TextInput [] text=[name] placeholder="Name" autofocus=[true] fontSize=[13]
+        backgroundColor="#1F1F26" borderColor="#2E2E38" textColor="#E4E4E7" focusRing=[0] @submit=submit {}
+}
+TextInput [] text=[token] placeholder="Token" fontSize=[13]
+    backgroundColor="#1F1F26" borderColor="#2E2E38" textColor="#E4E4E7" focusRing=[0] @submit=submit {}
+div [row w-grow h-fit] {
+    div [w-grow] {}
+    Button [] label="Add" bg="#6D5BD0" bgHover="#7C6BDB" bgActive="#5E4EC0" textColor="#FFFFFF"
+        paddingX=[14] paddingY=[5] focusRing=[0] @click=add {}
+}

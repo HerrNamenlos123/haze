@@ -11,6 +11,7 @@ exec = "scripts/build-sdl.hz"
 # The patches build-sdl.hz applies to SDL, so changing one rebuilds it.
 inputs = [
     { module="this", dir="root", path="patches/wayland-clipboard-receive.patch" },
+    { module="this", dir="root", path="patches/tray-click-callbacks.patch" },
     { module="this", dir="root", path="patches/windows-tray.patch" },
     { module="this", dir="root", path="patches/wayland-activated.patch" },
     { module="this", dir="root", path="patches/window-floating-rect.patch" },

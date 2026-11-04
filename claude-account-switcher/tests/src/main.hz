@@ -1,0 +1,887 @@
+import claude_account_switcher_ui
+import image
+import ui_components
+import ui_elements
+import ui_layout
+
+// The switcher's store against scratch folders (a machine folder and a profile
+// repo of its own for every scenario), and its window driven headlessly: the
+// real UIContext and Clay layout with a fixed-advance text measure, synthetic
+// pointer and key input. Nothing here knows where the real files live.
+//
+// What is checked is what a user or Claude Code could see: the files on disk
+// (above all active.token, the one Claude Code reads), what the store lists,
+// and what the window draws.
+//
+// Run:  __haze__/claude_account_switcher_tests/bin/claude_account_switcher_tests [scenario]
+// Without a scenario it runs all of them; the exit code is the failure count.
+
+const WIDTH = 380;
+const HEIGHT = 420;
+const CHAR = 8.0;
+const STEP = 0.016;
+
+const TOKEN_A = "sk-ant-oat01-aaaaaaaaaaaaaaaaaaaa";
+const TOKEN_B = "sk-ant-oat01-bbbbbbbbbbbbbbbbbbbb";
+const TOKEN_C = "sk-ant-oat01-cccccccccccccccccccc";
+
+ref struct TextDraw {
+    text: str;
+    x: real;
+    y: real;
+    w: real;
+    h: real;
+}
+
+ref struct Sim {
+    mouse: Vec2 = { x: -100.0, y: -100.0 };
+    leftHeld: bool = false;
+    pointerEdges: []ui_components.PointerEdge = [];
+    keyEdges: []ui_components.KeyEdge = [];
+    texts: []str = [];
+    now: real = 1.0;
+    pass: int = 0;
+    textDraws: []TextDraw = [];
+    drawingTexts: []TextDraw = [];
+    // What the store asked the host to pick, and what the test answers.
+    picks: []claude_account_switcher_ui.PickKind = [];
+    answer: str = "";
+    checks: int = 0;
+    failures: int = 0;
+    scenario: str = "";
+
+    mut fn check(name: str, ok: bool) {
+        this.checks = this.checks + 1;
+        if !ok {
+            this.failures = this.failures + 1;
+            fmt.println(f"FAIL [{this.scenario}] {name}");
+        }
+    }
+
+    mut fn checkStr(name: str, actual: str, expected: str) {
+        this.checks = this.checks + 1;
+        if actual != expected {
+            this.failures = this.failures + 1;
+            fmt.println(f"FAIL [{this.scenario}] {name}\n  expected '{expected}'\n  got      '{actual}'");
+        }
+    }
+}
+
+// ── Fixtures ─────────────────────────────────────────────────────────
+
+// A folder of its own for every scenario, created here so the next call
+// cannot pick it again.
+fn freshDir(name: str): str {
+    let base = "/tmp";
+    if let t = env.get("TMPDIR") { base = t; }
+    if let t = env.get("TEMP") { base = t; }
+    for (let i = 0; i < 100000; i++) {
+        let dir = f"{base}/cas-tests-{name}-{i}";
+        if let present = fs.exists(dir) {
+            if !present {
+                fs.createDirectory(dir);
+                return dir;
+            }
+        }
+    }
+    sys.panic("no free fixture directory");
+}
+
+ref struct Fixture {
+    state: str;
+    repo: str;
+    // An icon file to pick: 100x50, opaque red.
+    iconFile: str;
+    // A file that is no image.
+    notImage: str;
+
+    fn synced(): str { return f"{this.repo}/claude-account-switcher"; }
+}
+
+fn solidPng(width: int, height: int, r: u8, g: u8, b: u8): Bytes {
+    let px = ByteBuffer(width * height * 4);
+    for (let i = 0; i < width * height; i++) {
+        px.push(r);
+        px.push(g);
+        px.push(b);
+        px.push(255 as u8);
+    }
+    px.commit();
+    let png = image.encodePng(image.Image.fromPixels(width, height, 4, px.bytes()));
+    if !png { sys.panic("fixture PNG"); }
+    let out: Bytes = png;
+    return out;
+}
+
+fn newFixture(sim: mut Sim): Fixture {
+    let root = freshDir(sim.scenario);
+    let f = Fixture {
+        state: f"{root}/state",
+        repo: f"{root}/profile",
+        iconFile: f"{root}/icon.png",
+        notImage: f"{root}/notes.txt",
+    };
+    fs.createDirectory(f.repo);
+    fs.writeBinary(f.iconFile, solidPng(100, 50, 255 as u8, 0 as u8, 0 as u8));
+    fs.writeText(f.notImage, "not an image");
+    return f;
+}
+
+fn open(sim: mut Sim, f: Fixture): bool {
+    let opened = claude_account_switcher_ui.openSwitcher(f.state, (kind: claude_account_switcher_ui.PickKind): none => {
+        sim.picks.push(kind);
+        let answer = sim.answer;
+        let path: str | none = none;
+        if answer.length > 0 { path = answer; }
+        claude_account_switcher_ui.switcher().picked(kind, path);
+    });
+    if opened { return true; }
+    return false;
+}
+
+fn s(): mut claude_account_switcher_ui.Switcher {
+    return claude_account_switcher_ui.switcher();
+}
+
+fn readOr(path: str, missing: str): str {
+    let text = fs.readText(path);
+    if text {
+        let value: str = text;
+        return value;
+    }
+    return missing;
+}
+
+fn exists(path: str): bool {
+    if let present = fs.exists(path) {
+        return present;
+    }
+    return false;
+}
+
+fn activeId(): str {
+    if let id = rx.get(s().active) { return id; }
+    return "<none>";
+}
+
+fn ids(): str {
+    let out = "";
+    for account in s().list() {
+        if out.length > 0 { out = out + ","; }
+        out = out + account.id + (account.hasToken ? "+" : "-");
+    }
+    return out;
+}
+
+// A fixture with the profile repo chosen and three accounts, a b c, each
+// with a token; `a` is active.
+fn threeAccounts(sim: mut Sim): Fixture {
+    let f = newFixture(sim);
+    open(sim, f);
+    s().setProfileRepo(f.repo);
+    s().addAccount("A", f.iconFile, TOKEN_A);
+    s().addAccount("B", f.iconFile, TOKEN_B);
+    s().addAccount("C", f.iconFile, TOKEN_C);
+    return f;
+}
+
+// ── First start and the profile repo ─────────────────────────────────
+
+fn scenarioFirstStart(sim: mut Sim) {
+    let f = newFixture(sim);
+    sim.check("opens without settings", open(sim, f));
+    sim.check("no profile repo yet", !s().hasProfileRepo());
+    sim.check("nothing written at start", !exists(f"{f.state}/settings.json"));
+
+    sim.check("a missing folder is refused", !s().setProfileRepo(f"{f.repo}/nope"));
+    sim.check("refusal is shown", s().hasProblem());
+    sim.check("refused folder not saved", !exists(f"{f.state}/settings.json"));
+    sim.check("an empty path is refused", !s().setProfileRepo("   "));
+
+    sim.check("an existing folder is taken", s().setProfileRepo(f.repo + "/"));
+    sim.check("problem cleared", !s().hasProblem());
+    sim.checkStr("settings file", readOr(f"{f.state}/settings.json", "<missing>"),
+        json.stringify(claude_account_switcher_ui.SettingsFile { profileRepo: f.repo, active: none }));
+    sim.checkStr("no accounts", ids(), "");
+    sim.check("synced folder only made with the first account", !exists(f.synced()));
+
+    // Opened again, it remembers.
+    open(sim, f);
+    sim.check("profile repo remembered", s().hasProfileRepo());
+}
+
+fn scenarioUnreadableSettings(sim: mut Sim) {
+    let f = newFixture(sim);
+    fs.createDirectory(f.state);
+    let path = f"{f.state}/settings.json";
+    let shapes: []str = ["{", "{}", "{\"active\":null}", "[1,2]", "{\"profileRepo\":3,\"active\":null}"];
+    for content in shapes {
+        fs.writeText(path, content);
+        sim.check(f"refuses settings {content}", !open(sim, f));
+        sim.checkStr(f"settings {content} untouched", readOr(path, "<missing>"), content);
+    }
+}
+
+// ── Adding ───────────────────────────────────────────────────────────
+
+fn scenarioAddFirstBecomesActive(sim: mut Sim) {
+    let f = newFixture(sim);
+    open(sim, f);
+    s().setProfileRepo(f.repo);
+    sim.check("added", s().addAccount("  Personal Max  ", f.iconFile, "  " + TOKEN_A + "\r\n"));
+    sim.checkStr("listed", ids(), "personal-max+");
+    sim.checkStr("name trimmed", s().list()[0].name, "Personal Max");
+    sim.checkStr("accounts.json", readOr(f"{f.synced()}/accounts.json", "<missing>"),
+        "{\"accounts\":[{\"id\":\"personal-max\",\"name\":\"Personal Max\"}]}");
+    sim.checkStr("token stored trimmed", readOr(f"{f.state}/tokens/personal-max.token", "<missing>"), TOKEN_A);
+    sim.checkStr("active.token is exactly the token", readOr(f"{f.state}/active.token", "<missing>"), TOKEN_A);
+    sim.checkStr("active", activeId(), "personal-max");
+    sim.check("token not in the repo", !readOr(f"{f.synced()}/accounts.json", "").contains("sk-ant"));
+
+    let png = fs.readBinary(f"{f.synced()}/icons/personal-max.png");
+    sim.check("icon stored", png ? true : false);
+    if png {
+        let decoded = image.decode(png, 4);
+        sim.check("icon decodes", decoded ? true : false);
+        if decoded {
+            let icon: image.Image = decoded;
+            sim.check("icon is 64x64", icon.width == 64 && icon.height == 64);
+            // 100x50 fits as 64x32, centred: rows 0..15 transparent, 16..47 red.
+            let at = (y: int, x: int): int => (y * 64 + x) * 4;
+            sim.check("top row transparent", icon.pixels[at(0, 32) + 3] == 0);
+            sim.check("bottom row transparent", icon.pixels[at(63, 32) + 3] == 0);
+            sim.check("middle opaque red", icon.pixels[at(32, 32) + 3] == 255 && icon.pixels[at(32, 32)] > 200 && icon.pixels[at(32, 32) + 2] < 50);
+            sim.check("first image row opaque", icon.pixels[at(16, 32) + 3] > 200);
+            sim.check("row above it transparent", icon.pixels[at(15, 32) + 3] < 50);
+        }
+    }
+
+    sim.check("second added", s().addAccount("Personal Max", f.iconFile, TOKEN_B));
+    sim.checkStr("same name gets its own id", ids(), "personal-max+,personal-max-2+");
+    sim.checkStr("first stays active", activeId(), "personal-max");
+    sim.checkStr("active.token unchanged", readOr(f"{f.state}/active.token", "<missing>"), TOKEN_A);
+}
+
+fn scenarioAddRefused(sim: mut Sim) {
+    let f = newFixture(sim);
+    open(sim, f);
+    sim.check("refused before a profile repo", !s().addAccount("A", f.iconFile, TOKEN_A));
+    s().setProfileRepo(f.repo);
+    let cases: []str = ["no name", "no token", "not a token", "token with space", "no icon", "icon not an image", "icon missing"];
+    sim.check(cases[0], !s().addAccount("  ", f.iconFile, TOKEN_A));
+    sim.check(cases[1], !s().addAccount("A", f.iconFile, "   "));
+    sim.check(cases[2], !s().addAccount("A", f.iconFile, "hello"));
+    sim.check(cases[3], !s().addAccount("A", f.iconFile, "sk-ant-oat01 abc"));
+    sim.check(cases[4], !s().addAccount("A", "", TOKEN_A));
+    sim.check(cases[5], !s().addAccount("A", f.notImage, TOKEN_A));
+    sim.check(cases[6], !s().addAccount("A", f"{f.repo}/gone.png", TOKEN_A));
+    sim.check("each refusal is shown", s().hasProblem());
+    sim.check("nothing synced", !exists(f.synced()));
+    sim.check("no token written", !exists(f"{f.state}/tokens"));
+    sim.check("nothing active", !exists(f"{f.state}/active.token"));
+}
+
+// ── Switching ────────────────────────────────────────────────────────
+
+fn scenarioSwitchCycles(sim: mut Sim) {
+    let f = threeAccounts(sim);
+    sim.checkStr("a active", activeId(), "a");
+    sim.check("switch", s().switchToNext());
+    sim.checkStr("then b", activeId(), "b");
+    sim.checkStr("b's token is active", readOr(f"{f.state}/active.token", ""), TOKEN_B);
+    s().switchToNext();
+    sim.checkStr("then c", activeId(), "c");
+    s().switchToNext();
+    sim.checkStr("wraps to a", activeId(), "a");
+    sim.checkStr("a's token is active", readOr(f"{f.state}/active.token", ""), TOKEN_A);
+    sim.checkStr("remembered", readOr(f"{f.state}/settings.json", ""),
+        json.stringify(claude_account_switcher_ui.SettingsFile { profileRepo: f.repo, active: "a" }));
+
+    // b without a token on this machine (as after a pull): skipped.
+    fs.removeFile(f"{f.state}/tokens/b.token");
+    sim.check("switch skipping b", s().switchToNext());
+    sim.checkStr("skips b", activeId(), "c");
+    sim.checkStr("listed without token", ids(), "a+,b-,c+");
+    s().switchToNext();
+    sim.checkStr("back to a", activeId(), "a");
+}
+
+fn scenarioSwitchSingleAndNone(sim: mut Sim) {
+    let f = newFixture(sim);
+    open(sim, f);
+    s().setProfileRepo(f.repo);
+    sim.check("nothing to switch to", !s().switchToNext());
+    s().addAccount("Only", f.iconFile, TOKEN_A);
+    sim.check("single account switches to itself", s().switchToNext());
+    sim.checkStr("still only", activeId(), "only");
+    sim.checkStr("its token", readOr(f"{f.state}/active.token", ""), TOKEN_A);
+}
+
+// ── Tokens ───────────────────────────────────────────────────────────
+
+fn scenarioReplaceActiveToken(sim: mut Sim) {
+    let f = threeAccounts(sim);
+    sim.check("replaced", s().setToken("a", TOKEN_C));
+    sim.checkStr("token file", readOr(f"{f.state}/tokens/a.token", ""), TOKEN_C);
+    sim.checkStr("active.token follows", readOr(f"{f.state}/active.token", ""), TOKEN_C);
+    sim.check("inactive replaced", s().setToken("b", TOKEN_A));
+    sim.checkStr("active.token not touched", readOr(f"{f.state}/active.token", ""), TOKEN_C);
+    sim.check("bad token refused", !s().setToken("b", "nope"));
+    sim.checkStr("old one kept", readOr(f"{f.state}/tokens/b.token", ""), TOKEN_A);
+    sim.check("unknown account refused", !s().setToken("zzz", TOKEN_A));
+    sim.check("no token file for it", !exists(f"{f.state}/tokens/zzz.token"));
+}
+
+// Another machine added accounts; this one pulled the repo but has no token.
+fn scenarioSyncedFromElsewhere(sim: mut Sim) {
+    let f = newFixture(sim);
+    open(sim, f);
+    s().setProfileRepo(f.repo);
+    fs.createDirectory(f"{f.synced()}/icons");
+    fs.writeText(f"{f.synced()}/accounts.json", "{\"accounts\":[{\"id\":\"work\",\"name\":\"Work\"},{\"id\":\"home\",\"name\":\"Home\"}]}");
+    fs.writeBinary(f"{f.synced()}/icons/work.png", solidPng(64, 64, 0 as u8, 0 as u8, 255 as u8));
+    sim.check("reloads", s().reload());
+    sim.checkStr("listed, no tokens", ids(), "work-,home-");
+    sim.checkStr("nothing active", activeId(), "<none>");
+    sim.check("no active.token", !exists(f"{f.state}/active.token"));
+    sim.check("work has its icon", s().iconOf("work") ? true : false);
+    sim.check("home has none", s().iconOf("home") ? false : true);
+    sim.check("switch has nothing", !s().switchToNext());
+
+    sim.check("token entered", s().setToken("home", TOKEN_B));
+    sim.checkStr("home now active", activeId(), "home");
+    sim.checkStr("its token", readOr(f"{f.state}/active.token", ""), TOKEN_B);
+    sim.checkStr("accounts.json untouched by a token", readOr(f"{f.synced()}/accounts.json", ""),
+        "{\"accounts\":[{\"id\":\"work\",\"name\":\"Work\"},{\"id\":\"home\",\"name\":\"Home\"}]}");
+}
+
+// ── Removing ─────────────────────────────────────────────────────────
+
+fn scenarioRemove(sim: mut Sim) {
+    let f = threeAccounts(sim);
+    sim.check("remove inactive", s().removeAccount("b"));
+    sim.checkStr("b gone", ids(), "a+,c+");
+    sim.check("b's icon gone", !exists(f"{f.synced()}/icons/b.png"));
+    sim.check("b's token gone", !exists(f"{f.state}/tokens/b.token"));
+    sim.checkStr("a still active", activeId(), "a");
+
+    sim.check("remove active", s().removeAccount("a"));
+    sim.checkStr("c takes over", activeId(), "c");
+    sim.checkStr("c's token active", readOr(f"{f.state}/active.token", ""), TOKEN_C);
+
+    sim.check("remove last", s().removeAccount("c"));
+    sim.checkStr("none active", activeId(), "<none>");
+    sim.check("active.token removed", !exists(f"{f.state}/active.token"));
+    sim.checkStr("empty list saved", readOr(f"{f.synced()}/accounts.json", ""), "{\"accounts\":[]}");
+}
+
+// The active account was removed on another machine, and this one pulled.
+fn scenarioRemovedElsewhere(sim: mut Sim) {
+    let f = threeAccounts(sim);
+    fs.writeText(f"{f.synced()}/accounts.json", "{\"accounts\":[{\"id\":\"b\",\"name\":\"B\"},{\"id\":\"c\",\"name\":\"C\"}]}");
+    sim.check("reloads", s().reload());
+    sim.checkStr("a gone", ids(), "b+,c+");
+    sim.checkStr("b takes over", activeId(), "b");
+    sim.checkStr("b's token active", readOr(f"{f.state}/active.token", ""), TOKEN_B);
+    sim.check("a's orphan token removed", !exists(f"{f.state}/tokens/a.token"));
+}
+
+// ── Files that cannot be used are never written ─────────────────────
+
+fn scenarioBadAccountsFile(sim: mut Sim) {
+    let f = threeAccounts(sim);
+    let path = f"{f.synced()}/accounts.json";
+    let shapes: []str = [
+        "{",
+        "{}",
+        "{\"accounts\":[{\"id\":\"a\"}]}",
+        "{\"accounts\":[{\"id\":\"../../evil\",\"name\":\"E\"}]}",
+        "{\"accounts\":[{\"id\":\"A\",\"name\":\"Upper\"}]}",
+        "{\"accounts\":[{\"id\":\"a\",\"name\":\"A\"},{\"id\":\"a\",\"name\":\"Again\"}]}",
+        "{\"accounts\":[{\"id\":\"a\",\"name\":\"  \"}]}",
+    ];
+    for content in shapes {
+        fs.writeText(path, content);
+        sim.check(f"reload refuses {content}", !s().reload());
+        sim.check(f"shown: {content}", s().hasProblem());
+        sim.checkStr(f"nothing listed: {content}", ids(), "");
+        sim.check(f"add refused: {content}", !s().addAccount("D", f.iconFile, TOKEN_A));
+        sim.check(f"switch refused: {content}", !s().switchToNext());
+        sim.checkStr(f"file untouched: {content}", readOr(path, "<missing>"), content);
+        sim.check(f"tokens kept: {content}", exists(f"{f.state}/tokens/a.token") && exists(f"{f.state}/tokens/c.token"));
+        sim.checkStr(f"active.token kept: {content}", readOr(f"{f.state}/active.token", ""), TOKEN_A);
+    }
+    sim.check("no file escaped the folders", !exists(f"{f.repo}/../evil.png"));
+}
+
+// ── Found by the review (2026-11-04) ─────────────────────────────────
+
+// active.token is the active account's token, or absent while none is: the
+// invariant every operation must leave behind.
+fn checkConsistent(sim: mut Sim, f: Fixture, name: str) {
+    let active = readOr(f"{f.state}/active.token", "<missing>");
+    if let id = rx.get(s().active) {
+        sim.checkStr(f"{name}: active.token is {id}'s token", active, readOr(f"{f.state}/tokens/{id}.token", "<no token file>"));
+        let settings = readOr(f"{f.state}/settings.json", "");
+        sim.check(f"{name}: settings name {id}", settings.contains(f"\"active\":\"{id}\""));
+    } else {
+        sim.checkStr(f"{name}: no active.token while none is active", active, "<missing>");
+    }
+}
+
+// The profile repo folder without accounts.json (moved, a wrong folder, a
+// branch without it) while this machine has tokens: nothing is deleted.
+fn scenarioAccountsFileMissing(sim: mut Sim) {
+    let f = threeAccounts(sim);
+    let path = f"{f.synced()}/accounts.json";
+    fs.removeFile(path);
+    sim.check("reload refuses", !s().reload());
+    sim.check("shown", s().hasProblem());
+    sim.check("tokens kept", exists(f"{f.state}/tokens/a.token") && exists(f"{f.state}/tokens/b.token") && exists(f"{f.state}/tokens/c.token"));
+    sim.checkStr("active.token kept", readOr(f"{f.state}/active.token", "<missing>"), TOKEN_A);
+    sim.check("switch refused", !s().switchToNext());
+    sim.checkStr("still a's token", readOr(f"{f.state}/active.token", "<missing>"), TOKEN_A);
+    sim.check("add refused", !s().addAccount("D", f.iconFile, TOKEN_A));
+    sim.check("no accounts.json made", !exists(path));
+
+    // Another existing folder chosen by mistake: the same.
+    let other = f"{f.repo}/elsewhere";
+    fs.createDirectory(other);
+    s().setProfileRepo(other);
+    sim.check("wrong folder: tokens kept", exists(f"{f.state}/tokens/a.token"));
+    sim.checkStr("wrong folder: active.token kept", readOr(f"{f.state}/active.token", "<missing>"), TOKEN_A);
+}
+
+// An empty list pulled from another machine removes every account there, so
+// here too: their tokens go, and nothing is active.
+fn scenarioEmptyListPulled(sim: mut Sim) {
+    let f = threeAccounts(sim);
+    fs.writeText(f"{f.synced()}/accounts.json", "{\"accounts\":[]}");
+    sim.check("reloads", s().reload());
+    sim.checkStr("none listed", ids(), "");
+    sim.check("tokens removed", !exists(f"{f.state}/tokens/a.token") && !exists(f"{f.state}/tokens/c.token"));
+    checkConsistent(sim, f, "after empty list");
+}
+
+// active.token missing or holding another token (deleted by hand, a crash, a
+// settings save that failed after it was written): the next reload restores
+// it from the active account's token.
+fn scenarioActiveTokenRestored(sim: mut Sim) {
+    let f = threeAccounts(sim);
+    fs.removeFile(f"{f.state}/active.token");
+    s().reload();
+    checkConsistent(sim, f, "after delete");
+    fs.writeText(f"{f.state}/active.token", TOKEN_C);
+    s().reload();
+    checkConsistent(sim, f, "after foreign token");
+    // Opened again from disk (a restart), too.
+    fs.writeText(f"{f.state}/active.token", TOKEN_B);
+    open(sim, f);
+    checkConsistent(sim, f, "after restart");
+    sim.checkStr("still a", activeId(), "a");
+    s().switchToNext();
+    checkConsistent(sim, f, "after switch");
+    s().setToken("b", TOKEN_C);
+    checkConsistent(sim, f, "after new token");
+    s().removeAccount("b");
+    checkConsistent(sim, f, "after remove");
+}
+
+// A token file that is no token (edited by hand, cut short): never copied
+// into active.token, and the failure is shown.
+fn scenarioBadTokenFile(sim: mut Sim) {
+    let f = threeAccounts(sim);
+    fs.writeText(f"{f.state}/tokens/b.token", "garbage");
+    sim.check("switch to b fails", !s().switchToNext());
+    sim.check("shown", s().hasProblem());
+    sim.checkStr("a stays", activeId(), "a");
+    sim.checkStr("a's token stays", readOr(f"{f.state}/active.token", "<missing>"), TOKEN_A);
+    checkConsistent(sim, f, "after failed switch");
+}
+
+// A switch while something reads active.token (Claude Code's credential
+// command does, many times a minute): the replacement is never refused, and
+// the reader goes on reading what it opened.
+fn scenarioSwitchWhileRead(sim: mut Sim) {
+    let f = threeAccounts(sim);
+    let opened = fs.openRead(f"{f.state}/active.token");
+    if opened is fs.Error {
+        sim.check("reader opened", false);
+        return;
+    }
+    let reader: mut fs.FileReader = opened;
+    sim.check("switch while read", s().switchToNext());
+    sim.checkStr("switched", activeId(), "b");
+    sim.checkStr("new token in place", readOr(f"{f.state}/active.token", "<missing>"), TOKEN_B);
+    while !reader.done() {
+        reader.readSome(4096);
+    }
+    sim.checkStr("reader saw the old token", reader.text(), TOKEN_A);
+    // And a read that is still open while the file is replaced twice.
+    let again = fs.openRead(f"{f.state}/active.token");
+    if again is fs.Error {
+        sim.check("second reader opened", false);
+        return;
+    }
+    let held: mut fs.FileReader = again;
+    sim.check("second switch while read", s().switchToNext());
+    sim.check("third switch while read", s().switchToNext());
+    held.close();
+    sim.checkStr("back to a", activeId(), "a");
+    checkConsistent(sim, f, "after switches while read");
+}
+
+// Names Windows keeps for devices: tokens/nul.token is not a file there.
+fn scenarioReservedNames(sim: mut Sim) {
+    let f = newFixture(sim);
+    open(sim, f);
+    s().setProfileRepo(f.repo);
+    s().addAccount("Nul", f.iconFile, TOKEN_A);
+    s().addAccount("CON", f.iconFile, TOKEN_B);
+    s().addAccount("com1", f.iconFile, TOKEN_C);
+    sim.checkStr("reserved names get another id", ids(), "nul-2+,con-2+,com1-2+");
+    fs.writeText(f"{f.synced()}/accounts.json", "{\"accounts\":[{\"id\":\"aux\",\"name\":\"Aux\"}]}");
+    sim.check("a reserved id from elsewhere is refused", !s().reload());
+}
+
+// A failed switch, then the window opens: the reason is still there.
+fn scenarioWindowShowsSwitchFailure(sim: mut Sim) {
+    let f = threeAccounts(sim);
+    let activation = rx.reactive<int>(0);
+    let w = openWindow(sim, activation);
+    fs.writeText(f"{f.state}/tokens/b.token", "garbage");
+    s().switchToNext();
+    activation := rx.get(activation) + 1;
+    w.frames(4);
+    sim.check("problem still shown", s().hasProblem());
+    sim.check("problem drawn", findTextStarting(sim, "The token of b") ? true : false);
+}
+
+fn findTextStarting(sim: mut Sim, prefix: str): TextDraw | none {
+    for d in sim.textDraws {
+        if d.text.startsWith(prefix) {
+            return d;
+        }
+    }
+    return none;
+}
+
+// ── Ids ──────────────────────────────────────────────────────────────
+
+fn scenarioSlugs(sim: mut Sim) {
+    sim.checkStr("plain", claude_account_switcher_ui.slugOf("Personal"), "personal");
+    sim.checkStr("spaces and symbols", claude_account_switcher_ui.slugOf("  Max 20x / Work!! "), "max-20x-work");
+    sim.checkStr("non-ASCII dropped", claude_account_switcher_ui.slugOf("Ärger"), "rger");
+    sim.checkStr("nothing left", claude_account_switcher_ui.slugOf("!!!"), "account");
+    sim.checkStr("dashes collapse", claude_account_switcher_ui.slugOf("a--b__c"), "a-b-c");
+    sim.check("token shape ok", !claude_account_switcher_ui.invalidToken(TOKEN_A));
+    sim.check("token with tab", claude_account_switcher_ui.invalidToken("sk-ant-a\tb") ? true : false);
+}
+
+// ── image.resize ─────────────────────────────────────────────────────
+
+fn scenarioResize(sim: mut Sim) {
+    // Left half red, right half blue.
+    let px = ByteBuffer(8 * 4 * 4);
+    for (let y = 0; y < 4; y++) {
+        for (let x = 0; x < 8; x++) {
+            if x < 4 { px.push(255 as u8); px.push(0 as u8); px.push(0 as u8); }
+            else { px.push(0 as u8); px.push(0 as u8); px.push(255 as u8); }
+            px.push(255 as u8);
+        }
+    }
+    px.commit();
+    let img = image.Image.fromPixels(8, 4, 4, px.bytes());
+    let small = image.resize(img, 4, 2);
+    sim.check("shape", small.width == 4 && small.height == 2 && small.channels == 4 && small.pixels.length == 32);
+    sim.check("left stays red", small.pixels[0] > 200 && small.pixels[2] < 50);
+    sim.check("right stays blue", small.pixels[12] < 50 && small.pixels[14] > 200);
+    sim.check("opaque", small.pixels[3] == 255 && small.pixels[31] == 255);
+    let big = image.resize(img, 64, 64);
+    sim.check("upscaled shape", big.width == 64 && big.height == 64 && big.pixels.length == 64 * 64 * 4);
+    let grey = image.resize(image.Image.fromPixels(1, 1, 1, Bytes(128 as u8)), 3, 3);
+    sim.check("grey 1x1 to 3x3", grey.channels == 1 && grey.pixels.length == 9 && grey.pixels[4] == 128);
+
+    // RGB and grey with alpha keep their channel count and their colour.
+    let rgb = ByteBuffer(4 * 3);
+    for (let i = 0; i < 4; i++) { rgb.push(10 as u8); rgb.push(200 as u8); rgb.push(30 as u8); }
+    rgb.commit();
+    let rgbSmall = image.resize(image.Image.fromPixels(2, 2, 3, rgb.bytes()), 1, 1);
+    sim.check("rgb 2x2 to 1x1", rgbSmall.channels == 3 && rgbSmall.pixels.length == 3
+        && rgbSmall.pixels[0] < 20 && rgbSmall.pixels[1] > 190 && rgbSmall.pixels[2] < 40);
+    let ga = ByteBuffer(2 * 2);
+    ga.push(255 as u8); ga.push(255 as u8);
+    ga.push(0 as u8); ga.push(0 as u8);
+    ga.commit();
+    let gaSmall = image.resize(image.Image.fromPixels(2, 1, 2, ga.bytes()), 1, 1);
+    // Alpha-weighted: the transparent black pixel adds no darkness.
+    sim.check("grey+alpha keeps white", gaSmall.channels == 2 && gaSmall.pixels[0] > 240 && gaSmall.pixels[1] > 100 && gaSmall.pixels[1] < 160);
+
+    // Transparent red next to opaque blue: no red fringe in the blend.
+    let fringe = ByteBuffer(2 * 4);
+    fringe.push(255 as u8); fringe.push(0 as u8); fringe.push(0 as u8); fringe.push(0 as u8);
+    fringe.push(0 as u8); fringe.push(0 as u8); fringe.push(255 as u8); fringe.push(255 as u8);
+    fringe.commit();
+    let blend = image.resize(image.Image.fromPixels(2, 1, 4, fringe.bytes()), 1, 1);
+    sim.check("no colour from transparent pixels", blend.pixels[0] < 20 && blend.pixels[2] > 230);
+}
+
+// ── The window ───────────────────────────────────────────────────────
+
+ref struct Window {
+    sim: mut Sim;
+    ui: ui_components.UIContext;
+    layout: ui_layout.LayoutContext;
+
+    mut fn frame() {
+        let sim = this.sim;
+        sim.now = sim.now + STEP;
+        let tree = this.ui.process();
+        if !tree { return; }
+        if !this.ui.frameNeedsPaint() { return; }
+        sim.pass = this.ui.beginRenderFeedback();
+        sim.drawingTexts = [];
+        this.layout.render(tree, {
+            renderFilledRectangle: (position: Vec2, size: Vec2, color: Color, cornerRadius: ui_layout.CornerRadiusValues): void => {},
+            renderText: (element: ui_layout.ffi.hzui_draw_text_element_t): void => {
+                sim.drawingTexts.push({ text: element.text, x: element.position.x, y: element.position.y, w: element.size.x, h: element.size.y });
+            },
+            onBoundingBox: (element: ui_elements.Element, pos: Vec2, size: Vec2): void => {
+                ui_components.applyRenderFeedback(element, pos, size, sim.pass);
+            },
+            renderCanvas: (element: ui_elements.CanvasElement): void => {},
+            renderBorder: (position: Vec2, size: Vec2, borderColor: Color, cornerRadius: ui_layout.CornerRadiusValues, borderWidth: ui_layout.ffi.hzui_border_widths_t): void => {},
+            setClip: (clip: ui_layout.ResolvedClip): void => {},
+        });
+        sim.textDraws = sim.drawingTexts;
+    }
+
+    mut fn frames(count: int) {
+        for (let i = 0; i < count; i++) {
+            this.frame();
+        }
+    }
+
+    mut fn click(pos: Vec2) {
+        this.sim.now = this.sim.now + 2.0;
+        this.sim.mouse = pos;
+        this.sim.pointerEdges.push({ button: ui_components.PointerButton.None, kind: ui_components.PointerEdgeKind.Moved, pos: pos });
+        this.frames(2);
+        this.sim.leftHeld = true;
+        this.sim.pointerEdges.push({ button: ui_components.PointerButton.Left, kind: ui_components.PointerEdgeKind.Pressed, pos: pos });
+        this.frame();
+        this.sim.leftHeld = false;
+        this.sim.pointerEdges.push({ button: ui_components.PointerButton.Left, kind: ui_components.PointerEdgeKind.Released, pos: pos });
+        this.frames(3);
+    }
+
+    mut fn hover(pos: Vec2) {
+        this.sim.mouse = pos;
+        this.sim.pointerEdges.push({ button: ui_components.PointerButton.None, kind: ui_components.PointerEdgeKind.Moved, pos: pos });
+        this.frames(3);
+    }
+
+    mut fn type(text: str) {
+        this.sim.texts.push(text);
+        this.frames(2);
+    }
+}
+
+fn openWindow(sim: mut Sim, activation: rx.Reactive<int>): mut Window {
+    let layout = ui_layout.LayoutContext({
+        width: WIDTH,
+        height: HEIGHT,
+        fonts: [{ name: "default", id: 0 }, { name: "roboto", id: 0 }],
+        getFontLineHeight: (fontId: int, fontSize: real): real => fontSize * 1.3,
+        measureText: (fontId: int, fontSize: real, text: str): Vec2 => Vec2(text.length as real * CHAR, fontSize * 1.3),
+    });
+    layout.setLayoutSize(WIDTH, HEIGHT);
+    let ui = ui_components.UIContext({
+        ui: (ui: ui_components.UIContext) => {
+            claude_account_switcher_ui.RootComponent(ui, { id: 0, activation: activation });
+        },
+        mousePos: () => sim.mouse,
+        clock: () => sim.now,
+        pointerButtons: ui_components.PointerHeldCallbacks {
+            leftHeld: () => sim.leftHeld,
+            middleHeld: () => false,
+            rightHeld: () => false,
+            edgesThisFrame: (): []ui_components.PointerEdge => {
+                let out: []ui_components.PointerEdge = [];
+                for e in sim.pointerEdges { out.push(e); }
+                sim.pointerEdges.clear();
+                return out;
+            },
+            reportsMotion: true,
+        },
+        inputExtras: ui_components.InputExtrasCallbacks {
+            wheelDelta: () => Vec2(0.0, 0.0),
+            modifiers: () => KeyModifiers.None,
+        },
+        keyboard: ui_components.KeyboardCallbacks {
+            keyEdgesThisFrame: (): []ui_components.KeyEdge => {
+                let out: []ui_components.KeyEdge = [];
+                for e in sim.keyEdges { out.push(e); }
+                sim.keyEdges.clear();
+                return out;
+            },
+            textInputThisFrame: (): []str => {
+                let out: []str = [];
+                for t in sim.texts { out.push(t); }
+                sim.texts.clear();
+                return out;
+            },
+        },
+        measureText: (fontFamily: str, fontSize: real, text: str): Vec2 => {
+            return layout.measureText(fontFamily, fontSize, text);
+        },
+        provideFont: (name: str, bytes: Bytes): void => {
+            layout.registerFont(name, 0);
+        },
+    });
+    let w = Window { sim: sim, ui: ui, layout: layout };
+    w.frames(5);
+    return w;
+}
+
+fn findText(sim: mut Sim, text: str): TextDraw | none {
+    for d in sim.textDraws {
+        if d.text == text {
+            return d;
+        }
+    }
+    return none;
+}
+
+fn shows(sim: mut Sim, text: str): bool {
+    if findText(sim, text) { return true; }
+    return false;
+}
+
+fn centerOf(sim: mut Sim, text: str): Vec2 {
+    if let d = findText(sim, text) {
+        return Vec2(d.x + d.w / 2.0, d.y + d.h / 2.0);
+    }
+    return Vec2(-100.0, -100.0);
+}
+
+// A text box, found by its placeholder (drawn while it is empty): a click
+// into it focuses it.
+fn clickBox(w: mut Window, placeholder: str): bool {
+    if !shows(w.sim, placeholder) { return false; }
+    w.click(centerOf(w.sim, placeholder));
+    return true;
+}
+
+// The whole first start, as the user does it: the folder, then an account.
+fn scenarioWindowFirstStart(sim: mut Sim) {
+    let f = newFixture(sim);
+    open(sim, f);
+    let activation = rx.reactive<int>(0);
+    let w = openWindow(sim, activation);
+    sim.check("asks for the profile repo", shows(sim, "Profile repo"));
+    sim.check("no accounts view yet", !shows(sim, "No accounts"));
+
+    // A wrong folder: shown, still asking.
+    sim.check("path box", clickBox(w, "C:\\Users\\...\\Projects\\profile"));
+    w.type(f"{f.repo}/nope");
+    w.click(centerOf(sim, "Use"));
+    sim.check("still asking", shows(sim, "Profile repo"));
+    sim.check("problem shown", s().hasProblem());
+
+    // The folder picker fills the box.
+    sim.answer = f.repo;
+    s().requestPick(claude_account_switcher_ui.PickKind.Folder);
+    w.frames(3);
+    w.click(centerOf(sim, "Use"));
+    sim.check("accounts view", shows(sim, "No accounts"));
+    sim.check("repo taken", s().hasProfileRepo());
+    sim.check("problem gone", !s().hasProblem());
+}
+
+fn scenarioWindowTokenMissing(sim: mut Sim) {
+    let f = newFixture(sim);
+    open(sim, f);
+    s().setProfileRepo(f.repo);
+    fs.createDirectory(f.synced());
+    fs.writeText(f"{f.synced()}/accounts.json", "{\"accounts\":[{\"id\":\"work\",\"name\":\"Work\"}]}");
+    s().reload();
+    let activation = rx.reactive<int>(0);
+    let w = openWindow(sim, activation);
+    sim.check("account listed", shows(sim, "Work"));
+    sim.check("asks for its token", clickBox(w, "Token for this machine"));
+    w.type(TOKEN_A);
+    w.click(centerOf(sim, "Save"));
+    sim.checkStr("saved", readOr(f"{f.state}/tokens/work.token", "<missing>"), TOKEN_A);
+    sim.checkStr("now active", activeId(), "work");
+    sim.check("token box gone", !shows(sim, "Token for this machine"));
+    sim.check("token never drawn", !shows(sim, TOKEN_A));
+}
+
+fn scenarioWindowRemoveAsks(sim: mut Sim) {
+    let f = threeAccounts(sim);
+    let activation = rx.reactive<int>(0);
+    let w = openWindow(sim, activation);
+    sim.check("three rows", shows(sim, "A") && shows(sim, "B") && shows(sim, "C"));
+    // The trash button shows on hover, right of the name; the name's row is
+    // the whole width, so the button sits near the right edge.
+    let row = centerOf(sim, "B");
+    w.hover(row);
+    w.click(Vec2((WIDTH as real) - 30.0, row.y));
+    sim.check("asks first", shows(sim, "Remove"));
+    sim.checkStr("nothing removed yet", ids(), "a+,b+,c+");
+    w.click(centerOf(sim, "Remove"));
+    sim.checkStr("b removed", ids(), "a+,c+");
+    sim.check("b's row gone", !shows(sim, "B"));
+}
+
+// Opening the window reads the files again: what a pull changed shows.
+fn scenarioWindowReloadsOnOpen(sim: mut Sim) {
+    let f = threeAccounts(sim);
+    let activation = rx.reactive<int>(0);
+    let w = openWindow(sim, activation);
+    fs.writeText(f"{f.synced()}/accounts.json", "{\"accounts\":[{\"id\":\"c\",\"name\":\"C\"},{\"id\":\"x\",\"name\":\"Pulled\"}]}");
+    activation := rx.get(activation) + 1;
+    w.frames(4);
+    sim.check("pulled account shows", shows(sim, "Pulled"));
+    sim.check("removed one gone", !shows(sim, "A"));
+    sim.checkStr("active moved to c", activeId(), "c");
+}
+
+fn main(): int {
+    let args = sys.args();
+    let only = args.length >= 2 ? args[1] : "";
+    let sim = Sim {};
+    let run = (name: str, body: (s: mut Sim) => none): none => {
+        if only.length > 0 && only != name { return; }
+        sim.scenario = name;
+        sim.answer = "";
+        body(sim);
+    };
+    run("first-start", (s: mut Sim) => { scenarioFirstStart(s); });
+    run("unreadable-settings", (s: mut Sim) => { scenarioUnreadableSettings(s); });
+    run("add-first-becomes-active", (s: mut Sim) => { scenarioAddFirstBecomesActive(s); });
+    run("add-refused", (s: mut Sim) => { scenarioAddRefused(s); });
+    run("switch-cycles", (s: mut Sim) => { scenarioSwitchCycles(s); });
+    run("switch-single-and-none", (s: mut Sim) => { scenarioSwitchSingleAndNone(s); });
+    run("replace-active-token", (s: mut Sim) => { scenarioReplaceActiveToken(s); });
+    run("synced-from-elsewhere", (s: mut Sim) => { scenarioSyncedFromElsewhere(s); });
+    run("remove", (s: mut Sim) => { scenarioRemove(s); });
+    run("removed-elsewhere", (s: mut Sim) => { scenarioRemovedElsewhere(s); });
+    run("bad-accounts-file", (s: mut Sim) => { scenarioBadAccountsFile(s); });
+    run("accounts-file-missing", (s: mut Sim) => { scenarioAccountsFileMissing(s); });
+    run("empty-list-pulled", (s: mut Sim) => { scenarioEmptyListPulled(s); });
+    run("active-token-restored", (s: mut Sim) => { scenarioActiveTokenRestored(s); });
+    run("bad-token-file", (s: mut Sim) => { scenarioBadTokenFile(s); });
+    run("switch-while-read", (s: mut Sim) => { scenarioSwitchWhileRead(s); });
+    run("reserved-names", (s: mut Sim) => { scenarioReservedNames(s); });
+    run("window-shows-switch-failure", (s: mut Sim) => { scenarioWindowShowsSwitchFailure(s); });
+    run("slugs", (s: mut Sim) => { scenarioSlugs(s); });
+    run("resize", (s: mut Sim) => { scenarioResize(s); });
+    run("window-first-start", (s: mut Sim) => { scenarioWindowFirstStart(s); });
+    run("window-token-missing", (s: mut Sim) => { scenarioWindowTokenMissing(s); });
+    run("window-remove-asks", (s: mut Sim) => { scenarioWindowRemoveAsks(s); });
+    run("window-reloads-on-open", (s: mut Sim) => { scenarioWindowReloadsOnOpen(s); });
+    fmt.println(f"{sim.checks - sim.failures}/{sim.checks} checks passed");
+    return sim.failures;
+}

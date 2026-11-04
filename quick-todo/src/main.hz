@@ -193,6 +193,13 @@ fn main(): int {
                 a.hide();
                 hiddenAt = sdl.getTime();
             }
+            // A left click on the icon (Windows) or "Open Quick Todo" in the
+            // menu shows it. Clicking the icon while the window is open first
+            // takes the focus away and hides it: that click must not show it
+            // again.
+            while let click = tray.takeIconClick() {
+                if click == sdl.TrayClick.Left && sdl.getTime() - hiddenAt > 0.3 { show(); }
+            }
             if let clicked = tray.takeClicked() {
                 if clicked == 1 { quitApp(); }
                 else if sdl.getTime() - hiddenAt > 0.3 { show(); }

@@ -1,0 +1,36 @@
+name = "claude-account-switcher"
+id = "CasW1n8k"
+version = "1.0.0"
+description = "Switches every running Claude Code session to another Claude account with one click on the tray icon"
+license = "MIT"
+authors = ["HerrNamenlos123"]
+type = "exe"
+
+[app]
+appId = "io.github.hazelang.ClaudeAccountSwitcher"
+displayName = "Claude Account Switcher"
+icon = "../resources/haze-logo.png"
+categories = ["Utility"]
+
+[scripts.win32]
+# Release build, installed for the current user where the login entry looks for
+# it (%LOCALAPPDATA%\Programs\claude-account-switcher, see
+# stdlib/app/install-windows.ps1), with a Start menu entry. One line: cmd.exe
+# does not take the multi-line form.
+install = 'haze build --release && powershell -NoProfile -ExecutionPolicy Bypass -File ../stdlib/app/install-windows.ps1 -Name claude-account-switcher -DisplayName "Claude Account Switcher"'
+# The same, then starts the installed program (unless the previous version still runs).
+install-run = 'haze build --release && powershell -NoProfile -ExecutionPolicy Bypass -File ../stdlib/app/install-windows.ps1 -Name claude-account-switcher -DisplayName "Claude Account Switcher" -Run'
+
+[linker.win32]
+flags = ["-Wl,/SUBSYSTEM:WINDOWS", "-Wl,/ENTRY:mainCRTStartup"]
+
+[dependencies]
+ui_components = { path = "../stdlib/ui_components" }
+ui_runtime = { path = "../stdlib/ui_runtime" }
+app = { path = "../stdlib/app" }
+sdl = { path = "../stdlib/sdl" }
+image = { path = "../stdlib/image" }
+filedialog = { path = "../stdlib/filedialog" }
+single_instance = { path = "../stdlib/single_instance" }
+autostart = { path = "../stdlib/autostart" }
+claude_account_switcher_ui = { path = "ui" }

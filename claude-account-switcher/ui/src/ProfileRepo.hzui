@@ -1,0 +1,46 @@
+from ui_widgets import ButtonComponent, TextInputComponent
+
+// Where the profile repo is on this machine: typed, or picked with a native
+// folder picker. The first view the switcher ever shows, and the top of its
+// settings.
+
+@emit
+// The folder was taken (setProfileRepo succeeded).
+done: ();
+
+@setup
+let path = reactive<str>(rx.get(switcher().profileRepo) ?? "");
+
+ui.watch(() => rx.get(switcher().pickedFolder), (value, old) => {
+    if let picked = value {
+        path := picked;
+    }
+});
+
+let browse = () => {
+    switcher().requestPick(PickKind.Folder);
+};
+
+let use = () => {
+    if switcher().setProfileRepo(rx.get(path)) {
+        emits.done();
+    }
+};
+
+let submit = (value: str) => {
+    use();
+};
+
+@template [col w-grow h-fit gap-2]
+
+text [text-color-["#A1A1AA"] font-size-12] ["Profile repo"]
+div [row w-grow h-fit gap-2 items-center] {
+    TextInput [] text=[path] placeholder="C:\\Users\\...\\Projects\\profile" fontSize=[13]
+        backgroundColor="#1F1F26" borderColor="#2E2E38" textColor="#E4E4E7" focusRing=[0] @submit=submit {}
+    Button [] icon="folder-opened" paddingX=[7] paddingY=[5] textColor="#A1A1AA" focusRing=[0] @click=browse {}
+}
+div [row w-grow h-fit] {
+    div [w-grow] {}
+    Button [] label="Use" bg="#6D5BD0" bgHover="#7C6BDB" bgActive="#5E4EC0" textColor="#FFFFFF"
+        paddingX=[14] paddingY=[5] focusRing=[0] @click=use {}
+}
