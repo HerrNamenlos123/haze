@@ -724,6 +724,30 @@ fn scenarioWindowMenuButtonIsNotARowClick(sim: mut Sim) {
     sim.check("the menu opened", shows(sim, "Rename"));
 }
 
+// The open menu covers what is under it: the pointer on the menu hovers no
+// row beneath it (whose hover shows its menu button).
+fn scenarioWindowMenuCoversRows(sim: mut Sim) {
+    let f = threeAccounts(sim);
+    let activation = rx.reactive<int>(0);
+    let w = openWindow(sim, activation);
+    let rowC = centerOf(sim, "C");
+    // Opened on A, the menu hangs down over B's and C's rows.
+    w.rightClick(centerOf(sim, "A"));
+    sim.check("menu open", shows(sim, "Rename"));
+    let onMenu = Vec2(centerOf(sim, "Change icon").x, rowC.y);
+    w.hover(onMenu);
+    let buttonOnC = false;
+    for d in sim.textDraws {
+        if d.x > (WIDTH as real) - 60.0 && d.y < rowC.y + 8.0 && d.y + d.h > rowC.y - 8.0 {
+            buttonOnC = true;
+        }
+    }
+    sim.check("the row under the menu is not hovered", !buttonOnC);
+    // Off the menu again, a row does hover.
+    w.hover(Vec2((WIDTH as real) - 30.0, rowC.y));
+    sim.check("menu still open", shows(sim, "Rename"));
+}
+
 // ── Ids ──────────────────────────────────────────────────────────────
 
 fn scenarioSlugs(sim: mut Sim) {
@@ -1212,6 +1236,7 @@ fn main(): int {
     run("window-escape-order", (s: mut Sim) => { scenarioWindowEscapeOrder(s); });
     run("window-rename-ends-on-click-outside", (s: mut Sim) => { scenarioWindowRenameEndsOnClickOutside(s); });
     run("window-menu-button-is-not-a-row-click", (s: mut Sim) => { scenarioWindowMenuButtonIsNotARowClick(s); });
+    run("window-menu-covers-rows", (s: mut Sim) => { scenarioWindowMenuCoversRows(s); });
     fmt.println(f"{sim.checks - sim.failures}/{sim.checks} checks passed");
     return sim.failures;
 }

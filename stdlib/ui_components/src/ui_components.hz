@@ -3201,16 +3201,14 @@ export opaque ref struct UIContext {
 
     // Traverses the full tree, updates hover/hit reactive state, and
     // schedules onHoverEnter/Leave + onHitEnter/Leave callbacks onto
-    // `eventQueue`. Neither is bubbling: every element that geometrically
-    // contains mousePos gets its own independent hover-transition (ancestors
-    // included -- this matches HTML/CSS :hover exactly), and separately,
-    // whichever of those is not itself contained by a hit child also gets
-    // its own hit-transition. Callbacks are only scheduled here, not
-    // invoked -- see process()'s FIRE PHASE.
+    // `eventQueue`. Neither is bubbling: the element on top under the pointer
+    // (`topmost`, below) and every element containing it gets its own
+    // independent hover-transition (ancestors included, as HTML/CSS :hover),
+    // and the topmost one alone also gets its hit-transition. Callbacks are
+    // only scheduled here, not invoked -- see process()'s FIRE PHASE.
     //
-    // Returns whether mousePos is over this element's own bounds *or* any
-    // descendant's (recursively) -- used by the caller (a parent frame of
-    // this same recursion) to know whether it's disqualified from "hit".
+    // Returns whether this element is the topmost one or contains it -- used
+    // by the caller (a parent frame of this same recursion) for its hover.
     // `hidden` -- this element is inside a `display: none` subtree (either
     // it is hidden itself or an ancestor is). Such an element is NOT simply
     // skipped: the walk still descends into it, but with every hit forced
@@ -3235,16 +3233,21 @@ export opaque ref struct UIContext {
     // freezes the last frame's answer, so the element under the pointer's exit
     // point stays lit and its onHoverLeave never fires. Same trap as `hidden`,
     // same fix.
-    fn updateHoverState(element: ui_elements.Element, mousePos: Vec2, buttons: PointerButtons, eventQueue: []QueuedHandler, pointerPresent: bool = true, hidden: bool = false): bool :: final {
+    //
+    // `topmost` -- the globalId of the element the pointer is on, the last of
+    // this frame's hit path ("" when it is on none). As in CSS, that element
+    // and every element containing it are hovered, and only it is hit; an
+    // element merely under the pointer but covered by another (a menu
+    // floating over a list) is not, any more than a click reaches it. So the
+    // geometry, clipping and `display: none` rules are collectHitPath's
+    // alone, and hover cannot disagree with where a click goes.
+    fn updateHoverState(element: ui_elements.Element, mousePos: Vec2, buttons: PointerButtons, eventQueue: []QueuedHandler, topmost: str, pointerPresent: bool = true, hidden: bool = false): bool :: final {
         let subtreeHidden = hidden || ui_elements.isDisplayNone(element);
         // Only a box the latest layout reported -- see collectHitPath.
         let box = currentRenderFeedback(element, this._renderFeedbackPass);
         let selfHit = false;
-        // A hidden element keeps the bounding box it had when it was last
-        // visible, so the geometry test would still pass -- it has to be
-        // suppressed explicitly rather than relying on the box being gone.
-        if pointerPresent && !subtreeHidden && box {
-            selfHit = boxContains(box, mousePos);
+        if pointerPresent && !subtreeHidden && topmost.length > 0 {
+            selfHit = globalIdOf(element) == topmost;
         }
         // Content this element clips away from the pointer is not under it:
         // its subtree is walked as hidden, which un-hovers whatever was.
@@ -3261,7 +3264,7 @@ export opaque ref struct UIContext {
         let childHover = false;
         if element is ui_elements.DivElement {
             for child in element.children {
-                if this.updateHoverState(child, mousePos, buttons, eventQueue, pointerPresent, childrenHidden) {
+                if this.updateHoverState(child, mousePos, buttons, eventQueue, topmost, pointerPresent, childrenHidden) {
                     childHover = true;
                 }
             }
@@ -4286,7 +4289,11 @@ export opaque ref struct UIContext {
             // last frame's hover frozen in place -- the element the pointer
             // left the window through stays lit, which is a claim about where
             // the pointer is that we know to be false.
-            this.updateHoverState(tree, this.mousePos, buttons, eventQueue, pointerLocated);
+            let topmost = "";
+            if finalHitPath.length > 0 {
+                topmost = globalIdOf(finalHitPath[finalHitPath.length - 1]);
+            }
+            this.updateHoverState(tree, this.mousePos, buttons, eventQueue, topmost, pointerLocated);
 
             // The pointer's shape follows whatever it is currently over, so
             // it is resolved from this frame's hit path -- the same path the
