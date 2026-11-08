@@ -13,11 +13,11 @@ let quit = () => {
     emits.quit();
 };
 
-@template [col w-grow h-grow p-4 gap-4]
+@template [col w-grow h-grow p-[14]px gap-[10]px]
 
 ProfileRepo [] @done=close {}
-div [w-grow h-grow] {}
-div [row w-grow h-fit] {
+div [row w-grow h-fit pt-[10]px border-t-[1] border-color-[border]] {
     div [w-grow] {}
-    Button [] label="Quit" bgHover="#C42B1C" textColor="#E4E4E7" focusRing=[0] @click=quit {}
+    Button [] label="Quit" bg=[raised] bgHover=[danger] bgActive=[dangerHover] textColor=[text1]
+        paddingX=[10] paddingY=[5] rounded=[radiusControl] focusRing=[0] @click=quit {}
 }

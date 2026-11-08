@@ -13,6 +13,7 @@ and against which commit it was verified; re-check a note against the code befor
 - [Array insert/remove and string loops](reference_haze_array_string_mutation.md) - in-place edits, narrow mut-subscript rule, quadratic concat
 - [No glyph fallback](reference_haze_ui_font_glyphs.md) - tofu for uncovered chars; tabs have no glyph
 - [stdlib/claude](project_claude_module.md) - Haze client for the Claude CLI; zero-alloc idle path; test suites
+- [Claude usage tracking](claude-usage-tracking.md) - 1-token probe, Claude Code's usage cache entry and its lock; contract in claude-account-switcher/usage
 - [stdlib/clipboard](project_clipboard_module.md) - backends, files, tests, what could not be verified
 - [codeeditor save and conflict model](project_codeeditor_saving.md) - diverged vs conflict flags, registry, ex commands
 - [codeeditor workspace and LSP](project_codeeditor_workspace_lsp.md) - servers belong to the workspace; projectRootPath rule
@@ -78,3 +79,6 @@ and against which commit it was verified; re-check a note against the code befor
 - [Remembered window state](window-state-remembering.md) - storage, placement rule, SDL patch, gaps
 - [Windows apps: console program, detached console](windows-gui-subsystem-no-console.md) - every [app] links console + detached manifest; why not /SUBSYSTEM:WINDOWS
 - [Windows command-line limit](windows-command-line-limit.md) - compile/link args go through a response file (cmd.exe caps 8191 chars); --rsp-quoting=windows
+- [Build timing traps](build-timing-traps.md) - a src/ edit rebuilds every module; Parsing includes generator time
+- [Profiling and Node runs](profiling-and-node-runs.md) - profile/debug scripts; Node-hosted runs need Node 22+; Bun profiler drops big profiles
+- [Dev compiler paths](dev-compiler-paths.md) - run from the repo root (parser found via cwd); embed paths resolve against haze.toml's dir

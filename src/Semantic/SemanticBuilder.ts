@@ -365,10 +365,11 @@ export class SemanticBuilder {
         // The condition is not known at compile time, build normal constraints
 
         // This is the actual point where constraints like assert() are applied to the remaining scope
-        const c = ConstraintSet.empty();
-        this.sr.e.buildLogicalConstraintSet(c, passedArgId);
+        const facts = this.sr.e.conditionFacts(passedArgId);
         this.sr.e.currentContext.constraints.addAll(
-          noReturnIf.operation === "noreturn-if-truthy" ? c.inverse() : c
+          noReturnIf.operation === "noreturn-if-truthy"
+            ? facts.whenFalse
+            : facts.whenTrue
         );
       }
     }

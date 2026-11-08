@@ -31,16 +31,22 @@ let submit = (value: str) => {
     use();
 };
 
-@template [col w-grow h-fit gap-2]
+@template [col w-grow h-grow gap-[10]px]
 
-text [text-color-["#A1A1AA"] font-size-12] ["Profile repo"]
-div [row w-grow h-fit gap-2 items-center] {
-    TextInput [] text=[path] placeholder="C:\\Users\\...\\Projects\\profile" fontSize=[13]
-        backgroundColor="#1F1F26" borderColor="#2E2E38" textColor="#E4E4E7" focusRing=[0] @submit=submit {}
-    Button [] icon="folder-opened" paddingX=[7] paddingY=[5] textColor="#A1A1AA" focusRing=[0] @click=browse {}
+div [col w-grow h-fit gap-[4]px] {
+    text [text-color-[text2] font-size-[smallSize]] ["Profile repo"]
+    div [row w-grow h-fit gap-[6]px items-center] {
+        TextInput [] text=[path] placeholder="C:\\Users\\...\\Projects\\profile" fontSize=[textSize] fontFamily=[fontRegular]
+            backgroundColor=[canvas] borderColor=[borderStrong] textColor=[text1] placeholderColor=[text3]
+            selectionColor=[pressed] caretColor=[accent] paddingX=[8] paddingY=[5] rounded=[radiusControl] focusRing=[0]
+            @submit=submit {}
+        Button [] label="Browse" bg=[raised] bgHover=[hover] bgActive=[pressed] textColor=[text1]
+            paddingX=[10] paddingY=[5] rounded=[radiusControl] focusRing=[0] @click=browse {}
+    }
 }
+div [w-grow h-grow] {}
 div [row w-grow h-fit] {
     div [w-grow] {}
-    Button [] label="Use" bg="#6D5BD0" bgHover="#7C6BDB" bgActive="#5E4EC0" textColor="#FFFFFF"
-        paddingX=[14] paddingY=[5] focusRing=[0] @click=use {}
+    Button [] label="Use folder" bg=[accent] bgHover=[accentHover] bgActive=[accentPressed] textColor=[accentInk]
+        paddingX=[10] paddingY=[5] rounded=[radiusControl] focusRing=[0] @click=use {}
 }

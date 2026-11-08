@@ -783,6 +783,32 @@ export fn indexOfFrom(haystack: str, needle: str, start: int): int {
     return -1;
 }
 
+// Whether `a` and `b` are the same text when A-Z and a-z count as equal;
+// every other byte must match exactly (HTTP header names, which are ASCII).
+export fn equalsIgnoringAsciiCase(a: str, b: str): bool {
+    if a.length != b.length {
+        return false;
+    }
+    for (let i = 0; i < a.length; i++) {
+        let x = a.slice(i, i + 1);
+        let y = b.slice(i, i + 1);
+        if x != y && asciiLower(x) != asciiLower(y) {
+            return false;
+        }
+    }
+    return true;
+}
+
+fn asciiLower(byte: str): str {
+    const upper = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    const lower = "abcdefghijklmnopqrstuvwxyz";
+    let at = indexOf(upper, byte);
+    if at < 0 {
+        return byte;
+    }
+    return lower.slice(at, at + 1);
+}
+
 export fn lastIndexOf(haystack: str, needle: str): int {
     if needle.length == 0 {
         return haystack.length;

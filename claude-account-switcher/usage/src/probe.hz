@@ -1,0 +1,80 @@
+import claude
+
+// The probe: the smallest request the API answers with usage headers. One
+// Haiku message with max_tokens 1 (about 33 input tokens and 1 output token).
+//
+// The system prompt is required, not decoration: a `claude setup-token`
+// token is accepted only for requests that identify as Claude Code. Without
+// it the API answers 429 "Error" with no usage headers, which looks like a
+// rate limit and is not (measured 2026-11-04).
+//
+// /api/oauth/usage is no alternative: it refuses setup tokens with 403
+// "OAuth token does not meet scope requirement user:profile".
+
+export const comptime PROBE_URL = "https://api.anthropic.com/v1/messages";
+export const comptime PROBE_MODEL = "claude-haiku-5-5";
+export const comptime PROBE_TIMEOUT_SECONDS = 20;
+
+const PROBE_BODY = "{\"model\":\"claude-haiku-5-5\",\"max_tokens\":1,\"system\":\"You are Claude Code, Anthropic's official CLI for Claude.\",\"messages\":[{\"role\":\"user\",\"content\":\".\"}]}";
+
+export enum ProbeState {
+    Running,
+    Done,
+}
+
+// One probe in flight. poll() until Done, then sample() or error().
+export ref struct Probe {
+    request: mut claude.HttpPost;
+    finished: bool = false;
+    resultSample: UsageSample | none = none;
+    resultError: ProbeError = ProbeError {};
+
+    fn constructor(token: str, url: str = PROBE_URL): Result<mut Probe, ProbeError> {
+        let headers: []claude.HttpHeader = [
+            claude.HttpHeader { name: "Authorization", value: f"Bearer {token}" },
+            claude.HttpHeader { name: "anthropic-beta", value: "oauth-2025-04-20" },
+            claude.HttpHeader { name: "anthropic-version", value: "2023-06-01" },
+            claude.HttpHeader { name: "content-type", value: "application/json" },
+        ];
+        let started = claude.HttpPost(url, headers, PROBE_BODY, PROBE_TIMEOUT_SECONDS);
+        if !started {
+            return ProbeError { kind: ProbeErrorKind.Network, message: started };
+        }
+        return Probe { request: started };
+    }
+
+    mut fn poll(): ProbeState {
+        if this.finished {
+            return ProbeState.Done;
+        }
+        if this.request.poll() == claude.HttpPostState.Running {
+            return ProbeState.Running;
+        }
+        this.finished = true;
+        let reply = this.request.reply();
+        // A reply with usage headers is a sample whatever its status: an
+        // account at its limit answers 429 with the headers saying so.
+        if let sample = sampleFromReply(reply) {
+            this.resultSample = sample;
+        }
+        else {
+            this.resultError = errorFromReply(reply);
+        }
+        return ProbeState.Done;
+    }
+
+    // The sample, once Done; none means error() says why.
+    fn sample(): UsageSample | none {
+        assert(this.finished, "Probe.sample() before poll() returned Done");
+        return this.resultSample;
+    }
+
+    fn error(): ProbeError {
+        assert(this.finished, "Probe.error() before poll() returned Done");
+        return this.resultError;
+    }
+
+    mut fn cancel() {
+        this.request.cancel();
+    }
+}

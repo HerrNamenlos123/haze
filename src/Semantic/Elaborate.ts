@@ -45,7 +45,7 @@ import {
 import { HazeErrorCode } from "../shared/ErrorCodes";
 import { makeTempId, makeTempName } from "../shared/store";
 import {
-  ConditionChain,
+  ConditionFacts,
   type ConstraintPath,
   ConstraintSet,
 } from "./Constraint";
@@ -870,7 +870,7 @@ export class SemanticElaborator {
 
       // This builds the constraints that apply to the expr itself, the right part of the AND
       const constraints = this.currentContext.constraints.clone();
-      this.buildLogicalConstraintSet(constraints, leftId);
+      constraints.addAll(this.conditionFacts(leftId).whenTrue);
 
       let [right, rightId] = this.withAdditionalConstraints(constraints, () =>
         this.expr(binaryExpr.right, inference)
@@ -909,16 +909,11 @@ export class SemanticElaborator {
       leftId = this.unwrapReactiveOrComputedIfPossible(leftId);
       left = this.sr.exprNodes.get(leftId);
 
-      // Build only the DELTA constraints from the left side (not including the current context).
-      // The right side of || is evaluated when the left is false, so we invert the delta.
-      // We must NOT include the current context in the set being inverted, because
-      // withAdditionalConstraints already merges the current context — inverting outer guards
-      // (like "props.ref is not none") would corrupt narrowing on the right side.
-      const deltaConstraints = ConstraintSet.empty();
-      this.buildLogicalConstraintSet(deltaConstraints, leftId);
-
+      // The right side of || is evaluated when the left is false. Only the
+      // left side's own facts: withAdditionalConstraints already merges the
+      // current context.
       let [right, rightId] = this.withAdditionalConstraints(
-        deltaConstraints.inverse(),
+        this.conditionFacts(leftId).whenFalse,
         () => this.expr(binaryExpr.right, inference)
       );
       rightId = this.unwrapReactiveOrComputedIfPossible(rightId);
@@ -3907,7 +3902,7 @@ export class SemanticElaborator {
           )[1];
 
           const constraints = this.currentContext.constraints.clone();
-          this.buildLogicalConstraintSet(constraints, narrowingCondition);
+          constraints.addAll(this.conditionFacts(narrowingCondition).whenTrue);
 
           // This is a == b, with both narrowed to the variant
           const actualCondition = this.compareElaboratedExprs(
@@ -4970,7 +4965,7 @@ export class SemanticElaborator {
     );
 
     const constraints = this.currentContext.constraints.clone();
-    this.sr.e.buildLogicalConstraintSet(constraints, narrowingConditionId);
+    constraints.addAll(this.sr.e.conditionFacts(narrowingConditionId).whenTrue);
     const narrowedValueId = Conversion.MakeConversionOrThrow(
       this.sr,
       this.sr.b.symbolValue(tempVariableId, sourceloc)[1],
@@ -5279,7 +5274,7 @@ export class SemanticElaborator {
     );
 
     const constraints = this.currentContext.constraints.clone();
-    this.sr.e.buildLogicalConstraintSet(constraints, conditionId);
+    constraints.addAll(this.sr.e.conditionFacts(conditionId).whenTrue);
     const narrowedValueId = Conversion.MakeConversionOrThrow(
       this.sr,
       this.sr.b.symbolValue(tempVariableId, sourceloc)[1],
@@ -17147,9 +17142,10 @@ export class SemanticElaborator {
           };
         }
         // Non-comptime
-        const thenConstraints = ConstraintSet.empty();
+        let thenFacts: ConditionFacts;
         const branchFlows: {
-          constraints: ConstraintSet;
+          // What is known when the branch is passed over (its condition false).
+          whenFalse: ConstraintSet;
           flow: Semantic.FlowResult;
         }[] = [];
 
@@ -17200,10 +17196,7 @@ export class SemanticElaborator {
 
           if (variableAsBoolResult.ok) {
             assert(letStatement.value);
-            this.buildLogicalConstraintSet(
-              thenConstraints,
-              variableAsBoolResult.expr
-            );
+            thenFacts = this.conditionFacts(variableAsBoolResult.expr);
             const [assignmentExpr, assignmentExprId] = this.sr.b.assignment(
               variableSymbolExprId,
               EAssignmentOperation.Rebind,
@@ -17231,7 +17224,7 @@ export class SemanticElaborator {
               resultFlow.addExitFlows(guardExpr.flow);
               resultWrites.addAll(guardExpr.writes);
               resultingConditionId = this.withAdditionalConstraints(
-                thenConstraints,
+                thenFacts.whenTrue,
                 () =>
                   this.sr.b.binaryAnd(
                     [
@@ -17249,7 +17242,7 @@ export class SemanticElaborator {
                     s.sourceloc
                   )[1]
               );
-              this.buildLogicalConstraintSet(thenConstraints, guardExprId);
+              thenFacts = thenFacts.and(this.conditionFacts(guardExprId));
             } else {
               // Variable is convertible to bool but no guard, only use value
               resultingConditionId = conditionFromLet;
@@ -17259,7 +17252,7 @@ export class SemanticElaborator {
             const [e, eId] = this.expr(s.condition, undefined);
             resultFlow.addExitFlows(e.flow);
             resultWrites.addAll(e.writes);
-            this.buildLogicalConstraintSet(thenConstraints, eId);
+            thenFacts = this.conditionFacts(eId);
 
             const [assignmentExpr, assignmentExprId] = this.sr.b.assignment(
               variableSymbolExprId,
@@ -17292,7 +17285,7 @@ export class SemanticElaborator {
           resultingConditionId = this.unwrapReactiveOrComputedIfPossible(eId);
           resultFlow.addExitFlows(e.flow);
           resultWrites.addAll(e.writes);
-          this.buildLogicalConstraintSet(thenConstraints, resultingConditionId);
+          thenFacts = this.conditionFacts(resultingConditionId);
         }
 
         // Before applying constraints
@@ -17318,7 +17311,7 @@ export class SemanticElaborator {
           });
 
         const { flow, writes, scopeId } = this.withAdditionalConstraints(
-          thenConstraints,
+          thenFacts.whenTrue,
           () =>
             this.makeAndElaborateBlockScope(s.thenBlock, {
               lastExprIsEmit: false,
@@ -17329,17 +17322,16 @@ export class SemanticElaborator {
         resultWrites.addAll(writes);
         branchFlows.push({
           flow: flow,
-          constraints: thenConstraints,
+          whenFalse: thenFacts.whenFalse,
         });
 
-        const elseIfConstraints = new ConditionChain();
+        // A later branch is entered with every earlier condition false,
+        // `!A && !B`: what each one's falsity tells (and ONLY that).
+        const passedOver = thenFacts.whenFalse.clone();
         s.elseif.forEach((e) => {
           assert(e.condition);
 
-          // This contains all constraints from all previous conditions (and ONLY the conditions)
-          const thisBranchPrevConstraints = elseIfConstraints.branchConstraints(
-            thenConstraints.inverse()
-          );
+          const thisBranchPrevConstraints = passedOver.clone();
 
           // Evaluate condition with the constraints from previous branches
           const [conditionExprData, conditionExpr] =
@@ -17361,18 +17353,14 @@ export class SemanticElaborator {
             false
           );
 
-          // This contains ONLY this elseIf's condition, so it can be inverted cleanly later
-          const thisBranchConstraints = ConstraintSet.empty();
-          this.buildLogicalConstraintSet(
-            thisBranchConstraints,
-            unwrappedConditionExpr
-          );
-          elseIfConstraints.add(thisBranchConstraints);
+          // ONLY this elseIf's condition.
+          const thisBranchFacts = this.conditionFacts(unwrappedConditionExpr);
+          passedOver.addAll(thisBranchFacts.whenFalse);
 
           // This now contains ALL the conditions that actually apply to the scope
           const scopeConstraints = this.currentContext.constraints.clone();
           scopeConstraints.addAll(thisBranchPrevConstraints);
-          scopeConstraints.addAll(thisBranchConstraints);
+          scopeConstraints.addAll(thisBranchFacts.whenTrue);
 
           const { flow, writes, scopeId } = this.withAdditionalConstraints(
             scopeConstraints,
@@ -17385,7 +17373,7 @@ export class SemanticElaborator {
           resultWrites.addAll(writes);
           branchFlows.push({
             flow: flow,
-            constraints: thisBranchConstraints,
+            whenFalse: thisBranchFacts.whenFalse,
           });
 
           ifStatement.elseIfs.push({
@@ -17395,14 +17383,9 @@ export class SemanticElaborator {
         });
 
         if (s.elseBlock) {
-          // This contains all constraints from all previous conditions (and ONLY the conditions)
-          const thisBranchPrevConstraints = elseIfConstraints.branchConstraints(
-            thenConstraints.inverse()
-          );
-
           // This now contains ALL the conditions that actually apply to the scope
           const scopeConstraints = this.currentContext.constraints.clone();
-          scopeConstraints.addAll(thisBranchPrevConstraints);
+          scopeConstraints.addAll(passedOver);
 
           const { flow, writes, scopeId } = this.withAdditionalConstraints(
             scopeConstraints,
@@ -17415,7 +17398,7 @@ export class SemanticElaborator {
           resultWrites.addAll(writes);
           branchFlows.push({
             flow: flow,
-            constraints: ConstraintSet.empty(),
+            whenFalse: ConstraintSet.empty(),
           });
           ifStatement.else = scopeId;
         }
@@ -17436,7 +17419,7 @@ export class SemanticElaborator {
         if (!s.elseBlock) {
           branchFlows.push({
             flow: Semantic.FlowResult.fallthrough(),
-            constraints: ConstraintSet.empty(), // IMPORTANT: no constraints
+            whenFalse: ConstraintSet.empty(), // IMPORTANT: no constraints
           });
         }
 
@@ -17450,7 +17433,7 @@ export class SemanticElaborator {
         // through a branch that falls through, and a branch is only entered
         // with every condition before it false. So the conditions of the
         // branches BEFORE the first one that falls through are all false
-        // afterwards -- each inverted on its own, `!A && !B`, since each was
+        // afterwards -- each on its own, `!A && !B`, since each was
         // evaluated and passed over.
         //
         // Nothing is known about the conditions after that branch: it was
@@ -17466,9 +17449,7 @@ export class SemanticElaborator {
           b.flow.has(Semantic.FlowType.Fallthrough)
         );
         for (let i = 0; i < firstFallthrough; i++) {
-          this.currentContext.constraints.addAll(
-            branchFlows[i].constraints.inverse()
-          );
+          this.currentContext.constraints.addAll(branchFlows[i].whenFalse);
         }
 
         return {
@@ -17532,9 +17513,8 @@ export class SemanticElaborator {
 
           if (variableAsBoolResult.ok) {
             assert(letStatement.value);
-            this.buildLogicalConstraintSet(
-              conditionConstraints,
-              variableAsBoolResult.expr
+            conditionConstraints.addAll(
+              this.conditionFacts(variableAsBoolResult.expr).whenTrue
             );
             const [assignmentExpr, assignmentExprId] = this.sr.b.assignment(
               variableSymbolExprId,
@@ -17581,7 +17561,9 @@ export class SemanticElaborator {
                     s.sourceloc
                   )[1]
               );
-              this.buildLogicalConstraintSet(conditionConstraints, guardExprId);
+              conditionConstraints.addAll(
+                this.conditionFacts(guardExprId).whenTrue
+              );
             } else {
               // Variable is convertible to bool but no guard, only use value
               resultingConditionId = conditionFromLet;
@@ -17591,7 +17573,7 @@ export class SemanticElaborator {
             const [e, eId] = this.expr(s.condition, undefined);
             resultFlow.addExitFlows(e.flow);
             resultWrites.addAll(e.writes);
-            this.buildLogicalConstraintSet(conditionConstraints, eId);
+            conditionConstraints.addAll(this.conditionFacts(eId).whenTrue);
 
             const [assignmentExpr, assignmentExprId] = this.sr.b.assignment(
               variableSymbolExprId,
@@ -17624,9 +17606,8 @@ export class SemanticElaborator {
           resultingConditionId = eId;
           resultFlow.addExitFlows(e.flow);
           resultWrites.addAll(e.writes);
-          this.buildLogicalConstraintSet(
-            conditionConstraints,
-            resultingConditionId
+          conditionConstraints.addAll(
+            this.conditionFacts(resultingConditionId).whenTrue
           );
         }
 
@@ -18888,10 +18869,11 @@ export class SemanticElaborator {
     return this.sr.b.extractConstraintPath(exprId);
   }
 
-  buildLogicalConstraintSet(
-    constraints: ConstraintSet,
-    exprId: Semantic.ExprId
-  ) {
+  /**
+   * What the condition `exprId` tells about values when it is true and when
+   * it is false (see ConditionFacts).
+   */
+  conditionFacts(exprId: Semantic.ExprId): ConditionFacts {
     const expr = this.sr.exprNodes.get(exprId);
     const resolvedExprTypeDef = this.sr.typeDefNodes.get(
       this.sr.typeUseNodes.get(this.sr.e.resolveAlias(expr.type)).type
@@ -18904,25 +18886,29 @@ export class SemanticElaborator {
         this.sr.typeUseNodes.get(this.sr.e.resolveAlias(expr.type)).type
       )
     ) {
-      this.buildLogicalConstraintSet(constraints, expr.expr);
-      return;
+      return this.conditionFacts(expr.expr);
     }
 
     if (
       expr.variant === Semantic.ENode.UnaryExpr &&
       expr.operation === EUnaryOperation.Negate
     ) {
-      const c = ConstraintSet.empty();
-      this.buildLogicalConstraintSet(c, expr.expr);
-      constraints.addAll(c.inverse());
-      return;
+      return this.conditionFacts(expr.expr).not();
     }
+
+    // The facts of a leaf condition, which hold exactly when it is true.
+    const constraints = ConstraintSet.empty();
 
     if (expr.variant === Semantic.ENode.BinaryExpr) {
       if (expr.operation === EBinaryOperation.BoolAnd) {
-        this.buildLogicalConstraintSet(constraints, expr.left);
-        this.buildLogicalConstraintSet(constraints, expr.right);
-        return;
+        return this.conditionFacts(expr.left).and(
+          this.conditionFacts(expr.right)
+        );
+      }
+      if (expr.operation === EBinaryOperation.BoolOr) {
+        return this.conditionFacts(expr.left).or(
+          this.conditionFacts(expr.right)
+        );
       }
       const rightValue = EvalCTFE(this.sr, expr.right);
       if (
@@ -18935,7 +18921,7 @@ export class SemanticElaborator {
           rightValue.value[1],
           expr.operation
         );
-        return;
+        return ConditionFacts.leaf(constraints);
       }
 
       const leftValue = EvalCTFE(this.sr, expr.left);
@@ -18950,7 +18936,7 @@ export class SemanticElaborator {
           expr.operation
         );
       }
-      return;
+      return ConditionFacts.leaf(constraints);
     }
 
     if (expr.variant === Semantic.ENode.UnionTagCheckExpr) {
@@ -19071,6 +19057,8 @@ export class SemanticElaborator {
         });
       }
     }
+
+    return ConditionFacts.leaf(constraints);
   }
 
   /**
@@ -21728,15 +21716,13 @@ export class SemanticElaborator {
       unsafe: inference?.unsafe,
     });
 
-    const constraints = ConstraintSet.empty();
-    this.buildLogicalConstraintSet(constraints, conditionId);
+    const facts = this.conditionFacts(conditionId);
 
-    let [then, thenId] = this.withAdditionalConstraints(constraints, () =>
+    let [then, thenId] = this.withAdditionalConstraints(facts.whenTrue, () =>
       this.expr(ternary.thenExpr, inference)
     );
-    let [_else, elseId] = this.withAdditionalConstraints(
-      constraints.inverse(),
-      () => this.expr(ternary.else, inference)
+    let [_else, elseId] = this.withAdditionalConstraints(facts.whenFalse, () =>
+      this.expr(ternary.else, inference)
     );
 
     const flow = Semantic.FlowResult.empty();

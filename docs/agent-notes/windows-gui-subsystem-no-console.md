@@ -31,3 +31,11 @@ semantics; it is not testable under Wine.
   what a CLI double-clicked in Explorer needs.
 - Check a binary: the PE optional header's Subsystem field (2 = GUI, 3 = console);
   `llvm-readobj --coff-resources app.exe` lists the MANIFEST resource.
+- Children of a detached app (measured 2026-11-04 against 3165b22f): a console program
+  spawned with CreateProcess flags 0 by a parent that has no console gets a console window
+  of its own, visible for as long as it runs. So `process.spawn` (all streams piped) and
+  `run`/`runCaptured` with `inherit_stdio: false` pass `CREATE_NO_WINDOW`
+  (hzstd_platform_win32.c); `inherit_stdio: true` keeps flags 0, since it means "share my
+  console". Check by hand: an [app] started with PowerShell `Start-Process` (no console)
+  that spawns a child calling `GetConsoleWindow()`; before the fix the child reported a
+  window, after it none, and its output still arrived through the pipe.

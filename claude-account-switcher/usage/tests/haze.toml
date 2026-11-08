@@ -1,0 +1,11 @@
+name = "claude_usage_tests"
+id = "CuTe5t92"
+version = "1.0.0"
+description = "claude_usage against scratch folders and recorded replies: parsing, the schedule, usage.json and the Claude Code cache entry under its lock"
+license = "MIT"
+authors = ["HerrNamenlos123"]
+type = "exe"
+
+[dependencies]
+claude_usage = { path = ".." }
+claude = { path = "../../../stdlib/claude" }

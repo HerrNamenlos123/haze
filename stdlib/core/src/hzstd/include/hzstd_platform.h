@@ -110,6 +110,8 @@ void hzstd_process_release(void *proc);
 
 void os_sleep_ns(uint64_t nanoseconds);
 double hzstd_time_now(void);
+/* Milliseconds since 1970-01-01 00:00 UTC, from the system clock (it can jump). */
+hzstd_int_t hzstd_time_wall_ms(void);
 
 typedef struct {
   hzstd_int_t resident;

@@ -1,0 +1,193 @@
+import claude
+
+// The usage cache entry in Claude Code's global config (~/.claude.json),
+// `cachedUsageUtilization`. Claude Code fills it itself only for an account
+// logged in with /login; the VS Code usage extension
+// (yahyashareef.claude-code-usage-tracker) reads it before it would ask the
+// API, and asks nothing while the entry is fresh. Traced 2026-11-04 in Claude
+// Code 2.1.318 and the extension 1.8.0; CONTRACT.md has the details.
+//
+// The file belongs to Claude Code, so this writes it the way Claude Code
+// does: under Claude Code's own lock (the directory `<config>.lock`, the
+// proper-lockfile scheme), re-reading the file under the lock, changing this
+// one key and nothing else, replacing the file whole. A held lock is never
+// waited for or taken over: that round is skipped (Locked) and the next one
+// tries again. Claude Code takes over a lock older than 10 s itself, so one
+// left behind by a crash here costs it at most that.
+
+export const comptime CACHE_KEY = "cachedUsageUtilization";
+
+// What goes into the entry.
+export ref struct CacheEntry {
+    fetchedAtMs: int = 0;
+    fiveHour: WindowUsage | none = none;
+    sevenDay: WindowUsage | none = none;
+}
+
+export enum CacheWrite {
+    // The entry now holds the new numbers.
+    Written,
+    // The entry was there and is gone.
+    Removed,
+    // No entry was wanted and none was there: nothing written.
+    Unchanged,
+    // Claude Code held the lock: nothing read or written this time.
+    Locked,
+}
+
+// The file Claude Code uses as its global config, the way Claude Code picks
+// it: `<dir>/.config.json` when that is a non-empty file (the legacy name,
+// dir = CLAUDE_CONFIG_DIR or ~/.claude), otherwise `.claude.json` in
+// CLAUDE_CONFIG_DIR or the home folder. none without a home folder.
+export fn claudeConfigPath(): str | none {
+    let home = "";
+    if sys.isWin32() {
+        if let profile = env.get("USERPROFILE") {
+            home = profile;
+        }
+    }
+    else {
+        if let h = env.get("HOME") {
+            home = h;
+        }
+    }
+    let configDir = "";
+    if let dir = env.get("CLAUDE_CONFIG_DIR") {
+        configDir = dir;
+    }
+    let legacyDir = configDir;
+    if legacyDir.length == 0 {
+        if home.length == 0 {
+            return none;
+        }
+        legacyDir = f"{home}/.claude";
+    }
+    let legacy = f"{legacyDir}/.config.json";
+    if let state = fs.statFile(legacy) {
+        if state.size > 0 {
+            return legacy;
+        }
+    }
+    if configDir.length > 0 {
+        return f"{configDir}/.claude.json";
+    }
+    if home.length == 0 {
+        return none;
+    }
+    return f"{home}/.claude.json";
+}
+
+// The entry the way Claude Code's schema has it: utilization in percent,
+// resets_at an ISO 8601 string; no accountUuid, since there is no /login
+// account it could name (Claude Code drops an entry whose accountUuid
+// differs from its oauthAccount's).
+fn entryNode(entry: CacheEntry): json.Node {
+    let node = claude.newObject();
+    claude.setInt(node, "fetchedAtMs", entry.fetchedAtMs);
+    let utilization = claude.newObject();
+    claude.set(utilization, "five_hour", windowEntry(entry.fiveHour));
+    claude.set(utilization, "seven_day", windowEntry(entry.sevenDay));
+    claude.set(node, "utilization", utilization);
+    return node;
+}
+
+fn windowEntry(w: WindowUsage | none): json.Node {
+    if let window = w {
+        let node = claude.newObject();
+        claude.setReal(node, "utilization", window.percent);
+        claude.setStr(node, "resets_at", time.formatUtcIso8601(window.resetsAtMs));
+        return node;
+    }
+    return claude.nullNode();
+}
+
+// Sets the entry to `entry`, or removes it when `entry` is none. An error
+// when the file is missing (Claude Code creates it, never this), is not
+// JSON, belongs to a /login account, or cannot be written; the file is then
+// left exactly as it was.
+export fn setClaudeUsageCache(configPath: str, entry: CacheEntry | none): Result<CacheWrite, str> {
+    let lock = f"{configPath}.lock";
+    let taken = fs.createDirectoryExclusive(lock);
+    if !taken {
+        if taken == fs.Error.AlreadyExists {
+            return Result<CacheWrite, str>.Ok(CacheWrite.Locked);
+        }
+        return Result<CacheWrite, str>.Err(f"{lock} could not be created: {taken}");
+    }
+    let result = changeUnderLock(configPath, entry);
+    let released = fs.removeEmptyDirectory(lock);
+    if !released {
+        return Result<CacheWrite, str>.Err(f"{lock} could not be removed: {released}");
+    }
+    return result;
+}
+
+fn changeUnderLock(configPath: str, entry: CacheEntry | none): Result<CacheWrite, str> {
+    let text = fs.readText(configPath);
+    if !text {
+        return Result<CacheWrite, str>.Err(f"{configPath} could not be read: {text}");
+    }
+    let t: str = text;
+    let parsed = claude.parseJson(t);
+    if !parsed {
+        return Result<CacheWrite, str>.Err(f"{configPath} is not JSON");
+    }
+    let root: json.Node = parsed;
+    if !root.isObject() {
+        return Result<CacheWrite, str>.Err(f"{configPath} is not a JSON object");
+    }
+    if let account = root.member("oauthAccount") {
+        if !claude.isNull(account) {
+            return Result<CacheWrite, str>.Err("Claude Code is logged in with /login (oauthAccount is set): it keeps this entry itself");
+        }
+    }
+
+    // Exact-key calls only (member, memberCount, remove, the proxy's :=
+    // appends): claude.set and claude.get match keys ignoring case, and in
+    // a file of Claude Code's a key differing only in case is not ours.
+    let had = root.memberCount(CACHE_KEY) > 0;
+    if let e = entry {
+        while root.remove(CACHE_KEY) {}
+        let slot = root[CACHE_KEY];
+        if !slot {
+            return Result<CacheWrite, str>.Err(f"{CACHE_KEY} could not be added");
+        }
+        let member: json.Node.Proxy = slot;
+        member := entryNode(e);
+    }
+    else {
+        if !had {
+            return Result<CacheWrite, str>.Ok(CacheWrite.Unchanged);
+        }
+        while root.remove(CACHE_KEY) {}
+    }
+
+    let out = claude.stringifyPretty(root) + "\n";
+    // Never write what would not read back.
+    if !claude.parseJson(out) {
+        return Result<CacheWrite, str>.Err("the changed config does not parse again; nothing written");
+    }
+    let written = fs.replaceText(configPath, out);
+    if !written {
+        return Result<CacheWrite, str>.Err(f"{configPath} could not be written: {written}");
+    }
+    if entry {
+        return Result<CacheWrite, str>.Ok(CacheWrite.Written);
+    }
+    return Result<CacheWrite, str>.Ok(CacheWrite.Removed);
+}
+
+// The entry `file` asks for at `nowMs`: the active account's numbers while
+// its last probe is fresh, stamped `nowMs` (the extension treats an entry
+// older than its own refresh interval as missing and asks the API itself,
+// which refuses setup tokens), none otherwise.
+export fn cacheEntryFor(file: UsageFile, nowMs: int): CacheEntry | none {
+    if let id = file.active {
+        if let a = file.account(id) {
+            if isFresh(a, nowMs) && (a.fiveHour || a.sevenDay) {
+                return CacheEntry { fetchedAtMs: nowMs, fiveHour: a.fiveHour, sevenDay: a.sevenDay };
+            }
+        }
+    }
+    return none;
+}

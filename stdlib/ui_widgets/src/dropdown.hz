@@ -91,6 +91,9 @@ export struct DropdownItem {
     // A check/bullet down the left, for items representing a current
     // choice -- which workspace is open, which theme is active.
     checked: bool = false;
+    // Destroys or removes something ("Delete", "Remove"): its label is in
+    // the danger colour.
+    danger: bool = false;
 }
 
 export struct DropdownStyle {
@@ -104,6 +107,15 @@ export struct DropdownStyle {
     itemBgHover: str = "#04395E";
     separatorColor: str = "#454545";
     rounded: real = 4.0;
+    textColorDanger: str = "#F48771";
+    // Space between the panel's edge and its rows, on the left and right
+    // (and added above and below the rows' own 4 px).
+    padding: real = 0.0;
+    itemPaddingX: real = 10.0;
+    itemPaddingY: real = 4.0;
+    // Of a row's hover highlight; with `padding` the rows stand clear of
+    // the edge, so their corners show.
+    itemRounded: real = 0.0;
 }
 
 export struct DropdownArgs {
@@ -163,7 +175,8 @@ export struct DropdownArgs {
                     || this.items[i].enabled != other.items[i].enabled
                     || this.items[i].separator != other.items[i].separator
                     || this.items[i].header != other.items[i].header
-                    || this.items[i].checked != other.items[i].checked {
+                    || this.items[i].checked != other.items[i].checked
+                    || this.items[i].danger != other.items[i].danger {
                     return true;
                 }
                 i = i + 1;
@@ -245,7 +258,7 @@ export fn Dropdown(ui: ui_components.UIContext, args: DropdownArgs) {
                     // A minimum, not a fixed width -- the panel still grows
                     // to fit a long label or a long path.
                     width: ui_styling.SizeMode.Fit,
-                    padding: ui_styling.StylePaddingFull { left: 0.0, right: 0.0, top: 4.0, bottom: 4.0 },
+                    padding: ui_styling.StylePaddingFull { left: style.padding, right: style.padding, top: 4.0 + style.padding, bottom: 4.0 + style.padding },
                 },
                 // Presses that land on the panel's own padding, between
                 // rows, are still the menu's -- without this they would
@@ -268,6 +281,13 @@ export fn Dropdown(ui: ui_components.UIContext, args: DropdownArgs) {
                     );
                 }
 
+                // The check gutter is only there when some item can show one.
+                let anyChecked = false;
+                if let all = p.items {
+                    for candidate in all {
+                        if candidate.checked { anyChecked = true; }
+                    }
+                }
                 let i = 0;
                 while p.items && i < p.items.length {
                     let item = p.items[i];
@@ -350,7 +370,7 @@ export fn Dropdown(ui: ui_components.UIContext, args: DropdownArgs) {
                             // widest child -- so widening the rows is what
                             // actually widens the menu.
                             width: ui_styling.SizeMode.Grow,
-                            padding: ui_styling.StylePaddingFull { left: 10.0, right: 10.0, top: 4.0, bottom: 4.0 },
+                            padding: ui_styling.StylePaddingFull { left: style.itemPaddingX, right: style.itemPaddingX, top: style.itemPaddingY, bottom: style.itemPaddingY },
                         },
                         onPointerDown: (event: ui_components.PointerEvent) => {
                             event.stopPropagation();
@@ -379,8 +399,8 @@ export fn Dropdown(ui: ui_components.UIContext, args: DropdownArgs) {
                         }
 
                         // A fixed-width gutter so labels line up whether or
-                        // not any item in the menu is checked.
-                        ui.div({
+                        // not each item is checked, in a menu where any can be.
+                        if anyChecked { ui.div({
                             id: 1,
                             style: { width: 14.0 },
                         }, (): void => {
@@ -405,13 +425,15 @@ export fn Dropdown(ui: ui_components.UIContext, args: DropdownArgs) {
                             }
                         },
                             presets.row(), presets.hFit()
-                        );
-
+                        ); }
+                        let labelColor = style.textColor;
+                        if !item.enabled { labelColor = style.textColorDisabled; }
+                        else if item.danger { labelColor = style.textColorDanger; }
                         ui.text({
                             id: 2,
                             text: item.label,
                         },
-                            presets.textColor(item.enabled ? style.textColor : style.textColorDisabled),
+                            presets.textColor(labelColor),
                             presets.noWrap()
                         );
 
@@ -437,6 +459,7 @@ export fn Dropdown(ui: ui_components.UIContext, args: DropdownArgs) {
                         presets.gap(3),
                         presets.crossAlign(ui_styling.CrossAlign.Center),
                         presets.bg(hovered ? style.itemBgHover : "#00000000"),
+                        presets.rounded(style.itemRounded),
                         item.enabled ? presets.cursorPointer() : presets.cursorDefault()
                     );
                 }
@@ -471,4 +494,10 @@ export fn Dropdown(ui: ui_components.UIContext, args: DropdownArgs) {
             return root;
         };
     });
+}
+
+// Dropdown as a template tag: `Dropdown [] open=[...] items=[...] @select=...`
+// in a .hzui file calls this, with `@select`/`@dismiss` as onSelect/onDismiss.
+export fn DropdownComponent(ui: ui_components.UIContext, args: DropdownArgs) {
+    Dropdown(ui, args);
 }

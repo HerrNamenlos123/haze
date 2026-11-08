@@ -7,8 +7,8 @@ import filedialog
 import single_instance
 import autostart
 import claude_account_switcher_ui
+import claude_usage
 
-const appId = "io.github.hazelang.ClaudeAccountSwitcher";
 // The program's file name, its login entry and its single-instance name.
 const programName = "claude-account-switcher";
 
@@ -29,10 +29,11 @@ ref struct TrayShows {
     iconVersion: int = -1;
 }
 
-// What Claude Code's settings were last made to say: -1 not yet, 0 no
-// helper, 1 the helper.
+// What Claude Code's settings were last made to say: -1 not yet (or the last
+// write failed), 0 no helper, 1 the helper; and the Retry count handled.
 ref struct ClaudeSettingsState {
     applied: int = -1;
+    retries: int = 0;
 }
 
 // ~/.claude/settings.json, the user's Claude Code settings.
@@ -133,12 +134,12 @@ fn applyAutostart() {
 }
 
 // Claude Code's credential command (apiKeyHelper): the active account's token
-// on stdout, exactly. Nothing else starts. The read shares the file for
+// (share/active.token) on stdout, exactly. Nothing else starts. The read shares the file for
 // delete, so a switch that replaces it meanwhile is never refused. Without an
 // active account it prints nothing and fails: anything printed would be taken
 // as the token.
 fn printToken(): int {
-    if let dir = app.stateDirectory(appId) {
+    if let dir = claude_usage.shareDirectory() {
         let token = fs.readText(f"{dir}/active.token");
         if token {
             let text: str = token;
@@ -166,31 +167,42 @@ fn main(): int {
             return si.send({ args: sys.args() }).exitCode;
         }
 
-        let stateDir = app.stateDirectory(appId);
+        // The [app] appId of haze.toml (a test of claude_usage checks), so
+        // shareDir is `<stateDir>/share`.
+        let stateDir = sys.stateDirectory(claude_usage.switcherAppId());
         if !stateDir { raise "This system names no folder for the program's own files"; }
+        let shareDir = claude_usage.shareDirectory();
+        if !shareDir { raise "This system names no folder for the program's own files"; }
 
         let picker = OpenPicker {};
-        let pick = (kind: claude_account_switcher_ui.PickKind): none => {
-            if picker.dialog { return; }
+        let pick = (kind: claude_account_switcher_ui.PickKind): bool => {
+            if picker.dialog { return false; }
             picker.kind = kind;
             if kind == claude_account_switcher_ui.PickKind.Folder {
                 picker.dialog = filedialog.pickFolderAsync({});
             } else {
                 picker.dialog = filedialog.pickFileAsync({ filters: "png,jpg,jpeg,bmp,gif,tga,psd" });
             }
+            return true;
         };
-        claude_account_switcher_ui.openSwitcher(stateDir as str, pick)?!;
+        claude_account_switcher_ui.openSwitcher(stateDir as str, shareDir as str, claude_usage.claudeConfigPath(), claude_usage.TrackerSettings {}, pick)?!;
         applyAutostart();
 
         let a = app.App({
             title: "Claude Account Switcher",
             nativeTitlebar: false,
-            size: { width: 380, height: 420 },
+            size: { width: 340, height: 420 },
             startHidden: true,
             hideOnClose: true,
         })?!;
 
-        let font = a.gfx.fontRenderer.fs.addFont("roboto-regular", embed.binary("resources/Roboto-Regular.ttf"));
+        // Slightly rounded, like everything in it.
+        a.window.setCorners(sdl.WindowCorners.RoundSmall);
+
+        // Geist and Geist Mono (SIL OFL 1.1), fetched by scripts/fetch-fonts.hz.
+        let geist = a.gfx.fontRenderer.fs.addFont("geist", embed.binary("resources/fonts/Geist-Regular.ttf"));
+        let geistMedium = a.gfx.fontRenderer.fs.addFont("geist-medium", embed.binary("resources/fonts/Geist-Medium.ttf"));
+        let geistMono = a.gfx.fontRenderer.fs.addFont("geist-mono", embed.binary("resources/fonts/GeistMono-Regular.ttf"));
         let logo = image.decode(embed.binary("../resources/haze-logo.png"), 4);
         if !logo { raise "The program's icon could not be decoded"; }
         let defaultIcon = claude_account_switcher_ui.normalizedIcon(logo);
@@ -232,17 +244,29 @@ fn main(): int {
             let s = claude_account_switcher_ui.switcher();
             let wanted = 0;
             if rx.get(s.active) { wanted = 1; }
-            if wanted == claudeSettings.applied { return; }
-            claudeSettings.applied = wanted;
+            let retries = rx.get(s.claudeSettingsRetries);
+            if wanted == claudeSettings.applied && retries == claudeSettings.retries { return; }
+            claudeSettings.retries = retries;
             let path = settingsPath;
             let command = helperCommand;
-            if !path { return; }
-            if !command { return; }
+            if !path {
+                claudeSettings.applied = wanted;
+                return;
+            }
+            if !command {
+                claudeSettings.applied = wanted;
+                return;
+            }
             let commandFor: str | none = none;
             if wanted == 1 { commandFor = command; }
             let applied = claude_account_switcher_ui.applyClaudeSettings(path as str, commandFor);
-            if !applied {
-                s.fail(f"Claude Code's settings were not changed: {applied}");
+            if applied {
+                claudeSettings.applied = wanted;
+                s.claudeSettingsProblem := none;
+            } else {
+                // Not remembered as done: the next change, or Retry, writes again.
+                claudeSettings.applied = -1;
+                s.claudeSettingsProblem := f"Claude Code's settings: {applied}";
             }
         };
         updateClaudeSettings();
@@ -258,8 +282,10 @@ fn main(): int {
             gfx: a.gfx,
             windowState: a.windowState,
             fonts: [
-                { name: "roboto", id: font },
-                { name: "default", id: font },
+                { name: "default", id: geist },
+                { name: "geist", id: geist },
+                { name: "geist-medium", id: geistMedium },
+                { name: "geist-mono", id: geistMono },
             ],
             mousePos: () => a.mousePos(),
             mousePosKnown: () => a.mousePosKnown(),
@@ -302,9 +328,11 @@ fn main(): int {
             ui: (ui: ui_components.UIContext) => { claude_account_switcher_ui.RootComponent(ui, { id: 0, activation: activation, onQuit: () => { quitApp(); } }); },
         });
 
-        // Opens the window at the tray icon on the accounts, read again.
+        // Opens the window at the tray icon on the accounts, read again, and
+        // the usage as of now.
         let show = () => {
             activation := rx.get(activation) + 1;
+            claude_account_switcher_ui.switcher().usageWindowOpened(time.wallClockMs(), time.now());
             a.window.moveToTray(tray);
             a.show();
         };
@@ -356,6 +384,12 @@ fn main(): int {
             }
             updateTray();
             updateClaudeSettings();
+            // Every pass, hidden too: probes and the cache feed must go on
+            // while the program sits in the tray. a.idle() returns after at
+            // most 100 ms without an event, which is far below anything the
+            // tracker schedules (its shortest wait is the 0.1 s poll of a
+            // running probe), so no extra wake-up is needed.
+            claude_account_switcher_ui.switcher().tickUsage(time.wallClockMs(), time.now());
 
             if a.resized {
                 runtime.resize(a.windowState);
@@ -372,6 +406,8 @@ fn main(): int {
             }
         }
 
+        // Takes the cache entry away: nobody keeps those numbers current now.
+        claude_account_switcher_ui.switcher().usage.shutdown();
         tray.destroy();
         si.release();
         a.destroy();

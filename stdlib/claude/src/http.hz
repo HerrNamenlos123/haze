@@ -1,5 +1,5 @@
-// The little bit of HTTPS this module needs: reading the release manifest and
-// downloading the `claude` binary.
+// The little bit of HTTPS this module needs: reading the release manifest,
+// downloading the `claude` binary, and small POSTs to the API (HttpPost).
 //
 // It shells out to `curl`, falling back to `wget`. That is a deliberate
 // choice, not a shortcut. The alternative is a TLS stack, and the only correct
@@ -96,6 +96,235 @@ export fn httpGetWith(tool: HttpTool, url: str, timeoutSeconds: int): HttpRespon
     return HttpResponse { ok: true, body: result.stdoutResult };
 }
 
+// One header of a request or a reply.
+export struct HttpHeader {
+    name: str = "";
+    value: str = "";
+}
+
+// What a finished HttpPost got back.
+export ref struct HttpReply {
+    // The HTTP status of the final answer; 0 when there was no answer at all
+    // (then `error` says why: DNS, TLS, a timeout, curl missing).
+    status: int = 0;
+    // The final answer's headers, in the order they came.
+    headers: []HttpHeader = [];
+    body: str = "";
+    error: str = "";
+
+    // The value of the first header called `name`, ignoring case as HTTP
+    // does; none when there is none.
+    fn header(name: str): str | none {
+        for h in this.headers {
+            if equalsIgnoringAsciiCase(h.name, name) {
+                return h.value;
+            }
+        }
+        return none;
+    }
+}
+
+export enum HttpPostState {
+    Running,
+    Done,
+}
+
+// A POST that runs in the background: construct it, call poll() from the
+// frame loop until it is Done, then read reply(). Nothing blocks, so a UI
+// thread can use it.
+//
+// The URL, the headers and the body reach curl as a config file on its
+// stdin, never as arguments: a command line is visible to every program on
+// the machine, and the headers carry tokens. `-q` first keeps a user's
+// ~/.curlrc out of it. curl only, no wget: wget takes headers only as
+// arguments. curl ships with Windows 10 1803+, macOS and most Linux systems.
+//
+// An HTTP error status is an answer, not a failure: reply().status holds it
+// and the body is kept (no `-f`), since the body says what went wrong.
+export ref struct HttpPost {
+    proc: process.Process;
+    // Not `stdout`: fields reach C under their own name, and the Windows C
+    // runtime defines stdout as a macro.
+    output: str = "";
+    stderrTail: str = "";
+    finished: bool = false;
+    cancelled: bool = false;
+    result: HttpReply = HttpReply {};
+
+    fn constructor(url: str, headers: []HttpHeader, body: str, timeoutSeconds: int): Result<mut HttpPost, str> {
+        let config = curlPostConfig(url, headers, body, timeoutSeconds);
+        let spawned = process.spawn("curl", ["-q", "--config", "-"], {});
+        if !spawned {
+            return "curl could not be started (is it installed?)";
+        }
+        let proc: process.Process = spawned;
+        if !proc.writeStdin(config) {
+            proc.kill();
+            return "curl did not take its configuration";
+        }
+        proc.closeStdin();
+        return HttpPost { proc: proc };
+    }
+
+    mut fn poll(): HttpPostState {
+        if this.finished {
+            return HttpPostState.Done;
+        }
+        this.drain();
+        if this.proc.isAlive() {
+            return HttpPostState.Running;
+        }
+        // What the child wrote before it exited is still in the pipes.
+        this.drain();
+        let code = this.proc.join();
+        this.finished = true;
+
+        if this.cancelled {
+            this.result = HttpReply { error: "cancelled" };
+        }
+        else if code != 0 {
+            let detail = this.stderrTail.trim();
+            if detail.length == 0 {
+                detail = f"curl exit code {code}";
+            }
+            this.result = HttpReply { error: detail };
+        }
+        else {
+            this.result = parseCurlReply(this.output);
+        }
+        return HttpPostState.Done;
+    }
+
+    // Only meaningful once poll() returned Done.
+    fn reply(): HttpReply {
+        assert(this.finished, "HttpPost.reply() before poll() returned Done");
+        return this.result;
+    }
+
+    // Stops the request; poll() then reaches Done with the error "cancelled".
+    mut fn cancel() {
+        if this.finished || this.cancelled {
+            return;
+        }
+        this.cancelled = true;
+        this.proc.kill();
+    }
+
+    mut fn drain() {
+        while true {
+            let chunk = this.proc.readStdout();
+            if chunk.length == 0 {
+                break;
+            }
+            this.output = this.output + chunk;
+        }
+        while true {
+            let chunk = this.proc.readStderr();
+            if chunk.length == 0 {
+                break;
+            }
+            this.stderrTail = this.stderrTail + chunk;
+            if this.stderrTail.length > 2048 {
+                this.stderrTail = this.stderrTail.slice(this.stderrTail.length - 2048, this.stderrTail.length);
+            }
+        }
+    }
+}
+
+// A curl config (the format of `curl --config`) that POSTs `body` to `url`
+// with `headers`, writing the reply's headers and then its body to stdout.
+export fn curlPostConfig(url: str, headers: []HttpHeader, body: str, timeoutSeconds: int): str {
+    let lines: []str = [
+        "silent",
+        "show-error",
+        f"max-time = {timeoutSeconds}",
+        "request = \"POST\"",
+        "dump-header = \"-\"",
+        "url = " + curlConfigQuote(url),
+    ];
+    for h in headers {
+        lines.push("header = " + curlConfigQuote(h.name + ": " + h.value));
+    }
+    lines.push("data-binary = " + curlConfigQuote(body));
+    let out = "";
+    for line in lines {
+        out = out + line + "\n";
+    }
+    return out;
+}
+
+// `value` as a double-quoted curl config string. Inside quotes curl reads
+// the escapes \\ \" \t \n \r \v; every other byte stands for itself, so a
+// vertical tab may stay as it is.
+export fn curlConfigQuote(value: str): str {
+    let out = "\"";
+    for (let i = 0; i < value.length; i++) {
+        let c = value.slice(i, i + 1);
+        if c == "\\" { out = out + "\\\\"; }
+        else if c == "\"" { out = out + "\\\""; }
+        else if c == "\n" { out = out + "\\n"; }
+        else if c == "\r" { out = out + "\\r"; }
+        else if c == "\t" { out = out + "\\t"; }
+        else { out = out + c; }
+    }
+    return out + "\"";
+}
+
+// curl's stdout for `dump-header = "-"`: one header block per answer (an
+// interim 1xx, or a proxy's CONNECT answer, comes before the final one),
+// each ending in an empty line, then the final answer's body. The last
+// block is the reply; everything after it is the body.
+export fn parseCurlReply(output: str): HttpReply {
+    let rest = output;
+    let reply = HttpReply {};
+    let sawBlock = false;
+    while rest.startsWith("HTTP/") {
+        let end = indexOf(rest, "\r\n\r\n");
+        let separator = 4;
+        let lfEnd = indexOf(rest, "\n\n");
+        if end < 0 || (lfEnd >= 0 && lfEnd < end) {
+            end = lfEnd;
+            separator = 2;
+        }
+        if end < 0 {
+            return HttpReply { error: "the reply's headers have no end" };
+        }
+        let block = rest.slice(0, end);
+        rest = rest.slice(end + separator, rest.length);
+
+        let lines = block.split("\n");
+        let statusLine = lines[0].trim();
+        let parts = statusLine.split(" ");
+        if parts.length < 2 {
+            return HttpReply { error: f"not an HTTP status line: {statusLine}" };
+        }
+        let parsed = int(parts[1]);
+        if !parsed {
+            return HttpReply { error: f"not an HTTP status line: {statusLine}" };
+        }
+        let status: int = parsed;
+        let headers: []HttpHeader = [];
+        for (let i = 1; i < lines.length; i++) {
+            let line = lines[i].trim();
+            let colon = indexOf(line, ":");
+            if colon <= 0 {
+                continue;
+            }
+            headers.push(HttpHeader {
+                name: line.slice(0, colon).trim(),
+                value: line.slice(colon + 1, line.length).trim(),
+            });
+        }
+        reply = HttpReply { status: status, headers: headers };
+        sawBlock = true;
+    }
+    if !sawBlock {
+        return HttpReply { error: "curl printed no HTTP reply" };
+    }
+    reply.body = rest;
+    return reply;
+}
+
 export enum DownloadState {
     Running,
     Complete,
@@ -169,9 +398,11 @@ export ref struct Download {
             return this.progress();
         }
 
-        let stderr = this.proc.readStderr();
-        if stderr.length > 0 {
-            this.stderrTail = this.stderrTail + stderr;
+        // Not named `stderr`: locals reach C under their own name, and the
+        // Windows C runtime defines stderr as a macro.
+        let errorOutput = this.proc.readStderr();
+        if errorOutput.length > 0 {
+            this.stderrTail = this.stderrTail + errorOutput;
             if this.stderrTail.length > 2048 {
                 this.stderrTail = this.stderrTail.slice(this.stderrTail.length - 2048, this.stderrTail.length);
             }

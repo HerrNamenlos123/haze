@@ -1,7 +1,7 @@
 @props
 // The account whose icon this is (Switcher.iconOf), or draftIconId.
 accountId: str;
-size: real = 24.0;
+size: real = 20.0;
 
 @setup
 let gpu = IconTexture {};
@@ -26,6 +26,6 @@ ui.onUnmount(() => {
     gpu.release();
 });
 
-@template [w-[props.size]px h-[props.size]px rounded-[4]px bg-[rx.get(hasIcon) ? "#00000000" : "#2A2A33"]]
+@template [w-[props.size]px h-[props.size]px rounded-[radiusControl]px bg-[rx.get(hasIcon) ? transparent : raised] border-[rx.get(hasIcon) ? 0.0 : 1.0] border-color-[borderStrong]]
 
 canvas if=[rx.get(hasIcon)] [w-[props.size]px h-[props.size]px] @render=draw

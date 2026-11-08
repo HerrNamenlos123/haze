@@ -56,7 +56,7 @@ div [col w-[420]px h-fit gap-4 p-5 rounded-12 bg-[theme().surface] border-1 bord
     }
     div [row w-grow h-fit gap-3 p-3 rounded-8 bg-[theme().dangerFill + "33"] border-1 border-color-[theme().danger]] {
         div [w-fit h-fit font-size-22 text-color-[theme().danger]] {
-            Codicon [] icon="warning" {}
+            Codicon [] icon="warning" size=[22] {}
         }
         div [col w-grow h-fit gap-1] {
             text [font-size-14 text-color-[theme().text]] ["This cannot be undone in Haze Notes."]

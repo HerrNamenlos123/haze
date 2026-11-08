@@ -23,13 +23,15 @@ let toggleSettings = () => {
     emits.toggleSettings();
 };
 
-@template [os-titlebar row w-grow h-[30]px items-center pl-3 bg-["#1F1F26"]]
+@template [os-titlebar row w-grow h-[34]px items-center gap-[2]px pl-3 pr-1 bg-[panel] border-b-[1] border-color-[border]]
 
-text [text-nowrap text-color-["#71717A"] font-size-12] ["Claude Accounts"]
+text [text-nowrap text-color-[text2] font-size-[smallSize] font-family-[fontMedium]] ["Claude Accounts"]
 div [w-grow] {}
-Button if=[props.accountsAvailable] [] icon="add" selected=[props.addOpen] paddingX=[9] paddingY=[7] rounded=[0]
-    textColor="#A1A1AA" focusRing=[0] @click=toggleAdd {}
-Button if=[props.accountsAvailable] [] icon="settings-gear" selected=[props.settingsOpen] paddingX=[9] paddingY=[7] rounded=[0]
-    textColor="#A1A1AA" focusRing=[0] @click=toggleSettings {}
-Button [] icon="chrome-close" paddingX=[10] paddingY=[7] rounded=[0]
-    bgHover="#C42B1C" bgActive="#B0271A" textColor="#A1A1AA" focusRing=[0] @click=close {}
+Button if=[props.accountsAvailable] [] icon="add" selected=[props.addOpen] paddingX=[6] paddingY=[6] rounded=[radiusControl]
+    bgHover=[hover] bgActive=[pressed] bgSelected=[raised] textColor=[props.addOpen ? text1 : text2] focusRing=[0]
+    @click=toggleAdd {}
+Button if=[props.accountsAvailable] [] icon="settings-gear" selected=[props.settingsOpen] paddingX=[6] paddingY=[6] rounded=[radiusControl]
+    bgHover=[hover] bgActive=[pressed] bgSelected=[raised] textColor=[props.settingsOpen ? text1 : text2] focusRing=[0]
+    @click=toggleSettings {}
+Button [] icon="chrome-close" paddingX=[6] paddingY=[6] rounded=[radiusControl]
+    bgHover=[danger] bgActive=[dangerHover] textColor=[text2] focusRing=[0] @click=close {}

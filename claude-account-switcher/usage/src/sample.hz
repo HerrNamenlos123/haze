@@ -1,0 +1,131 @@
+import claude
+
+// What one probe learned about an account's plan usage, and how a probe that
+// learned nothing failed. See CONTRACT.md for where these values go.
+
+// One limit window (the 5-hour or the 7-day one).
+export struct WindowUsage {
+    // 0..100 (the headers carry a fraction; 0.4 is 40).
+    percent: real = 0.0;
+    // When the window resets, ms since 1970 UTC.
+    resetsAtMs: int = 0;
+    // The API's word for it: "allowed", "allowed_warning", "rejected".
+    status: str = "";
+}
+
+export ref struct UsageSample {
+    fiveHour: WindowUsage | none = none;
+    sevenDay: WindowUsage | none = none;
+}
+
+export enum ProbeErrorKind {
+    // No HTTP answer: DNS, TLS, a timeout, curl missing.
+    Network,
+    // 429 without usage headers: the API asked us to slow down.
+    RateLimited,
+    // 401 or 403: the token is wrong, expired or lacks the scope.
+    Auth,
+    // Any other answer without usage headers.
+    Http,
+    // A 2xx answer without usage headers (the API changed).
+    NoUsageHeaders,
+}
+
+export fn probeErrorKindName(kind: ProbeErrorKind): str {
+    if kind == ProbeErrorKind.Network { return "network"; }
+    if kind == ProbeErrorKind.RateLimited { return "rate_limited"; }
+    if kind == ProbeErrorKind.Auth { return "auth"; }
+    if kind == ProbeErrorKind.Http { return "http"; }
+    return "no_usage_headers";
+}
+
+export fn probeErrorKindFromName(name: str): ProbeErrorKind | none {
+    if name == "network" { return ProbeErrorKind.Network; }
+    if name == "rate_limited" { return ProbeErrorKind.RateLimited; }
+    if name == "auth" { return ProbeErrorKind.Auth; }
+    if name == "http" { return ProbeErrorKind.Http; }
+    if name == "no_usage_headers" { return ProbeErrorKind.NoUsageHeaders; }
+    return none;
+}
+
+export ref struct ProbeError {
+    kind: ProbeErrorKind = ProbeErrorKind.Network;
+    // For a person: the API's own message where it gave one.
+    message: str = "";
+    // Seconds the API asked us to wait (retry-after), 0 when it named none.
+    retryAfterSeconds: int = 0;
+}
+
+// The usage windows in a reply's anthropic-ratelimit-unified-* headers; none
+// when it carries neither window. A window whose utilization or reset is
+// missing or not a number is left out, never guessed.
+export fn sampleFromReply(reply: claude.HttpReply): UsageSample | none {
+    let five = windowFromHeaders(reply, "5h");
+    let seven = windowFromHeaders(reply, "7d");
+    if !five && !seven {
+        return none;
+    }
+    return UsageSample { fiveHour: five, sevenDay: seven };
+}
+
+fn windowFromHeaders(reply: claude.HttpReply, name: str): WindowUsage | none {
+    let utilization = reply.header(f"anthropic-ratelimit-unified-{name}-utilization");
+    let reset = reply.header(f"anthropic-ratelimit-unified-{name}-reset");
+    if let u = utilization {
+        if let r = reset {
+            let fraction = real(u);
+            let resetSeconds = int(r);
+            if fraction && resetSeconds {
+                let f: real = fraction;
+                let seconds: int = resetSeconds;
+                let status = "";
+                if let s = reply.header(f"anthropic-ratelimit-unified-{name}-status") {
+                    status = s;
+                }
+                // To two decimals: the header's fraction times 100 is not exact
+                // in binary (1.11 gave 111.00000000000001).
+                let hundredths = (f * 10000.0 + 0.5) as int;
+                let percent = (hundredths as real) / 100.0;
+                return WindowUsage { percent: percent, resetsAtMs: seconds * 1000, status: status };
+            }
+        }
+    }
+    return none;
+}
+
+// Why a reply without usage headers is not a sample.
+export fn errorFromReply(reply: claude.HttpReply): ProbeError {
+    if reply.error.length > 0 || reply.status == 0 {
+        let message = reply.error;
+        if message.length == 0 {
+            message = "no answer";
+        }
+        return ProbeError { kind: ProbeErrorKind.Network, message: message };
+    }
+    let message = f"HTTP {reply.status}";
+    if let parsed = claude.parseJson(reply.body) {
+        if let error = claude.get(parsed, "error") {
+            if let text = claude.getString(error, "message") {
+                if text.length > 0 {
+                    message = f"HTTP {reply.status}: {text}";
+                }
+            }
+        }
+    }
+    if reply.status == 429 {
+        let wait = 0;
+        if let header = reply.header("retry-after") {
+            if let seconds = int(header) {
+                wait = seconds;
+            }
+        }
+        return ProbeError { kind: ProbeErrorKind.RateLimited, message: message, retryAfterSeconds: wait };
+    }
+    if reply.status == 401 || reply.status == 403 {
+        return ProbeError { kind: ProbeErrorKind.Auth, message: message };
+    }
+    if reply.status >= 200 && reply.status < 300 {
+        return ProbeError { kind: ProbeErrorKind.NoUsageHeaders, message: message };
+    }
+    return ProbeError { kind: ProbeErrorKind.Http, message: message };
+}

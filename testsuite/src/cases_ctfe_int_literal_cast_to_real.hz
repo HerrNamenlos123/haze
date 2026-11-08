@@ -7,7 +7,7 @@
 // where SOME_CONST is an integer literal) crashed the compiler outright --
 // "Error: Unknown primitive type: real" -- whenever that cast appeared
 // anywhere CTFE gets involved in constraint building, e.g. as either side
-// of a comparison inside an `if` condition (buildLogicalConstraintSet calls
+// of a comparison inside an `if` condition (conditionFacts() calls
 // EvalCTFE on comparison operands to fold constant comparisons).
 //
 // Root cause (src/Semantic/CTFE.ts, EvalCTFE()'s ExplicitCastExpr case):
@@ -43,7 +43,7 @@ fn main(): int {
     assert(b == 0.0, f"expected 0.0, got {b}");
 
     // The actual trigger: used inside an `if` condition, where
-    // buildLogicalConstraintSet folds each comparison operand through
+    // conditionFacts() folds each comparison operand through
     // EvalCTFE to look for constant comparisons.
     let v: real = 50.0;
     if v >= i8.min as real && v <= i8.max as real {

@@ -569,6 +569,17 @@ double hzstd_time_now(void)
   return (double)(counter.QuadPart - startup_counter_qpc) / (double)perf_frequency_qpc;
 }
 
+hzstd_int_t hzstd_time_wall_ms(void)
+{
+  FILETIME ft;
+  GetSystemTimePreciseAsFileTime(&ft);
+  ULARGE_INTEGER ticks;
+  ticks.LowPart = ft.dwLowDateTime;
+  ticks.HighPart = ft.dwHighDateTime;
+  // 100 ns ticks since 1601-01-01 UTC; the Unix epoch is 11644473600 s later.
+  return (hzstd_int_t)(ticks.QuadPart / 10000ULL) - (hzstd_int_t)11644473600000LL;
+}
+
 void os_sleep_ns(uint64_t ns)
 {
   HANDLE timer = CreateWaitableTimer(NULL, TRUE, NULL);
@@ -693,7 +704,14 @@ int hzstd_spawn_process(hzstd_str_t exe,
   }
 
   PROCESS_INFORMATION pi = { 0 };
-  BOOL created = CreateProcessA(NULL, cmdline, NULL, NULL, TRUE, 0, NULL, cwd.length > 0 ? cwd_c : NULL, &si, &pi);
+  // A child whose output goes to pipes needs no console. Without
+  // CREATE_NO_WINDOW, a console program started by a parent that has none
+  // (an [app] started from Explorer or at login: its console is detached)
+  // gets a console window of its own, which flashes up for as long as it
+  // runs (measured 2026-11-04). With inherit_stdio the child is meant to
+  // share the parent's console, so that path keeps the old flags.
+  DWORD flags = inherit_stdio ? 0 : CREATE_NO_WINDOW;
+  BOOL created = CreateProcessA(NULL, cmdline, NULL, NULL, TRUE, flags, NULL, cwd.length > 0 ? cwd_c : NULL, &si, &pi);
   DWORD createErr = created ? 0 : GetLastError();
   free(cmdline);
   if (!created) {
@@ -822,7 +840,10 @@ hzstd_process_spawn(hzstd_str_t exe, hzstd_dynamic_array_t* argv, hzstd_dynamic_
   si.dwFlags |= STARTF_USESTDHANDLES;
 
   PROCESS_INFORMATION pi = { 0 };
-  BOOL ok = CreateProcessA(NULL, cmdline, NULL, NULL, TRUE, 0, NULL, cwd.length > 0 ? cwd_c : NULL, &si, &pi);
+  // All three streams are pipes: no console for the child, or one started
+  // by a parent without a console (a detached [app]) opens a console window
+  // of its own (see hzstd_spawn_process).
+  BOOL ok = CreateProcessA(NULL, cmdline, NULL, NULL, TRUE, CREATE_NO_WINDOW, NULL, cwd.length > 0 ? cwd_c : NULL, &si, &pi);
   DWORD createErr = ok ? 0 : GetLastError();
   free(cmdline);
 

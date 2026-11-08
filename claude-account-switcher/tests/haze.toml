@@ -8,6 +8,7 @@ type = "exe"
 
 [dependencies]
 claude_account_switcher_ui = { path = "../ui" }
+claude_usage = { path = "../usage" }
 image = { path = "../../stdlib/image" }
 ui_components = { path = "../../stdlib/ui_components" }
 ui_elements = { path = "../../stdlib/ui_elements" }

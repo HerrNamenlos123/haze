@@ -1,0 +1,10 @@
+name = "claude-usage-sync"
+id = "CuSyNc63"
+version = "1.0.0"
+description = "Keeps the local Claude Code usage cache entry current from the switcher's shared usage.json, on a machine without the switcher (the VM)"
+license = "MIT"
+authors = ["HerrNamenlos123"]
+type = "exe"
+
+[dependencies]
+claude_usage = { path = "../usage" }

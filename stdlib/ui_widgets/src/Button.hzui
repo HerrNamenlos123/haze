@@ -58,9 +58,13 @@ let pressed = (event: PointerEvent) => {
     if event.activatesOnPress() { emits.click(); }
 };
 
+// The click is the button's either way: also when the press already clicked
+// it (activatesOnPress), it must not go on to what the button sits in (a row
+// that does something on a click of its own).
 let tapped = (event: PointerEvent) => {
-    if !props.enabled || event.activatesOnPress() { return; }
+    if !props.enabled { return; }
     event.stopPropagation();
+    if event.activatesOnPress() { return; }
     if props.ignoreDoubleClick && event.detail >= 2 { return; }
     emits.click();
 };
@@ -99,6 +103,7 @@ let backgroundColor = computed(() => {
 // same reason.
 @template [
         row items-center gap-0 px-[props.paddingX]px py-[props.paddingY]px bg-[backgroundColor]
+        text-color-[props.enabled ? props.textColor : props.textColorDisabled]
         rounded-[props.rounded]px h-fit [props.enabled]?cursor-pointer w-fit [props.grow]?w-grow
         [ringVisible]?outline-[props.focusRing]
         [ringVisible]?outline-color-[props.focusRingColor]
@@ -113,8 +118,9 @@ let backgroundColor = computed(() => {
 
 slot content label=[props.label] icon=[props.icon] {
     Codicon if=[props.icon] [] icon=[props.icon] {}
+    // The colour is the button's (on its root), for the icon and the label.
     text if=[props.label.length > 0] [
-        text-color-[props.enabled ? props.textColor : props.textColorDisabled] text-nowrap
+        text-nowrap
         [props.fontSize]?font-size-[props.fontSize]
     ] [props.label]
 }

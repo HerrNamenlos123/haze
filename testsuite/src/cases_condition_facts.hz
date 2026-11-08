@@ -1,0 +1,174 @@
+// ============================================================================
+// REGRESSION TEST: this is a real, load-bearing test, not a placeholder.
+//
+// Bug: only what a condition says when it is TRUE was collected; the false
+// side (else, an early return, the right side of `||`, a ternary's else) was
+// that set inverted. That holds only where the set is the whole condition,
+// and it rarely is:
+//
+//   if !a || !b { return; }   // `||` collected nothing, so nothing inverted:
+//   let x: str = a;           // H4001, a still `str | none`
+//
+//   if c && flag { return; }  // collected `c isNot none`, inverted `c is
+//   let n: none = c;          // none`: accepted, and for c = "x" with
+//                             // flag = false a runtime panic
+//
+// Fix: both sides are built together from the condition's structure
+// (ConditionFacts): `!` swaps them, `&&` adds up the true sides, `||` the
+// false sides, and a side is only ever complemented where it is the whole
+// condition.
+// ============================================================================
+
+namespace cases_condition_facts {
+
+    fn unsoundCase(body: str): str {
+        return """
+fn flagOf(): bool { return false; }
+""" + body + """
+fn main(): int { return 0; }
+""";
+    }
+
+    export fn register(s: mut testsuite.Suite) {
+
+        s.run(
+            "condition facts: the false side of || and !(&&) narrows",
+            """
+fn joined(x: str, y: str): str { return f"{x}{y}"; }
+
+fn earlyReturn(a: str | none, b: str | none): str {
+    if !a || !b { return "missing"; }
+    let x: str = a;
+    let y: str = b;
+    return joined(x, y);
+}
+
+fn elseBranch(a: str | none, b: str | none): str {
+    if !a || !b {
+        return "missing";
+    } else {
+        return joined(a, b);
+    }
+}
+
+fn ternary(a: str | none, b: str | none): str {
+    return !a || !b ? "missing" : joined(a, b);
+}
+
+fn rightOfOr(a: str | none, b: str | none): bool {
+    return !a || !b || joined(a, b) == "pq";
+}
+
+fn notAnd(a: str | none, b: str | none): str {
+    if !(a && b) { return "missing"; }
+    return joined(a, b);
+}
+
+fn elseIf(a: str | none, b: str | none, first: bool): str {
+    if !a || !b {
+        return "missing";
+    } else if first {
+        return f"first {joined(a, b)}";
+    }
+    return f"later {joined(a, b)}";
+}
+
+fn sameValue(n: int | none): str {
+    if !n || n < 3 { return "small"; }
+    let x: int = n;
+    return f"big {x}";
+}
+
+fn main(): int {
+    fmt.println(earlyReturn("p", "q"));
+    fmt.println(earlyReturn(none, "q"));
+    fmt.println(earlyReturn("p", none));
+    fmt.println(earlyReturn(none, none));
+    fmt.println(elseBranch("p", "q"));
+    fmt.println(elseBranch("p", none));
+    fmt.println(ternary("p", "q"));
+    fmt.println(ternary(none, "q"));
+    fmt.println(f"{rightOfOr("p", "q")} {rightOfOr("p", "x")} {rightOfOr(none, "x")}");
+    fmt.println(notAnd("p", "q"));
+    fmt.println(notAnd("p", none));
+    fmt.println(elseIf("p", "q", true));
+    fmt.println(elseIf("p", "q", false));
+    fmt.println(elseIf(none, "q", false));
+    fmt.println(sameValue(none));
+    fmt.println(sameValue(2));
+    fmt.println(sameValue(7));
+    return 0;
+}
+""",
+            """
+pq
+missing
+missing
+missing
+pq
+missing
+pq
+missing
+true false true
+pq
+missing
+first pq
+later pq
+missing
+small
+small
+big 7
+""");
+
+        // `c && flag` is false also where c is a str: nothing is known about c.
+        s.compileFails(
+            "condition facts: an early return on && with an opaque operand does not narrow",
+            unsoundCase("""
+fn afterAnd(c: str | none, flag: bool): str {
+    if c && flag { return "both"; }
+    let n: none = c;
+    return f"{n}";
+}
+"""),
+            [testsuite.mustHave(errorcodes.Code.NoSuitableConversionFound)]);
+
+        s.compileFails(
+            "condition facts: the else of && with an opaque operand does not narrow",
+            unsoundCase("""
+fn elseOfAnd(c: str | none, flag: bool): str {
+    if c && flag {
+        return "both";
+    } else {
+        let n: none = c;
+        return f"{n}";
+    }
+}
+"""),
+            [testsuite.mustHave(errorcodes.Code.NoSuitableConversionFound)]);
+
+        s.compileFails(
+            "condition facts: the ternary else of && with an opaque operand does not narrow",
+            unsoundCase("""
+fn ternaryOfAnd(c: str | none): none {
+    let n: none = c && flagOf() ? none : c;
+    return n;
+}
+"""),
+            [testsuite.mustHave(errorcodes.Code.NoSuitableConversionFound)]);
+
+        // `!a || !b` is true where a is a str and b is none: nothing is known
+        // about a.
+        s.compileFails(
+            "condition facts: the true side of || does not narrow",
+            unsoundCase("""
+fn thenOfOr(a: str | none, b: str | none): str {
+    if !a || !b {
+        let n: none = a;
+        return f"{n}";
+    }
+    return "both";
+}
+"""),
+            [testsuite.mustHave(errorcodes.Code.NoSuitableConversionFound)]);
+    }
+}

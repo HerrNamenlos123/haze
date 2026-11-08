@@ -1,0 +1,411 @@
+// UsageTracker: what the switcher runs. It probes the accounts on a slow
+// schedule (and on demand), keeps usage.json current and feeds Claude Code's
+// cache entry. It has no clock and no thread of its own: the switcher calls
+// tick() with the time, and asks nextWakeSeconds() when to call it again.
+// That keeps the schedule testable and the idle cost at zero.
+//
+// Two clocks, for two jobs. `nowMs` is the wall clock (time.wallClockMs()):
+// what probes are stamped with, what due-ness and freshness are measured in,
+// so a machine that slept for an hour finds every probe due when it wakes.
+// `mono` is time.now() (seconds, monotonic): the 5 s gap between requests
+// and the 15 s feed rhythm, which a clock change must not stretch or skip.
+
+export struct TrackerSettings {
+    // How often the active account is probed, and every other account.
+    activeIntervalMs: int = 60000;
+    otherIntervalMs: int = 600000;
+    // Never two requests closer than this, whoever asked (the refresh button
+    // included).
+    minGapSeconds: real = 5.0;
+    // How often the cache entry is rewritten with a fresh fetchedAtMs. Below
+    // the extension's refresh interval minus 5 s (60 s set in VS Code).
+    feedIntervalSeconds: real = 15.0;
+    // An account's numbers go stale after this many of its own intervals
+    // (AccountUsage.staleAfterMs): 3 min for the active one, 30 min for
+    // the others.
+    staleIntervals: int = 3;
+    // probeAllSoon() leaves out an account attempted less than this long
+    // ago: reopening the window right away probes nothing again.
+    probeAllSkipMs: int = 30000;
+    // Where probes go; only tests change it.
+    probeUrl: str = PROBE_URL;
+}
+
+// An account with a token on this machine.
+export struct AccountToken {
+    id: str = "";
+    token: str = "";
+}
+
+export ref struct UsageTracker {
+    usagePath: str;
+    claudeConfig: str | none;
+    settings: TrackerSettings = TrackerSettings {};
+    file: UsageFile = UsageFile {};
+    tokens: []AccountToken = [];
+    // 0 or 1 entries: a `mut Probe | none` field cannot be narrowed back to
+    // a mutable receiver.
+    probes: []mut Probe = [];
+    probingId: str = "";
+    lastRequestMono: real = -1000000.0;
+    lastFeedMono: real = -1000000.0;
+    feedDue: bool = true;
+    // Why usage.json or the cache entry could not be written last time; ""
+    // when the last write worked. For the window, not for decisions.
+    fileProblem: str = "";
+    cacheProblem: str = "";
+    lastCacheWrite: CacheWrite = CacheWrite.Unchanged;
+
+    // `usagePath` is share/usage.json; `claudeConfig` the file from
+    // claudeConfigPath() (none: no cache entry is fed). The last usage.json
+    // is read back, so a restart shows the numbers at once and does not
+    // probe everything again.
+    fn constructor(usagePath: str, claudeConfig: str | none, settings: TrackerSettings = {}) {
+        let tracker = UsageTracker { usagePath: usagePath, claudeConfig: claudeConfig, settings: settings };
+        let read = readUsageFile(usagePath);
+        if !read {
+            tracker.fileProblem = f"{read}";
+        }
+        else {
+            let existing: UsageFile | none = read;
+            if let f = existing {
+                tracker.file = f;
+            }
+        }
+        return tracker;
+    }
+
+    // The accounts that have a token here, in the switcher's order, and the
+    // active one. Call it whenever either changes. An account that is gone
+    // is dropped from usage.json; a new active account is probed at once
+    // (within the 5 s gap) and the cache entry follows it at once.
+    mut fn setAccounts(accounts: []AccountToken, active: str | none) {
+        let previous = this.file.active;
+        this.tokens = accounts;
+        let kept: []AccountUsage = [];
+        for t in accounts {
+            if let existing = this.file.account(t.id) {
+                kept.push(existing);
+            }
+            else {
+                kept.push(AccountUsage { id: t.id });
+            }
+        }
+        this.file.accounts = kept;
+        this.file.active = active;
+        // Being active changes an account's interval, so its staleness too.
+        for a in this.file.accounts {
+            a.staleAfterMs = this.settings.staleIntervals * this.intervalMs(a.id);
+        }
+        if !sameId(previous, active) {
+            this.feedDue = true;
+            if let id = active {
+                if let a = this.file.account(id) {
+                    // Due at once: a switch always gets the new account's
+                    // own numbers, never the old account's.
+                    a.attemptedAtMs = none;
+                }
+            }
+        }
+        if this.probingId.length > 0 && !this.tokenFor(this.probingId) {
+            this.probes[0].cancel();
+        }
+    }
+
+    // Does what is due: finishes a probe, starts the next one, rewrites the
+    // cache entry. True when something the window shows may have changed.
+    // Allocates nothing when nothing is due.
+    mut fn tick(nowMs: int, mono: real): bool {
+        let changed = false;
+        if this.probes.length > 0 {
+            if this.probes[0].poll() == ProbeState.Done {
+                this.finishProbe(nowMs);
+                changed = true;
+            }
+        }
+        if this.probes.length == 0 && mono - this.lastRequestMono >= this.settings.minGapSeconds {
+            if let id = this.dueAccount(nowMs) {
+                this.startProbe(id, nowMs, mono);
+                changed = true;
+            }
+        }
+        if this.feedDue || mono - this.lastFeedMono >= this.settings.feedIntervalSeconds {
+            this.feed(nowMs, mono);
+        }
+        return changed;
+    }
+
+    // Makes every account with a token due now, for when the window opens:
+    // everything it shows is then current within a few seconds. They run
+    // one after another through tick(), the active one first, each after
+    // the 5 s gap and never during a retry-after. An account attempted less
+    // than probeAllSkipMs ago is left as it is. (Request of the user,
+    // 2026-11-04: "it simply requests all accounts when the window is
+    // opened".)
+    mut fn probeAllSoon(nowMs: int) {
+        for a in this.file.accounts {
+            if !this.tokenFor(a.id) {
+                continue;
+            }
+            if let at = a.attemptedAtMs {
+                let age = nowMs - at;
+                if age >= 0 && age < this.settings.probeAllSkipMs {
+                    continue;
+                }
+            }
+            // Due at once, the way a new active account is.
+            a.attemptedAtMs = none;
+        }
+    }
+
+    // Probes `id` now, for the refresh button. False when it is not allowed
+    // yet (see refreshWaitSeconds) and nothing happens.
+    mut fn refresh(id: str, nowMs: int, mono: real): bool {
+        if this.refreshWaitSeconds(id, nowMs, mono) != 0.0 {
+            return false;
+        }
+        this.startProbe(id, nowMs, mono);
+        return true;
+    }
+
+    // 0 when refresh(id) would probe now. Otherwise how many seconds until it
+    // can (the gap between requests, or a retry-after the API asked for);
+    // -1 when it cannot at all (no token here) or a probe is running.
+    fn refreshWaitSeconds(id: str, nowMs: int, mono: real): real {
+        if !this.tokenFor(id) || this.probes.length > 0 {
+            return -1.0;
+        }
+        let wait = this.settings.minGapSeconds - (mono - this.lastRequestMono);
+        if let a = this.file.account(id) {
+            let retry = retryWaitSeconds(a, nowMs);
+            if retry > wait {
+                wait = retry;
+            }
+        }
+        if wait <= 0.0 {
+            return 0.0;
+        }
+        return wait;
+    }
+
+    // The account's state for the window; none for an id it does not know.
+    fn usage(id: str): AccountUsage | none {
+        return this.file.account(id);
+    }
+
+    fn isProbing(id: str): bool {
+        return this.probes.length > 0 && this.probingId == id;
+    }
+
+    // Seconds until tick() has something to do; the switcher sleeps that
+    // long (or until an event). Short while a probe runs.
+    fn nextWakeSeconds(nowMs: int, mono: real): real {
+        if this.probes.length > 0 {
+            return 0.1;
+        }
+        let wait = this.settings.feedIntervalSeconds - (mono - this.lastFeedMono);
+        if this.feedDue {
+            wait = 0.0;
+        }
+        let gap = this.settings.minGapSeconds - (mono - this.lastRequestMono);
+        for a in this.file.accounts {
+            if !this.tokenFor(a.id) {
+                continue;
+            }
+            let dueIn = (this.dueAtMs(a) - nowMs) as real / 1000.0;
+            let retry = retryWaitSeconds(a, nowMs);
+            if retry > dueIn {
+                dueIn = retry;
+            }
+            if gap > dueIn {
+                dueIn = gap;
+            }
+            if dueIn < wait {
+                wait = dueIn;
+            }
+        }
+        if wait < 0.0 {
+            return 0.0;
+        }
+        return wait;
+    }
+
+    // Stops a running probe and removes the cache entry: numbers nobody keeps
+    // current must not stay up as live. Call when the switcher quits.
+    mut fn shutdown() {
+        if this.probes.length > 0 {
+            this.probes[0].cancel();
+        }
+        if let config = this.claudeConfig {
+            setClaudeUsageCache(config, none);
+        }
+    }
+
+    // ── internals ───────────────────────────────────────────────────────────
+
+    fn tokenFor(id: str): str | none {
+        for t in this.tokens {
+            if t.id == id {
+                return t.token;
+            }
+        }
+        return none;
+    }
+
+    fn intervalMs(id: str): int {
+        if let active = this.file.active {
+            if active == id {
+                return this.settings.activeIntervalMs;
+            }
+        }
+        return this.settings.otherIntervalMs;
+    }
+
+    // When the account's next scheduled probe is due (wall clock). A probe
+    // stamped in the future (the clock was set back) is due now.
+    fn dueAtMs(a: AccountUsage): int {
+        if let at = a.attemptedAtMs {
+            return at + this.intervalMs(a.id);
+        }
+        return 0;
+    }
+
+    // The account to probe now: the active one first, then the others in
+    // order. none when nothing is due.
+    fn dueAccount(nowMs: int): str | none {
+        if let id = this.file.active {
+            if let a = this.file.account(id) {
+                if this.isDue(a, nowMs) {
+                    return id;
+                }
+            }
+        }
+        for a in this.file.accounts {
+            if this.isDue(a, nowMs) {
+                return a.id;
+            }
+        }
+        return none;
+    }
+
+    fn isDue(a: AccountUsage, nowMs: int): bool {
+        if !this.tokenFor(a.id) || retryWaitSeconds(a, nowMs) > 0.0 {
+            return false;
+        }
+        if let at = a.attemptedAtMs {
+            if at > nowMs {
+                return true;
+            }
+        }
+        return nowMs >= this.dueAtMs(a);
+    }
+
+    mut fn startProbe(id: str, nowMs: int, mono: real) {
+        let token = this.tokenFor(id);
+        assert(token as bool, "startProbe for an account without a token");
+        let t: str = token;
+        this.lastRequestMono = mono;
+        if let a = this.file.account(id) {
+            a.attemptedAtMs = nowMs;
+        }
+        let started = Probe(t, this.settings.probeUrl);
+        if !started {
+            let e: ProbeError = started;
+            this.recordFailure(id, e, nowMs);
+            this.writeFile(nowMs);
+            return;
+        }
+        this.probes.push(started);
+        this.probingId = id;
+    }
+
+    mut fn finishProbe(nowMs: int) {
+        let id = this.probingId;
+        let sample = this.probes[0].sample();
+        let error = this.probes[0].error();
+        this.probes = [];
+        this.probingId = "";
+        this.applyProbeResult(id, sample, error, nowMs);
+    }
+
+    // What a finished probe of `id` brought: `sample`, or when that is none,
+    // `error`. Writes usage.json and feeds the cache entry on the next tick.
+    // Public for the tests, which put results in without a network.
+    mut fn applyProbeResult(id: str, sample: UsageSample | none, error: ProbeError, nowMs: int) {
+        if let s = sample {
+            if let a = this.file.account(id) {
+                a.probedAtMs = nowMs;
+                a.fiveHour = s.fiveHour;
+                a.sevenDay = s.sevenDay;
+                a.error = none;
+            }
+        }
+        else {
+            this.recordFailure(id, error, nowMs);
+        }
+        this.writeFile(nowMs);
+        this.feedDue = true;
+    }
+
+    mut fn recordFailure(id: str, e: ProbeError, nowMs: int) {
+        if let a = this.file.account(id) {
+            a.error = ProbeFailure { kind: e.kind, message: e.message, atMs: nowMs, retryAfterSeconds: e.retryAfterSeconds };
+        }
+    }
+
+    mut fn writeFile(nowMs: int) {
+        this.file.writtenAtMs = nowMs;
+        let written = writeUsageFile(this.usagePath, this.file);
+        if !written {
+            this.fileProblem = f"{written}";
+        }
+        else {
+            this.fileProblem = "";
+        }
+    }
+
+    mut fn feed(nowMs: int, mono: real) {
+        this.lastFeedMono = mono;
+        this.feedDue = false;
+        if let config = this.claudeConfig {
+            let result = setClaudeUsageCache(config, cacheEntryFor(this.file, nowMs));
+            if !result {
+                this.cacheProblem = f"{result}";
+            }
+            else {
+                let outcome: CacheWrite = result;
+                this.lastCacheWrite = outcome;
+                this.cacheProblem = "";
+                if outcome == CacheWrite.Locked {
+                    // Claude Code held the lock: try again in a second, not
+                    // a whole feed interval later.
+                    this.lastFeedMono = mono - this.settings.feedIntervalSeconds + 1.0;
+                }
+            }
+        }
+    }
+}
+
+// How long the API asked us to wait before probing `a` again, from its last
+// failure; 0 when it asked for nothing or the wait is over.
+export fn retryWaitSeconds(a: AccountUsage, nowMs: int): real {
+    if let e = a.error {
+        if e.retryAfterSeconds > 0 {
+            let until = e.atMs + e.retryAfterSeconds * 1000;
+            if until > nowMs {
+                return (until - nowMs) as real / 1000.0;
+            }
+        }
+    }
+    return 0.0;
+}
+
+fn sameId(a: str | none, b: str | none): bool {
+    if let x = a {
+        if let y = b {
+            return x == y;
+        }
+        return false;
+    }
+    return !b;
+}

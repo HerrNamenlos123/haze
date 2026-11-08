@@ -2,9 +2,12 @@
 // keeps, and every file it writes. The host decides where the folders are;
 // nothing in this module knows a real path.
 //
-// Two folders:
-// - `stateDir`, this machine's own: settings.json, tokens/<id>.token and
-//   active.token. Never synced: a token belongs to one machine.
+// Three folders:
+// - `stateDir`, this machine's own: settings.json and tokens/<id>.token.
+//   Never synced: a token belongs to one machine.
+// - `shareDir` (`<stateDir>/share`), what this machine shares with tools and
+//   with a VM it mounts the folder into: active.token and usage.json (written
+//   by the usage tracker, see claude_usage).
 // - `<profile repo>/claude-account-switcher`, synced through git: accounts.json
 //   and icons/<id>.png. Everything about an account except its token.
 //
@@ -14,6 +17,7 @@
 // or the new one, never a mix.
 
 import image
+import claude_usage
 
 // settings.json, the file format. No field has a default: every file the
 // switcher ever wrote holds both, and a file of another shape must not open as
@@ -60,20 +64,125 @@ const syncedFolderName = "claude-account-switcher";
 // profile repo's folder.
 export enum PickKind { Icon, Folder }
 
+// What an account's row is doing: showing it, editing its name, asking for
+// a new token, or asking whether to remove it.
+export enum RowMode { Normal, Rename, Token, ConfirmRemove }
+
 // The id the add form's icon preview draws under (no account can have it:
 // ids are slugs without underscores).
 export const draftIconId = "_draft";
 
+// ── Usage as the window shows it ─────────────────────────────────────────
+
+// How often the shown usage is computed again, for the countdowns.
+const usageViewSeconds = 30.0;
+
+// A usage window's colour: below 60 %, from 60 % and from 80 %.
+export enum UsageLevel { Normal, Warning, Critical }
+
+export fn usageLevel(percent: real): UsageLevel {
+    if percent >= 80.0 { return UsageLevel.Critical; }
+    if percent >= 60.0 { return UsageLevel.Warning; }
+    return UsageLevel.Normal;
+}
+
+// The time until a reset, as the VS Code usage extension writes it: whole
+// days and hours from a day on, hours and minutes from an hour on, else
+// minutes. Rounded down: never more time left than there is.
+export fn countdown(ms: int): str {
+    let minutes = ms / 60000;
+    if minutes < 0 { minutes = 0; }
+    let hours = minutes / 60;
+    if hours >= 24 {
+        return f"{hours / 24}d {hours % 24}h";
+    }
+    if hours >= 1 {
+        return f"{hours}h {minutes % 60}m";
+    }
+    return f"{minutes}m";
+}
+
+// One window (5h or 7d) of an account's usage.
+export struct WindowView {
+    // There is a number to show: the last probe brought this window, and it
+    // has not reset since (after a reset the number is no longer its usage).
+    shown: bool = false;
+    percent: real = 0.0;
+    // The percentage rounded down, so the text and the colour agree at 60
+    // and 80.
+    percentText: str = "";
+    left: str = "";
+    level: UsageLevel = UsageLevel.Normal;
+    // The probe is recent enough to count (claude_usage.isFresh). A number
+    // that is not is shown dimmed, never as current.
+    current: bool = false;
+}
+
+// The refresh button: it may probe now, has to wait (the gap between
+// requests, or a retry-after), a probe of the account runs, or it cannot
+// (no token here, or another account's probe runs).
+export enum RefreshState { Ready, Waiting, Probing, Unavailable }
+
+export struct UsageView {
+    fiveHour: WindowView = WindowView {};
+    sevenDay: WindowView = WindowView {};
+    // The kind of the last probe's failure (claude_usage.probeErrorKindName),
+    // "" when it brought numbers; and its message.
+    error: str = "";
+    errorMessage: str = "";
+    refresh: RefreshState = RefreshState.Unavailable;
+}
+
+fn windowView(w: claude_usage.WindowUsage | none, current: bool, nowMs: int): WindowView {
+    if let window = w {
+        if window.resetsAtMs > nowMs {
+            return WindowView {
+                shown: true,
+                percent: window.percent,
+                percentText: f"{window.percent as int}%",
+                left: countdown(window.resetsAtMs - nowMs),
+                level: usageLevel(window.percent),
+                current: current,
+            };
+        }
+    }
+    return WindowView {};
+}
+
 export ref struct Switcher {
     stateDir: str;
+    shareDir: str;
+    // Probes the accounts' usage and keeps share/usage.json; told about the
+    // accounts by syncUsageAccounts, run by the host through tickUsage.
+    usage: mut claude_usage.UsageTracker;
+    // Bumped whenever the shown usage is computed again (showUsageAt).
+    usageRevision: rx.Reactive<int>;
+    // The clocks at the last tickUsage, and at the last showUsageAt.
+    tickNowMs: int = 0;
+    tickMono: real = 0.0;
+    viewNowMs: int = 0;
+    viewMono: real = -1000000.0;
+    shownRefresh: RefreshState = RefreshState.Unavailable;
     // The host's: opens a native picker, which may take long; its answer
-    // comes back through picked().
-    pick: (kind: PickKind) => none;
+    // comes back through picked(). False when none opened (one is open
+    // already): nothing will come back for this request.
+    pick: (kind: PickKind) => bool;
     // The last image file picked for a new account, and it as the icon it
     // becomes (none when it is no image).
     pickedIcon: rx.Reactive<str | none>;
     pickedIconImage: rx.Reactive<image.Image | none>;
     pickedFolder: rx.Reactive<str | none>;
+    // The account the open icon picker is for, none for the add form's.
+    iconPickFor: str | none = none;
+    // Every account id a row was shown for, by rowKey.
+    rowKeys: []str = [];
+    // Why Claude Code's settings could not be made to match the active
+    // account, none while they do. Separate from `problem`: it stays until a
+    // write succeeds, whatever else the user does, because until then Claude
+    // Code may be using another account than the one shown.
+    claudeSettingsProblem: rx.Reactive<str | none>;
+    // Bumped by the window's Retry.
+    claudeSettingsRetries: rx.Reactive<int>;
     // none until the user chose the profile repo (settings.json is not there).
     profileRepo: rx.Reactive<str | none>;
     accounts: rx.ShallowReactive<[]Account>;
@@ -111,7 +220,7 @@ export ref struct Switcher {
     fn settingsPath(): str { return f"{this.stateDir}/settings.json"; }
     fn tokensDir(): str { return f"{this.stateDir}/tokens"; }
     fn tokenPath(id: str): str { return f"{this.stateDir}/tokens/{id}.token"; }
-    fn activeTokenPath(): str { return f"{this.stateDir}/active.token"; }
+    fn activeTokenPath(): str { return f"{this.shareDir}/active.token"; }
 
     fn syncedDir(): str | none {
         if let repo = rx.get(this.profileRepo) {
@@ -180,6 +289,35 @@ export ref struct Switcher {
         this.accounts := empty;
         this.icons = [];
         this.accountsLoaded = false;
+        this.syncUsageAccounts();
+    }
+
+    // A key for `id`'s row that stays the same for as long as the program
+    // runs, wherever the account moves in the list: a row keeps what is
+    // typed into it when another one goes.
+    mut fn rowKey(id: str): int {
+        for (let i = 0; i < this.rowKeys.length; i++) {
+            if this.rowKeys[i] == id {
+                return i + 1;
+            }
+        }
+        this.rowKeys.push(id);
+        return this.rowKeys.length;
+    }
+
+    fn hasClaudeSettingsProblem(): bool {
+        if rx.get(this.claudeSettingsProblem) { return true; }
+        return false;
+    }
+
+    fn claudeSettingsProblemText(): str {
+        if let message = rx.get(this.claudeSettingsProblem) { return message; }
+        return "";
+    }
+
+    // The window's Retry: the host writes Claude Code's settings again.
+    fn retryClaudeSettings() {
+        this.claudeSettingsRetries := rx.get(this.claudeSettingsRetries) + 1;
     }
 
     fn fail(message: str): bool {
@@ -193,13 +331,29 @@ export ref struct Switcher {
 
     // ── Pickers ────────────────────────────────────────────────────────────
 
-    fn requestPick(kind: PickKind) {
-        this.pick(kind);
+    // The target is set before the picker opens (a host may answer at once)
+    // and put back when none opened: the answer still to come is then the
+    // open picker's, for what that one was asked for.
+    mut fn requestPick(kind: PickKind) {
+        let previous = this.iconPickFor;
+        this.iconPickFor = none;
+        if !this.pick(kind) {
+            this.iconPickFor = previous;
+        }
+    }
+
+    // An icon picker whose image becomes `id`'s icon right away.
+    mut fn requestIconFor(id: str) {
+        let previous = this.iconPickFor;
+        this.iconPickFor = id;
+        if !this.pick(PickKind.Icon) {
+            this.iconPickFor = previous;
+        }
     }
 
     // The host's answer to pick(): the path chosen, none when the picker was
     // cancelled (which changes nothing).
-    fn picked(kind: PickKind, path: str | none) {
+    mut fn picked(kind: PickKind, path: str | none) {
         let chosen = path;
         if !chosen {
             return;
@@ -207,6 +361,11 @@ export ref struct Switcher {
         let file = chosen as str;
         if kind == PickKind.Folder {
             this.pickedFolder := file;
+            return;
+        }
+        if let account = this.iconPickFor {
+            this.iconPickFor = none;
+            this.setAccountIcon(account, file);
             return;
         }
         this.pickedIcon := file;
@@ -297,7 +456,10 @@ export ref struct Switcher {
         this.accountsLoaded = true;
         this.iconVersion := rx.get(this.iconVersion) + 1;
         this.removeOrphanTokens();
-        return this.reconcile();
+        let reconciled = this.reconcile();
+        // A token may have changed without the active account changing.
+        this.syncUsageAccounts();
+        return reconciled;
     }
 
     // Whether tokens/ holds any token file (an unreadable folder counts as
@@ -427,17 +589,22 @@ export ref struct Switcher {
         if let message = invalidToken(token) {
             return this.fail(f"The token of {id} is not a token: {message}");
         }
+        let made = fs.createDirectory(this.shareDir);
+        if !made {
+            return this.fail(f"{this.shareDir} could not be created: {made}");
+        }
         let written = fs.replaceText(this.activeTokenPath(), token);
         if !written {
             return this.fail(f"{this.activeTokenPath()} could not be written: {written}");
         }
         let previous = rx.get(this.active);
         this.active := id;
-        if !this.saveSettings() {
+        let saved = this.saveSettings();
+        if !saved {
             this.active := previous;
-            return false;
         }
-        return true;
+        this.syncUsageAccounts();
+        return saved;
     }
 
     mut fn deactivate(): bool {
@@ -446,7 +613,108 @@ export ref struct Switcher {
             return this.fail(f"{this.activeTokenPath()} could not be removed: {removed}");
         }
         this.active := none;
-        return this.saveSettings();
+        let saved = this.saveSettings();
+        this.syncUsageAccounts();
+        return saved;
+    }
+
+    // ── Usage ──────────────────────────────────────────────────────────────
+
+    // Tells the tracker which accounts have a token here (in list order,
+    // each with its token) and which one is active. Called by everything
+    // that changes one of those; the tracker ignores a call that changes
+    // nothing.
+    mut fn syncUsageAccounts() {
+        let tokens: []claude_usage.AccountToken = [];
+        for account in this.list() {
+            if !account.hasToken {
+                continue;
+            }
+            let read = fs.readText(this.tokenPath(account.id));
+            if read {
+                let token: str = read;
+                tokens.push(claude_usage.AccountToken { id: account.id, token: token.trim() });
+            }
+        }
+        this.usage.setAccounts(tokens, rx.get(this.active));
+    }
+
+    // The host calls this from its main loop with the wall clock
+    // (time.wallClockMs()) and the monotonic one (time.now()), also while
+    // the window is hidden: it runs the probes and the cache feed, and
+    // re-renders the usage when what it shows changed, when the refresh
+    // button's state changed, and every usageViewSeconds for the countdowns.
+    // Allocates nothing when nothing is due.
+    mut fn tickUsage(nowMs: int, mono: real) {
+        this.tickNowMs = nowMs;
+        this.tickMono = mono;
+        let changed = this.usage.tick(nowMs, mono);
+        if changed || mono - this.viewMono >= usageViewSeconds || this.refreshStateNow() != this.shownRefresh {
+            this.showUsageAt(nowMs, mono);
+        }
+    }
+
+    // The window opened: every account is probed again soon (one after
+    // another, see claude_usage's probeAllSoon), and what it shows is as of
+    // now.
+    mut fn usageWindowOpened(nowMs: int, mono: real) {
+        this.usage.probeAllSoon(nowMs);
+        this.tickUsage(nowMs, mono);
+        this.showUsageAt(nowMs, mono);
+    }
+
+    // What the window shows of usage is as of (nowMs, mono) from now on.
+    mut fn showUsageAt(nowMs: int, mono: real) {
+        this.viewNowMs = nowMs;
+        this.viewMono = mono;
+        this.shownRefresh = this.refreshStateNow();
+        this.usageRevision := rx.get(this.usageRevision) + 1;
+    }
+
+    // The refresh button's state for the active account, at the last tick.
+    fn refreshStateNow(): RefreshState {
+        if let id = rx.get(this.active) {
+            return this.refreshStateOf(id, this.tickNowMs, this.tickMono);
+        }
+        return RefreshState.Unavailable;
+    }
+
+    fn refreshStateOf(id: str, nowMs: int, mono: real): RefreshState {
+        if this.usage.isProbing(id) {
+            return RefreshState.Probing;
+        }
+        let wait = this.usage.refreshWaitSeconds(id, nowMs, mono);
+        if wait == 0.0 {
+            return RefreshState.Ready;
+        }
+        if wait < 0.0 {
+            return RefreshState.Unavailable;
+        }
+        return RefreshState.Waiting;
+    }
+
+    // The refresh button: probes `id` now, if it may.
+    mut fn refreshUsage(id: str) {
+        if this.usage.refresh(id, this.tickNowMs, this.tickMono) {
+            this.showUsageAt(this.tickNowMs, this.tickMono);
+        }
+    }
+
+    // What the window shows of `id`'s usage, as of the last showUsageAt.
+    fn usageView(id: str): UsageView {
+        rx.get(this.usageRevision);
+        let nowMs = this.viewNowMs;
+        let view = UsageView { refresh: this.refreshStateOf(id, nowMs, this.viewMono) };
+        if let u = this.usage.usage(id) {
+            let current = claude_usage.isFresh(u, nowMs);
+            view.fiveHour = windowView(u.fiveHour, current, nowMs);
+            view.sevenDay = windowView(u.sevenDay, current, nowMs);
+            if let e = u.error {
+                view.error = claude_usage.probeErrorKindName(e.kind);
+                view.errorMessage = e.message;
+            }
+        }
+        return view;
     }
 
     // ── Settings ───────────────────────────────────────────────────────────
@@ -558,6 +826,84 @@ export ref struct Switcher {
         this.clearProblem();
         // reload() reconciles: an active `id` gets its new token into
         // active.token, and with none active, `id` becomes active.
+        return this.reload();
+    }
+
+    // `id` becomes the active account (a click on its row). It needs a token
+    // on this machine; without one the row asks for it.
+    mut fn activateAccount(id: str): bool {
+        if !this.reload() {
+            return false;
+        }
+        let index = this.indexOf(id);
+        if index < 0 {
+            return this.fail("That account is gone");
+        }
+        if !this.list()[index].hasToken {
+            return this.fail(f"{this.list()[index].name} has no token on this machine");
+        }
+        if this.isActive(id) {
+            this.clearProblem();
+            return true;
+        }
+        if this.activate(id) {
+            this.clearProblem();
+            return true;
+        }
+        return false;
+    }
+
+    // A new name for `id`; its id, icon and tokens stay.
+    mut fn renameAccount(id: str, name: str): bool {
+        if !this.reload() {
+            return false;
+        }
+        if this.indexOf(id) < 0 {
+            return this.fail("That account is gone");
+        }
+        let trimmed = name.trim();
+        if trimmed.length == 0 {
+            return this.fail("The account needs a name");
+        }
+        let stored: []StoredAccount = [];
+        for account in this.list() {
+            stored.push(StoredAccount { id: account.id, name: account.id == id ? trimmed : account.name });
+        }
+        if !this.saveAccounts(stored) {
+            return false;
+        }
+        this.clearProblem();
+        return this.reload();
+    }
+
+    // `id`'s icon, from the image file at `iconFile`.
+    mut fn setAccountIcon(id: str, iconFile: str): bool {
+        if !this.reload() {
+            return false;
+        }
+        if this.indexOf(id) < 0 {
+            return this.fail("That account is gone");
+        }
+        let synced = this.syncedDir();
+        if !synced {
+            return this.fail("Choose the profile repo first");
+        }
+        let dir = synced as str;
+        let png = iconPngFromFile(iconFile);
+        if png is str {
+            return this.fail(png);
+        }
+        let iconsDir = f"{dir}/icons";
+        let madeIcons = fs.createDirectory(iconsDir);
+        if !madeIcons {
+            return this.fail(f"{iconsDir} could not be created: {madeIcons}");
+        }
+        let iconPath = f"{iconsDir}/{id}.png";
+        let wroteIcon = fs.writeBinary(iconPath, png as Bytes);
+        if !wroteIcon {
+            return this.fail(f"{iconPath} could not be written: {wroteIcon}");
+        }
+        this.clearProblem();
         return this.reload();
     }
 
@@ -835,11 +1181,50 @@ fn withoutTrailingSlash(path: str): str {
 
 let switcherStore: mut Switcher | none = none;
 
-// Opens the switcher for the whole program, with this machine's folder at
-// `stateDir`. Only a settings.json that is not there starts without a profile
-// repo. One that is there but cannot be read or understood is an error, and
-// nothing in this module will ever write to it.
-export fn openSwitcher(stateDir: str, pick: (kind: PickKind) => none): Result<none, str> {
+// Versions before share/ kept active.token in the state folder. It moves
+// there once, the new one complete before the old one goes, so a Claude Code
+// that asks for the token meanwhile always finds one. A new one that is there
+// already wins: it is what this version wrote.
+fn moveLegacyActiveToken(stateDir: str, shareDir: str): Result<none, str> {
+    let legacy = f"{stateDir}/active.token";
+    let target = f"{shareDir}/active.token";
+    let read = fs.readText(legacy);
+    if !read {
+        if read == fs.Error.NotFound {
+            return Result<none, str>.Ok(none);
+        }
+        return Result<none, str>.Err(f"{legacy} could not be read: {read}");
+    }
+    let token: str = read;
+    let present = fs.exists(target);
+    if !present {
+        return Result<none, str>.Err(f"{target} could not be checked: {present}");
+    }
+    let there: bool = present;
+    if !there {
+        let made = fs.createDirectory(shareDir);
+        if !made {
+            return Result<none, str>.Err(f"{shareDir} could not be created: {made}");
+        }
+        let written = fs.replaceText(target, token);
+        if !written {
+            return Result<none, str>.Err(f"{target} could not be written: {written}");
+        }
+    }
+    let removed = fs.removeFile(legacy);
+    if !removed {
+        return Result<none, str>.Err(f"{legacy} could not be removed: {removed}");
+    }
+    return Result<none, str>.Ok(none);
+}
+
+// Opens the switcher for the whole program, with this machine's folders at
+// `stateDir` and `shareDir`. Only a settings.json that is not there starts
+// without a profile repo. One that is there but cannot be read or understood
+// is an error, and nothing in this module will ever write to it.
+// The usage tracker writes `shareDir`/usage.json and feeds Claude Code's
+// cache entry in `claudeConfig` (none: it feeds none).
+export fn openSwitcher(stateDir: str, shareDir: str, claudeConfig: str | none, usageSettings: claude_usage.TrackerSettings, pick: (kind: PickKind) => bool): Result<none, str> {
     let settings = SettingsFile { profileRepo: "", active: none };
     let hasSettings = false;
     let path = f"{stateDir}/settings.json";
@@ -855,8 +1240,16 @@ export fn openSwitcher(stateDir: str, pick: (kind: PickKind) => none): Result<no
         return Result<none, str>.Err(f"{path} could not be read: {text}");
     }
 
+    let moved = moveLegacyActiveToken(stateDir, shareDir);
+    if !moved {
+        return moved;
+    }
+
     let store = Switcher {
         stateDir: stateDir,
+        shareDir: shareDir,
+        usage: claude_usage.UsageTracker(f"{shareDir}/usage.json", claudeConfig, usageSettings),
+        usageRevision: rx.reactive<int>(0),
         pick: pick,
         pickedIcon: rx.reactive<str | none>(none),
         pickedIconImage: rx.reactive<image.Image | none>(none),
@@ -865,6 +1258,8 @@ export fn openSwitcher(stateDir: str, pick: (kind: PickKind) => none): Result<no
         accounts: rx.shallowReactive<[]Account>([]),
         active: rx.reactive<str | none>(settings.active),
         problem: rx.reactive<str | none>(none),
+        claudeSettingsProblem: rx.reactive<str | none>(none),
+        claudeSettingsRetries: rx.reactive<int>(0),
         iconVersion: rx.reactive<int>(0),
     };
     if hasSettings {

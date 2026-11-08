@@ -1,0 +1,106 @@
+// ============================================================================
+// time.wallClockMs and time.formatUtcIso8601; fs.createDirectoryExclusive and
+// fs.removeEmptyDirectory.
+//
+// The wall clock is for time stamps other programs read (Claude Code's usage
+// cache, the switcher's usage.json); the expected dates were computed with
+// Python's datetime, leap days and the ends of the supported range included.
+//
+// A lock that other programs take by creating a directory (proper-lockfile,
+// which Claude Code uses for ~/.claude.json) needs a mkdir that fails when
+// anything is already there, in one step, and a removal that never takes a
+// directory with something in it.
+// ============================================================================
+
+namespace cases_wall_clock_and_directory_lock {
+
+    export fn register(s: mut testsuite.Suite) {
+
+        s.run(
+            "time.formatUtcIso8601, time.wallClockMs, fs exclusive directories",
+            """
+fn describe(result: Result<none, fs.Error>): str {
+    if result {
+        return "ok";
+    }
+    if result == fs.Error.AlreadyExists { return "AlreadyExists"; }
+    if result == fs.Error.NotFound { return "NotFound"; }
+    if result == fs.Error.NotEmpty { return "NotEmpty"; }
+    if result == fs.Error.NotADirectory { return "NotADirectory"; }
+    if result == fs.Error.InvalidPath { return "InvalidPath"; }
+    return f"error {result}";
+}
+
+fn workPath(name: str): str {
+    let dir = env.get("HAZE_TEST_WORKDIR");
+    if dir is str {
+        return f"{dir}/{name}";
+    }
+    return f"/tmp/{name}";
+}
+
+fn main(): int {
+    // formatUtcIso8601 against values checked with Python's datetime.
+    fmt.println(time.formatUtcIso8601(0));
+    fmt.println(time.formatUtcIso8601(1793828400000));
+    fmt.println(time.formatUtcIso8601(951782400000));
+    fmt.println(time.formatUtcIso8601(951868799999));
+    fmt.println(time.formatUtcIso8601(4107542400000));
+    fmt.println(time.formatUtcIso8601(-1));
+    fmt.println(time.formatUtcIso8601(-62135596800000));
+    fmt.println(time.formatUtcIso8601(253402300799999));
+
+    // The wall clock is near the real time and moves forward.
+    let a = time.wallClockMs();
+    time.sleep(0.05);
+    let b = time.wallClockMs();
+    fmt.println(f"wall clock after 2026: {a > 1767225600000}, moved 40..1000 ms: {b - a >= 40 && b - a < 1000}");
+
+    let dir = workPath("fs_directory_lock");
+    fs.createDirectory(dir);
+    let lock = f"{dir}/file.lock";
+    fs.removeEmptyDirectory(lock);
+    fmt.println(f"take: {describe(fs.createDirectoryExclusive(lock))}");
+    fmt.println(f"take again: {describe(fs.createDirectoryExclusive(lock))}");
+    let deep = f"{dir}/no/such";
+    fmt.println(f"missing parent: {describe(fs.createDirectoryExclusive(deep))}");
+    let plainFile = f"{dir}/plain.txt";
+    fs.writeText(plainFile, "x");
+    fmt.println(f"over a file: {describe(fs.createDirectoryExclusive(plainFile))}");
+    fmt.println(f"remove a file: {describe(fs.removeEmptyDirectory(plainFile))}");
+    let inside = f"{lock}/inside.txt";
+    fs.writeText(inside, "x");
+    fmt.println(f"remove non-empty: {describe(fs.removeEmptyDirectory(lock))}");
+    fs.removeFile(inside);
+    fmt.println(f"remove: {describe(fs.removeEmptyDirectory(lock))}");
+    fmt.println(f"remove gone: {describe(fs.removeEmptyDirectory(lock))}");
+    fmt.println(f"take after release: {describe(fs.createDirectoryExclusive(lock))}");
+    let cut = f"{dir}/cut\x00x";
+    fmt.println(f"NUL: {describe(fs.createDirectoryExclusive(cut))}");
+    fs.removeEmptyDirectory(lock);
+    return 0;
+}
+""",
+            """
+1970-01-01T00:00:00.000Z
+2026-11-04T21:40:00.000Z
+2000-02-29T00:00:00.000Z
+2000-02-29T23:59:59.999Z
+2100-03-01T00:00:00.000Z
+1969-12-31T23:59:59.999Z
+0001-01-01T00:00:00.000Z
+9999-12-31T23:59:59.999Z
+wall clock after 2026: true, moved 40..1000 ms: true
+take: ok
+take again: AlreadyExists
+missing parent: NotFound
+over a file: AlreadyExists
+remove a file: NotADirectory
+remove non-empty: NotEmpty
+remove: ok
+remove gone: NotFound
+take after release: ok
+NUL: InvalidPath
+""");
+    }
+}

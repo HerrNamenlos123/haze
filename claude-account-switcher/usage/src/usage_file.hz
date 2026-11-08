@@ -1,0 +1,312 @@
+import claude
+
+// usage.json: what the probes found, per account, and which account is
+// active. The switcher writes it (share/usage.json in its state folder);
+// claude-usage, claude-usage-wait and claude-usage-sync only read it. The
+// format is in CONTRACT.md; every field is always written, `null` where a
+// value is absent.
+
+export const comptime USAGE_FILE_VERSION = 2;
+
+
+export ref struct ProbeFailure {
+    kind: ProbeErrorKind = ProbeErrorKind.Network;
+    message: str = "";
+    atMs: int = 0;
+    retryAfterSeconds: int = 0;
+}
+
+export ref struct AccountUsage {
+    id: str = "";
+    // How long this account's numbers count as current: three of its own
+    // probe intervals (the active account is probed far more often than the
+    // others), so one failed probe does not take them away. 0: never current.
+    staleAfterMs: int = 0;
+    // The last probe that brought numbers, and what it brought.
+    probedAtMs: int | none = none;
+    fiveHour: WindowUsage | none = none;
+    sevenDay: WindowUsage | none = none;
+    // The last probe started, successful or not.
+    attemptedAtMs: int | none = none;
+    // Why the last probe brought nothing; none when it brought numbers.
+    error: ProbeFailure | none = none;
+}
+
+export ref struct UsageFile {
+    writtenAtMs: int = 0;
+    active: str | none = none;
+    accounts: []AccountUsage = [];
+
+    fn account(id: str): AccountUsage | none {
+        for a in this.accounts {
+            if a.id == id {
+                return a;
+            }
+        }
+        return none;
+    }
+}
+
+// How far a probe may lie in the reader's future and still count. The VM
+// reads the host's usage.json with its own clock, and two clocks are never
+// exactly equal; beyond this, a clock was set back and the stamp proves
+// nothing.
+export const comptime CLOCK_SKEW_MS = 60000;
+
+// Whether `a`'s numbers count as current at `nowMs`, by its own staleAfterMs.
+export fn isFresh(a: AccountUsage, nowMs: int): bool {
+    if let at = a.probedAtMs {
+        let age = nowMs - at;
+        return age > -CLOCK_SKEW_MS && age < a.staleAfterMs;
+    }
+    return false;
+}
+
+// Where the switcher keeps what it shares with tools and other machines
+// (usage.json, active.token): `share/` in its state folder. The app id must
+// be the [app] appId in claude-account-switcher/haze.toml (a test checks).
+export fn switcherAppId(): str {
+    return "io.github.hazelang.ClaudeAccountSwitcher";
+}
+
+export fn shareDirectory(): str | none {
+    if let dir = sys.stateDirectory(switcherAppId()) {
+        return f"{dir}/share";
+    }
+    return none;
+}
+
+export fn usageFilePath(): str | none {
+    if let dir = shareDirectory() {
+        return f"{dir}/usage.json";
+    }
+    return none;
+}
+
+fn optionalInt(value: int | none): json.Node {
+    if let v = value {
+        return claude.fromInt(v);
+    }
+    return claude.nullNode();
+}
+
+fn windowNode(w: WindowUsage | none): json.Node {
+    if let window = w {
+        let node = claude.newObject();
+        claude.setReal(node, "percent", window.percent);
+        claude.setInt(node, "resetsAtMs", window.resetsAtMs);
+        claude.setStr(node, "status", window.status);
+        return node;
+    }
+    return claude.nullNode();
+}
+
+export fn usageFileToJson(file: UsageFile): str {
+    let root = claude.newObject();
+    claude.setInt(root, "version", USAGE_FILE_VERSION);
+    claude.setInt(root, "writtenAtMs", file.writtenAtMs);
+    if let active = file.active {
+        claude.setStr(root, "active", active);
+    }
+    else {
+        claude.setNull(root, "active");
+    }
+    let list = claude.newArray();
+    for a in file.accounts {
+        let node = claude.newObject();
+        claude.setStr(node, "id", a.id);
+        claude.setInt(node, "staleAfterMs", a.staleAfterMs);
+        claude.set(node, "probedAtMs", optionalInt(a.probedAtMs));
+        claude.set(node, "fiveHour", windowNode(a.fiveHour));
+        claude.set(node, "sevenDay", windowNode(a.sevenDay));
+        claude.set(node, "attemptedAtMs", optionalInt(a.attemptedAtMs));
+        if let e = a.error {
+            let err = claude.newObject();
+            claude.setStr(err, "kind", probeErrorKindName(e.kind));
+            claude.setStr(err, "message", e.message);
+            claude.setInt(err, "atMs", e.atMs);
+            claude.setInt(err, "retryAfterSeconds", e.retryAfterSeconds);
+            claude.set(node, "error", err);
+        }
+        else {
+            claude.setNull(node, "error");
+        }
+        claude.push(list, node);
+    }
+    claude.set(root, "accounts", list);
+    return claude.stringifyPretty(root) + "\n";
+}
+
+// A field that must be there and hold a number.
+fn readInt(node: json.Node, key: str): Result<int, str> {
+    if let value = claude.getRaw(node, key) {
+        if let n = claude.asInt(value) {
+            return Result<int, str>.Ok(n);
+        }
+        return Result<int, str>.Err(f"{key} is not a number");
+    }
+    return Result<int, str>.Err(f"{key} is missing");
+}
+
+// A field that must be there and hold a number or null.
+fn readNullableInt(node: json.Node, key: str): Result<int | none, str> {
+    if let value = claude.getRaw(node, key) {
+        if claude.isNull(value) {
+            return Result<int | none, str>.Ok(none);
+        }
+        if let n = claude.asInt(value) {
+            return Result<int | none, str>.Ok(n);
+        }
+        return Result<int | none, str>.Err(f"{key} is not a number");
+    }
+    return Result<int | none, str>.Err(f"{key} is missing");
+}
+
+fn readWindow(node: json.Node, key: str): Result<WindowUsage | none, str> {
+    let value = claude.getRaw(node, key);
+    if !value {
+        return Result<WindowUsage | none, str>.Err(f"{key} is missing");
+    }
+    let v: json.Node = value;
+    if claude.isNull(v) {
+        return Result<WindowUsage | none, str>.Ok(none);
+    }
+    let percent = claude.getReal(v, "percent");
+    let resets = claude.getInt(v, "resetsAtMs");
+    let status = claude.getString(v, "status");
+    if let p = percent {
+        if let r = resets {
+            if let s = status {
+                return Result<WindowUsage | none, str>.Ok(WindowUsage { percent: p, resetsAtMs: r, status: s });
+            }
+        }
+    }
+    return Result<WindowUsage | none, str>.Err(f"{key} lacks percent, resetsAtMs or status");
+}
+
+export fn parseUsageFile(text: str): Result<UsageFile, str> {
+    let parsed = claude.parseJson(text);
+    if !parsed {
+        return Result<UsageFile, str>.Err("not JSON");
+    }
+    let root: json.Node = parsed;
+    let version = claude.getInt(root, "version");
+    if !version {
+        return Result<UsageFile, str>.Err("no version");
+    }
+    let v: int = version;
+    if v != USAGE_FILE_VERSION {
+        return Result<UsageFile, str>.Err(f"version {v}, this program reads {USAGE_FILE_VERSION}");
+    }
+    let written = readInt(root, "writtenAtMs");
+    if !written { return Result<UsageFile, str>.Err(written); }
+    let writtenAt: int = written;
+    let file = UsageFile { writtenAtMs: writtenAt };
+
+    let activeNode = claude.getRaw(root, "active");
+    if !activeNode {
+        return Result<UsageFile, str>.Err("active is missing");
+    }
+    let an: json.Node = activeNode;
+    if !claude.isNull(an) {
+        let name = claude.asStr(an);
+        if !name {
+            return Result<UsageFile, str>.Err("active is not a string");
+        }
+        let activeId: str = name;
+        file.active = activeId;
+    }
+
+    let list = claude.getRaw(root, "accounts");
+    if !list {
+        return Result<UsageFile, str>.Err("accounts is missing");
+    }
+    let accountsNode: json.Node = list;
+    if !claude.isArray(accountsNode) {
+        return Result<UsageFile, str>.Err("accounts is not a list");
+    }
+    for node in claude.elements(accountsNode) {
+        let id = claude.getString(node, "id");
+        if !id {
+            return Result<UsageFile, str>.Err("an account has no id");
+        }
+        let accountId: str = id;
+        let stale = readInt(node, "staleAfterMs");
+        if !stale { return Result<UsageFile, str>.Err(f"{accountId}: {stale}"); }
+        let staleAfter: int = stale;
+        let a = AccountUsage { id: accountId, staleAfterMs: staleAfter };
+        let probed = readNullableInt(node, "probedAtMs");
+        if !probed { return Result<UsageFile, str>.Err(f"{accountId}: {probed}"); }
+        a.probedAtMs = probed;
+        let attempted = readNullableInt(node, "attemptedAtMs");
+        if !attempted { return Result<UsageFile, str>.Err(f"{accountId}: {attempted}"); }
+        a.attemptedAtMs = attempted;
+        let five = readWindow(node, "fiveHour");
+        if !five { return Result<UsageFile, str>.Err(f"{accountId}: {five}"); }
+        a.fiveHour = five;
+        let seven = readWindow(node, "sevenDay");
+        if !seven { return Result<UsageFile, str>.Err(f"{accountId}: {seven}"); }
+        a.sevenDay = seven;
+
+        let errNode = claude.getRaw(node, "error");
+        if !errNode {
+            return Result<UsageFile, str>.Err(f"{accountId}: error is missing");
+        }
+        let en: json.Node = errNode;
+        if !claude.isNull(en) {
+            let kindName = claude.getString(en, "kind");
+            let message = claude.getString(en, "message");
+            let at = claude.getInt(en, "atMs");
+            let retry = claude.getInt(en, "retryAfterSeconds");
+            let failure = ProbeFailure {};
+            let complete = false;
+            if let k = kindName {
+                if let kind = probeErrorKindFromName(k) {
+                    if let m = message {
+                        if let t = at {
+                            if let r = retry {
+                                failure = ProbeFailure { kind: kind, message: m, atMs: t, retryAfterSeconds: r };
+                                complete = true;
+                            }
+                        }
+                    }
+                }
+            }
+            if !complete {
+                return Result<UsageFile, str>.Err(f"{accountId}: error lacks kind, message, atMs or retryAfterSeconds");
+            }
+            a.error = failure;
+        }
+        file.accounts.push(a);
+    }
+    return Result<UsageFile, str>.Ok(file);
+}
+
+// The file at `path`, none when there is none; an error when it cannot be
+// read or is not a usage file of this version.
+export fn readUsageFile(path: str): Result<UsageFile | none, str> {
+    let text = fs.readText(path);
+    if !text {
+        if text == fs.Error.NotFound {
+            return Result<UsageFile | none, str>.Ok(none);
+        }
+        return Result<UsageFile | none, str>.Err(f"{path} could not be read: {text}");
+    }
+    let t: str = text;
+    let parsed = parseUsageFile(t);
+    if !parsed {
+        return Result<UsageFile | none, str>.Err(f"{path}: {parsed}");
+    }
+    let file: UsageFile = parsed;
+    return Result<UsageFile | none, str>.Ok(file);
+}
+
+// Replaces the file whole (fs.replaceText): a reader sees the old one or the
+// new one, never a mix.
+export fn writeUsageFile(path: str, file: UsageFile): Result<none, str> {
+    let written = fs.replaceText(path, usageFileToJson(file));
+    if !written {
+        return Result<none, str>.Err(f"{path} could not be written: {written}");
+    }
+    return Result<none, str>.Ok(none);
+}
