@@ -27,6 +27,33 @@ install -Dm644 __haze__/haze-notes/bin/io.github.hazelang.HazeNotes.desktop ~/.l
 install -Dm644 __haze__/haze-notes/bin/io.github.hazelang.HazeNotes.png ~/.local/share/icons/hicolor/512x512/apps/io.github.hazelang.HazeNotes.png &&
 gtk-update-icon-cache -f -t ~/.local/share/icons/hicolor
 '''
+# Removes what `install` put in place for the current user. What the app keeps
+# per user (cache, window state) and the vaults stay.
+uninstall = '''
+rm -f ~/.local/bin/haze-notes ~/.local/share/applications/io.github.hazelang.HazeNotes.desktop ~/.local/share/icons/hicolor/512x512/apps/io.github.hazelang.HazeNotes.png &&
+if [ -d ~/.local/share/icons/hicolor ]; then gtk-update-icon-cache -f -t ~/.local/share/icons/hicolor; fi
+'''
+# The same release build, installed for every user of this machine (asks for
+# sudo): the binary into /usr/local/bin, on every user's PATH, the desktop
+# entry and icon under /usr/local/share, which every user's desktop searches.
+# umask 022 keeps what sudo creates readable by everyone. This user's own
+# copies from `install` are removed (`uninstall`): they would shadow the
+# machine-wide ones.
+install-machine = '''
+umask 022 &&
+haze build --release &&
+sudo install -Dm755 __haze__/haze-notes/bin/haze-notes /usr/local/bin/haze-notes &&
+sudo install -Dm644 __haze__/haze-notes/bin/io.github.hazelang.HazeNotes.desktop /usr/local/share/applications/io.github.hazelang.HazeNotes.desktop &&
+sudo install -Dm644 __haze__/haze-notes/bin/io.github.hazelang.HazeNotes.png /usr/local/share/icons/hicolor/512x512/apps/io.github.hazelang.HazeNotes.png &&
+sudo gtk-update-icon-cache -f -t /usr/local/share/icons/hicolor &&
+haze uninstall
+'''
+# Removes what `install-machine` put in place, for every user (asks for sudo).
+# What the app keeps per user and the vaults stay.
+uninstall-machine = '''
+sudo rm -f /usr/local/bin/haze-notes /usr/local/share/applications/io.github.hazelang.HazeNotes.desktop /usr/local/share/icons/hicolor/512x512/apps/io.github.hazelang.HazeNotes.png &&
+if [ -d /usr/local/share/icons/hicolor ]; then sudo gtk-update-icon-cache -f -t /usr/local/share/icons/hicolor; fi
+'''
 
 [dependencies]
 # Core runtime and UI framework stuff
