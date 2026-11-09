@@ -82,3 +82,4 @@ and against which commit it was verified; re-check a note against the code befor
 - [Build timing traps](build-timing-traps.md) - a src/ edit rebuilds every module; Parsing includes generator time
 - [Profiling and Node runs](profiling-and-node-runs.md) - profile/debug scripts; Node-hosted runs need Node 22+; Bun profiler drops big profiles
 - [Dev compiler paths](dev-compiler-paths.md) - run from the repo root (parser found via cwd); embed paths resolve against haze.toml's dir
+- [wgpu-native fatal errors](wgpu-native-fatal-errors.md) - which calls abort the app; NULL error callbacks; lost panic message; crash offset to function via relink map
