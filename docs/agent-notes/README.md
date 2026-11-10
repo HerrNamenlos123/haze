@@ -66,6 +66,7 @@ and against which commit it was verified; re-check a note against the code befor
 - [Running stdlib module tests](running-stdlib-module-tests.md) - throwaway project, relative dep paths, not haze exec
 - [SDL click-through](sdl-focus-clickthrough.md) - activating click is dropped unless the hint is set
 - [SDL hit-test per backend](sdl-hittest-backend-behavior.md) - what DRAGGABLE gives on Windows vs Wayland
+- [SDL screen saver, keepScreenAwake](sdl-screen-saver-keep-awake.md) - never on by itself; runtime switch; hint before init; SDL_Quit forgets hints
 - [Semantic token routes](semantic-tokens-routes.md) - tsserver vs LSP; opt-in per theme
 - [hzui SFC plugin design](sfc-plugin-design.md) - plugin interface, #source mapping, format rules, quirks
 - [Shared __haze__ workspace ping-pong](shared-haze-workspace-rebuild-pingpong.md) - different compilers rebuild each other's stdlib

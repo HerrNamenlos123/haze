@@ -1110,19 +1110,48 @@ void haze_sdl_requestWindowClose(SDL_Window *window) {
    Wayland, X11, Windows and macOS alike), so a click into an unfocused window
    only focuses it and the button under the pointer needs a second click --
    closing an unfocused window took two clicks on its X. A desktop
-   application focuses AND clicks in one go, so every haze window does. */
+   application focuses AND clicks in one go, so every haze window does.
+
+   Screen saver: SDL disables it the moment its video starts, for games, which
+   on Wayland gives every window an idle inhibitor: no dimming, blanking,
+   locking or idle suspend while any haze application was open. A haze
+   application keeps the screen awake only while it asks to, see
+   haze_sdl_keepScreenAwake. SDL reads the hint once, in SDL_VideoInit, so it
+   has to be set before SDL_Init (and again for every init: SDL_Quit forgets
+   every hint); at override priority, so that an SDL_VIDEO_ALLOW_SCREENSAVER
+   in the environment cannot switch it on either. */
 bool haze_sdl_init(bool platform_decorations) {
   haze_sdl_should_close_all = false;
   if (!platform_decorations) {
     SDL_SetHint(SDL_HINT_VIDEO_WAYLAND_ALLOW_LIBDECOR, "0");
   }
   SDL_SetHint(SDL_HINT_MOUSE_FOCUS_CLICKTHROUGH, "1");
+  SDL_SetHintWithPriority(SDL_HINT_VIDEO_ALLOW_SCREENSAVER, "1",
+                          SDL_HINT_OVERRIDE);
   return SDL_Init(SDL_INIT_VIDEO);
 }
 
 void haze_sdl_terminate(void) {
   haze_sdl_should_close_all = false;
   SDL_Quit();
+}
+
+/* SDL calls keeping the screen awake "disabling the screen saver"; it is one
+   switch for the whole process, and SDL_Quit switches it off. What each
+   platform does with it, in the SDL this module builds (no D-Bus, no
+   XScreenSaver extension, see build-sdl.hz):
+   - Wayland: an idle inhibitor on the surface of every window, those created
+     later included. The compositor honours one only while its window is
+     visible, so a process without a visible window keeps nothing awake.
+   - Windows: SetThreadExecutionState(ES_DISPLAY_REQUIRED) on the calling
+     thread, which has to be the main thread.
+   - macOS: a PreventUserIdleDisplaySleep power assertion.
+   - X11: only the X server's own screen saver is held off; a desktop's own
+     idle handling (GNOME's) never sees it.
+   false where the platform has no way to (SDL's offscreen and dummy drivers,
+   or video not initialized), with the reason in SDL_GetError. */
+bool haze_sdl_keepScreenAwake(bool on) {
+  return on ? SDL_DisableScreenSaver() : SDL_EnableScreenSaver();
 }
 
 /* positioned: put the window at (x, y), in the desktop's coordinates, rather

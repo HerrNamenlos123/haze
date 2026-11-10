@@ -1,0 +1,151 @@
+import sdl
+
+__c__("#include <SDL3/SDL.h>");
+
+// SDL never keeps the screen awake on its own, and sdl.keepScreenAwake
+// switches it on and off for as long as the application wants. SDL's own
+// default is the screen saver disabled from the moment its video starts,
+// which suits a game; it kept every Haze window holding an idle inhibitor.
+//
+// On SDL's offscreen video driver, which never shows a window: it has nothing
+// to inhibit, so SDL reports the switch as not supported there, but it keeps
+// the state it was switched to, which SDL_ScreenSaverEnabled reads and every
+// real driver acts on.
+//
+// Run from a throwaway exe project inside the repository that depends on sdl,
+// with this file as its main.hz.
+
+ref struct State {
+    checks: int = 0;
+    failures: int = 0;
+
+    fn check(name: str, ok: bool) {
+        this.checks = this.checks + 1;
+        if !ok {
+            this.failures = this.failures + 1;
+            fmt.println(f"FAIL: {name}");
+        }
+    }
+}
+
+fn screenSaverAllowed(): bool {
+    let allowed = false;
+    do unsafe {
+        __c__("allowed = SDL_ScreenSaverEnabled();");
+    };
+    return allowed;
+}
+
+// The offscreen driver, whatever the environment says: these tests never show
+// a window on a real display. Set before every init, because SDL_Quit forgets
+// every hint.
+fn initOffscreen(s: State, name: str): bool {
+    do unsafe {
+        __c__("SDL_SetHintWithPriority(SDL_HINT_VIDEO_DRIVER, \"offscreen\", SDL_HINT_OVERRIDE);");
+    };
+    let init = sdl.init(true);
+    if !init {
+        fmt.println(f"sdl.init failed: {init}");
+        s.check(f"{name}: init with the offscreen driver", false);
+        return false;
+    }
+    let offscreen = false;
+    do unsafe {
+        __c__("const char *driver = SDL_GetCurrentVideoDriver(); offscreen = driver != NULL && SDL_strcmp(driver, \"offscreen\") == 0;");
+    };
+    if !offscreen {
+        s.check(f"{name}: the offscreen video driver is in use", false);
+        sdl.terminate();
+        return false;
+    }
+    return true;
+}
+
+fn beforeInit(s: State) {
+    s.check("before init: keepScreenAwake is an error", !sdl.keepScreenAwake(true));
+}
+
+fn initLeavesTheScreenSaverAllowed(s: State) {
+    if !initOffscreen(s, "default") { return; }
+    s.check("default: init leaves the screen saver allowed", screenSaverAllowed());
+    let window = sdl.createWindow({ title: "screen-saver-tests", size: { width: 320, height: 200 }, hidden: true });
+    if !window {
+        fmt.println(f"sdl.createWindow failed: {window}");
+        s.check("default: an offscreen window", false);
+        sdl.terminate();
+        return;
+    }
+    s.check("default: a window leaves it allowed", screenSaverAllowed());
+    window.destroy();
+    sdl.terminate();
+}
+
+fn switchedOnAndOff(s: State) {
+    if !initOffscreen(s, "switch") { return; }
+    let on = sdl.keepScreenAwake(true);
+    s.check("switch: on keeps the screen awake", !screenSaverAllowed());
+    s.check("switch: on is an error where the platform cannot (offscreen)", !on);
+
+    let window = sdl.createWindow({ title: "screen-saver-tests", size: { width: 320, height: 200 }, hidden: true });
+    if !window {
+        fmt.println(f"sdl.createWindow failed: {window}");
+        s.check("switch: an offscreen window", false);
+        sdl.terminate();
+        return;
+    }
+    s.check("switch: a window created while on keeps it on", !screenSaverAllowed());
+
+    sdl.keepScreenAwake(true);
+    s.check("switch: on twice is still on", !screenSaverAllowed());
+    let off = sdl.keepScreenAwake(false);
+    s.check("switch: one off after two ons allows it again (a switch, not a count)", screenSaverAllowed());
+    s.check("switch: off is an error where the platform cannot (offscreen)", !off);
+
+    sdl.keepScreenAwake(true);
+    s.check("switch: on again after off", !screenSaverAllowed());
+    sdl.keepScreenAwake(false);
+    s.check("switch: off again", screenSaverAllowed());
+
+    window.destroy();
+    sdl.terminate();
+}
+
+fn terminateEndsIt(s: State) {
+    if !initOffscreen(s, "terminate") { return; }
+    sdl.keepScreenAwake(true);
+    sdl.terminate();
+    if !initOffscreen(s, "terminate, init again") { return; }
+    s.check("terminate: an init after a terminate while on leaves it allowed", screenSaverAllowed());
+    sdl.terminate();
+}
+
+// SDL_VIDEO_ALLOW_SCREENSAVER=0 in the environment would have SDL disable the
+// screen saver at init again: the environment beats a hint set at normal
+// priority.
+fn environmentCannotTurnItOn(s: State) {
+    do unsafe {
+        __c__("SDL_SetEnvironmentVariable(SDL_GetEnvironment(), \"SDL_VIDEO_ALLOW_SCREENSAVER\", \"0\", true);");
+    };
+    if initOffscreen(s, "environment") {
+        s.check("environment: SDL_VIDEO_ALLOW_SCREENSAVER=0 leaves it allowed", screenSaverAllowed());
+        sdl.terminate();
+    }
+    do unsafe {
+        __c__("SDL_UnsetEnvironmentVariable(SDL_GetEnvironment(), \"SDL_VIDEO_ALLOW_SCREENSAVER\");");
+    };
+}
+
+fn main(): int {
+    let s = State {};
+    beforeInit(s);
+    initLeavesTheScreenSaverAllowed(s);
+    switchedOnAndOff(s);
+    terminateEndsIt(s);
+    environmentCannotTurnItOn(s);
+    if s.failures > 0 {
+        fmt.println(f"{s.failures} of {s.checks} checks failed");
+        return 1;
+    }
+    fmt.println(f"All {s.checks} checks passed");
+    return 0;
+}

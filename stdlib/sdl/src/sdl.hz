@@ -23,6 +23,7 @@ namespace ffi {
 
 	extern C fn haze_sdl_init(platformDecorations: bool): bool :: final;
 	extern C fn haze_sdl_terminate(): void :: final;
+	extern C fn haze_sdl_keepScreenAwake(on: bool): bool :: final;
 	extern C fn haze_sdl_createWindow(width: i32, height: i32, title: ccstr, noApi: bool, borderless: bool, hidden: bool, positioned: bool, x: i32, y: i32, maximized: bool): SDL_Window | none :: final;
 	extern C fn haze_sdl_showWindow(window: SDL_Window): void :: final;
 	extern C fn haze_sdl_hideWindow(window: SDL_Window): void :: final;
@@ -1250,6 +1251,21 @@ export fn init(platformDecorations: bool = true) {
 
 export fn terminate() {
 	ffi.terminate();
+}
+
+// Keep the screen from dimming, blanking and locking for idleness while `on`
+// -- for as long as the application has a reason to, such as a video
+// playing. Never on unless asked for: init()
+// leaves the screen to the platform's idle policy. A switch for the whole
+// process, not a count: the last call wins. Ends with terminate(). Needs
+// init() first; an error where the platform has no way to keep the screen
+// awake. What it does per platform, and where a window has to be visible for
+// it to hold: haze_sdl_keepScreenAwake in sdl_impl.c.
+export fn keepScreenAwake(on: bool): Result<none, str> {
+	if !ffi.haze_sdl_keepScreenAwake(on) {
+		return ffi.getError();
+	}
+	return none;
 }
 
 export fn createWindow(config: WindowConfig): Result<mut Window, str> {
