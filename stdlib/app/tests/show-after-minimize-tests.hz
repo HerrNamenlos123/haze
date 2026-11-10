@@ -1,0 +1,128 @@
+import app
+
+// App.show() puts the window on the screen, whatever state it was left in.
+// A window that was minimized and then hidden (a tray app's window minimized
+// from the taskbar, which takes the focus away, so the app hides it) comes
+// back restored: before, it came back minimized, a taskbar entry with
+// nothing behind it, and nothing ever restored it.
+//
+// Opens a real window on the desktop for a moment. Run from a throwaway exe
+// project inside the repository that depends on app, with this file as its
+// main.hz.
+
+ref struct State {
+    checks: int = 0;
+    failures: int = 0;
+
+    fn check(name: str, ok: bool) {
+        this.checks = this.checks + 1;
+        if !ok {
+            this.failures = this.failures + 1;
+            fmt.println(f"FAIL: {name}");
+        }
+    }
+}
+
+// Runs frames until the window is on the screen and not minimized, or 120
+// frames have passed. Returns whether it got there.
+fn pumpUntilOnScreen(a: mut app.App): bool {
+    for (let i = 0; i < 120; i++) {
+        if let frame = a.nextFrame() {
+            frame.present();
+        }
+        if a.isVisible() && !a.window.isMinimized() {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn pumpUntilMinimized(a: mut app.App): bool {
+    for (let i = 0; i < 120; i++) {
+        if let frame = a.nextFrame() {
+            frame.present();
+        }
+        if a.window.isMinimized() {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn pumpUntilMaximized(a: mut app.App): bool {
+    for (let i = 0; i < 120; i++) {
+        if let frame = a.nextFrame() {
+            frame.present();
+        }
+        if a.isMaximized() && !a.window.isMinimized() {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn pumpFrames(a: mut app.App, count: int) {
+    for (let i = 0; i < count; i++) {
+        if let frame = a.nextFrame() {
+            frame.present();
+        }
+    }
+}
+
+fn main(): int {
+    attempt {
+        let s = State {};
+        let a = app.App({
+            title: "show-after-minimize-tests",
+            size: { width: 320, height: 240 },
+            startHidden: true,
+            hideOnClose: true,
+        })?!;
+
+        a.show();
+        s.check("first show: on screen", pumpUntilOnScreen(a));
+
+        // Hidden and shown again, never minimized.
+        a.hide();
+        pumpFrames(a, 3);
+        s.check("hide: not visible", !a.isVisible());
+        a.show();
+        s.check("show after hide: on screen", pumpUntilOnScreen(a));
+
+        // Minimized, then hidden, then shown.
+        a.minimize();
+        s.check("minimize: minimized", pumpUntilMinimized(a));
+        a.hide();
+        pumpFrames(a, 3);
+        s.check("hide while minimized: not visible", !a.isVisible());
+        a.show();
+        s.check("show after minimize and hide: on screen, not minimized", pumpUntilOnScreen(a));
+        s.check("show after minimize and hide: not maximized", !a.isMaximized());
+
+        // Minimized and shown again without hiding in between (a second
+        // launch asking the running one to come forward).
+        a.minimize();
+        s.check("minimize again: minimized", pumpUntilMinimized(a));
+        a.show();
+        s.check("show while minimized: on screen, not minimized", pumpUntilOnScreen(a));
+
+        // Maximized, minimized, hidden: comes back maximized, as it was.
+        a.maximize();
+        s.check("maximize: maximized", pumpUntilMaximized(a));
+        a.minimize();
+        s.check("minimize maximized: minimized", pumpUntilMinimized(a));
+        a.hide();
+        pumpFrames(a, 3);
+        a.show();
+        s.check("show after maximized, minimize, hide: on screen", pumpUntilOnScreen(a));
+        s.check("show after maximized, minimize, hide: still maximized", a.isMaximized());
+
+        a.destroy();
+        fmt.println(f"{s.checks - s.failures}/{s.checks} checks passed");
+        return s.failures == 0 ? 0 : 1;
+    }
+    else e {
+        fmt.println("show-after-minimize-tests failed: ", e);
+        return 1;
+    };
+}

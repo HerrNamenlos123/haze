@@ -1227,6 +1227,15 @@ export opaque ref struct App {
         if !this.windowShown {
             if this.window.appearsWithFirstFrame() || this.framePresented {
                 this.window.show();
+                // Showing maps the window in the state it was left in, and a
+                // window minimized before it was hidden (from the taskbar,
+                // which takes the focus away, so a tray app hides it) would
+                // come back minimized: a taskbar entry and nothing on the
+                // screen. Restoring brings it back as it was before the
+                // minimize, maximized included.
+                if this.window.isMinimized() {
+                    this.window.restore();
+                }
                 this.window.focus();
                 this.windowShown = true;
             }
