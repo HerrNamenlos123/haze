@@ -2086,6 +2086,32 @@ export namespace Conversion {
         };
       }
 
+      // A literal into a union of literal types ("lines" | "dots"): the
+      // member that is that very literal, as it converts to that literal
+      // type on its own (see the conversion to LiteralDatatype).
+      if (sourceExpr.variant === Semantic.ENode.LiteralExpr) {
+        const fromLiteral = sourceExpr.literal;
+        const fromValue =
+          "value" in fromLiteral ? fromLiteral.value : undefined;
+        const literalMember = resolvedTargetTypeDef.members.findIndex((m) => {
+          const mDef = sr.typeDefNodes.get(
+            sr.typeUseNodes.get(sr.e.resolveAlias(m)).type
+          );
+          if (mDef.variant !== Semantic.ENode.LiteralDatatype) {
+            return false;
+          }
+          const toLiteral = mDef.literalValue;
+          const toValue = "value" in toLiteral ? toLiteral.value : undefined;
+          return fromLiteral.type === toLiteral.type && fromValue === toValue;
+        });
+        if (literalMember !== -1) {
+          return {
+            kind: "value-to-union",
+            index: literalMember,
+          };
+        }
+      }
+
       // The source's own struct as a variant, in another storage class
       // (§6.2): a ref or stackref stored into a value variant is a copy, a ref
       // into a stackref variant is free. Matching these by type alone stored

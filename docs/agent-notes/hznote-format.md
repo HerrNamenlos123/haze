@@ -1,0 +1,15 @@
+# .hznote: haze-notes' file format
+
+A note is an .hznote: a header naming every type and field, then one length-prefixed, checksummed chunk per page; read by name, so changed types load or are refused precisely.
+
+Verified 2026-11-11 against bf4a25f5 plus the uncommitted .hznote work in .claude/worktrees/hznote.
+
+- Spec and code: `haze-notes/src/hznote.hz` (its header comment is the byte layout). `CodeSchema` describes the code's types via `traverse.describe`, `HznoteWriter` / `HznoteReader` are the traverse format. `encodeNote` / `decodeNote` for notes, `encodeShapes` / `decodeShapes` for the clipboard (MIME `application/x-haze-notes-shapes`; a single selected image also goes on as `image/png`, its exact bytes).
+- What is stored is what the model's types say (`documents.hz`). Runtime state and caches are `[[hznote.skip]]` (tessellations, hidden, bbox, cachedOutline); `DocumentBody.pages` is `[[hznote.skip="each page is a chunk of its own"]]` and written as chunks. Images hold PNG bytes (`ImageShape.png`), no base64.
+- Reading matches fields by name once per file and type (`structPlan`): reordered fields read, unknown ones are skipped (`skipValue`), missing ones take their declared default, none or literal value, else `missingField` refuses. Same name with another kind (i64 vs i32) refuses (`sameKind`). Variants match by struct name (`unionPlan`). Nothing is converted.
+- Plain structs (traverse.plainLeafSize > 0, e.g. `Point`, `Vec2`, `Viewport`) are written raw (type layout 1); an array of them is one copy each way when the file's layout is the code's (`identical`). `plainCopiesCounted` counts those copies (tests).
+- Errors are `HznoteError { problem, message, offset, chunk, path }`; `problem` is NotANote / Newer / Damaged / Incompatible. Every single-byte change and every cut-off length is refused (tests).
+- Loading (`persistence.hz`): one step, no frame splitting. The user's 137 notes (206 MB) all open; slowest 35 ms, all 1.1 s, release build (`haze-notes/tests/note-load-bench.hz`).
+- Tests: `haze-notes/tests/hznote-tests.hz` (round trips, damage, versions, plain copies), `document-load-tests.hz`, `shape-page-tests.hz`; runner `haze-notes/tests/run-test.sh <test> <sources...>`.
+- One-time conversion from technicalsketcher's .tsk: `haze-notes migrate-tsk <vault> <backup>` (`haze-notes/src/migrate.hz`, tests `haze-notes/tests/migrate-tests.hz`). It backs the vault up and compares the copy byte for byte, proves every note (written, read back from disk, decoded bit for bit equal, canonical, exported JSON equal to the original tree but for key order, number spelling and the bbox/cachedOutline caches) before deleting its .tsk, stops at the first failure, updates `.hznotes/vault.json`'s lastOpenedFile, then re-proves everything against the backup. Meant to be deleted with the .tsk types once the vault is converted.
+- Trap: `.hznotes/vault.json` holds ABSOLUTE paths (lastOpenedFile). A copy of a vault opened in the app still names the original's files; point it at the copy first.

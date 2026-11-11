@@ -1,0 +1,566 @@
+// Walks types and values of any shape at compile time, as json.parse and
+// json.stringify do, and calls a format's functions for everything it meets.
+// It writes and reads no bytes itself: the format does, in its functions, and
+// so decides everything about the encoding. What the walk takes off the
+// format is the reflection: which fields a struct has and in what order,
+// which variant of a union a value is, what a field holds when the input does
+// not have it (its declared default, else none, else the input is refused),
+// building structs (value and ref) and arrays, and copying plain values in
+// one go where the format allows it.
+//
+// A format is a ref struct passed as `f` to describe / write / read. It
+// declares, as a field of literal type, the attribute that marks the fields
+// it leaves out (runtime state, caches, or what it stores elsewhere):
+//
+//     skipAttribute: "myformat.skip" = "myformat.skip";
+//
+// (a literal field still needs its value in a struct literal: the default
+// spares every `MyFormat {}` from repeating it).
+//
+// A field carrying it is never walked: its type is never even instantiated,
+// and reading fills it the way an absent field is filled. Besides that the
+// format has the functions below, each generic over the type being walked,
+// and only those it is asked for by the types it walks.
+//
+// Writing, write<F, T>(f, value):
+//   writePrimitive<T>(value)     a bool, an integer, a float, a str or Bytes
+//   writeLiteral<T>()            a field of literal type ("Line"): its value
+//                                is in its type (T.literalValue)
+//   beginStruct<T>() / endStruct<T>()
+//   beginField<T>(name, index) / endField<T>(name, index)
+//                                around each field T writes, index its
+//                                position in T.fields
+//   beginArray<T>(length) / endArray<T>()      (T the array type)
+//   beginVariant<T, V>(index) / endVariant<T, V>(index)
+//                                around the variant a union value is: V its
+//                                type (none too), index its place in T.variants
+//   writesPlain<T>(): bool       may a plain T (see plainLeafSize) be written
+//                                as its memory? Then, instead of the walk:
+//   writePlain<T>(memory, count) count plain T values, side by side in
+//                                memory: one value, or all elements of an
+//                                array (inside its beginArray / endArray)
+//
+// Reading, read<F, T>(f): Result<T, Failed>, the input order the format's:
+//   readPrimitive<T>(): T / readLiteral<T>()
+//   beginReadStruct<T>()
+//   nextField<T>(): int          the T.fields index of the next field the
+//                                input has, or -1 at the struct's end. The
+//                                format skips what T has no field for itself.
+//   endReadStruct<T>()
+//   missingField<T>(name) / duplicateField<T>(name)
+//                                the walk found the input without a field T
+//                                needs, or with one twice: the format records
+//                                it (failed() is then true)
+//   beginReadArray<T>(): int     the element count / endReadArray<T>()
+//   readVariant<T>(): int        the T.variants index of the next value
+//   endReadVariant<T>()          after that variant's value
+//   readsPlain<T>(): bool / readPlain<T>(memory, count)
+//                                as writesPlain / writePlain: true only when
+//                                the input holds T exactly as memory does
+//   failed(): bool               asked after every one of these; once true,
+//                                read returns Failed and the format's own
+//                                record says what went wrong and where
+//
+// Describing, describe<F, T>(f): int, for formats that write what their types
+// are (a schema): the int is the format's own name for the type.
+//   describePrimitive<T>() / describeLiteral<T>() / describeNone(): int
+//   describeStruct<T>(): int, describeField<T, FieldType>(id, name, index)
+//                                for each field written, endDescribeStruct<T>(id)
+//   describeArray<T, Element>(): int / describeFixedArray<T, Element>(length): int
+//   describeUnion<T>(): int, describeVariant<T, V>(id, index) for each
+//                                variant, endDescribeUnion<T>(id)
+// A struct is numbered (describeStruct) before its fields are described, so
+// a type that contains itself ends: the format looks itself up first.
+//
+// Not walked: reactive values, Context, pointers, callables (a static assert
+// names the type).
+
+namespace traverse {
+
+    // What read returns once the format has failed; what failed, and where,
+    // the format records itself.
+    export struct Failed {}
+
+    // ── Plain values ────────────────────────────────────────────────────
+
+    // The size in bytes of every number in T when T is plain for format F, 0
+    // otherwise. Plain is a number (not bool, not a str), or a value struct
+    // whose fields are all plain, none skipped by F, with every number in it
+    // (nested structs' too) of one size. Such a struct has no padding: its
+    // bytes are exactly its numbers in field order, so its memory is its
+    // value, and an array of it is one block (plainSize asserts both against
+    // C's sizeof).
+    export fn plainLeafSize<F, T>(): int :: final {
+        if comptime T is f64 || T is real || T is i64 || T is u64 || T is int || T is usize {
+            return 8;
+        }
+        else if comptime T is f32 || T is i32 || T is u32 {
+            return 4;
+        }
+        else if comptime T is i16 || T is u16 {
+            return 2;
+        }
+        else if comptime T is i8 || T is u8 {
+            return 1;
+        }
+        else if comptime T.category == meta.TypeCategory.Struct && T.isValue {
+            if comptime T is Bytes {
+                return 0;
+            }
+            else {
+                const comptime skip = F["skipAttribute"].literalValue;
+                let leaf = 0;
+                for comptime field in T.fields {
+                    if comptime T.hasFieldAttribute(field.name, skip) {
+                        return 0;
+                    }
+                    else {
+                        do unsafe {
+                            let probe: T = uninitialized;
+                            let size = plainLeafSize<F, typeof(probe.[field.name])>();
+                            if size == 0 {
+                                return 0;
+                            }
+                            if leaf == 0 {
+                                leaf = size;
+                            }
+                            else if leaf != size {
+                                return 0;
+                            }
+                        }
+                    }
+                }
+                return leaf;
+            }
+        }
+        return 0;
+    }
+
+    export fn isPlain<F, T>(): bool {
+        return plainLeafSize<F, T>() > 0;
+    }
+
+    // How many numbers a plain T holds.
+    // (Exported only because the exported generics here call it: a generic
+    // instantiated in another module cannot reach a helper that is not.)
+    export fn plainLeafCount<F, T>(): int :: final {
+        if comptime T.category == meta.TypeCategory.Struct {
+            let count = 0;
+            for comptime field in T.fields {
+                do unsafe {
+                    let probe: T = uninitialized;
+                    count = count + plainLeafCount<F, typeof(probe.[field.name])>();
+                }
+            }
+            return count;
+        }
+        return 1;
+    }
+
+    // The byte size of a plain T, checked against the C compiler's: a plain
+    // T whose memory had gaps or a different size would make every copy of it
+    // wrong, so that is a panic, never a silent misread.
+    export fn plainSize<F, T>(): int {
+        let size = plainLeafSize<F, T>() * plainLeafCount<F, T>();
+        let actual = 0;
+        do unsafe {
+            let probe: T = uninitialized;
+            __c__("actual = (hzstd_int_t)sizeof(probe);");
+        }
+        if size == 0 || size != actual {
+            sys.panic(f"traverse: {T.prettyName} is not plain, or its memory is not its numbers side by side ({size} bytes expected, {actual} in memory)");
+        }
+        return size;
+    }
+
+    // ── Names ───────────────────────────────────────────────────────────
+
+    // The T.fields index of the field called `name` that format F walks, or
+    // -1: T has no such field, or F skips it.
+    export fn fieldIndex<F, T>(name: str): int {
+        const comptime skip = F["skipAttribute"].literalValue;
+        for comptime field, i in T.fields {
+            if comptime T.hasFieldAttribute(field.name, skip) == false {
+                if field.name == name {
+                    return i;
+                }
+            }
+        }
+        return -1;
+    }
+
+    // T's name without its module or namespace, "LineShape" for
+    // haze-notes' LineShape: the same in every build and version, where
+    // T.prettyName names the module and its version too. A type that is no
+    // named struct (a union written out, an array) gets its pretty name.
+    export fn typeName<T>(): str {
+        let pretty = T.prettyName;
+        let start = 0;
+        if pretty.startsWith("ref ") {
+            start = 4;
+        }
+        else if pretty.startsWith("stackref ") {
+            start = 9;
+        }
+        let depth = 0;
+        let lastDot = -1;
+        for (let i = start; i < pretty.length; i++) {
+            let c = pretty[i];
+            if c == b"(" || c == b"<" || c == b"[" {
+                depth = depth + 1;
+            }
+            else if c == b")" || c == b">" || c == b"]" {
+                depth = depth - 1;
+            }
+            else if c == b"." && depth == 0 {
+                lastDot = i;
+            }
+            else if c == b" " && depth == 0 {
+                return pretty.slice(start, pretty.length);
+            }
+        }
+        return pretty.slice(lastDot >= 0 ? lastDot + 1 : start, pretty.length);
+    }
+
+    // ── Writing ─────────────────────────────────────────────────────────
+
+    export fn write<F, T>(f: F, value: T): void :: final {
+        if comptime T.category == meta.TypeCategory.Literal {
+            f.writeLiteral<T>();
+        }
+        else if comptime T is bool || T is i8 || T is i16 || T is i32 || T is i64 || T is int
+              || T is u8 || T is u16 || T is u32 || T is u64 || T is usize
+              || T is f32 || T is f64 || T is real || T is str || T is Bytes {
+            f.writePrimitive<T>(value);
+        }
+        else if comptime T is none {
+            // Its variant says it all.
+        }
+        else if comptime T.category == meta.TypeCategory.Struct {
+            if isPlain<F, T>() && f.writesPlain<T>() {
+                let copy = value;
+                let memory = RawMemory { length: plainSize<F, T>() };
+                __c__("memory._data = &copy;");
+                f.writePlain<T>(memory, 1);
+            }
+            else {
+                writeStruct<F, T>(f, value);
+            }
+        }
+        else if comptime T.category == meta.TypeCategory.DynamicArray {
+            let length = value.length;
+            f.beginArray<T>(length);
+            if length > 0 && isPlain<F, T.elementType>() && f.writesPlain<T.elementType>() {
+                let memory = RawMemory { length: plainSize<F, T.elementType>() * length };
+                __c__("memory._data = value->buffer;");
+                f.writePlain<T.elementType>(memory, length);
+            }
+            else {
+                for element in value {
+                    write<F, T.elementType>(f, element);
+                }
+            }
+            f.endArray<T>();
+        }
+        else if comptime T.category == meta.TypeCategory.Array {
+            f.beginArray<T>(T.length);
+            if T.length > 0 && isPlain<F, T.elementType>() && f.writesPlain<T.elementType>() {
+                let copy = value;
+                let memory = RawMemory { length: plainSize<F, T.elementType>() * T.length };
+                __c__("memory._data = &copy;");
+                f.writePlain<T.elementType>(memory, T.length);
+            }
+            else {
+                for (let i = 0; i < T.length; i++) {
+                    write<F, T.elementType>(f, value[i]);
+                }
+            }
+            f.endArray<T>();
+        }
+        else if comptime T.category == meta.TypeCategory.Union {
+            for comptime Variant, i in T.variants {
+                if value is Variant {
+                    f.beginVariant<T, Variant>(i);
+                    write<F, Variant>(f, value);
+                    f.endVariant<T, Variant>(i);
+                    return;
+                }
+            }
+            sys.unreachable();
+        }
+        else {
+            static_assert(false, f"traverse.write(): type {T.prettyName} is not supported");
+        }
+    }
+
+    export fn writeStruct<F, T>(f: F, value: T): void :: final {
+        const comptime skip = F["skipAttribute"].literalValue;
+        f.beginStruct<T>();
+        for comptime field, i in T.fields {
+            if comptime T.hasFieldAttribute(field.name, skip) == false {
+                f.beginField<T>(field.name, i);
+                let fieldValue = value.[field.name];
+                write<F, typeof(fieldValue)>(f, fieldValue);
+                f.endField<T>(field.name, i);
+            }
+        }
+        f.endStruct<T>();
+    }
+
+    // ── Reading ─────────────────────────────────────────────────────────
+
+    export fn read<F, T>(f: F): Result<T, Failed> :: final {
+        if comptime T.category == meta.TypeCategory.Literal {
+            f.readLiteral<T>();
+            if f.failed() {
+                return Failed {};
+            }
+            return Result<T, Failed>.Ok(T.literalValue);
+        }
+        else if comptime T is bool || T is i8 || T is i16 || T is i32 || T is i64 || T is int
+              || T is u8 || T is u16 || T is u32 || T is u64 || T is usize
+              || T is f32 || T is f64 || T is real || T is str || T is Bytes {
+            let value = f.readPrimitive<T>();
+            if f.failed() {
+                return Failed {};
+            }
+            return Result<T, Failed>.Ok(value);
+        }
+        else if comptime T is none {
+            return Result<T, Failed>.Ok(none);
+        }
+        else if comptime T.category == meta.TypeCategory.Struct {
+            if isPlain<F, T>() && f.readsPlain<T>() {
+                do unsafe {
+                    let value: T = uninitialized;
+                    let memory = RawMemory { length: plainSize<F, T>() };
+                    __c__("memory._data = &value;");
+                    f.readPlain<T>(memory, 1);
+                    if f.failed() {
+                        return Failed {};
+                    }
+                    return Result<T, Failed>.Ok(value);
+                }
+            }
+            return readStruct<F, T>(f);
+        }
+        else if comptime T.category == meta.TypeCategory.DynamicArray {
+            let count = f.beginReadArray<T>();
+            if f.failed() {
+                return Failed {};
+            }
+            let array: T = [];
+            if count > 0 && isPlain<F, T.elementType>() && f.readsPlain<T.elementType>() {
+                let elementSize = plainSize<F, T.elementType>();
+                let resized = false;
+                __c__("resized = hzstd_dynamic_array_resize_zeroed(array, (size_t)count) == hzstd_dynamic_array_result_ok;");
+                if !resized {
+                    sys.panic("traverse.read(): out of memory for an array");
+                }
+                let memory = RawMemory { length: elementSize * count };
+                __c__("memory._data = array->buffer;");
+                f.readPlain<T.elementType>(memory, count);
+                if f.failed() {
+                    return Failed {};
+                }
+            }
+            else {
+                array.reserve(count);
+                for (let i = 0; i < count; i++) {
+                    let element = read<F, T.elementType>(f);
+                    if !element {
+                        return Failed {};
+                    }
+                    array.push(element);
+                }
+            }
+            f.endReadArray<T>();
+            if f.failed() {
+                return Failed {};
+            }
+            return Result<T, Failed>.Ok(array);
+        }
+        else if comptime T.category == meta.TypeCategory.Array {
+            let count = f.beginReadArray<T>();
+            if f.failed() {
+                return Failed {};
+            }
+            do unsafe {
+                let array: T = uninitialized;
+                __c__("memset(&array, 0, sizeof(array));");
+                if count != T.length {
+                    sys.panic("traverse.read(): the format must check a fixed array's length");
+                }
+                if T.length > 0 && isPlain<F, T.elementType>() && f.readsPlain<T.elementType>() {
+                    let memory = RawMemory { length: plainSize<F, T.elementType>() * T.length };
+                    __c__("memory._data = &array;");
+                    f.readPlain<T.elementType>(memory, T.length);
+                    if f.failed() {
+                        return Failed {};
+                    }
+                }
+                else {
+                    for (let i = 0; i < T.length; i++) {
+                        let element = read<F, T.elementType>(f);
+                        if !element {
+                            return Failed {};
+                        }
+                        array[i] = element;
+                    }
+                }
+                f.endReadArray<T>();
+                if f.failed() {
+                    return Failed {};
+                }
+                return Result<T, Failed>.Ok(array);
+            }
+        }
+        else if comptime T.category == meta.TypeCategory.Union {
+            let index = f.readVariant<T>();
+            if f.failed() {
+                return Failed {};
+            }
+            for comptime Variant, i in T.variants {
+                if index == i {
+                    let value = read<F, Variant>(f);
+                    if !value {
+                        return Failed {};
+                    }
+                    f.endReadVariant<T>();
+                    if f.failed() {
+                        return Failed {};
+                    }
+                    return Result<T, Failed>.Ok(value as T);
+                }
+            }
+            sys.panic(f"traverse.read(): the format gave variant {index} of {T.prettyName}, which has {T.variants.length}");
+        }
+        else {
+            static_assert(false, f"traverse.read(): type {T.prettyName} is not supported");
+        }
+        sys.unreachable();
+    }
+
+    export fn readStruct<F, T>(f: F): Result<T, Failed> :: final {
+        const comptime skip = F["skipAttribute"].literalValue;
+        do unsafe {
+            let result: T = uninitialized;
+            if comptime T.isValue {
+                // Every field is assigned below: read, or filled.
+            }
+            else {
+                __c__(f"result = hzstd_allocate(hzstd_make_heap_allocator(), sizeof(*result), \"{T.prettyName}\"); memset(result, 0, sizeof(*result));");
+            }
+            let seen = createStaticArray<bool, T.fields.length>(false);
+            f.beginReadStruct<T>();
+            if f.failed() {
+                return Failed {};
+            }
+            while true {
+                let index = f.nextField<T>();
+                if f.failed() {
+                    return Failed {};
+                }
+                if index < 0 {
+                    break;
+                }
+                let known = false;
+                for comptime field, i in T.fields {
+                    if comptime T.hasFieldAttribute(field.name, skip) == false {
+                        if index == i {
+                            known = true;
+                            if seen[i] {
+                                f.duplicateField<T>(field.name);
+                                return Failed {};
+                            }
+                            let value = read<F, typeof(result.[field.name])>(f);
+                            if !value {
+                                return Failed {};
+                            }
+                            result.[field.name] = value;
+                            seen[i] = true;
+                        }
+                    }
+                }
+                if !known {
+                    sys.panic(f"traverse.read(): the format gave field {index} of {T.prettyName}, which it skips or does not have");
+                }
+            }
+            f.endReadStruct<T>();
+            if f.failed() {
+                return Failed {};
+            }
+            // What the input did not have: a literal's value, the field's
+            // declared default, or none -- else the input is refused.
+            for comptime field, i in T.fields {
+                if !seen[i] {
+                    if comptime T[field.name].category == meta.TypeCategory.Literal {
+                        result.[field.name] = T[field.name].literalValue;
+                    }
+                    else if comptime T.hasFieldDefault(field.name) {
+                        result.[field.name] = T.fieldDefault(field.name);
+                    }
+                    else if comptime T[field.name].category == meta.TypeCategory.Union && T[field.name].hasVariant<none>() {
+                        result.[field.name] = none;
+                    }
+                    else if comptime T.hasFieldAttribute(field.name, skip) {
+                        static_assert(false, f"traverse.read(): field '{field.name}' of {T.prettyName} is skipped by the format ({skip}), so it is never read, but it has no default value and does not accept none -- nothing to fill it with. Give it a default value.");
+                    }
+                    else {
+                        f.missingField<T>(field.name);
+                        return Failed {};
+                    }
+                }
+            }
+            return Result<T, Failed>.Ok(result);
+        }
+    }
+
+    // ── Describing ──────────────────────────────────────────────────────
+
+    export fn describe<F, T>(f: F): int :: final {
+        if comptime T.category == meta.TypeCategory.Literal {
+            return f.describeLiteral<T>();
+        }
+        else if comptime T is bool || T is i8 || T is i16 || T is i32 || T is i64 || T is int
+              || T is u8 || T is u16 || T is u32 || T is u64 || T is usize
+              || T is f32 || T is f64 || T is real || T is str || T is Bytes {
+            return f.describePrimitive<T>();
+        }
+        else if comptime T is none {
+            return f.describeNone();
+        }
+        else if comptime T.category == meta.TypeCategory.Struct {
+            const comptime skip = F["skipAttribute"].literalValue;
+            let id = f.describeStruct<T>();
+            for comptime field, i in T.fields {
+                if comptime T.hasFieldAttribute(field.name, skip) == false {
+                    do unsafe {
+                        let probe: T = uninitialized;
+                        f.describeField<T, typeof(probe.[field.name])>(id, field.name, i);
+                    }
+                }
+            }
+            f.endDescribeStruct<T>(id);
+            return id;
+        }
+        else if comptime T.category == meta.TypeCategory.DynamicArray {
+            return f.describeArray<T, T.elementType>();
+        }
+        else if comptime T.category == meta.TypeCategory.Array {
+            return f.describeFixedArray<T, T.elementType>(T.length);
+        }
+        else if comptime T.category == meta.TypeCategory.Union {
+            let id = f.describeUnion<T>();
+            for comptime Variant, i in T.variants {
+                f.describeVariant<T, Variant>(id, i);
+            }
+            f.endDescribeUnion<T>(id);
+            return id;
+        }
+        else {
+            static_assert(false, f"traverse.describe(): type {T.prettyName} is not supported");
+        }
+        sys.unreachable();
+    }
+}

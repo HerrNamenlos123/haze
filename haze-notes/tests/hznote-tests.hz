@@ -1,0 +1,423 @@
+// The .hznote format (src/hznote.hz): documents of every shape survive
+// encode and decode bit for bit, encoding is canonical, every damaged file is
+// refused (each single changed byte, each cut-off length), and files written
+// by other versions of the types are read by name -- fields reordered, added,
+// removed, a field with a default the file lacks -- or refused with a precise
+// message when reading them would be wrong: a field of another type, a
+// required field missing, an unknown variant, a newer container. Also that
+// the plain-memory copy is taken exactly when the file's layout is the
+// code's, and that both ways read the same values.
+//
+// Run: haze-notes/tests/run-test.sh haze-notes/tests/hznote-tests.hz hznote.hz documents.hz tiles.hz persistence.hz
+
+let checks = 0;
+let failures = 0;
+
+fn check(name: str, ok: bool) {
+    checks = checks + 1;
+    if !ok {
+        failures = failures + 1;
+        fmt.println(f"FAIL: {name}");
+    }
+}
+
+fn bitsOf(value: real): u64 {
+    let bits: u64 = 0;
+    __c__("memcpy(&bits, &value, 8);");
+    return bits;
+}
+
+fn realFromBits(bits: u64): real {
+    let value: real = 0.0;
+    __c__("memcpy(&value, &bits, 8);");
+    return value;
+}
+
+fn same(a: real, b: real): bool {
+    return bitsOf(a) == bitsOf(b);
+}
+
+// ── Documents ───────────────────────────────────────────────────────────
+
+fn pngish(n: int): Bytes {
+    let b = ByteBuffer();
+    b.push(0x89 as u8);
+    b.push("PNG");
+    for (let i = 0; i < n; i++) {
+        let v = (i * 31 + 7) % 256;
+        if v >= 0 && v <= 255 {
+            b.push(v as u8);
+        }
+    }
+    b.commit();
+    return b.bytes();
+}
+
+fn stroke(n: int, color: str, seed: real): LineShape {
+    let points: []Point = [];
+    for (let i = 0; i < n; i++) {
+        points.push(Point { x: seed + i as real * 0.37, y: seed * 2.0 - i as real * 0.11, pressure: 0.5 });
+    }
+    return LineShape { variant: "Line", points: points, penColor: color, penThickness: 0.35 };
+}
+
+fn sampleDocument(): DocumentFile {
+    let pages: []Page = [];
+    // Page 0: strokes of 0, 1 and many points, odd numbers, an image, text.
+    let shapes: []Shape = [];
+    shapes.push(stroke(0, "#000000", 1.0));
+    shapes.push(stroke(1, "#1D4ED8", 2.0));
+    shapes.push(stroke(500, "#1d4ed8", 3.0));
+    let odd = stroke(4, "", 0.0);
+    odd.points[0] = Point { x: -0.0, y: realFromBits(0x7ff8000000000001), pressure: realFromBits(0x7ff0000000000000) };
+    odd.points[1] = Point { x: realFromBits(0xfff0000000000000), y: 0.1 + 0.2, pressure: 1.0 };
+    odd.penThickness = realFromBits(0x0000000000000001);
+    shapes.push(odd);
+    shapes.push(ImageShape { variant: "Image", position: Vec2(10.5, 20.25), size: Vec2(80.0, 60.0), png: pngish(3000) });
+    shapes.push(TextblockShape { variant: "Textblock", position: Vec2(1.0, 2.0), size: Vec2(3.0, 4.0), rawText: "Grüße, ∑ and \"quotes\"\nline two" });
+    shapes.push(TextblockShape { variant: "Textblock", position: Vec2(0.0, 0.0), size: Vec2(0.0, 0.0), rawText: "" });
+    pages.push(Page { shapes: shapes });
+    // An empty page, then one with an empty image and many strokes.
+    let empty: []Shape = [];
+    pages.push(Page { shapes: empty });
+    let more: []Shape = [];
+    more.push(ImageShape { variant: "Image", position: Vec2(0.0, 0.0), size: Vec2(1.0, 1.0), png: Bytes() });
+    for (let i = 0; i < 300; i++) {
+        more.push(stroke(i % 40, i % 3 == 0 ? "#ff0000" : "#00ff00", i as real));
+    }
+    pages.push(Page { shapes: more });
+    return DocumentFile {
+        data: DocumentBody {
+            pageColor: "#ffffff",
+            gridColor: "#5252524f",
+            gridType: "dots",
+            pages: pages,
+            pageWidthMm: 210.0,
+            pageHeightMm: 297.0,
+            currentPageIndex: 2,
+            viewport: Viewport { offsetX: -12.5, offsetY: 0.0, zoomPxPerMm: 4.25 },
+        },
+    };
+}
+
+fn sameShapeContent(a: Shape, b: Shape): bool {
+    if a is LineShape {
+        if !(b is LineShape) { return false; }
+        if a.penColor != b.penColor || !same(a.penThickness, b.penThickness) || a.points.length != b.points.length { return false; }
+        for (let i = 0; i < a.points.length; i++) {
+            if !same(a.points[i].x, b.points[i].x) || !same(a.points[i].y, b.points[i].y) || !same(a.points[i].pressure, b.points[i].pressure) { return false; }
+        }
+        return true;
+    }
+    if a is ImageShape {
+        if !(b is ImageShape) { return false; }
+        return same(a.position.x, b.position.x) && same(a.position.y, b.position.y) && same(a.size.x, b.size.x) && same(a.size.y, b.size.y) && a.png == b.png;
+    }
+    if a is TextblockShape {
+        if !(b is TextblockShape) { return false; }
+        return same(a.position.x, b.position.x) && same(a.position.y, b.position.y) && same(a.size.x, b.size.x) && same(a.size.y, b.size.y) && a.rawText == b.rawText;
+    }
+    return false;
+}
+
+fn sameDocument(a: DocumentFile, b: DocumentFile): bool {
+    let x = a.data;
+    let y = b.data;
+    if x.pageColor != y.pageColor || x.gridColor != y.gridColor || !same(x.pageWidthMm, y.pageWidthMm) || !same(x.pageHeightMm, y.pageHeightMm) || x.currentPageIndex != y.currentPageIndex {
+        return false;
+    }
+    if (x.gridType is "lines") != (y.gridType is "lines") {
+        return false;
+    }
+    let vx = x.viewport;
+    let vy = y.viewport;
+    if vx is Viewport {
+        if !(vy is Viewport) { return false; }
+        if !same(vx.offsetX, vy.offsetX) || !same(vx.offsetY, vy.offsetY) || !same(vx.zoomPxPerMm, vy.zoomPxPerMm) { return false; }
+    } else if vy is Viewport {
+        return false;
+    }
+    if x.pages.length != y.pages.length {
+        return false;
+    }
+    for (let p = 0; p < x.pages.length; p++) {
+        let sa = x.pages[p].shapes;
+        let sb = y.pages[p].shapes;
+        if sa.length != sb.length { return false; }
+        for (let i = 0; i < sa.length; i++) {
+            if !sameShapeContent(sa[i], sb[i]) { return false; }
+        }
+    }
+    return true;
+}
+
+fn testRoundTrip() {
+    let doc = sampleDocument();
+    let bytes = encodeNote(doc);
+    check("starts with the magic", isHznote(bytes));
+    let back = decodeNote(bytes);
+    if back is HznoteError {
+        check(f"decodes: {back.describe()}", false);
+        return;
+    }
+    check("round trip is bit for bit", sameDocument(doc, back));
+    check("encoding is canonical", encodeNote(back) == bytes);
+    // Without a viewport, with the other grid.
+    doc.data.viewport = none;
+    doc.data.gridType = "lines";
+    let back2 = decodeNote(encodeNote(doc));
+    check("no viewport, lines", back2 is DocumentFile ? sameDocument(doc, back2) : false);
+    // A new note.
+    let fresh = decodeNote(newNoteBytes());
+    check("a new note is one blank page", fresh is DocumentFile ? fresh.data.pages.length == 1 && fresh.data.pages[0].shapes.length == 0 && fresh.data.pageWidthMm == 210.0 : false);
+    // Caches and runtime state are not stored.
+    let s = stroke(10, "#000000", 1.0);
+    s.getBBox();
+    s.getOutline();
+    s.hidden = true;
+    let page: []Shape = [s];
+    let pages: []Page = [Page { shapes: page }];
+    let withCaches = DocumentFile { data: DocumentBody { pageColor: "#fff", gridColor: "#000", gridType: "lines", pages: pages, pageWidthMm: 1.0, pageHeightMm: 1.0, currentPageIndex: 0 } };
+    let decoded = decodeNote(encodeNote(withCaches));
+    if decoded is DocumentFile {
+        let shape = decoded.data.pages[0].shapes[0];
+        check("caches and hidden are not stored", shape is LineShape ? !shape.bbox && !shape.cachedOutline && !shape.hidden : false);
+    } else {
+        check("decodes with caches", false);
+    }
+    // Shapes on the clipboard.
+    let clip = decodeShapes(encodeShapes(doc.data.pages[0].shapes));
+    if clip is HznoteError {
+        check(f"clipboard shapes decode: {clip.describe()}", false);
+    } else {
+        let shapes: []Shape = clip;
+        let all = shapes.length == doc.data.pages[0].shapes.length;
+        for (let i = 0; all && i < shapes.length; i++) {
+            all = sameShapeContent(shapes[i], doc.data.pages[0].shapes[i]);
+        }
+        check("clipboard shapes round trip", all);
+    }
+}
+
+// ── Damage ──────────────────────────────────────────────────────────────
+
+fn small(): DocumentFile {
+    let shapes: []Shape = [stroke(3, "#000", 1.0), ImageShape { variant: "Image", position: Vec2(1.0, 2.0), size: Vec2(3.0, 4.0), png: pngish(5) }];
+    let pages: []Page = [Page { shapes: shapes }];
+    return DocumentFile { data: DocumentBody { pageColor: "#fff", gridColor: "#000", gridType: "lines", pages: pages, pageWidthMm: 210.0, pageHeightMm: 297.0, currentPageIndex: 0, viewport: Viewport {} } };
+}
+
+fn withByte(data: Bytes, index: int, value: u8): Bytes {
+    let b = ByteBuffer(data);
+    b.setAt(index, value);
+    b.commit();
+    return b.bytes();
+}
+
+// `data` with byte `index` inverted.
+fn flipped(data: Bytes, index: int): Bytes {
+    let value = 255 - data[index] as int;
+    if value >= 0 && value <= 255 {
+        return withByte(data, index, value as u8);
+    }
+    return data;
+}
+
+fn testDamage() {
+    let bytes = encodeNote(small());
+    let flipsRefused = 0;
+    for (let i = 0; i < bytes.length; i++) {
+        let result = decodeNote(flipped(bytes, i));
+        if result is HznoteError {
+            flipsRefused = flipsRefused + 1;
+        } else {
+            fmt.println(f"  a changed byte {i} was not noticed");
+        }
+    }
+    check(f"every changed byte is refused ({flipsRefused} of {bytes.length})", flipsRefused == bytes.length);
+    let cutsRefused = 0;
+    for (let n = 0; n < bytes.length; n++) {
+        let result = decodeNote(bytes.slice(0, n));
+        if result is HznoteError {
+            cutsRefused = cutsRefused + 1;
+        }
+    }
+    check("every cut-off file is refused", cutsRefused == bytes.length);
+    // Bytes after the end.
+    let longer = ByteBuffer(bytes);
+    longer.push(0 as u8);
+    longer.commit();
+    let after = decodeNote(longer.bytes());
+    check("bytes after the end are refused", after is HznoteError ? after.problem == HznoteProblem.Damaged : false);
+    // What kind of problem each is.
+    let notNote = decodeNote(Bytes("{\"filetype\":\"technicalsketcher\"}"));
+    check("JSON is no note", notNote is HznoteError ? notNote.problem == HznoteProblem.NotANote : false);
+    let newer = decodeNote(withByte(bytes, 8, 2 as u8));
+    check("container 2 is newer", newer is HznoteError ? newer.problem == HznoteProblem.Newer : false);
+    let checksum = decodeNote(flipped(bytes, 20));
+    check("a changed header byte fails its checksum", checksum is HznoteError ? checksum.problem == HznoteProblem.Damaged && checksum.message.contains("checksum") : false);
+}
+
+// ── Other versions of the types ─────────────────────────────────────────
+//
+// Files written with one set of types and read with another, through the
+// same writeFile / readFile a note uses. Types match by name, so these are
+// the same names in different namespaces.
+
+namespace v1 {
+    export struct Dot { x: real; y: real; pressure: real; }
+    export ref struct Item { name: str; count: i64; dots: []Dot; }
+    export ref struct Root { title: str; }
+}
+
+namespace reordered {
+    // Every field in another order, the plain struct too, and a field
+    // v1 does not know.
+    export struct Dot { pressure: real; x: real; y: real; }
+    export ref struct Item { dots: []Dot; extra: str; count: i64; name: str; }
+    export ref struct Root { title: str; }
+}
+
+namespace retyped {
+    export struct Dot { x: real; y: real; pressure: real; }
+    export ref struct Item { name: str; count: i32; dots: []Dot; }
+    export ref struct Root { title: str; }
+}
+
+namespace lacking {
+    // No count, which v1 requires.
+    export struct Dot { x: real; y: real; pressure: real; }
+    export ref struct Item { name: str; dots: []Dot; }
+    export ref struct Root { title: str; }
+}
+
+namespace defaulted {
+    // Reading v1 files: a count it does not need, a new field with a
+    // default, one that may be none, and one that is a literal.
+    export struct Dot { x: real; y: real; pressure: real; }
+    export ref struct Item { name: str; dots: []Dot; tag: str = "default"; maybe: str | none; kind: "Item"; }
+    export ref struct Root { title: str; }
+}
+
+namespace shapes1 {
+    export ref struct Circle { r: real; }
+    export ref struct Square { side: real; }
+    export type Shape = Circle | Square;
+    export ref struct Item { shape: Shape; }
+    export ref struct Root { title: str; }
+}
+
+namespace shapes2 {
+    // Triangle is unknown to shapes1.
+    export ref struct Circle { r: real; }
+    export ref struct Triangle { a: real; }
+    export type Shape = Circle | Triangle;
+    export ref struct Item { shape: Shape; }
+    export ref struct Root { title: str; }
+}
+
+fn v1Items(): []v1.Item {
+    let dots: []v1.Dot = [];
+    for (let i = 0; i < 100; i++) {
+        dots.push(v1.Dot { x: i as real, y: -(i as real), pressure: 0.25 * i as real });
+    }
+    let items: []v1.Item = [v1.Item { name: "first", count: 7, dots: dots }, v1.Item { name: "second", count: -1, dots: [] }];
+    return items;
+}
+
+fn reorderedItems(): []reordered.Item {
+    let dots: []reordered.Dot = [];
+    for (let i = 0; i < 100; i++) {
+        dots.push(reordered.Dot { x: i as real, y: -(i as real), pressure: 0.25 * i as real });
+    }
+    let items: []reordered.Item = [reordered.Item { name: "first", count: 7, dots: dots, extra: "unknown to v1" }, reordered.Item { name: "second", count: -1, dots: [], extra: "" }];
+    return items;
+}
+
+fn sameV1(items: []v1.Item, expected: []v1.Item): bool {
+    if items.length != expected.length { return false; }
+    for (let i = 0; i < items.length; i++) {
+        if items[i].name != expected[i].name || items[i].count != expected[i].count || items[i].dots.length != expected[i].dots.length { return false; }
+        for (let j = 0; j < items[i].dots.length; j++) {
+            let a = items[i].dots[j];
+            let b = expected[i].dots[j];
+            if !same(a.x, b.x) || !same(a.y, b.y) || !same(a.pressure, b.pressure) { return false; }
+        }
+    }
+    return true;
+}
+
+fn errorOf<R, C>(data: Bytes): HznoteError | none {
+    let file = readFile<R, C>(data);
+    if file is HznoteError {
+        return file;
+    }
+    return none;
+}
+
+fn testVersions() {
+    // The same types: the dots are one plain copy per array.
+    let same1 = writeFile<v1.Root, v1.Item>(v1.Root { title: "t" }, v1Items());
+    let reader = readFile<v1.Root, v1.Item>(same1);
+    check("same types read back", reader is HznoteFile<v1.Root, v1.Item> ? sameV1(reader.chunks, v1Items()) : false);
+    check("same types: dots copied in one go", plainCopiesReading<v1.Root, v1.Item>(same1) == 1);
+
+    // Reordered, with a field v1 does not know: read by name, field by
+    // field for the dots (their layout differs), the same values.
+    let other = writeFile<reordered.Root, reordered.Item>(reordered.Root { title: "t" }, reorderedItems());
+    let fromOther = readFile<v1.Root, v1.Item>(other);
+    if fromOther is HznoteError {
+        check(f"reordered fields read: {fromOther.describe()}", false);
+    } else {
+        check("reordered fields and an unknown one read by name", sameV1(fromOther.chunks, v1Items()));
+    }
+    check("reordered dots are not copied raw", plainCopiesReading<v1.Root, v1.Item>(other) == 0);
+
+    // A field of another type is refused, naming it.
+    let retypedItems: []retyped.Item = [retyped.Item { name: "x", count: 3, dots: [] }];
+    let wrongType = errorOf<v1.Root, v1.Item>(writeFile<retyped.Root, retyped.Item>(retyped.Root { title: "t" }, retypedItems));
+    check("i32 where i64 is refused", wrongType is HznoteError ? wrongType.problem == HznoteProblem.Incompatible && wrongType.message.contains("count") && wrongType.message.contains("i32") && wrongType.message.contains("i64") : false);
+
+    // A required field missing is refused.
+    let lackingItems: []lacking.Item = [lacking.Item { name: "x", dots: [] }];
+    let missing = errorOf<v1.Root, v1.Item>(writeFile<lacking.Root, lacking.Item>(lacking.Root { title: "t" }, lackingItems));
+    check("a missing required field is refused", missing is HznoteError ? missing.problem == HznoteProblem.Incompatible && missing.message.contains("count") : false);
+
+    // Fields the file lacks with a default, none, or a literal are filled;
+    // the one the code no longer has is skipped.
+    let filled = readFile<defaulted.Root, defaulted.Item>(same1);
+    if filled is HznoteError {
+        check(f"defaults fill what the file lacks: {filled.describe()}", false);
+    } else {
+        let first = filled.chunks[0];
+        check("defaults fill what the file lacks", first.name == "first" && first.tag == "default" && first.maybe is none && first.dots.length == 100);
+    }
+
+    // An unknown variant is refused, a known one read.
+    let known: []shapes2.Item = [shapes2.Item { shape: shapes2.Circle { r: 2.5 } }];
+    let knownBack = readFile<shapes1.Root, shapes1.Item>(writeFile<shapes2.Root, shapes2.Item>(shapes2.Root { title: "t" }, known));
+    check("a known variant reads", knownBack is HznoteFile<shapes1.Root, shapes1.Item> ? knownBack.chunks[0].shape is shapes1.Circle : false);
+    let unknown: []shapes2.Item = [shapes2.Item { shape: shapes2.Triangle { a: 1.0 } }];
+    let unknownBack = errorOf<shapes1.Root, shapes1.Item>(writeFile<shapes2.Root, shapes2.Item>(shapes2.Root { title: "t" }, unknown));
+    check("an unknown variant is refused", unknownBack is HznoteError ? unknownBack.problem == HznoteProblem.Incompatible && unknownBack.message.contains("Triangle") : false);
+
+    // The error says where.
+    if unknownBack is HznoteError {
+        check("the error names the chunk and the path", unknownBack.chunk == 0 && unknownBack.path.contains("shape") && unknownBack.offset > 0);
+    }
+}
+
+// How many plain copies reading `data` as R and C takes.
+fn plainCopiesReading<R, C>(data: Bytes): int {
+    plainCopiesCounted = 0;
+    readFile<R, C>(data);
+    return plainCopiesCounted;
+}
+
+fn main(): int {
+    testRoundTrip();
+    testDamage();
+    testVersions();
+    fmt.println(f"{checks} checks, {failures} failed");
+    return failures > 0 ? 1 : 0;
+}

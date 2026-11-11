@@ -185,8 +185,8 @@ struct VaultOrderItem {
 
 // ── Indexing ────────────────────────────────────────────────────────────
 //
-// What the tree holds is what technicalsketcher.web's readVault kept: files
-// whose name contains ".tsk", folders whose name does not start with "."
+// What the tree holds: notes (files ending in noteExtension), folders whose
+// name does not start with "."
 // (.hznotes is the app's own; .obsidian, .trash and .git belong to other
 // tools), and of those folders only the ones with something left in them. A
 // vault is often shared with other tools, and a file haze-notes cannot open
@@ -196,8 +196,11 @@ struct VaultOrderItem {
 // with no note in it. A folder created in the app gets one, so it shows up
 // before anything is written in it.
 
+// The extension every note has: an .hznote file (hznote.hz).
+const comptime noteExtension = ".hznote";
+
 fn isNoteFile(name: str): bool {
-    return name.contains(".tsk");
+    return name.endsWith(noteExtension) && name.length > noteExtension.length;
 }
 
 fn isHiddenFolder(name: str): bool {
@@ -208,8 +211,8 @@ fn isHiddenFolder(name: str): bool {
 // symlink cycle) would otherwise be followed forever.
 const MAX_FOLDER_DEPTH = 32;
 
-// The empty file that keeps a folder in the tree with no note in it. Its name
-// has no ".tsk", so it is never a note itself, and it is never listed.
+// The empty file that keeps a folder in the tree with no note in it. It is
+// no note itself, and it is never listed.
 const KEEP_FILE = ".hznotekeep";
 
 // A folder as the tree sees it.
@@ -370,7 +373,7 @@ fn equalsIgnoringAsciiCase(a: str, b: str): bool {
 }
 
 // Whether Windows keeps the name for a device: CON, PRN, AUX, NUL, COM1-9 or
-// LPT1-9, in any case, with any extension after it ("nul.tsk" too).
+// LPT1-9, in any case, with any extension after it ("nul.hznote" too).
 fn isWindowsDeviceName(name: str): bool {
     let stemEnd = 0;
     while stemEnd < name.length && name[stemEnd] as int != 46 { // '.'
@@ -413,7 +416,7 @@ fn entryNameError(name: str, isFolder: bool): str {
         return f"\"{trimmed}\" is a name Windows keeps for itself.";
     }
     if !isFolder && noteTitle(noteFileName(trimmed)).length == 0 {
-        return "A note needs a name before \".tsk\".";
+        return f"A note needs a name before \"{noteExtension}\".";
     }
     if isFolder && trimmed.startsWith(".") {
         return "Folders starting with \".\" are hidden from the notes.";
@@ -424,14 +427,14 @@ fn entryNameError(name: str, isFolder: bool): str {
     return "";
 }
 
-// The file a note called `name` is saved as. It ends in ".tsk", which the
-// name may already do.
+// The file a note called `name` is saved as. It ends in noteExtension,
+// which the name may already do.
 fn noteFileName(name: str): str {
     let trimmed = name.trim();
-    if trimmed.endsWith(".tsk") {
+    if trimmed.endsWith(noteExtension) {
         return trimmed;
     }
-    return trimmed + ".tsk";
+    return trimmed + noteExtension;
 }
 
 // What creating a note or a folder came to: its path, or why there is none.
@@ -469,7 +472,7 @@ fn missingFolderError(folder: str): str {
 // Creates the note `name` in `folder`, holding `contents`. A file already
 // there is never replaced, nor is one whose name differs only in case where
 // the file system ignores case.
-fn createNote(folder: str, name: str, contents: str): CreatedEntry {
+fn createNote(folder: str, name: str, contents: Bytes): CreatedEntry {
     let problem = entryNameError(name, false);
     if problem.length > 0 {
         return CreatedEntry { error: problem };
@@ -480,7 +483,7 @@ fn createNote(folder: str, name: str, contents: str): CreatedEntry {
     }
     let fileName = noteFileName(name);
     let title = noteTitle(fileName);
-    let written = fs.createText(f"{folder}/{fileName}", contents);
+    let written = fs.createBinary(f"{folder}/{fileName}", contents);
     if !written {
         if written == fs.Error.AlreadyExists {
             return CreatedEntry { error: f"\"{title}\" already exists in this folder." };
@@ -585,8 +588,8 @@ fn entryName(path: str): str {
 // the extension every note has.
 fn noteTitle(path: str): str {
     let name = entryName(path);
-    if name.endsWith(".tsk") {
-        return name.slice(0, name.length - 4);
+    if name.endsWith(noteExtension) {
+        return name.slice(0, name.length - noteExtension.length);
     }
     return name;
 }

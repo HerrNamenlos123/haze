@@ -1,0 +1,628 @@
+import base64
+
+// The one move of a vault from technicalsketcher's .tsk files to .hznote,
+// run once as
+//
+//     haze-notes migrate-tsk <vault> <backup>
+//
+//   1. The whole vault is copied to <backup>, which must not exist yet, and
+//      the copy compared with the vault, every file byte for byte. Nothing
+//      else happens unless they are the same.
+//   2. Every .tsk in the vault (hidden folders included) becomes an .hznote
+//      beside it, proven before the .tsk goes (convertNote): the JSON read
+//      and converted, the .hznote written, read back from the disk and
+//      compared with what was written, decoded and compared with the note
+//      converted, bit for bit, encoded again to the very same bytes, and
+//      exported as tsk JSON again, which must be the original JSON tree but
+//      for the order of keys, how numbers are spelled and the caches a shape
+//      may carry (bbox, cachedOutline). The first note failing any of it
+//      stops the run; it and every note after it stay .tsk, untouched.
+//   3. The note the vault remembers as open (.hznotes/vault.json) follows its
+//      rename.
+//   4. The vault is compared with the backup again: no .tsk left, every
+//      .hznote proven against the backup's .tsk the same way, and every other
+//      file the same as in the backup.
+//
+// Once the vault is converted, this file, its tsk types and the command go:
+// Haze Notes knows no .tsk.
+
+// ── The tsk file, as technicalsketcher.web wrote it ─────────────────────
+
+struct TskPoint {
+    x: real;
+    y: real;
+    pressure: real;
+}
+
+struct TskVec2 {
+    x: real;
+    y: real;
+}
+
+ref struct TskLine {
+    variant: "Line";
+    points: []TskPoint;
+    penColor: str;
+    penThickness: real;
+}
+
+ref struct TskImage {
+    variant: "Image";
+    position: TskVec2;
+    size: TskVec2;
+    base64ImageData: str;
+}
+
+ref struct TskTextblock {
+    variant: "Textblock";
+    position: TskVec2;
+    size: TskVec2;
+    rawText: str;
+}
+
+[[json.discriminator="variant"]]
+type TskShape = TskLine | TskImage | TskTextblock;
+
+ref struct TskPage {
+    shapes: []TskShape;
+}
+
+struct TskViewport {
+    offsetX: real;
+    offsetY: real;
+    zoomPxPerMm: real;
+}
+
+ref struct TskBody {
+    pageColor: str;
+    gridColor: str;
+    gridType: "lines" | "dots";
+    pages: []TskPage;
+    pageWidthMm: real;
+    pageHeightMm: real;
+    currentPageIndex: int;
+    viewport?: TskViewport;
+}
+
+ref struct TskFile {
+    filetype: str;
+    fileversion: int;
+    data: TskBody;
+}
+
+// Every image the web app and Haze Notes ever stored is one.
+const comptime pngDataUrlPrefix = "data:image/png;base64,";
+
+// The PNG in a data URL, or why it is none: only a PNG data URL whose
+// base64 is the one base64.encode gives for its bytes, so that turning the
+// bytes back into the URL gives the very same text.
+fn pngFromDataUrl(url: str): Bytes | str {
+    if !url.startsWith(pngDataUrlPrefix) {
+        return "an image that is no PNG data URL";
+    }
+    let payload = url.slice(pngDataUrlPrefix.length, url.length);
+    let decoded = base64.decode(payload);
+    if !decoded {
+        return "an image whose base64 is damaged";
+    }
+    let png: Bytes = decoded;
+    if base64.encode(png) != payload {
+        return "an image whose base64 is not written the one usual way";
+    }
+    return png;
+}
+
+fn dataUrlFromPng(png: Bytes): str {
+    return pngDataUrlPrefix + base64.encode(png);
+}
+
+// A tsk file as a note, or why it cannot be one.
+fn toModel(file: TskFile): DocumentFile | str {
+    if file.filetype != "technicalsketcher" {
+        return f"filetype \"{file.filetype}\"";
+    }
+    if file.fileversion != 1 {
+        return f"fileversion {file.fileversion}";
+    }
+    let pages: []Page = [];
+    for tskPage in file.data.pages {
+        let shapes: []Shape = [];
+        for s in tskPage.shapes {
+            if s is TskLine {
+                let points: []Point = [];
+                points.reserve(s.points.length);
+                for p in s.points {
+                    points.push(Point { x: p.x, y: p.y, pressure: p.pressure });
+                }
+                shapes.push(LineShape { variant: "Line", points: points, penColor: s.penColor, penThickness: s.penThickness });
+            }
+            else if s is TskImage {
+                let png = pngFromDataUrl(s.base64ImageData);
+                if png is str {
+                    return png;
+                }
+                shapes.push(ImageShape { variant: "Image", position: Vec2(s.position.x, s.position.y), size: Vec2(s.size.x, s.size.y), png: png });
+            }
+            else if s is TskTextblock {
+                shapes.push(TextblockShape { variant: "Textblock", position: Vec2(s.position.x, s.position.y), size: Vec2(s.size.x, s.size.y), rawText: s.rawText });
+            }
+        }
+        pages.push(Page { shapes: shapes });
+    }
+    let body = DocumentBody {
+        pageColor: file.data.pageColor,
+        gridColor: file.data.gridColor,
+        gridType: file.data.gridType,
+        pages: pages,
+        pageWidthMm: file.data.pageWidthMm,
+        pageHeightMm: file.data.pageHeightMm,
+        currentPageIndex: file.data.currentPageIndex,
+    };
+    let viewport = file.data.viewport;
+    if viewport is TskViewport {
+        body.viewport = Viewport { offsetX: viewport.offsetX, offsetY: viewport.offsetY, zoomPxPerMm: viewport.zoomPxPerMm };
+    }
+    return DocumentFile { data: body };
+}
+
+// A note as the tsk file it came from (without the caches).
+fn toTsk(doc: DocumentFile): TskFile {
+    let pages: []TskPage = [];
+    for page in doc.data.pages {
+        let shapes: []TskShape = [];
+        for s in page.shapes {
+            if s is LineShape {
+                let points: []TskPoint = [];
+                for p in s.points {
+                    points.push(TskPoint { x: p.x, y: p.y, pressure: p.pressure });
+                }
+                shapes.push(TskLine { variant: "Line", points: points, penColor: s.penColor, penThickness: s.penThickness });
+            }
+            else if s is ImageShape {
+                shapes.push(TskImage { variant: "Image", position: TskVec2 { x: s.position.x, y: s.position.y }, size: TskVec2 { x: s.size.x, y: s.size.y }, base64ImageData: dataUrlFromPng(s.png) });
+            }
+            else if s is TextblockShape {
+                shapes.push(TskTextblock { variant: "Textblock", position: TskVec2 { x: s.position.x, y: s.position.y }, size: TskVec2 { x: s.size.x, y: s.size.y }, rawText: s.rawText });
+            }
+        }
+        pages.push(TskPage { shapes: shapes });
+    }
+    let body = TskBody {
+        pageColor: doc.data.pageColor,
+        gridColor: doc.data.gridColor,
+        gridType: doc.data.gridType,
+        pages: pages,
+        pageWidthMm: doc.data.pageWidthMm,
+        pageHeightMm: doc.data.pageHeightMm,
+        currentPageIndex: doc.data.currentPageIndex,
+    };
+    let viewport = doc.data.viewport;
+    if viewport is Viewport {
+        body.viewport = TskViewport { offsetX: viewport.offsetX, offsetY: viewport.offsetY, zoomPxPerMm: viewport.zoomPxPerMm };
+    }
+    return TskFile { filetype: "technicalsketcher", fileversion: 1, data: body };
+}
+
+// ── Comparing JSON ──────────────────────────────────────────────────────
+
+fn numberBits(value: real): u64 {
+    let bits: u64 = 0;
+    __c__("memcpy(&bits, &value, 8);");
+    return bits;
+}
+
+// Where `converted` differs from `original`, or "". Neither the order of an
+// object's keys nor how a number is written counts (numbers compare as
+// their f64 bits), nor a shape's caches in the original: an object with a
+// "variant" (a shape) may carry bbox and cachedOutline, which Haze Notes
+// computes rather than stores. Everything else does: a key of another case,
+// a key twice, a key either side has and the other not.
+fn jsonDifference(original: json.Node, converted: json.Node, path: str): str :: final {
+    if original.isObject() {
+        if !converted.isObject() {
+            return f"{path}: an object became something else";
+        }
+        let isShape = original.member("variant") ? true : false;
+        let count = original.objectEntryCount();
+        for (let i: usize = 0; i < count; i++) {
+            let key = original.objectKeyAt(i);
+            if original.memberCount(key) != 1 {
+                return f"{path}.{key}: the original has it twice";
+            }
+            if isShape && (key == "bbox" || key == "cachedOutline") {
+                continue;
+            }
+            let other = converted.member(key);
+            if !other {
+                return f"{path}.{key}: missing after the conversion";
+            }
+            let inner: json.Node = other;
+            let difference = jsonDifference(original.objectValueAt(i), inner, f"{path}.{key}");
+            if difference.length > 0 {
+                return difference;
+            }
+        }
+        let convertedCount = converted.objectEntryCount();
+        for (let i: usize = 0; i < convertedCount; i++) {
+            let key = converted.objectKeyAt(i);
+            if !original.member(key) {
+                return f"{path}.{key}: added by the conversion";
+            }
+        }
+        return "";
+    }
+    if original.isArray() {
+        if !converted.isArray() {
+            return f"{path}: an array became something else";
+        }
+        if original.arrayLength() != converted.arrayLength() {
+            return f"{path}: {original.arrayLength()} elements became {converted.arrayLength()}";
+        }
+        let a = original.firstElement();
+        let b = converted.firstElement();
+        let index = 0;
+        while let x = a {
+            let y = b;
+            if !y {
+                return f"{path}[{index}]: missing";
+            }
+            let yNode: json.Node = y;
+            let difference = jsonDifference(x, yNode, f"{path}[{index}]");
+            if difference.length > 0 {
+                return difference;
+            }
+            a = x.next();
+            b = yNode.next();
+            index = index + 1;
+        }
+        return "";
+    }
+    if original.isNumber() {
+        if !converted.isNumber() || numberBits(original.numberValue()) != numberBits(converted.numberValue()) {
+            return f"{path}: a number changed";
+        }
+        return "";
+    }
+    if original.isString() {
+        if !converted.isString() || original.stringValue() != converted.stringValue() {
+            return f"{path}: a string changed";
+        }
+        return "";
+    }
+    if original.isBool() {
+        if !converted.isBool() || original.boolValue() != converted.boolValue() {
+            return f"{path}: a bool changed";
+        }
+        return "";
+    }
+    if original.isNull() {
+        return converted.isNull() ? "" : f"{path}: null changed";
+    }
+    return f"{path}: a JSON value of no known kind";
+}
+
+// ── One note ────────────────────────────────────────────────────────────
+
+// Whether the note in tsk JSON `text` is exactly what `hznote` holds, as
+// the conversion proves it: "" when it is, else what differs.
+fn proveNote(text: str, hznote: Bytes): str {
+    let tree = json.parseToJsonNode(text);
+    if !tree {
+        return "the .tsk is not JSON";
+    }
+    let original: json.Node = tree;
+    let parsed = json.parse<TskFile>(text);
+    if !parsed {
+        return f"the .tsk is not a note: {parsed.error()}";
+    }
+    let tsk: TskFile = parsed;
+    let converted = toModel(tsk);
+    if converted is str {
+        return f"the .tsk holds {converted}";
+    }
+    let model: DocumentFile = converted;
+    let decoded = decodeNote(hznote);
+    if decoded is HznoteError {
+        return f"the .hznote does not read back: {decoded.describe()}";
+    }
+    let back: DocumentFile = decoded;
+    let difference = documentDifference(model, back);
+    if difference.length > 0 {
+        return f"the .hznote differs from the .tsk at {difference}";
+    }
+    if encodeNote(back) != hznote {
+        return "the .hznote does not encode back to the same bytes";
+    }
+    let exported = json.parseToJsonNode(json.stringify(toTsk(back)));
+    if !exported {
+        return "the note exported as JSON does not parse";
+    }
+    let exportedTree: json.Node = exported;
+    let jsonChange = jsonDifference(original, exportedTree, "");
+    if jsonChange.length > 0 {
+        return f"the note exported as tsk JSON differs from the .tsk at {jsonChange}";
+    }
+    return "";
+}
+
+// Converts the .tsk at `tskPath` to an .hznote at `hznotePath` and removes
+// it, once that is proven (see the top of this file). "" when done; else
+// why not, and then the .tsk is as it was and no .hznote was left.
+fn convertNote(tskPath: str, hznotePath: str): str {
+    let read = fs.readText(tskPath);
+    if !read {
+        return "the .tsk cannot be read";
+    }
+    let text: str = read;
+    let parsed = json.parse<TskFile>(text);
+    if !parsed {
+        return f"the .tsk is not a note: {parsed.error()}";
+    }
+    let tsk: TskFile = parsed;
+    let converted = toModel(tsk);
+    if converted is str {
+        return f"the .tsk holds {converted}";
+    }
+    let model: DocumentFile = converted;
+    let bytes = encodeNote(model);
+    let created = fs.createBinary(hznotePath, bytes);
+    if !created {
+        if created == fs.Error.AlreadyExists {
+            return "an .hznote of that name is there already";
+        }
+        return "the .hznote cannot be written";
+    }
+    let failure = "";
+    let disk = fs.readBinary(hznotePath);
+    if !disk {
+        failure = "the .hznote cannot be read back";
+    } else {
+        let written: Bytes = disk;
+        if written != bytes {
+            failure = "the .hznote on the disk is not what was written";
+        } else {
+            failure = proveNote(text, written);
+        }
+    }
+    if failure.length == 0 {
+        // Nothing changed the .tsk meanwhile.
+        let again = fs.readText(tskPath);
+        if !again {
+            failure = "the .tsk cannot be read again";
+        } else {
+            let againText: str = again;
+            if againText != text {
+                failure = "the .tsk changed while it was converted";
+            }
+        }
+    }
+    if failure.length > 0 {
+        fs.removeFile(hznotePath);
+        return failure;
+    }
+    if !fs.removeFile(tskPath) {
+        return "the .tsk cannot be removed (the .hznote is there and proven)";
+    }
+    return "";
+}
+
+// ── Files and folders ───────────────────────────────────────────────────
+
+// Every file under `root`, as paths relative to it ("a/b.tsk"), and every
+// folder; "" in `problem` when all of it is plain files and folders.
+ref struct Tree {
+    files: []str = [];
+    folders: []str = [];
+    problem: str = "";
+}
+
+fn walk(root: str, relative: str, tree: Tree): void :: final {
+    let path = relative.length > 0 ? f"{root}/{relative}" : root;
+    let listed = fs.listDir(path);
+    if !listed {
+        tree.problem = f"{path} cannot be listed";
+        return;
+    }
+    let entries: []fs.DirEntry = listed;
+    for entry in entries {
+        let child = relative.length > 0 ? f"{relative}/{entry.name}" : entry.name;
+        if entry.isDirectory {
+            tree.folders.push(child);
+            walk(root, child, tree);
+        } else if entry.isFile {
+            tree.files.push(child);
+        } else {
+            tree.problem = f"{root}/{child} is neither a file nor a folder";
+        }
+        if tree.problem.length > 0 {
+            return;
+        }
+    }
+}
+
+fn treeOf(root: str): Tree {
+    let tree = Tree {};
+    walk(root, "", tree);
+    return tree;
+}
+
+fn sameFile(a: str, b: str): bool {
+    let x = fs.readBinary(a);
+    let y = fs.readBinary(b);
+    if !x || !y {
+        return false;
+    }
+    let left: Bytes = x;
+    let right: Bytes = y;
+    return left == right;
+}
+
+// Copies the vault to `backup`, folder by folder, file by file, and checks
+// the copy: "" when it is the vault, byte for byte.
+fn backUp(vault: str, backup: str): str {
+    let tree = treeOf(vault);
+    if tree.problem.length > 0 {
+        return tree.problem;
+    }
+    if !fs.createDirectoryExclusive(backup) {
+        return f"{backup} cannot be created (it must not exist yet)";
+    }
+    for folder in tree.folders {
+        if !fs.createDirectory(f"{backup}/{folder}") {
+            return f"{backup}/{folder} cannot be created";
+        }
+    }
+    for file in tree.files {
+        if !fs.copyFile(f"{vault}/{file}", f"{backup}/{file}", {}) {
+            return f"{file} cannot be copied";
+        }
+    }
+    let copy = treeOf(backup);
+    if copy.problem.length > 0 {
+        return copy.problem;
+    }
+    if copy.files.length != tree.files.length || copy.folders.length != tree.folders.length {
+        return f"the backup has {copy.files.length} files in {copy.folders.length} folders, the vault {tree.files.length} in {tree.folders.length}";
+    }
+    for file in tree.files {
+        if !sameFile(f"{vault}/{file}", f"{backup}/{file}") {
+            return f"{file} is not the same in the backup";
+        }
+    }
+    return "";
+}
+
+fn hznoteNameFor(tskPath: str): str {
+    return tskPath.slice(0, tskPath.length - 4) + noteExtension;
+}
+
+// The note the vault remembers as open (.hznotes/vault.json) under its new
+// name, when it was a .tsk.
+fn followRename(vault: str): str {
+    let path = f"{vault}/.hznotes/vault.json";
+    let read = fs.readText(path);
+    if !read {
+        return "";
+    }
+    let text: str = read;
+    let tree = json.parseToJsonNode(text);
+    if !tree {
+        return "";
+    }
+    let root: json.Node = tree;
+    if !root.isObject() {
+        return "";
+    }
+    let last = root.member("lastOpenedFile");
+    if !last {
+        return "";
+    }
+    let lastNode: json.Node = last;
+    if !lastNode.isString() {
+        return "";
+    }
+    let opened = lastNode.stringValue();
+    if !opened.endsWith(".tsk") {
+        return "";
+    }
+    root.remove("lastOpenedFile");
+    root.addString("lastOpenedFile", hznoteNameFor(opened));
+    if !fs.replaceText(path, root.print({ pretty: false })) {
+        return ".hznotes/vault.json cannot be written";
+    }
+    return "";
+}
+
+// After the conversion: the vault is the backup but for its notes, each now
+// an .hznote proven against the backup's .tsk. "" when so.
+fn checkAgainstBackup(vault: str, backup: str): str {
+    let now = treeOf(vault);
+    let before = treeOf(backup);
+    if now.problem.length > 0 { return now.problem; }
+    if before.problem.length > 0 { return before.problem; }
+    if now.files.length != before.files.length {
+        return f"the vault has {now.files.length} files, the backup {before.files.length}";
+    }
+    let notes = 0;
+    for file in before.files {
+        if file.endsWith(".tsk") {
+            let converted = hznoteNameFor(file);
+            if fs.statFile(f"{vault}/{file}") {
+                return f"{file} is still there";
+            }
+            let note = fs.readBinary(f"{vault}/{converted}");
+            if !note {
+                return f"{converted} is missing";
+            }
+            let original = fs.readText(f"{backup}/{file}");
+            if !original {
+                return f"{file} cannot be read in the backup";
+            }
+            let originalText: str = original;
+            let noteBytes: Bytes = note;
+            let proof = proveNote(originalText, noteBytes);
+            if proof.length > 0 {
+                return f"{converted}: {proof}";
+            }
+            notes = notes + 1;
+        }
+        else if file == ".hznotes/vault.json" {
+            // Rewritten for the rename; the app keeps nothing else there.
+        }
+        else if !sameFile(f"{vault}/{file}", f"{backup}/{file}") {
+            return f"{file} changed during the conversion";
+        }
+    }
+    fmt.println(f"Checked against the backup: {notes} notes proven, {before.files.length - notes} other files unchanged.");
+    return "";
+}
+
+// ── The command ─────────────────────────────────────────────────────────
+
+fn migrateCommand(args: []str): int {
+    if args.length != 4 {
+        fmt.println("Usage: haze-notes migrate-tsk <vault> <backup>");
+        fmt.println("Copies the vault to <backup> (which must not exist), then converts every .tsk in it to .hznote, proving each one.");
+        return 2;
+    }
+    let vault = args[2];
+    let backup = args[3];
+    let started = time.now();
+    fmt.println(f"Backing up {vault} to {backup} ...");
+    let backupProblem = backUp(vault, backup);
+    if backupProblem.length > 0 {
+        fmt.println(f"Stopped before anything was converted: {backupProblem}");
+        return 1;
+    }
+    let tree = treeOf(vault);
+    let notes: []str = [];
+    for file in tree.files {
+        if file.endsWith(".tsk") {
+            notes.push(file);
+        }
+    }
+    fmt.println(f"The backup is the vault, byte for byte. Converting {notes.length} notes ...");
+    let converted = 0;
+    for note in notes {
+        let failure = convertNote(f"{vault}/{note}", f"{vault}/{hznoteNameFor(note)}");
+        if failure.length > 0 {
+            fmt.println(f"Stopped at {note}: {failure}");
+            fmt.println(f"{converted} notes converted; {notes.length - converted} are still .tsk, untouched. The backup is at {backup}.");
+            return 1;
+        }
+        converted = converted + 1;
+    }
+    let renameProblem = followRename(vault);
+    if renameProblem.length > 0 {
+        fmt.println(f"All {converted} notes converted, but {renameProblem}.");
+        return 1;
+    }
+    let check = checkAgainstBackup(vault, backup);
+    if check.length > 0 {
+        fmt.println(f"All {converted} notes converted, but checking against the backup found: {check}");
+        return 1;
+    }
+    let seconds = time.now() - started;
+    fmt.println(f"Done: {converted} notes converted and proven in {seconds} s. The backup is at {backup}.");
+    return 0;
+}

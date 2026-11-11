@@ -1,0 +1,71 @@
+// ============================================================================
+// REGRESSION TEST -- this is a real, load-bearing test, not a placeholder.
+//
+// Bug: an integer literal above int's range (2^63 and up) was accepted where
+// a declaration gave it its type (`let x: u64 = 0xfff0000000000000;`) but
+// rejected as an argument for a u64 parameter (H7030 "out of range for
+// literal type int"): call arguments are elaborated before the overload is
+// chosen, without the parameter's type, so the literal was typed int and
+// failed. Hit writing f64 bit patterns (0xfff0000000000000 = -inf) in
+// stdlib/core/tests/binary-tests.hz.
+//
+// Fix: literalExpr (src/Semantic/Elaborate.ts) types an unsuffixed literal
+// that fits u64 but not int as u64 when nothing gives it a type, so the
+// conversion to the parameter decides, as for every other literal. One that
+// fits no integer type is still H7030; into an int it is a conversion error.
+// ============================================================================
+
+namespace cases_u64_literal_argument {
+
+    export fn register(s: mut testsuite.Suite) {
+
+        s.run(
+            "u64 literal above 2^63: as an argument, in a let and in an expression",
+            """
+fn take(x: u64): u64 { return x; }
+
+fn main(): int {
+    let a: u64 = 0xfff0000000000000;
+    fmt.println(a == take(0xfff0000000000000));
+    fmt.println(take(18446744073709551615) == u64.max);
+    let below: u64 = 9223372036854775807;
+    let one: u64 = 1;
+    fmt.println(take(9223372036854775808) == below + one);
+    let b = 0x8000000000000000;
+    fmt.println(b == take(0x8000000000000000));
+    fmt.println(take(5) == 5);
+    return 0;
+}
+""",
+            """
+true
+true
+true
+true
+true
+""");
+
+        s.compileFails(
+            "u64 literal above 2^63 into an int parameter is still refused",
+            """
+fn take(x: int): int { return x; }
+
+fn main(): int {
+    return take(0xfff0000000000000);
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.NoSuitableConversionFound)]);
+
+        s.compileFails(
+            "a literal beyond u64 is still out of range",
+            """
+fn take(x: u64): u64 { return x; }
+
+fn main(): int {
+    take(18446744073709551616);
+    return 0;
+}
+""",
+            [testsuite.totalErrors(1)]);
+    }
+}

@@ -1431,9 +1431,10 @@ hzstd_fs_error_t hzstd_file_close(hzstd_allocator_t allocator, void* handle)
 hzstd_fs_error_t
 hzstd_write_file_binary(hzstd_allocator_t allocator, hzstd_str_t path, void* buffer, hzstd_int_t length)
 {
-  if (!buffer || length <= 0) {
+  // An empty file is written as one: no buffer is needed for no bytes.
+  if (length < 0 || (length > 0 && !buffer)) {
     return (hzstd_fs_error_t) {
-      .code = hzstd_fs_error_code_invalid_path,
+      .code = hzstd_fs_error_code_io_error,
       .message = HZSTD_STRING("invalid buffer or length", 24),
     };
   }

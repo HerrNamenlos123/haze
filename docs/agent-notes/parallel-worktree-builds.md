@@ -17,3 +17,4 @@ Recipe (main checkout = the repo root):
 4. Build from the worktree root with the dev compiler: `bun run src/main.ts build --dir <project> --quiet` (not the installed `haze` binary). A separate cwd also avoids [[shared-haze-workspace-rebuild-pingpong]]. A haze-notes build then took 29 s.
 
 Collect uncommitted work: `git -C <wt> diff HEAD` plus `git -C <wt> ls-files --others --exclude-standard`. Remove with `git worktree remove --force` (the copied caches are untracked).
+- Trap (2026-11-11): the dev compiler writes a project's binary to `<repo>/__haze__/<project>/bin/<project>`. A `<project>/__haze__/<project>/bin/` (haze-notes has one in the main checkout, from the installed `haze build` run inside the project) is NOT rebuilt by it; reflinked into a worktree it is a stale binary that looks current. Run the binary from the repo-root `__haze__`, and delete the copied `<project>/__haze__/<project>` in a worktree.

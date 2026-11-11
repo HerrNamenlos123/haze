@@ -1545,18 +1545,14 @@ export function lowerExpr(
         lr.sr.typeUseNodes.get(lr.sr.e.resolveAlias(rightExpr.type)).type
       );
 
-      if (
-        (leftType.variant === Semantic.ENode.PrimitiveDatatype &&
-          leftType.primitive === EPrimitive.str) ||
-        (rightType.variant === Semantic.ENode.PrimitiveDatatype &&
-          rightType.primitive === EPrimitive.str)
-      ) {
-        assert(
-          leftType.variant === Semantic.ENode.PrimitiveDatatype &&
-            leftType.primitive === EPrimitive.str &&
-            rightType.variant === Semantic.ENode.PrimitiveDatatype &&
-            rightType.primitive === EPrimitive.str
-        );
+      // A string literal type ("Line") is a str in C as well.
+      const isStr = (t: Semantic.TypeDef) =>
+        (t.variant === Semantic.ENode.PrimitiveDatatype &&
+          t.primitive === EPrimitive.str) ||
+        (t.variant === Semantic.ENode.LiteralDatatype &&
+          t.literalValue.type === EPrimitive.str);
+      if (isStr(leftType) || isStr(rightType)) {
+        assert(isStr(leftType) && isStr(rightType));
         if (
           expr.operation === EBinaryOperation.Equal ||
           expr.operation === EBinaryOperation.NotEqual

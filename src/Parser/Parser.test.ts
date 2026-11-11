@@ -262,7 +262,8 @@ function countMarked(ast: unknown) {
   };
 }
 
-describe("extern C function types, in both parsers", () => {
+/** Starts the native parser server for the enclosing describe block. */
+function useBothParsers() {
   beforeAll(() => {
     // Rebuilds the native parser only when its sources changed.
     if (!ensureNativeParser(REPO_ROOT)) {
@@ -277,6 +278,89 @@ describe("extern C function types, in both parsers", () => {
     nativeServer?.stop();
     nativeServer = null;
   });
+}
+
+describe("`type` as a name, in both parsers", () => {
+  useBothParsers();
+
+  // `type` is a keyword (`type X = ...`), and still a name wherever a member
+  // or a function is named (memberNameId in the grammar, memberName() in the
+  // native parser).
+  const positions: [string, string][] = [
+    ["method", "struct S { mut fn type(text: str) {} }"],
+    ["free function", "fn type(text: str) {}"],
+    ["generic free function", "fn type<T>(t: T) {}"],
+    ["data member", "struct S { type: str; }"],
+    ["anonymous struct member", "type A = { type: str, n: i32 };"],
+    ["tagged union tag", "type U = union { type: i32, other: str };"],
+    ["member access and call", 'fn f(s: S) { s.type("x"); let t = s.type; }'],
+    ["struct literal key", "fn f() { let s = S { type: 1 }; }"],
+  ];
+
+  for (const [position, source] of positions) {
+    test(position, async () => {
+      const ast = await parseBoth(source);
+      const text = JSON.stringify(ast, (_key, value) =>
+        typeof value === "bigint" ? value.toString() : value
+      );
+      expect(text).toMatch(/"(name|tag|member|key)":"type"/);
+    });
+  }
+});
+
+type FunctionTypeNode = {
+  variant: string;
+  returnType: { variant: string };
+  types: { variant: string }[];
+};
+
+describe("function types return a union, in both parsers", () => {
+  useBothParsers();
+
+  // As in TypeScript: `() => A | B` returns `A | B`; a union with a function
+  // in it wraps the function, `(() => A) | B`.
+  const datatype = async (source: string) =>
+    ((await parseBoth(source)) as { datatype: FunctionTypeNode }[])[0]
+      .datatype;
+
+  test("`() => A | B` returns A | B", async () => {
+    const type = await datatype("type T = () => A | none;");
+    expect(type.variant).toBe("CallableTypeExpr");
+    expect(type.returnType.variant).toBe("BinaryUnionTypeExpr");
+  });
+
+  test("`(a: i32) -> A | B` returns A | B", async () => {
+    const type = await datatype("type T = (a: i32) -> A | none;");
+    expect(type.variant).toBe("FunctionTypeExpr");
+    expect(type.returnType.variant).toBe("BinaryUnionTypeExpr");
+  });
+
+  test("a wrapped function is a member of the union", async () => {
+    const type = await datatype("type T = (() => A) | none;");
+    expect(type.variant).toBe("BinaryUnionTypeExpr");
+    expect(type.types[0].variant).toBe("CallableTypeExpr");
+  });
+
+  test("a function returning a function returning A | B", async () => {
+    const type = (await datatype(
+      "type T = () => () => A | none;"
+    )) as unknown as { returnType: FunctionTypeNode };
+    expect(type.returnType.variant).toBe("CallableTypeExpr");
+    expect(type.returnType.returnType.variant).toBe("BinaryUnionTypeExpr");
+  });
+
+  test("a requires block after the union", async () => {
+    const type = await datatype("type T = () => A | none :: pure;");
+    expect(type.returnType.variant).toBe("BinaryUnionTypeExpr");
+  });
+
+  test("a struct member, as TextInput's caretBox", async () => {
+    await parseBoth("struct S { caretBox: () => Box | none; }");
+  });
+});
+
+describe("extern C function types, in both parsers", () => {
+  useBothParsers();
 
   // [position, source, extern C function types, Haze function types]
   const positions: [string, string, number, number][] = [
@@ -355,7 +439,7 @@ describe("extern C function types, in both parsers", () => {
     ],
     [
       "unions",
-      "type U = none | extern C () -> void | (extern C (a: i32) -> i32);",
+      "type U = none | (extern C () -> void) | (extern C (a: i32) -> i32);",
       2,
       0,
     ],
@@ -425,10 +509,19 @@ describe("extern C function types, in both parsers", () => {
     expect(type.sourceloc.start).toEqual({ line: 1, column: 9 });
   });
 
-  test("the return type is a single type: `-> A | B` is a union of the function and B", async () => {
+  test("as every function type, `-> A | B` returns A | B", async () => {
     const ast = (await parseBoth("type U = extern C () -> void | none;")) as {
-      datatype: { variant: string; types: { variant: string }[] };
+      datatype: FunctionTypeNode & { externLanguage: EExternLanguage };
     }[];
+    expect(ast[0].datatype.variant).toBe("FunctionTypeExpr");
+    expect(ast[0].datatype.externLanguage).toBe(EExternLanguage.Extern_C);
+    expect(ast[0].datatype.returnType.variant).toBe("BinaryUnionTypeExpr");
+  });
+
+  test("a wrapped extern C function is a member of the union", async () => {
+    const ast = (await parseBoth(
+      "type U = (extern C () -> void) | none;"
+    )) as { datatype: FunctionTypeNode }[];
     expect(ast[0].datatype.variant).toBe("BinaryUnionTypeExpr");
     expect(ast[0].datatype.types[0].variant).toBe("FunctionTypeExpr");
   });

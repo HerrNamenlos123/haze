@@ -1,0 +1,191 @@
+// The one-time conversion of a vault from .tsk to .hznote (src/migrate.hz):
+// a vault converts with every note proven and everything else untouched, and
+// each thing the proof must catch stops the run with that note and the ones
+// after it left as they were: an image whose base64 is not the usual one, a
+// key Haze Notes does not know, a key in another case, a key twice, an
+// .hznote already there, a backup folder already there. Also that the
+// comparisons the proof is made of can fail at all.
+//
+// Run: TMPDIR=<scratch> haze-notes/tests/run-test.sh haze-notes/tests/migrate-tests.hz migrate.hz hznote.hz documents.hz tiles.hz persistence.hz vault.hz
+
+let checks = 0;
+let failures = 0;
+
+fn check(name: str, ok: bool) {
+    checks = checks + 1;
+    if !ok {
+        failures = failures + 1;
+        fmt.println(f"FAIL: {name}");
+    }
+}
+
+// A fresh folder per run (set by main): the file system API cannot delete,
+// and what an earlier run left would be found by this one.
+let scratchRoot = "";
+
+fn scratch(): str {
+    return scratchRoot;
+}
+
+fn exists(path: str): bool {
+    return fs.statFile(path) ? true : false;
+}
+
+fn textOf(path: str): str {
+    let read = fs.readText(path);
+    if !read {
+        return "";
+    }
+    let text: str = read;
+    return text;
+}
+
+// A small PNG's worth of bytes, as the web app stored them.
+const comptime pngUrl = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+
+fn note(shapes: str): str {
+    return "{\"filetype\":\"technicalsketcher\",\"fileversion\":1,\"data\":{\"pageColor\":\"#ffffff\",\"gridColor\":\"#5252524f\",\"gridType\":\"lines\",\"pages\":[{\"shapes\":["
+        + shapes + "]},{\"shapes\":[]}],\"pageWidthMm\":210,\"pageHeightMm\":297,\"currentPageIndex\":0,\"viewport\":{\"offsetX\":-0.0,\"offsetY\":12.5,\"zoomPxPerMm\":4}}}";
+}
+
+const comptime stroke = "{\"variant\":\"Line\",\"points\":[{\"x\":1.25,\"y\":2,\"pressure\":0.5},{\"x\":-0,\"y\":0.30000000000000004,\"pressure\":0.5}],\"penColor\":\"#1D4ED8\",\"penThickness\":0.35,\"bbox\":{\"left\":0,\"right\":1,\"top\":0,\"bottom\":1},\"cachedOutline\":[[1,2],[3,4]]}";
+
+fn image(url: str): str {
+    return "{\"variant\":\"Image\",\"position\":{\"x\":10,\"y\":20.5},\"size\":{\"x\":30,\"y\":40},\"base64ImageData\":\"" + url + "\",\"bbox\":{\"left\":10,\"right\":40,\"top\":20.5,\"bottom\":60.5}}";
+}
+
+const comptime textblock = "{\"variant\":\"Textblock\",\"position\":{\"x\":1,\"y\":2},\"size\":{\"x\":3,\"y\":4},\"rawText\":\"Grüße\\n\\\"quoted\\\"\"}";
+
+// A vault: three notes (one in a hidden folder), files that are no notes,
+// and the vault's own state naming a note as open.
+fn makeVault(root: str) {
+    fs.writeText(f"{root}/First.tsk", note(stroke + "," + image(pngUrl) + "," + textblock));
+    fs.writeText(f"{root}/Folder/Second.tsk", note(stroke));
+    fs.writeText(f"{root}/.trash/Deleted.tsk", note(""));
+    fs.writeText(f"{root}/Folder/scan.pdf", "%PDF-1.7 not a note");
+    fs.writeText(f"{root}/readme.md", "# hello");
+    fs.writeText(f"{root}/.hznotes/vault.json", f"{{\"lastOpenedFile\":\"{root}/Folder/Second.tsk\",\"sidepanelOpen\":true}}");
+}
+
+fn migrate(vault: str, backup: str): int {
+    let args: []str = ["haze-notes", "migrate-tsk", vault, backup];
+    return migrateCommand(args);
+}
+
+fn testClean() {
+    let vault = f"{scratch()}/clean/vault";
+    let backup = f"{scratch()}/clean/backup";
+    makeVault(vault);
+    check("a clean vault converts", migrate(vault, backup) == 0);
+    check("no .tsk is left", !exists(f"{vault}/First.tsk") && !exists(f"{vault}/Folder/Second.tsk") && !exists(f"{vault}/.trash/Deleted.tsk"));
+    check("every note is an .hznote", exists(f"{vault}/First.hznote") && exists(f"{vault}/Folder/Second.hznote") && exists(f"{vault}/.trash/Deleted.hznote"));
+    check("the backup has the .tsk files", textOf(f"{backup}/First.tsk") == note(stroke + "," + image(pngUrl) + "," + textblock));
+    check("other files are untouched", textOf(f"{vault}/readme.md") == "# hello" && textOf(f"{vault}/Folder/scan.pdf") == "%PDF-1.7 not a note");
+    check("the open note follows the rename", textOf(f"{vault}/.hznotes/vault.json").contains("Second.hznote") && textOf(f"{vault}/.hznotes/vault.json").contains("sidepanelOpen"));
+    let load = DocumentLoad(f"{vault}/First.hznote");
+    load.step(time.now() + 10.0);
+    if let doc = load.doc {
+        check("the converted note opens, with its three shapes", doc.data.pages[0].shapes.length == 3);
+        let shape = doc.data.pages[0].shapes[1];
+        check("its image is the PNG itself", shape is ImageShape ? shape.png.length > 8 && shape.png[1] == 0x50 : false);
+    } else {
+        check(f"the converted note opens: {load.hint}", false);
+    }
+}
+
+// A vault whose Folder/Second.tsk holds `second`: the run must stop there,
+// and leave Second (and anything after it) a .tsk without an .hznote.
+fn stopsAt(name: str, second: str) {
+    let vault = f"{scratch()}/{name}/vault";
+    let backup = f"{scratch()}/{name}/backup";
+    makeVault(vault);
+    fs.writeText(f"{vault}/Folder/Second.tsk", second);
+    check(f"{name}: the run stops", migrate(vault, backup) == 1);
+    check(f"{name}: the note stays a .tsk, as it was", textOf(f"{vault}/Folder/Second.tsk") == second);
+    check(f"{name}: no .hznote is left for it", !exists(f"{vault}/Folder/Second.hznote"));
+    check(f"{name}: the backup was made", textOf(f"{backup}/Folder/Second.tsk") == second);
+}
+
+fn testStops() {
+    // An image whose base64 is not the one base64.encode writes (a line
+    // break in it), so that turning it back would give other text.
+    stopsAt("image base64", note(image("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=\\n=")));
+    // Without its padding: a decoder may take it, but turned back it is
+    // not the same text.
+    stopsAt("image without padding", note(image("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg")));
+    stopsAt("image not PNG", note(image("data:image/jpeg;base64,/9j/")));
+    // A key Haze Notes does not keep would be lost.
+    stopsAt("unknown key", note("{\"variant\":\"Line\",\"points\":[],\"penColor\":\"#000\",\"penThickness\":1,\"tilt\":3}"));
+    stopsAt("unknown settings key", "{\"filetype\":\"technicalsketcher\",\"fileversion\":1,\"data\":{\"pageColor\":\"#ffffff\",\"gridColor\":\"#5252524f\",\"gridType\":\"lines\",\"pages\":[],\"pageWidthMm\":210,\"pageHeightMm\":297,\"currentPageIndex\":0,\"paperTexture\":\"x\"}}");
+    // json.parse matches keys in any case; the JSON comparison does not.
+    stopsAt("key in another case", note("{\"variant\":\"Line\",\"points\":[],\"PenColor\":\"#000\",\"penThickness\":1}"));
+    stopsAt("key twice", note("{\"variant\":\"Line\",\"points\":[],\"penColor\":\"#000\",\"penColor\":\"#fff\",\"penThickness\":1}"));
+    stopsAt("a fraction where an int goes", "{\"filetype\":\"technicalsketcher\",\"fileversion\":1,\"data\":{\"pageColor\":\"#ffffff\",\"gridColor\":\"#5252524f\",\"gridType\":\"lines\",\"pages\":[],\"pageWidthMm\":210,\"pageHeightMm\":297,\"currentPageIndex\":0.5}}");
+    stopsAt("another file version", "{\"filetype\":\"technicalsketcher\",\"fileversion\":2,\"data\":{\"pageColor\":\"#ffffff\",\"gridColor\":\"#5252524f\",\"gridType\":\"lines\",\"pages\":[],\"pageWidthMm\":210,\"pageHeightMm\":297,\"currentPageIndex\":0}}");
+    stopsAt("damaged JSON", "{\"filetype\":\"technicalsketcher\",");
+
+    // An .hznote already there is never replaced.
+    let vault = f"{scratch()}/exists/vault";
+    makeVault(vault);
+    fs.writeText(f"{vault}/Folder/Second.hznote", "precious");
+    check("an .hznote already there: the run stops", migrate(vault, f"{scratch()}/exists/backup") == 1);
+    check("and it is left as it was", textOf(f"{vault}/Folder/Second.hznote") == "precious" && exists(f"{vault}/Folder/Second.tsk"));
+
+    // A backup folder that is there already: nothing happens at all.
+    let taken = f"{scratch()}/taken/vault";
+    makeVault(taken);
+    fs.createDirectory(f"{scratch()}/taken/backup");
+    check("a backup folder already there: refused", migrate(taken, f"{scratch()}/taken/backup") == 1);
+    check("and nothing is converted", exists(f"{taken}/First.tsk") && !exists(f"{taken}/First.hznote"));
+}
+
+fn testComparisons() {
+    let a = json.parseToJsonNode("{\"x\":1,\"y\":[1,2],\"s\":\"a\",\"b\":true,\"n\":null}");
+    let same = json.parseToJsonNode("{\"n\":null,\"b\":true,\"s\":\"a\",\"y\":[1.0,2],\"x\":1e0}");
+    let number = json.parseToJsonNode("{\"x\":1.0000000000000002,\"y\":[1,2],\"s\":\"a\",\"b\":true,\"n\":null}");
+    let text = json.parseToJsonNode("{\"x\":1,\"y\":[1,2],\"s\":\"b\",\"b\":true,\"n\":null}");
+    let shorter = json.parseToJsonNode("{\"x\":1,\"y\":[1],\"s\":\"a\",\"b\":true,\"n\":null}");
+    let flag = json.parseToJsonNode("{\"x\":1,\"y\":[1,2],\"s\":\"a\",\"b\":false,\"n\":null}");
+    let zero = json.parseToJsonNode("{\"z\":0}");
+    let negativeZero = json.parseToJsonNode("{\"z\":-0}");
+    if a && same && number && text && shorter && flag && zero && negativeZero {
+        check("key order and number spelling do not count", jsonDifference(a, same, "") == "");
+        check("the last bit of a number counts", jsonDifference(a, number, "").length > 0);
+        check("a string counts", jsonDifference(a, text, "").length > 0);
+        check("an array's length counts", jsonDifference(a, shorter, "").length > 0);
+        check("a bool counts", jsonDifference(a, flag, "").length > 0);
+        check("-0 is not 0", jsonDifference(zero, negativeZero, "").length > 0);
+    } else {
+        check("comparison fixtures parse", false);
+    }
+    // A file of the backup that differs in one byte is found.
+    let dir = f"{scratch()}/compare";
+    fs.writeText(f"{dir}/a", "abcdef");
+    fs.writeText(f"{dir}/b", "abcdeg");
+    fs.writeText(f"{dir}/c", "abcdef");
+    check("files differing in a byte are not the same", !sameFile(f"{dir}/a", f"{dir}/b"));
+    check("equal files are", sameFile(f"{dir}/a", f"{dir}/c"));
+    // A proof against a note that is not the .tsk fails.
+    let other = encodeNote(blankNote());
+    check("a proof against another note fails", proveNote(note(stroke), other).length > 0);
+}
+
+fn blankNote(): DocumentFile {
+    let blank: []Shape = [];
+    let pages: []Page = [Page { shapes: blank }];
+    return DocumentFile { data: DocumentBody { pageColor: "#ffffff", gridColor: "#5252524f", gridType: "lines", pages: pages, pageWidthMm: 210.0, pageHeightMm: 297.0, currentPageIndex: 0 } };
+}
+
+fn main(): int {
+    let base = "/tmp";
+    if let tmp = env.get("TMPDIR") {
+        base = tmp;
+    }
+    let stamp = time.now() * 1000000.0;
+    scratchRoot = f"{base}/haze-notes-migrate-tests-{stamp}";
+    testComparisons();
+    testClean();
+    testStops();
+    fmt.println(f"{checks} checks, {failures} failed");
+    return failures > 0 ? 1 : 0;
+}

@@ -89,6 +89,15 @@ fn main(): int {
     cases_json_ignore.register(suite);
     cases_json_real_numbers.register(suite);
     cases_address_of.register(suite);
+    cases_constructor_self_call.register(suite);
+    cases_u64_literal_argument.register(suite);
+    cases_negative_zero_literal.register(suite);
+    cases_comptime_loop_reentrant.register(suite);
+    cases_fixed_array_assignment.register(suite);
+    cases_literal_string_compare.register(suite);
+    cases_literal_union_conversion.register(suite);
+    cases_fs_write_binary.register(suite);
+    cases_json_negative_zero.register(suite);
     cases_computed_narrowing.register(suite);
     cases_narrowed_recheck.register(suite);
     cases_narrowing_inverse.register(suite);

@@ -1,0 +1,240 @@
+// ByteBuffer's binary writes against BinaryReader's reads: every number type
+// at its edges (exact bits of -0, NaN payloads and infinities included), the
+// byte layout itself (little-endian, checked byte by byte), size patching,
+// measuring buffers, raw memory, and the reader's overrun rule (a read that
+// does not fit reads nothing, and the first one is remembered).
+//
+// Run: scripts/run-stdlib-test.sh stdlib/core/tests/binary-tests.hz
+
+let failures = 0;
+
+fn check(name: str, ok: bool) {
+    if !ok {
+        fmt.println(f"FAIL {name}");
+        failures = failures + 1;
+    }
+}
+
+// A real literal as an f64: comparisons need both sides of one type.
+fn f(x: real): f64 {
+    return x;
+}
+
+fn bitsOf(value: f64): u64 {
+    let bits: u64 = 0;
+    __c__("memcpy(&bits, &value, 8);");
+    return bits;
+}
+
+fn f64FromBits(bits: u64): f64 {
+    let value: f64 = 0.0;
+    __c__("memcpy(&value, &bits, 8);");
+    return value;
+}
+
+fn bits32Of(value: f32): u32 {
+    let bits: u32 = 0;
+    __c__("memcpy(&bits, &value, 4);");
+    return bits;
+}
+
+fn f32FromBits(bits: u32): f32 {
+    let value: f32 = 0.0;
+    __c__("memcpy(&value, &bits, 4);");
+    return value;
+}
+
+fn testRoundTrip() {
+    let b = ByteBuffer();
+    b.pushU16(0);
+    b.pushU16(65535);
+    b.pushU32(0);
+    b.pushU32(4294967295);
+    b.pushU64(0);
+    b.pushU64(u64.max);
+    b.pushI8(-128);
+    b.pushI8(127);
+    b.pushI16(-32768);
+    b.pushI16(32767);
+    b.pushI32(-2147483648);
+    b.pushI32(2147483647);
+    b.pushI64(i64.min);
+    b.pushI64(i64.max);
+    b.pushF64(-0.0);
+    b.pushF64(f64FromBits(0x7ff8000000000123)); // a NaN with a payload
+    b.pushF64(f64FromBits(0x7ff0000000000000)); // +inf
+    b.pushF64(f64FromBits(0xfff0000000000000)); // -inf
+    b.pushF64(0.1);
+    b.pushF32(f32FromBits(0x80000000));         // -0
+    b.pushF32(f32FromBits(0x7fc00001));         // NaN payload
+    b.pushF32(3.25);
+    b.push(7 as u8);
+    let expectedLength = 2 * 2 + 4 * 2 + 8 * 2 + 1 * 2 + 2 * 2 + 4 * 2 + 8 * 2 + 8 * 5 + 4 * 3 + 1;
+    check("length of all writes", b.length() == expectedLength);
+    b.commit();
+    let r = BinaryReader(b.bytes());
+    check("u16 0", r.readU16() == 0);
+    check("u16 max", r.readU16() == 65535);
+    check("u32 0", r.readU32() == 0);
+    check("u32 max", r.readU32() == 4294967295);
+    check("u64 0", r.readU64() == 0);
+    check("u64 max", r.readU64() == u64.max);
+    check("i8 min", r.readI8() == -128);
+    check("i8 max", r.readI8() == 127);
+    check("i16 min", r.readI16() == -32768);
+    check("i16 max", r.readI16() == 32767);
+    check("i32 min", r.readI32() == -2147483648);
+    check("i32 max", r.readI32() == 2147483647);
+    check("i64 min", r.readI64() == i64.min);
+    check("i64 max", r.readI64() == i64.max);
+    check("f64 -0 bits", bitsOf(r.readF64()) == 0x8000000000000000);
+    check("f64 NaN payload bits", bitsOf(r.readF64()) == 0x7ff8000000000123);
+    check("f64 +inf bits", bitsOf(r.readF64()) == 0x7ff0000000000000);
+    check("f64 -inf bits", bitsOf(r.readF64()) == 0xfff0000000000000);
+    check("f64 0.1 bits", bitsOf(r.readF64()) == bitsOf(f(0.1)));
+    check("f32 -0 bits", bits32Of(r.readF32()) == 0x80000000);
+    check("f32 NaN payload bits", bits32Of(r.readF32()) == 0x7fc00001);
+    let expectedF32: f32 = 3.25;
+    check("f32 3.25", r.readF32() == expectedF32);
+    check("u8", r.readU8() == 7);
+    check("at the end", r.atEnd() && r.remaining() == 0);
+    check("nothing overran", !r.overran() && r.overrunAt() == -1);
+}
+
+fn testByteOrder() {
+    let b = ByteBuffer();
+    b.pushU32(0x04030201);
+    b.pushU16(0x0605);
+    b.pushU64(0x0e0d0c0b0a090807);
+    b.pushF64(f64FromBits(0x161514131211100f));
+    check("little-endian u32", b.getAt(0) == 1 && b.getAt(1) == 2 && b.getAt(2) == 3 && b.getAt(3) == 4);
+    check("little-endian u16", b.getAt(4) == 5 && b.getAt(5) == 6);
+    let inOrder = true;
+    for (let i = 6; i < 22; i++) {
+        if b.getAt(i) as int != i + 1 {
+            inOrder = false;
+        }
+    }
+    check("little-endian u64 and f64", inOrder);
+}
+
+fn testPatchAndMeasure() {
+    let b = ByteBuffer();
+    b.pushU32(0);
+    b.push(Bytes("payload"));
+    b.setU32At(0, 7);
+    b.commit();
+    let r = BinaryReader(b.bytes());
+    let size = r.readU32();
+    check("patched size", size == 7);
+    check("patched payload", r.readStr(size as int) == "payload");
+
+    let m = ByteBuffer.measuring();
+    m.pushU16(1);
+    m.pushU32(1);
+    m.pushU64(1);
+    m.pushI8(1);
+    m.pushI16(1);
+    m.pushI32(1);
+    m.pushI64(1);
+    m.pushF32(1.0);
+    m.pushF64(1.0);
+    m.setU32At(0, 5);
+    check("measuring counts", m.length() == 2 + 4 + 8 + 1 + 2 + 4 + 8 + 4 + 8);
+}
+
+fn testRawMemory() {
+    let values: [4]f64 = [1.5, -2.5, 0.0, 1000000.25];
+    let memory = RawMemory {};
+    __c__("memory._data = &values; memory.length = sizeof(values);");
+    let b = ByteBuffer();
+    b.push(memory);
+    b.commit();
+    check("raw memory pushed", b.length() == 32);
+    let r = BinaryReader(b.bytes());
+    check("raw memory as numbers", r.readF64() == f(1.5) && r.readF64() == f(-2.5) && r.readF64() == f(0.0) && r.readF64() == f(1000000.25));
+    r.seek(0);
+    let into: [4]f64 = [0.0, 0.0, 0.0, 0.0];
+    let target = RawMemory {};
+    __c__("target._data = &into; target.length = sizeof(into);");
+    r.readInto(target);
+    check("readInto", into[0] == f(1.5) && into[1] == f(-2.5) && into[2] == f(0.0) && into[3] == f(1000000.25) && r.atEnd());
+    // Over raw memory the caller owns.
+    let raw = BinaryReader.overMemory(memory);
+    check("over raw memory", raw.readF64() == f(1.5) && raw.remaining() == 24);
+    let copied = raw.readBytes(8);
+    check("readBytes copies out of raw memory", copied.length == 8);
+    values[1] = 99.0;
+    let copiedReader = BinaryReader(copied);
+    check("the copy does not change with the memory", copiedReader.readF64() == f(-2.5));
+    // A short readInto writes nothing.
+    let shortInput = BinaryReader(Bytes("abc"));
+    let untouched: [1]f64 = [4.0];
+    let one = RawMemory {};
+    __c__("one._data = &untouched; one.length = 8;");
+    shortInput.readInto(one);
+    check("short readInto writes nothing", untouched[0] == f(4.0) && shortInput.overran() && shortInput.overrunAt() == 0);
+}
+
+fn testOverrun() {
+    let r = BinaryReader(Bytes("abcdef"));
+    check("u32 fits", r.readU32() != 0);
+    check("u32 past the end reads 0", r.readU32() == 0);
+    check("overrun remembered where it started", r.overran() && r.overrunAt() == 4);
+    check("moved to the end", r.atEnd() && r.position() == 6);
+    check("later reads fit nothing", r.readU8() == 0 && r.readStr(1) == "" && r.readBytes(1).length == 0);
+    check("first overrun is kept", r.overrunAt() == 4);
+
+    let s = BinaryReader(Bytes("abc"));
+    s.seek(4);
+    check("seek past the end overruns", s.overran() && s.overrunAt() == 0);
+    let t = BinaryReader(Bytes("abc"));
+    t.skip(-1);
+    check("negative skip overruns", t.overran());
+    let u = BinaryReader(Bytes("abc"));
+    check("negative readStr overruns", u.readStr(-1) == "" && u.overran());
+    let v = BinaryReader(Bytes("abc"));
+    v.seek(3);
+    check("seek to the very end is fine", !v.overran() && v.atEnd());
+    let empty = BinaryReader(Bytes());
+    check("empty reader", empty.atEnd() && empty.readU8() == 0 && empty.overran());
+}
+
+fn testViewsAndSubReaders() {
+    let r = BinaryReader(Bytes("headerPAYLOADtail"));
+    r.skip(6);
+    let view = r.readView(7);
+    check("view", view.string() == "PAYLOAD");
+    check("readStr copies", r.readStr(4) == "tail");
+    let block = BinaryReader(Bytes("xx" + "12345678" + "yy"));
+    block.skip(2);
+    let sub = block.sub(8);
+    check("parent moved past the block", block.position() == 10);
+    check("sub reader starts at 0", sub.position() == 0 && sub.length() == 8);
+    check("sub reads its block", sub.readStr(3) == "123");
+    check("sub view", sub.readView(2).string() == "45");
+    check("sub cannot read past its block", sub.readU32() == 0 && sub.overran() && !block.overran());
+    let tooLong = BinaryReader(Bytes("abc"));
+    let outside = tooLong.sub(10);
+    check("sub past the end", tooLong.overran() && outside.length() == 0 && outside.overran());
+    // One byte held inline still reads.
+    let single = BinaryReader(Bytes(42 as u8));
+    check("single byte source", single.readU8() == 42 && single.atEnd());
+    let singleView = BinaryReader(Bytes(9 as u8));
+    check("single byte view", singleView.readView(1)[0] == 9);
+}
+
+fn main(): int {
+    testRoundTrip();
+    testByteOrder();
+    testPatchAndMeasure();
+    testRawMemory();
+    testOverrun();
+    testViewsAndSubReaders();
+    if failures > 0 {
+        fmt.println(f"{failures} failed");
+        return 1;
+    }
+    fmt.println("binary: all passed");
+    return 0;
+}

@@ -1,0 +1,76 @@
+// ============================================================================
+// REGRESSION TEST -- this is a real, load-bearing test, not a placeholder.
+//
+// Bug: inside a `for comptime` loop, a call that elaborates another
+// instantiation of the same function -- a generic walk over a struct's fields
+// calling itself for a field's type -- made the loop's variables undeclared
+// for the rest of that iteration (H3002 "Symbol 'field' was not declared").
+// The loop variable and index are bound in a map keyed by the loop body's
+// collected scope, which every instantiation shares; the nested elaboration
+// of the same loop deleted the bindings when it finished. json.hz worked
+// around it by copying field.name into a `const comptime` first. Hit
+// writing stdlib/core/src/traverse.hz.
+//
+// Fix: both comptime for-each unrollings (src/Semantic/Elaborate.ts) put back
+// the bindings that were there before instead of deleting them.
+// ============================================================================
+
+namespace cases_comptime_loop_reentrant {
+
+    export fn register(s: mut testsuite.Suite) {
+
+        s.run(
+            "for comptime over fields: the loop variable and index survive a nested instantiation",
+            """
+struct Inner { v: int; w: int; }
+struct Outer { a: int; inner: Inner; b: int; }
+
+fn walk<T>(value: T): str :: final {
+    if comptime T is int {
+        return f"{value}";
+    }
+    else {
+        let text = "";
+        for comptime field, i in T.fields {
+            let fieldValue = value.[field.name];
+            let inner = walk<typeof(fieldValue)>(fieldValue);
+            text = text + f"{field.name}#{i}=({inner})";
+        }
+        return text;
+    }
+}
+
+fn main(): int {
+    fmt.println(walk<Outer>(Outer { a: 1, inner: Inner { v: 2, w: 3 }, b: 4 }));
+    return 0;
+}
+""",
+            """
+a#0=(1)inner#1=(v#0=(2)w#1=(3))b#2=(4)
+""");
+
+        s.run(
+            "for comptime over a parameter pack: the loop variable and index survive a nested instantiation",
+            """
+fn leaf(x: int): str { return f"{x}"; }
+fn leaf(x: str): str :: final { return pair(7, 8); }
+
+fn pair(values: ...): str {
+    let text = "";
+    for comptime v, i in values {
+        let inner = leaf(v);
+        text = text + f"[{i}:{inner}:{v}]";
+    }
+    return text;
+}
+
+fn main(): int {
+    fmt.println(pair(5, "s"));
+    return 0;
+}
+""",
+            """
+[0:5:5][1:[0:7:7][1:8:8]:s]
+""");
+    }
+}

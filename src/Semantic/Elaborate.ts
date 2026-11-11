@@ -2765,6 +2765,19 @@ export class SemanticElaborator {
     assert(elaboratedMethod.variant === Semantic.ENode.FunctionSymbol);
 
     const constructorFunctype = this.sr.typeDefNodes.get(elaboratedMethod.type);
+    // A constructor that calls itself while it is still being elaborated
+    // finds its own type still deferred: the same recursion every other
+    // function call reports (H7023), not an internal error. A probe for an
+    // implicit constructor conversion catches it and finds no conversion.
+    if (constructorFunctype.variant === Semantic.ENode.DeferredFunctionDatatype) {
+      throw new CompilerError(
+        `Function ${calledExprType.name}.constructor() is not fully elaborated yet. If it is part of a recursive call chain, it requires a "fn foo(): T :: final" annotation and if required an explicit return type.` +
+          (this.buildDeferredElaborationHint(elaboratedMethodId) ?? ""),
+        callSourceloc,
+        HazeErrorCode.FunctionNotFullyElaboratedYetIfItPart,
+        this.buildElaborationPathFromCurrentContext()
+      );
+    }
     assert(constructorFunctype.variant === Semantic.ENode.FunctionDatatype);
 
     return {
@@ -3343,6 +3356,26 @@ export class SemanticElaborator {
       }
 
       const [min, max] = Conversion.getIntegerMinMax(literalExpr.literal.type);
+      // An unsuffixed literal above int's range that fits u64, with nothing
+      // here to give it a type (an argument elaborated before its overload is
+      // chosen): it is a u64, and the conversion to wherever it goes decides,
+      // as for any other literal.
+      if (
+        literalExpr.literal.type === EPrimitive.int &&
+        literalExpr.literal.value > max
+      ) {
+        const [, u64Max] = Conversion.getIntegerMinMax(EPrimitive.u64);
+        if (literalExpr.literal.value <= u64Max) {
+          return this.sr.b.literalValue(
+            {
+              type: EPrimitive.u64,
+              unit: null,
+              value: literalExpr.literal.value,
+            },
+            literalExpr.sourceloc
+          );
+        }
+      }
       if (literalExpr.literal.value < min || literalExpr.literal.value > max) {
         throw new CompilerError(
           `Value ${literalExpr.literal.value} is out of range for literal type ${primitiveToString(
@@ -18409,6 +18442,29 @@ export class SemanticElaborator {
             const resultWrites = Semantic.WriteResult.empty();
             const resultFlow = Semantic.FlowResult.fallthrough();
             const allScopes: Semantic.StatementId[] = [];
+            // The map belongs to the body's collected scope, which every
+            // instantiation of the enclosing function shares: a call in the
+            // body can elaborate another instantiation and so this same loop,
+            // nested. Each iteration puts back what was bound before it, so
+            // the nested loop leaves the outer iteration's variables intact.
+            const outerLoopValue = syntheticMap.get(s.loopVariable);
+            const outerLoopIndex = s.indexVariable
+              ? syntheticMap.get(s.indexVariable)
+              : undefined;
+            const restoreBindings = () => {
+              if (outerLoopValue === undefined) {
+                syntheticMap.delete(s.loopVariable);
+              } else {
+                syntheticMap.set(s.loopVariable, outerLoopValue);
+              }
+              if (s.indexVariable) {
+                if (outerLoopIndex === undefined) {
+                  syntheticMap.delete(s.indexVariable);
+                } else {
+                  syntheticMap.set(s.indexVariable, outerLoopIndex);
+                }
+              }
+            };
 
             for (let i = 0; i < comptimeList.items.length; i++) {
               const loopValueSymbol =
@@ -18440,10 +18496,7 @@ export class SemanticElaborator {
               resultFlow.addAll(flow);
               resultWrites.addAll(writes);
 
-              if (s.indexVariable) {
-                syntheticMap.delete(s.indexVariable);
-              }
-              syntheticMap.delete(s.loopVariable);
+              restoreBindings();
 
               allScopes.push(
                 this.sr.b.exprStatement(
@@ -18534,6 +18587,12 @@ export class SemanticElaborator {
           const resultWrites = Semantic.WriteResult.empty();
           const resultFlow = Semantic.FlowResult.fallthrough();
           const allScopes: Semantic.StatementId[] = [];
+          // As for the list above: put back what an outer elaboration of this
+          // same loop had bound, rather than deleting it.
+          const outerLoopValue = syntheticMap.get(s.loopVariable);
+          const outerLoopIndex = s.indexVariable
+            ? syntheticMap.get(s.indexVariable)
+            : undefined;
           for (let i = 0; i < comptimeExpr.parameters.length; i++) {
             const semanticParamId = comptimeExpr.parameters[i];
             const paramValue = this.sr.symbolNodes.get(semanticParamId);
@@ -18575,9 +18634,17 @@ export class SemanticElaborator {
             resultFlow.addAll(flow);
             resultWrites.addAll(writes);
             if (s.indexVariable) {
-              syntheticMap.delete(s.indexVariable);
+              if (outerLoopIndex === undefined) {
+                syntheticMap.delete(s.indexVariable);
+              } else {
+                syntheticMap.set(s.indexVariable, outerLoopIndex);
+              }
             }
-            syntheticMap.delete(s.loopVariable);
+            if (outerLoopValue === undefined) {
+              syntheticMap.delete(s.loopVariable);
+            } else {
+              syntheticMap.set(s.loopVariable, outerLoopValue);
+            }
 
             allScopes.push(
               this.sr.b.exprStatement(

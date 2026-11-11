@@ -1,0 +1,66 @@
+// ============================================================================
+// REGRESSION TEST -- this is a real, load-bearing test, not a placeholder.
+//
+// Bug: the literal -0.0 lost its sign. The minus is folded into the literal,
+// whose value (JavaScript's -0) the C generator printed with toString(),
+// which gives "0": the program got +0.0. A file format writing -0.0 back
+// wrote +0.0 (found writing exact f64 bits in stdlib/core/tests/
+// binary-tests.hz).
+//
+// The same printing appended ".0" to toString()'s exponent form, so a
+// literal of 1e21 or more, or below 1e-6, became invalid C ("1e+21.0").
+//
+// Fix: stringifyWithDecimal (src/Codegen/CodeGenerator.ts) prints -0 as
+// "-0.0" and leaves an exponent form as it is.
+// ============================================================================
+
+namespace cases_negative_zero_literal {
+
+    export fn register(s: mut testsuite.Suite) {
+
+        s.run(
+            "-0.0 keeps its sign, as real, f64 and f32",
+            """
+fn signOf(x: f64): bool {
+    let negative = false;
+    __c__("negative = signbit(x) != 0;");
+    return negative;
+}
+
+fn main(): int {
+    let r = -0.0;
+    let d: f64 = -0.0;
+    let f: f32 = -0.0;
+    let negativeReal = false;
+    __c__("negativeReal = signbit(r) != 0;");
+    let negativeF32 = false;
+    __c__("negativeF32 = signbit(f) != 0;");
+    fmt.println(negativeReal);
+    fmt.println(signOf(d));
+    fmt.println(negativeF32);
+    fmt.println(signOf(0.0));
+    fmt.println(signOf(-1.5));
+    fmt.println(r == 0.0);
+    let big = 1000000000000000000000.0;
+    let tiny = 0.0000001;
+    let tinyF32: f32 = 0.0000001;
+    fmt.println(big > 100000000000000000000.0 && big < 10000000000000000000000.0);
+    fmt.println(tiny < 0.000001 && tiny > 0.00000001);
+    let zeroF32: f32 = 0.0;
+    fmt.println(tinyF32 > zeroF32);
+    return 0;
+}
+""",
+            """
+true
+true
+true
+false
+true
+true
+true
+true
+true
+""");
+    }
+}

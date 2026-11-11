@@ -770,9 +770,13 @@ size_t hzstd_format_real(double value, char *buffer)
 {
   char *out = buffer;
   if (value == 0.0) {
+    // -0 reads back as -0 only with its sign.
+    if (signbit(value)) {
+      *out++ = '-';
+    }
     *out++ = '0';
     *out = '\0';
-    return 1;
+    return (size_t)(out - buffer);
   }
   if (value < 0.0) {
     *out++ = '-';

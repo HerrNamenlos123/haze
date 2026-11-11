@@ -1,0 +1,58 @@
+// Opens every .hznote under a folder the way Haze Notes does (DocumentLoad:
+// read, decode, put stray shapes on their pages) and says how long each
+// took: every note must open, and none may take long enough to be felt.
+//
+// Run: RELEASE=1 haze-notes/tests/run-test.sh haze-notes/tests/note-load-bench.hz hznote.hz documents.hz tiles.hz persistence.hz -- <folder>
+
+fn notesUnder(folder: str, out: []str): void :: final {
+    let listed = fs.listDir(folder);
+    if !listed {
+        return;
+    }
+    let entries: []fs.DirEntry = listed;
+    for entry in entries {
+        if entry.isDirectory {
+            notesUnder(f"{folder}/{entry.name}", out);
+        } else if entry.name.endsWith(".hznote") {
+            out.push(f"{folder}/{entry.name}");
+        }
+    }
+}
+
+fn main(): int {
+    let args = sys.args();
+    if args.length != 2 {
+        fmt.println("usage: note-load-bench <folder>");
+        return 2;
+    }
+    let notes: []str = [];
+    notesUnder(args[1], notes);
+    let failed = 0;
+    let total = 0.0;
+    let slowest = 0.0;
+    let slowestNote = "";
+    let shapes = 0;
+    for note in notes {
+        let started = time.now();
+        let load = DocumentLoad(note);
+        load.step(0.0);
+        let took = time.now() - started;
+        total = total + took;
+        if took > slowest {
+            slowest = took;
+            slowestNote = note;
+        }
+        if let doc = load.doc {
+            for page in doc.data.pages {
+                shapes = shapes + page.shapes.length;
+            }
+        } else {
+            failed = failed + 1;
+            fmt.println(f"FAILED {note}: {load.hint}");
+        }
+    }
+    let ms = (slowest * 1000.0) as int;
+    let totalMs = (total * 1000.0) as int;
+    fmt.println(f"{notes.length} notes, {failed} failed, {shapes} shapes; all in {totalMs} ms, slowest {ms} ms: {slowestNote}");
+    return failed > 0 ? 1 : 0;
+}

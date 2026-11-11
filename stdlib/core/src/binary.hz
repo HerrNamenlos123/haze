@@ -1,0 +1,329 @@
+// Reading binary data, the counterpart of ByteBuffer's binary writes
+// (pushU32, pushF64, push(RawMemory), ...): building blocks for binary file
+// formats, which are made out of these and of traverse, not kept here.
+
+// Memory a plain value, or the elements of a plain array, occupy: what
+// ByteBuffer.push(RawMemory) copies out of and BinaryReader.readInto copies
+// into, in one go whatever the size. It points at memory it does not own and
+// keeps nothing alive, so it is valid only while what it was taken from stays
+// where it is and keeps its size. traverse hands one to a format for the
+// duration of one call, never longer.
+export struct RawMemory {
+    _data: cptr = none;
+    length: int = 0;
+}
+
+// Reads numbers, bytes and text front to back out of memory it does not own:
+// Bytes (kept alive by the reader, as GC memory or the program's own) or raw
+// memory the caller provides and keeps alive and unchanged while it reads.
+// Nothing about reading allocates; only readBytes and readStr do, for the copy
+// they return.
+//
+// Numbers are read in little-endian byte order, as ByteBuffer writes them
+// (HZSTD_ASSERT_LITTLE_ENDIAN: no Haze build targets anything else).
+//
+// A read that does not fit in what is left reads nothing: it returns zero (or
+// nothing), moves to the end, and the reader remembers where that first
+// happened (overran(), overrunAt()). Every later read then fits nothing
+// either, so a parser can read a whole record and check once at its end that
+// all of it was there. Damaged or cut-off input is never a panic; reading
+// outside the memory is impossible.
+export struct BinaryReader {
+    _data: cptr = none;        // the first byte
+    _length: int = 0;
+    _position: int = 0;
+    // Keeps the memory alive when it is Bytes; empty over raw memory.
+    _source: Bytes;
+    // Over Bytes: views of it are Bytes too (see readView). Raw memory the
+    // reader does not own cannot be handed out as Bytes, which never change.
+    _viewable: bool = false;
+    _overrunAt: int = -1;
+
+    fn constructor(source: Bytes): BinaryReader {
+        let memory = source;
+        if let single = source.singleByte {
+            // A single byte is held inline, with no memory to point into:
+            // given a block of its own.
+            let block = ByteBuffer(1);
+            block.push(single);
+            block.commit();
+            memory = block.bytes();
+        }
+        let data = none as cptr;
+        if memory.length > 0 {
+            __c__("data = (hzstd_u8_t*)memory.basePtr + memory.offset;");
+        }
+        return BinaryReader { _data: data, _length: memory.length, _source: memory, _viewable: true };
+    }
+
+    // Over memory the caller owns -- a buffer it allocated, memory of another
+    // library, a block that lives for one scope: it must stay alive and
+    // unchanged for as long as this reader, and every reader sub() made from
+    // it, is used. What readBytes and readStr return are copies and outlive
+    // it.
+    static fn overMemory(memory: RawMemory): BinaryReader {
+        if memory.length < 0 {
+            sys.panic("BinaryReader: negative length");
+        }
+        return BinaryReader { _data: memory._data, _length: memory.length, _source: Bytes() };
+    }
+
+    fn position(): int {
+        return this._position;
+    }
+
+    fn length(): int {
+        return this._length;
+    }
+
+    fn remaining(): int {
+        return this._length - this._position;
+    }
+
+    fn atEnd(): bool {
+        return this._position >= this._length;
+    }
+
+    // Whether a read ran past the end.
+    fn overran(): bool {
+        return this._overrunAt >= 0;
+    }
+
+    // Where the first read that ran past the end started, or -1.
+    fn overrunAt(): int {
+        return this._overrunAt;
+    }
+
+    // Moves to `position`, which must lie in [0, length()]; outside it counts
+    // as running past the end.
+    mut fn seek(position: int) {
+        if position < 0 || position > this._length {
+            this._overrun();
+            return;
+        }
+        this._position = position;
+    }
+
+    mut fn skip(count: int) {
+        if !this._fits(count) {
+            this._overrun();
+            return;
+        }
+        this._position += count;
+    }
+
+    mut fn readU8(): u8 {
+        let v: u8 = 0;
+        if this._fits(1) {
+            __c__("v = ((const hzstd_u8_t*)this->_data)[this->_position];");
+            this._position += 1;
+        } else {
+            this._overrun();
+        }
+        return v;
+    }
+
+    mut fn readU16(): u16 {
+        let v: u16 = 0;
+        if this._fits(2) {
+            __c__("HZSTD_ASSERT_LITTLE_ENDIAN(); memcpy(&v, (const hzstd_u8_t*)this->_data + this->_position, 2);");
+            this._position += 2;
+        } else {
+            this._overrun();
+        }
+        return v;
+    }
+
+    mut fn readU32(): u32 {
+        let v: u32 = 0;
+        if this._fits(4) {
+            __c__("HZSTD_ASSERT_LITTLE_ENDIAN(); memcpy(&v, (const hzstd_u8_t*)this->_data + this->_position, 4);");
+            this._position += 4;
+        } else {
+            this._overrun();
+        }
+        return v;
+    }
+
+    mut fn readU64(): u64 {
+        let v: u64 = 0;
+        if this._fits(8) {
+            __c__("HZSTD_ASSERT_LITTLE_ENDIAN(); memcpy(&v, (const hzstd_u8_t*)this->_data + this->_position, 8);");
+            this._position += 8;
+        } else {
+            this._overrun();
+        }
+        return v;
+    }
+
+    mut fn readI8(): i8 {
+        let v: i8 = 0;
+        if this._fits(1) {
+            __c__("memcpy(&v, (const hzstd_u8_t*)this->_data + this->_position, 1);");
+            this._position += 1;
+        } else {
+            this._overrun();
+        }
+        return v;
+    }
+
+    mut fn readI16(): i16 {
+        let v: i16 = 0;
+        if this._fits(2) {
+            __c__("HZSTD_ASSERT_LITTLE_ENDIAN(); memcpy(&v, (const hzstd_u8_t*)this->_data + this->_position, 2);");
+            this._position += 2;
+        } else {
+            this._overrun();
+        }
+        return v;
+    }
+
+    mut fn readI32(): i32 {
+        let v: i32 = 0;
+        if this._fits(4) {
+            __c__("HZSTD_ASSERT_LITTLE_ENDIAN(); memcpy(&v, (const hzstd_u8_t*)this->_data + this->_position, 4);");
+            this._position += 4;
+        } else {
+            this._overrun();
+        }
+        return v;
+    }
+
+    mut fn readI64(): i64 {
+        let v: i64 = 0;
+        if this._fits(8) {
+            __c__("HZSTD_ASSERT_LITTLE_ENDIAN(); memcpy(&v, (const hzstd_u8_t*)this->_data + this->_position, 8);");
+            this._position += 8;
+        } else {
+            this._overrun();
+        }
+        return v;
+    }
+
+    // The exact bits written: -0, NaN payloads and infinities included.
+    mut fn readF32(): f32 {
+        let v: f32 = 0.0;
+        if this._fits(4) {
+            __c__("HZSTD_ASSERT_LITTLE_ENDIAN(); memcpy(&v, (const hzstd_u8_t*)this->_data + this->_position, 4);");
+            this._position += 4;
+        } else {
+            this._overrun();
+        }
+        return v;
+    }
+
+    mut fn readF64(): f64 {
+        let v: f64 = 0.0;
+        if this._fits(8) {
+            __c__("HZSTD_ASSERT_LITTLE_ENDIAN(); memcpy(&v, (const hzstd_u8_t*)this->_data + this->_position, 8);");
+            this._position += 8;
+        } else {
+            this._overrun();
+        }
+        return v;
+    }
+
+    // The next `count` bytes, copied: they outlive the reader and the memory
+    // it reads.
+    mut fn readBytes(count: int): Bytes {
+        let result = Bytes();
+        if !this._fits(count) {
+            this._overrun();
+            return result;
+        }
+        if count > 0 {
+            __c__("""
+                void* copy = hzstd_heap_allocate_atomic((size_t)count, "Bytes");
+                memcpy(copy, (const hzstd_u8_t*)this->_data + this->_position, (size_t)count);
+                result.basePtr = copy;
+                result.offset = 0;
+                result.length = count;
+            """);
+        }
+        this._position += count;
+        return result;
+    }
+
+    // The next `count` bytes as text, copied. Not checked to be UTF-8, as no
+    // str in Haze is yet.
+    mut fn readStr(count: int): str {
+        let result = "";
+        if !this._fits(count) {
+            this._overrun();
+            return result;
+        }
+        if count > 0 {
+            __c__("""
+                char* copy = (char*)hzstd_heap_allocate_atomic((size_t)count, "str");
+                memcpy(copy, (const hzstd_u8_t*)this->_data + this->_position, (size_t)count);
+                result = HZSTD_STRING(copy, count);
+            """);
+        }
+        this._position += count;
+        return result;
+    }
+
+    // The next `count` bytes without a copy: a slice of the Bytes this reader
+    // reads, which keeps all of them alive as long as it lives. Only a reader
+    // over Bytes has one to give; over raw memory this panics -- use
+    // readBytes.
+    mut fn readView(count: int): Bytes {
+        if !this._viewable {
+            sys.panic("BinaryReader: readView() needs a reader over Bytes; over raw memory use readBytes()");
+        }
+        if !this._fits(count) {
+            this._overrun();
+            return Bytes();
+        }
+        let start = this._position;
+        this._position += count;
+        return this._source.slice(start, start + count);
+    }
+
+    // Copies the next `memory.length` bytes into `memory` (a plain value's or
+    // a plain array's, see RawMemory). Nothing is written when they do not
+    // fit.
+    mut fn readInto(memory: RawMemory) {
+        let n = memory.length;
+        if !this._fits(n) {
+            this._overrun();
+            return;
+        }
+        let target = memory._data;
+        if n > 0 {
+            // Into a plain value's memory, as written: little-endian.
+            __c__("HZSTD_ASSERT_LITTLE_ENDIAN(); memcpy(target, (const hzstd_u8_t*)this->_data + this->_position, (size_t)n);");
+        }
+        this._position += n;
+    }
+
+    // The next `count` bytes as a reader of their own, starting at its
+    // position 0, which this one moves past: a length-prefixed block parsed
+    // on its own, or handed to someone else to parse. It reads the same
+    // memory and keeps it alive the same way.
+    mut fn sub(count: int): BinaryReader {
+        if !this._fits(count) {
+            this._overrun();
+            return BinaryReader { _source: this._source, _viewable: this._viewable, _overrunAt: 0 };
+        }
+        let start = this._position;
+        this._position += count;
+        let data = none as cptr;
+        __c__("data = (hzstd_u8_t*)this->_data + start;");
+        if this._viewable {
+            return BinaryReader { _data: data, _length: count, _source: this._source.slice(start, start + count), _viewable: true };
+        }
+        return BinaryReader { _data: data, _length: count, _source: Bytes() };
+    }
+
+    fn _fits(count: int): bool {
+        return count >= 0 && count <= this._length - this._position;
+    }
+
+    mut fn _overrun() {
+        if this._overrunAt < 0 {
+            this._overrunAt = this._position;
+        }
+        this._position = this._length;
+    }
+}

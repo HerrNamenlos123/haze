@@ -52,56 +52,13 @@ struct Point {
     pressure: real;
 }
 
-// A stroke's outline polygon, in page mm. The file keeps it as [[x, y], ...];
-// in memory it is one flat array. As a little array per point, the outlines
-// were most of the objects in a loaded document -- hundreds of thousands in a
-// large one -- and the garbage collector walks every one of them on every
-// collection, so the pauses grew with the document.
-[[json.serialize="toJson", json.parse="fromJson"]]
+// A stroke's outline polygon, in page mm, as one flat array. As a little
+// array per point, the outlines were most of the objects in a loaded
+// document -- hundreds of thousands in a large one -- and the garbage
+// collector walks every one of them on every collection, so the pauses grew
+// with the document.
 ref struct Outline {
   points: []Vec2 = [];
-
-  fn toJson(): json.Node {
-    let node = json.array();
-    for p in this.points {
-      let pair = node.newArray();
-      pair.appendNumber(p.x);
-      pair.appendNumber(p.y);
-      node.append(pair);
-    }
-    return node;
-  }
-
-  static fn fromJson(node: json.Node): Result<Outline, json.Error> {
-    if !node.isArray() {
-      return json.Error { error: () => "outline: expected an array" };
-    }
-    let points: []Vec2 = [];
-    let count = node.arrayLength();
-    if count <= 1000000000 {
-      points.reserve(count as int);
-    }
-    let pair = node.firstElement();
-    while let current = pair {
-      if !current.isArray() {
-        return json.Error { error: () => "outline: expected [x, y]" };
-      }
-      let x = current.firstElement();
-      if !x {
-        return json.Error { error: () => "outline: expected [x, y]" };
-      }
-      let y = x.next();
-      if !y {
-        return json.Error { error: () => "outline: expected [x, y]" };
-      }
-      if !x.isNumber() || !y.isNumber() {
-        return json.Error { error: () => "outline: expected [x, y]" };
-      }
-      points.push(Vec2(x.numberValue(), y.numberValue()));
-      pair = current.next();
-    }
-    return Outline { points: points };
-  }
 }
 
 ref struct LineShape {
@@ -109,9 +66,11 @@ ref struct LineShape {
   points: []Point;
   penColor: str;
   penThickness: real;
-  // Cached outline + bbox for this stroke, so reopening the file doesn't have to redo the
-  // perfect-freehand computation. Optional for backward compatibility with older files.
+  // The stroke's outline and its bounds, computed from the points when first
+  // asked for (see getOutline, getBBox): never stored.
+  [[hznote.skip]]
   bbox?: BBox;
+  [[hznote.skip]]
   cachedOutline?: Outline;
 
   // Internal, non-serialized data: the stroke tessellated at the tile pyramid
@@ -120,12 +79,12 @@ ref struct LineShape {
   // fine when zoomed out or visibly faceted when zoomed in. Only the
   // maxTesselatedLevels most recent levels are kept, so zooming through the
   // whole range does not leave every stroke holding a mesh per level.
-  [[json.ignore]]
+  [[hznote.skip]]
   tesselations: []LevelTesselation = [];
   // Left out of the page's tiles while the editor draws it itself -- as it
   // is being moved or resized, or has been erased and not yet removed. See
   // DocumentRenderer.render and EditorControls.
-  [[json.ignore]]
+  [[hznote.skip]]
   hidden: bool = false;
 
   // The stroke's outline polygon in page mm: what the eraser hit-tests
@@ -223,17 +182,17 @@ ref struct ImageShape {
   variant: "Image";
   position: Vec2;
   size: Vec2;
-  base64ImageData: str;
+  // The picture's PNG file, byte for byte as it was pasted: what a copy
+  // puts back on the clipboard.
+  png: Bytes;
+  [[hznote.skip]]
   bbox?: BBox;
   // See LineShape.hidden.
-  [[json.ignore]]
+  [[hznote.skip]]
   hidden: bool = false;
   // The decoded GPU texture is cached outside the document model entirely
-  // (DocumentRenderer.imageTextures, keyed by base64ImageData) rather than
-  // as a field here: this ref struct participates in json.parse/json.stringify
-  // for the whole document, and a field whose type reaches into opaque
-  // wgpu FFI handles breaks that generic codegen (sizeof on an
-  // intentionally-incomplete C struct) even when marked [[json.ignore]].
+  // (DocumentRenderer.imageTextures, keyed by the PNG's bytes): nothing of
+  // the GPU belongs in what is saved.
 
   fn getBBox(): BBox {
     if this.bbox {
@@ -259,9 +218,10 @@ ref struct TextblockShape {
   position: Vec2;
   size: Vec2;
   rawText: str;
+  [[hznote.skip]]
   bbox?: BBox;
   // See LineShape.hidden.
-  [[json.ignore]]
+  [[hznote.skip]]
   hidden: bool = false;
   // Image/Canvas/Texture element reference
 
@@ -284,20 +244,7 @@ ref struct TextblockShape {
   }
 };
 
-[[json.discriminator="variant"]]
 type Shape = LineShape | ImageShape | TextblockShape;
-
-// Drops a stroke's stored outline and bbox, for a shape coming in from a file
-// or the clipboard: an outline is only ever used as computed here, from the
-// points. The web app's stored outlines are exactly what that computes
-// anyway; but haze-notes builds before the outline matched the web app's
-// stored their own, a little thicker, and those must not be shown, exported
-// or saved again.
-fn forgetStoredOutline(shape: Shape) {
-    if shape is LineShape {
-        shape.clearShapeCache();
-    }
-}
 
 // Identity, not contents: `==` on ref structs compares them member by member,
 // and two strokes drawn alike are still two strokes.
@@ -410,17 +357,10 @@ fn cloneShape(shape: Shape): Shape {
         return LineShape { variant: "Line", points: points, penColor: shape.penColor, penThickness: shape.penThickness };
     }
     if shape is ImageShape {
-        return ImageShape { variant: "Image", position: shape.position, size: shape.size, base64ImageData: shape.base64ImageData };
+        return ImageShape { variant: "Image", position: shape.position, size: shape.size, png: shape.png };
     }
     assert(shape is TextblockShape);
     return TextblockShape { variant: "Textblock", position: shape.position, size: shape.size, rawText: shape.rawText };
-}
-
-// What Ctrl+C puts on the clipboard, in the same format the web app used,
-// so shapes copy between the two.
-struct ShapesInClipboard {
-    type: str;
-    shapes: []Shape;
 }
 
 // Pages, the body and the file are references: the editor edits the one
@@ -440,7 +380,10 @@ ref struct DocumentBody {
     pageColor: str;
     gridColor: str;
     gridType: "lines" | "dots";
-    pages: []Page;
+    // Each page is a chunk of its own in the file (see hznote.hz), not a
+    // part of the settings.
+    [[hznote.skip="each page is a chunk of its own"]]
+    pages: []Page = [];
     pageWidthMm: real;
     pageHeightMm: real;
     currentPageIndex: int;
@@ -448,8 +391,6 @@ ref struct DocumentBody {
 }
 
 ref struct DocumentFile {
-    filetype: str;
-    fileversion: int;
     data: DocumentBody;
 }
 
@@ -678,4 +619,82 @@ fn tesselateStroke(args: StrokeTesselateArgs): TesselationResult {
     }
     tess.destroy();
     return {};
+}
+
+// ── Comparing documents ─────────────────────────────────────────────────
+
+// Where `a` and `b` first differ in what a note stores ("pages[2].shapes[7]
+// .points[3].x"), or "" when they are the same: every number by its exact
+// bits (-0 and NaN payloads too), strings and images byte for byte. Caches
+// and runtime state are not looked at. What the one-time conversion from
+// .tsk proves each note by, and what the format's tests check.
+fn documentDifference(a: DocumentFile, b: DocumentFile): str {
+    let x = a.data;
+    let y = b.data;
+    if x.pageColor != y.pageColor { return "pageColor"; }
+    if x.gridColor != y.gridColor { return "gridColor"; }
+    if (x.gridType is "lines") != (y.gridType is "lines") { return "gridType"; }
+    if !sameBits(x.pageWidthMm, y.pageWidthMm) { return "pageWidthMm"; }
+    if !sameBits(x.pageHeightMm, y.pageHeightMm) { return "pageHeightMm"; }
+    if x.currentPageIndex != y.currentPageIndex { return "currentPageIndex"; }
+    let vx = x.viewport;
+    let vy = y.viewport;
+    if vx is Viewport {
+        if !(vy is Viewport) { return "viewport"; }
+        if !sameBits(vx.offsetX, vy.offsetX) { return "viewport.offsetX"; }
+        if !sameBits(vx.offsetY, vy.offsetY) { return "viewport.offsetY"; }
+        if !sameBits(vx.zoomPxPerMm, vy.zoomPxPerMm) { return "viewport.zoomPxPerMm"; }
+    } else if vy is Viewport {
+        return "viewport";
+    }
+    if x.pages.length != y.pages.length { return "pages"; }
+    for (let p = 0; p < x.pages.length; p++) {
+        let sa = x.pages[p].shapes;
+        let sb = y.pages[p].shapes;
+        if sa.length != sb.length { return f"pages[{p}].shapes"; }
+        for (let i = 0; i < sa.length; i++) {
+            let difference = shapeDifference(sa[i], sb[i]);
+            if difference.length > 0 {
+                return f"pages[{p}].shapes[{i}]{difference}";
+            }
+        }
+    }
+    return "";
+}
+
+fn sameBits(a: real, b: real): bool {
+    let same = false;
+    __c__("same = memcmp(&a, &b, sizeof(a)) == 0;");
+    return same;
+}
+
+// As documentDifference, for one shape: "" or where, starting with ".".
+fn shapeDifference(a: Shape, b: Shape): str {
+    if a is LineShape {
+        if !(b is LineShape) { return ".variant"; }
+        if a.penColor != b.penColor { return ".penColor"; }
+        if !sameBits(a.penThickness, b.penThickness) { return ".penThickness"; }
+        if a.points.length != b.points.length { return ".points"; }
+        for (let i = 0; i < a.points.length; i++) {
+            if !sameBits(a.points[i].x, b.points[i].x) { return f".points[{i}].x"; }
+            if !sameBits(a.points[i].y, b.points[i].y) { return f".points[{i}].y"; }
+            if !sameBits(a.points[i].pressure, b.points[i].pressure) { return f".points[{i}].pressure"; }
+        }
+        return "";
+    }
+    if a is ImageShape {
+        if !(b is ImageShape) { return ".variant"; }
+        if !sameBits(a.position.x, b.position.x) || !sameBits(a.position.y, b.position.y) { return ".position"; }
+        if !sameBits(a.size.x, b.size.x) || !sameBits(a.size.y, b.size.y) { return ".size"; }
+        if a.png != b.png { return ".png"; }
+        return "";
+    }
+    if a is TextblockShape {
+        if !(b is TextblockShape) { return ".variant"; }
+        if !sameBits(a.position.x, b.position.x) || !sameBits(a.position.y, b.position.y) { return ".position"; }
+        if !sameBits(a.size.x, b.size.x) || !sameBits(a.size.y, b.size.y) { return ".size"; }
+        if a.rawText != b.rawText { return ".rawText"; }
+        return "";
+    }
+    return ".variant";
 }

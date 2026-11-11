@@ -1,0 +1,37 @@
+// ============================================================================
+// REGRESSION TEST -- this is a real, load-bearing test, not a placeholder.
+//
+// Bug: comparing two values of one string literal type -- a discriminator
+// field `variant: "Line"` of two shapes, `a.variant == b.variant` -- was
+// accepted, then lowered to C's == on two string structs: invalid C. Lower.ts
+// sent only operands of type str to hzstd_strings_equal; a string literal
+// type is a str too. Hit comparing decoded shapes in
+// stdlib/core/tests/traverse-tests.hz.
+//
+// Fix: the BinaryExpr lowering (src/Lower/Lower.ts) treats a string literal
+// type as str.
+// ============================================================================
+
+namespace cases_literal_string_compare {
+
+    export fn register(s: mut testsuite.Suite) {
+
+        s.run(
+            "two values of one string literal type compare as strings",
+            """
+ref struct Line { variant: "Line"; width: int; }
+
+fn main(): int {
+    let a = Line { variant: "Line", width: 1 };
+    let b = Line { variant: "Line", width: 2 };
+    fmt.println(a.variant == b.variant);
+    fmt.println(a.variant != b.variant);
+    return 0;
+}
+""",
+            """
+true
+false
+""");
+    }
+}

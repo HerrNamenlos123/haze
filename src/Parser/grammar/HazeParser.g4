@@ -72,7 +72,7 @@ cInjectDirective: (export=EXPORT)? INLINEC LB expr RB SEMI?;
 
 externLanguage: id;
 
-functionDefinition: (export=EXPORT)? (extern=EXTERN externLang=externLanguage? pub=PUB? noemit=NOEMIT?)? FN comptime=COMPTIME? id (LANGLE id (COMMA id)* RANGLE)? LB params RB (COLON typeExpr)? requiresBlock? (DOUBLEARROW)? (funcbody | SEMI?);
+functionDefinition: (export=EXPORT)? (extern=EXTERN externLang=externLanguage? pub=PUB? noemit=NOEMIT?)? FN comptime=COMPTIME? fnName=memberNameId (LANGLE id (COMMA id)* RANGLE)? LB params RB (COLON typeExpr)? requiresBlock? (DOUBLEARROW)? (funcbody | SEMI?);
 lambda: LB lambdaParams RB (COLON typeExpr)? requiresBlock? (DOUBLEARROW | SINGLEARROW) funcbody;
 param: id QUESTIONMARK? COLON (typeExpr | ellipsis) (EQUALS expr)?;
 params: (param (COMMA param)* (COMMA ellipsis)? COMMA?)? | ellipsis;
@@ -155,8 +155,8 @@ memberSeparator
     ;
 
 anonStructMember
-    : name=id QUESTIONMARK? COLON typeExpr (EQUALS expr)?
-    | name=id EQUALS expr
+    : name=memberNameId QUESTIONMARK? COLON typeExpr (EQUALS expr)?
+    | name=memberNameId EQUALS expr
     ;
 
 typeArgList
@@ -188,11 +188,13 @@ typeExprModified
     // integer during elaboration, once any generics it references are bound.
     | LBRACKET n=expr RBRACKET typeExprModified
     | LBRACKET RBRACKET typeExprModified
-    | LB params RB (DOUBLEARROW | SINGLEARROW) typeExprModified requiresBlock?
+    // The return type takes a union, as in TypeScript: `() => A | B` returns
+    // `A | B`; a union with a function in it wraps it, `(() => A) | B`.
+    | LB params RB (DOUBLEARROW | SINGLEARROW) typeExpr requiresBlock?
     // `extern C (params) -> R`: a function type without a context, the only
     // kind C can call. Only `C` and only `->` are valid; the language and the
     // arrow are left open here so the AST builder can name the mistake.
-    | EXTERN externLang=externLanguage? LB params RB (DOUBLEARROW | SINGLEARROW) typeExprModified requiresBlock?
+    | EXTERN externLang=externLanguage? LB params RB (DOUBLEARROW | SINGLEARROW) typeExpr requiresBlock?
     | typeExprSimple
     ;
 
@@ -202,7 +204,7 @@ typeExprUnion
 
 typeExpr
     : typeExprUnion
-    | NODISCARD? UNION LCURLY (id COLON typeExprUnion COMMA)+ (id COLON typeExprUnion COMMA?) RCURLY
+    | NODISCARD? UNION LCURLY (memberNameId COLON typeExprUnion COMMA)+ (memberNameId COLON typeExprUnion COMMA?) RCURLY
     ;
 
 genericLiteral
@@ -217,7 +219,7 @@ structContent
     : structContentWithSourceloc                                                                            #StructContentWithSourcelocAlt
     | metaAnnotation? variableMutabilitySpecifier? (id | TYPE) QUESTIONMARK? COLON typeExpr (EQUALS expr)? memberSeparator?          #StructMember
     | metaAnnotation? variableMutabilitySpecifier? (id | TYPE) EQUALS expr memberSeparator?                                          #StructMemberInferred
-    | static=STATIC? methodModifier* FN comptime=COMPTIME? name=(RAW_ID | OPERATORASSIGN | OPERATORREBIND | OPERATORPLUS | OPERATORMINUS | OPERATORMUL | OPERATORDIV | OPERATORMOD | OPERATORSUBSCRIPT | OPERATORAS | OPERATOREQ | OPERATORNEQ | OPERATORLT | OPERATORGT | OPERATORLTE | OPERATORGTE) (LANGLE generic+=id (COMMA generic+=id)* RANGLE)? LB params RB (COLON typeExpr)? requiresBlock? (funcbody | SEMI?)    #StructMethod
+    | static=STATIC? methodModifier* FN comptime=COMPTIME? name=(RAW_ID | TYPE | OPERATORASSIGN | OPERATORREBIND | OPERATORPLUS | OPERATORMINUS | OPERATORMUL | OPERATORDIV | OPERATORMOD | OPERATORSUBSCRIPT | OPERATORAS | OPERATOREQ | OPERATORNEQ | OPERATORLT | OPERATORGT | OPERATORLTE | OPERATORGTE) (LANGLE generic+=id (COMMA generic+=id)* RANGLE)? LB params RB (COLON typeExpr)? requiresBlock? (funcbody | SEMI?)    #StructMethod
     | structDefinition                                                                                      #NestedStructDefinition
     | enumDefinition                                                                                      #NestedStructDefinition
     ;

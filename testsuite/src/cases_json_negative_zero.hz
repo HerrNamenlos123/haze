@@ -1,0 +1,53 @@
+// ============================================================================
+// REGRESSION TEST -- this is a real, load-bearing test, not a placeholder.
+//
+// Bug: json.stringify wrote -0.0 as 0, so a number read back from JSON had
+// lost its sign. cJSON's print_number prints every value equal to its integer
+// part with %d, and -0.0 == 0. (Reading "-0" kept the sign; only writing lost
+// it.) Found by the .tsk -> .hznote conversion's proof
+// (haze-notes/src/migrate.hz), which compares the re-exported JSON with the
+// original bit for bit.
+//
+// Fix: print_number (stdlib/core/src/hzstd/src/json/cJSON.c) sends -0 to the
+// real formatter, and hzstd_format_real (hzstd_dtoa.c) writes its sign:
+// "the shortest number that reads back as the same double", as it promises.
+// ============================================================================
+
+namespace cases_json_negative_zero {
+
+    export fn register(s: mut testsuite.Suite) {
+
+        s.run(
+            "json: -0.0 is written with its sign and reads back as -0.0",
+            """
+struct P { x: real; y: real; }
+
+fn negative(x: real): bool {
+    let n = false;
+    __c__("n = signbit(x) != 0;");
+    return n;
+}
+
+fn main(): int {
+    let text = json.stringify(P { x: -0.0, y: 0.0 });
+    fmt.println(text);
+    let back = json.parse<P>(text);
+    if back {
+        fmt.println(negative(back.x));
+        fmt.println(negative(back.y));
+    }
+    let node = json.parseToJsonNode("[-0,0,-0.0,-1]");
+    if node {
+        fmt.println(node.print({ pretty: false }));
+    }
+    return 0;
+}
+""",
+            """
+{"x":-0,"y":0}
+true
+false
+[-0,0,-0,-1]
+""");
+    }
+}

@@ -100,6 +100,12 @@ fn toUIKeyEdges(a: app.App, out: mut []ui_components.KeyEdge): []ui_components.K
 }
 
 fn main(): int {
+    // The one-time conversion of a vault from .tsk (migrate.hz), without a
+    // window.
+    let args = sys.args();
+    if args.length >= 2 && args[1] == "migrate-tsk" {
+        return migrateCommand(args);
+    }
     attempt {
         // The window is borderless and the UI draws the titlebar (see
         // TitleBar.hzui): where it is gets published to the window manager

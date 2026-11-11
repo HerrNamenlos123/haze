@@ -258,6 +258,36 @@ namespace json {
             return ffi.hzstd_json_is_object(this.data);
         }
 
+        // Strings, bools and null the same way, so that every kind of node
+        // can be told apart and read: what walking any JSON tree needs (a
+        // comparison of two documents, say).
+        fn isString(): bool {
+            return ffi.hzstd_json_is_string(this.data);
+        }
+
+        fn stringValue(): str {
+            let value = ffi.hzstd_json_get_string_value(this.allocator, this.data);
+            if !value.found {
+                sys.panic("stringValue() called on a JSON node that is not a string");
+            }
+            return value.value;
+        }
+
+        fn isBool(): bool {
+            return ffi.hzstd_json_is_bool(this.data);
+        }
+
+        fn boolValue(): bool {
+            if !ffi.hzstd_json_is_bool(this.data) {
+                sys.panic("boolValue() called on a JSON node that is not a bool");
+            }
+            return ffi.hzstd_json_is_true(this.data);
+        }
+
+        fn isNull(): bool {
+            return ffi.hzstd_json_is_null(this.data);
+        }
+
         // The object's member `key` gone (every one of that name); false when
         // there was none. Setting a member that is there already needs this
         // first: `node[key] := value` adds one more.

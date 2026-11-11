@@ -44,8 +44,8 @@ fn flattenTree(entries: []FSEntry, expanded: LinearMap<str, bool>, depth: int, o
         } else if entry is FSFileEntry {
             out.push(TreeRow {
                 path: entry.fullPath,
-                // A file that is no note keeps its whole name: ".tsk" is
-                // only left off where every name has it.
+                // A file that is no note keeps its whole name: the note
+                // extension is only left off where every name has it.
                 name: entry.ghost ? entry.filename : noteTitle(entry.filename),
                 depth: depth,
                 isDir: false,

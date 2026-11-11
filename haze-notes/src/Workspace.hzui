@@ -380,7 +380,7 @@ let submitName = (text: str) => {
         revealInTree(created.path);
         return;
     }
-    let created = createNote(folder, text, newDocumentText());
+    let created = createNote(folder, text, newNoteBytes());
     if created.error.length > 0 {
         namingError := created.error;
         return;

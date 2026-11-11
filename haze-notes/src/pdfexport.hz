@@ -1,6 +1,5 @@
 import pdf
 import image
-import base64
 
 // Exporting a document as a PDF, a piece per frame.
 //
@@ -234,14 +233,14 @@ ref struct PdfExport {
 
     writer?: mut pdf.Writer;
     texture: pdf.Image | none = none;
-    // Images by their base64ImageData, embedded once however often pasted.
-    images: LinearMap<str, pdf.Image> = {};
+    // Images by their PNG bytes, embedded once however often pasted.
+    images: LinearMap<Bytes, pdf.Image> = {};
     // Images that could not be embedded, which are left out.
-    skipped: LinearMap<str, bool> = {};
+    skipped: LinearMap<Bytes, bool> = {};
     // The image being embedded, which the page waits for.
     decoding: image.ImageDecode | none = none;
     encoder?: mut pdf.ImageEncoder;
-    imageKey: str = "";
+    imageKey: Bytes;
 
     page: int = 0;
     shape: int = 0;
@@ -281,6 +280,7 @@ ref struct PdfExport {
             gridColor: gridColor,
             pages: pages,
             totalShapes: total,
+            imageKey: Bytes(),
         };
     }
 
@@ -357,7 +357,7 @@ ref struct PdfExport {
                     if !this.embedImage(writer, shape, deadline) {
                         return false;
                     }
-                    if let img = this.images.get(shape.base64ImageData) {
+                    if let img = this.images.get(shape.png) {
                         page.drawImage(img, shape.position.x, this.pageHeight - shape.size.y - shape.position.y, shape.size.x, shape.size.y);
                     }
                 }
@@ -468,7 +468,7 @@ ref struct PdfExport {
     // Makes sure the shape's image is in the file. False while it is still
     // being decoded or compressed: call again on the next step.
     mut fn embedImage(writer: mut pdf.Writer, shape: ImageShape, deadline: real): bool {
-        let key = shape.base64ImageData;
+        let key = shape.png;
         if this.images.has(key) || this.skipped.has(key) {
             return true;
         }
@@ -497,13 +497,7 @@ ref struct PdfExport {
             return false;
         }
 
-        let data = base64.decode(stripDataUrlPrefix(key));
-        if !data {
-            fmt.println(f"PDF export: an image is not valid base64: {data.message}");
-            this.skipImage(key);
-            return true;
-        }
-        let bytes: Bytes = data;
+        let bytes = key;
         // A JPEG goes in as it is. pdf-lib only took PNGs, and failed the
         // whole export on anything else.
         if bytes.length > 2 && bytes[0] == 0xFF && bytes[1] == 0xD8 {
@@ -518,7 +512,7 @@ ref struct PdfExport {
     }
 
     // An image that cannot be embedded is left out, rather than the export.
-    mut fn skipImage(key: str) {
+    mut fn skipImage(key: Bytes) {
         this.skipped.set(key, true);
     }
 }

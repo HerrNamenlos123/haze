@@ -10,10 +10,7 @@
 // finds the nearest page by measuring the distance to every page, and against
 // the shapes' place in the document, which a change of page must not move.
 //
-// haze-notes is an executable, so nothing can depend on it: run this from a
-// throwaway exe project inside the repository that depends on renderer,
-// tesselate and perfect_freehand, with src/persistence.hz, src/documents.hz
-// and src/tiles.hz copied in verbatim and this file as its main.hz.
+// Run: TMPDIR=<scratch> haze-notes/tests/run-test.sh haze-notes/tests/shape-page-tests.hz persistence.hz hznote.hz documents.hz tiles.hz
 
 ref struct State {
     checks: int = 0;
@@ -33,30 +30,37 @@ fn near(a: real, b: real): bool {
     return d < 0.000001 && d > -0.000001;
 }
 
-// The A4 document the web app writes, with `pages` as its pages' JSON.
-fn documentText(pages: str): str {
-    let text = String();
-    text.append("{\"filetype\":\"technicalsketcher\",\"fileversion\":1,\"data\":{\"pageColor\":\"#ffffff\",\"gridColor\":\"#5252524f\",\"gridType\":\"lines\",\"pages\":[");
-    text.append(pages);
-    text.append("],\"pageWidthMm\":210,\"pageHeightMm\":297,\"currentPageIndex\":0}}");
-    return text.cloneString();
+// The A4 document the web app makes, with these pages.
+fn documentOf(pages: [][]Shape): DocumentFile {
+    let list: []Page = [];
+    for shapes in pages {
+        list.push(Page { shapes: shapes });
+    }
+    return DocumentFile {
+        data: DocumentBody {
+            pageColor: "#ffffff",
+            gridColor: "#5252524f",
+            gridType: "lines",
+            pages: list,
+            pageWidthMm: 210.0,
+            pageHeightMm: 297.0,
+            currentPageIndex: 0,
+        },
+    };
 }
 
-// `count` blank pages. Parsed rather than built: a literal-union field
-// (gridType) cannot be set from a string literal in a struct literal yet.
+// `count` blank pages.
 fn blankDocument(count: int): DocumentFile {
-    let pages = String();
+    let pages: [][]Shape = [];
     for (let i = 0; i < count; i++) {
-        pages.append(i > 0 ? ",{\"shapes\":[]}" : "{\"shapes\":[]}");
+        let blank: []Shape = [];
+        pages.push(blank);
     }
-    let parsed = json.parse<DocumentFile>(documentText(pages.cloneString()));
-    assert(parsed, "blank document parses");
-    let doc: DocumentFile = parsed;
-    return doc;
+    return documentOf(pages);
 }
 
 fn image(x: real, y: real, w: real, h: real): ImageShape {
-    return ImageShape { variant: "Image", position: Vec2(x, y), size: Vec2(w, h), base64ImageData: "data:image/png;base64,AAAA" };
+    return ImageShape { variant: "Image", position: Vec2(x, y), size: Vec2(w, h), png: Bytes("\u0000\u0000\u0000") };
 }
 
 fn stroke(x: real, y: real): LineShape {
@@ -139,26 +143,28 @@ fn fixtureDir(): str {
     return "/tmp/haze-notes-shape-page-tests";
 }
 
-// Loads `text` the way the editor does, a short budget at a time.
-fn loaded(state: mut State, name: str, text: str): DocumentFile | none {
-    let path = f"{fixtureDir()}/{name}.tsk";
-    state.check(f"{name}: fixture written", fs.writeText(path, text) ? true : false);
+// `doc` saved as a note and loaded the way the editor does.
+fn loaded(state: mut State, name: str, doc: DocumentFile): DocumentFile | none {
+    let path = f"{fixtureDir()}/{name}.hznote";
+    state.check(f"{name}: fixture written", fs.writeBinary(path, encodeNote(doc)) ? true : false);
+    return loadedFrom(state, name, path);
+}
+
+fn loadedFrom(state: mut State, name: str, path: str): DocumentFile | none {
     let load = DocumentLoad(path);
-    for (let i = 0; i < 100000; i++) {
-        if load.step(time.now() + 0.005) {
-            break;
-        }
-    }
+    load.step(time.now() + 10.0);
     state.check(f"{name}: loaded", load.finished && !load.failed);
     return load.doc;
 }
 
-fn imageJson(x: real, y: real, w: real, h: real): str {
-    return f"{{\"variant\":\"Image\",\"position\":{{\"x\":{x},\"y\":{y}}},\"size\":{{\"x\":{w},\"y\":{h}}},\"base64ImageData\":\"data:image/png;base64,AAAA\"}}";
+// A two-point stroke: the one the load cases were measured with.
+fn shortStroke(x: real, y: real): Shape {
+    let points: []Point = [Point { x: x, y: y, pressure: 0.5 }, Point { x: x + 10.0, y: y + 2.0, pressure: 0.5 }];
+    return LineShape { variant: "Line", points: points, penColor: "#000000", penThickness: 0.5 };
 }
 
-fn strokeJson(x: real, y: real): str {
-    return f"{{\"variant\":\"Line\",\"points\":[{{\"x\":{x},\"y\":{y},\"pressure\":0.5}},{{\"x\":{x + 10.0},\"y\":{y + 2.0},\"pressure\":0.5}}],\"penColor\":\"#000000\",\"penThickness\":0.5}}";
+fn imageShape(x: real, y: real, w: real, h: real): Shape {
+    return image(x, y, w, h);
 }
 
 // The y of a page's i-th shape: an image's top, a stroke's first point. A
@@ -335,7 +341,10 @@ fn main(): int {
     // What the report's file holds: the image dragged onto the second page is
     // still in the first page's shapes, 14 mm into the second.
     fmt.println("case: a file with an image left behind");
-    let leftBehind = documentText(f"{{\"shapes\":[{imageJson(4.9, 4.5, 200.0, 29.7)},{imageJson(4.4, 321.3, 200.0, 42.2)}]}},{{\"shapes\":[{strokeJson(20.0, 100.0)}]}},{{\"shapes\":[]}}");
+    let leftBehindFirst: []Shape = [imageShape(4.9, 4.5, 200.0, 29.7), imageShape(4.4, 321.3, 200.0, 42.2)];
+    let leftBehindSecond: []Shape = [shortStroke(20.0, 100.0)];
+    let leftBehindThird: []Shape = [];
+    let leftBehind = documentOf([leftBehindFirst, leftBehindSecond, leftBehindThird]);
     if let doc = loaded(state, "left-behind", leftBehind) {
         state.check("left behind: no page added", doc.data.pages.length == 3);
         state.check("left behind: the first page keeps its own image",
@@ -346,13 +355,11 @@ fn main(): int {
         state.check("left behind: the third page stays empty", doc.data.pages[2].shapes.length == 0);
 
         // Saved and loaded again, nothing moves any more.
-        let path = f"{fixtureDir()}/left-behind-saved.tsk";
+        let path = f"{fixtureDir()}/left-behind-saved.hznote";
         let save = DocumentSave(path, doc);
         save.finish();
         state.check("left behind: saved", !save.failed);
-        let again = fs.readText(path);
-        let againText: str = again ? again : "";
-        if let reloaded = loaded(state, "left-behind-again", againText) {
+        if let reloaded = loadedFrom(state, "left-behind-again", path) {
             state.check("left behind: the same pages again",
                 reloaded.data.pages.length == 3 && reloaded.data.pages[0].shapes.length == 1 && reloaded.data.pages[1].shapes.length == 2);
         }
@@ -361,27 +368,32 @@ fn main(): int {
     // A dot 3.5 mm below its page's bottom edge, from the web app: the gap's
     // nearer page is its own.
     fmt.println("case: a dot just below its page");
-    let dotPages = String();
+    let dotPages: [][]Shape = [];
     for (let i = 0; i < 8; i++) {
-        if i > 0 {
-            dotPages.append(",");
+        let shapes: []Shape = [];
+        if i == 4 {
+            shapes.push(shortStroke(50.0, 300.5));
         }
-        dotPages.append(i == 4 ? f"{{\"shapes\":[{strokeJson(50.0, 300.5)}]}}" : "{\"shapes\":[]}");
+        dotPages.push(shapes);
     }
-    if let doc = loaded(state, "dot", documentText(dotPages.cloneString())) {
+    if let doc = loaded(state, "dot", documentOf(dotPages)) {
         state.check("dot: stays on its page", doc.data.pages[4].shapes.length == 1 && shapeCount(doc) == 1);
         state.check("dot: not moved", near(yOf(doc.data.pages[4], 0), 300.5));
     }
 
     fmt.println("case: a stroke above its page");
-    if let doc = loaded(state, "above", documentText(f"{{\"shapes\":[]}},{{\"shapes\":[{strokeJson(20.0, -100.0)}]}}")) {
+    let aboveFirst: []Shape = [];
+    let aboveSecond: []Shape = [shortStroke(20.0, -100.0)];
+    if let doc = loaded(state, "above", documentOf([aboveFirst, aboveSecond])) {
         state.check("above: on the page before", doc.data.pages[0].shapes.length == 1 && doc.data.pages[1].shapes.length == 0);
         state.check("above: where it lies", near(yOf(doc.data.pages[0], 0), 207.0));
     }
 
     // A load adds no pages: beyond the last page, the last one has it.
     fmt.println("case: beyond the last page");
-    if let doc = loaded(state, "beyond", documentText(f"{{\"shapes\":[{imageJson(10.0, 1000.0, 20.0, 20.0)}]}},{{\"shapes\":[]}}")) {
+    let beyondFirst: []Shape = [imageShape(10.0, 1000.0, 20.0, 20.0)];
+    let beyondSecond: []Shape = [];
+    if let doc = loaded(state, "beyond", documentOf([beyondFirst, beyondSecond])) {
         state.check("beyond: no page added", doc.data.pages.length == 2);
         state.check("beyond: on the last page", doc.data.pages[1].shapes.length == 1);
         state.check("beyond: where it lies", near(yOf(doc.data.pages[1], 0), 1000.0 - 307.0));
@@ -389,7 +401,8 @@ fn main(): int {
 
     // Shapes on their own page are left alone, in their order.
     fmt.println("case: everything on its page");
-    if let doc = loaded(state, "in-place", documentText(f"{{\"shapes\":[{imageJson(1.0, 1.0, 5.0, 5.0)},{strokeJson(20.0, 280.0)},{imageJson(1.0, 2.0, 5.0, 5.0)}]}}")) {
+    let inPlace: []Shape = [imageShape(1.0, 1.0, 5.0, 5.0), shortStroke(20.0, 280.0), imageShape(1.0, 2.0, 5.0, 5.0)];
+    if let doc = loaded(state, "in-place", documentOf([inPlace])) {
         state.check("in place: all three, in order",
             doc.data.pages[0].shapes.length == 3 && near(yOf(doc.data.pages[0], 0), 1.0)
             && near(yOf(doc.data.pages[0], 1), 280.0) && near(yOf(doc.data.pages[0], 2), 2.0));

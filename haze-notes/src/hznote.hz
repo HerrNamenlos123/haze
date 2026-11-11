@@ -1,0 +1,1420 @@
+import crc32c
+
+// .hznote: Haze Notes' file format.
+//
+// Built from Haze's binary building blocks (ByteBuffer's binary writes,
+// BinaryReader, crc32c) and traverse, which walks the document's types for
+// it: the file stores what the types say, so a field added to a shape is in
+// the next file written without anything here changing. Nothing in it is
+// specific to notes but the choice of what becomes a chunk; it is meant as a
+// precedent for other formats.
+//
+// ── Layout ─────────────────────────────────────────────────────────────
+//
+// Little-endian throughout. Every number keeps its exact bits.
+//
+//   magic      89 48 5A 4E 4F 54 45 0A     "\x89HZNOTE\n"
+//   container  u16 = 1                     this layout; it changes only when
+//                                          the framing below does, never for
+//                                          the types stored in it
+//   header     u32 size, its bytes, u32 CRC-32C of those bytes:
+//                names   u16 count, each a u16 length and the UTF-8 bytes
+//                types   u16 count, each a type (below)
+//                root    u16 type, then a value block: the note's settings
+//                        (DocumentBody, all but its pages)
+//   chunks     u8 1, u32 size, then that many bytes, then a u32 CRC-32C of
+//              the tag, the size and the bytes. The bytes: u16 type, then a
+//              value block -- one page.
+//   end        u8 0, u32 how many chunks there were, u32 CRC-32C of the tag
+//              and the count. The file ends there.
+//
+// Every chunk can be read on its own, with nothing but the header: reading a
+// file is "read a size, read that many bytes" in a loop, and the bytes can
+// go to whoever decodes them. Inside a chunk the same holds one level down:
+// every shape is a sized block of its own.
+//
+// A value block: u32 size and the value's bytes, then the strings it uses:
+// u32 count, each a u32 length and the bytes. A str value is the u32 index of
+// its string: each distinct string is stored, and read, once per block.
+//
+// ── Types ──────────────────────────────────────────────────────────────
+//
+// A type is a u8 kind, then:
+//   1 primitive   u8 which: 1 bool, 2 i8, 3 i16, 4 i32, 5 i64, 6 int, 7 u8,
+//                 8 u16, 9 u32, 10 u64, 11 usize, 12 f32, 13 f64, 14 real,
+//                 15 str, 16 Bytes
+//   2 struct      u16 name, u8 layout, u16 field count, each field a u16 name
+//                 and a u16 type, in the order they are written. Layout 0:
+//                 a u32 size, then the fields. Layout 1 (raw): a plain
+//                 struct -- numbers of one size and nothing else, see
+//                 traverse.plainLeafSize -- whose bytes are exactly its
+//                 numbers, as in memory: no size, and an array of it is one
+//                 block, copied in one go when the reading code's struct is
+//                 the same.
+//   3 array       u16 element type
+//   4 fixed array u32 length, u16 element type
+//   5 union       u16 variant count, each a u16 type
+//   6 literal     u8 1 and a u16 name holding the text, or u8 2 and an i64
+//   7 none
+//
+// A value, by its type: bool one byte (0 or 1); numbers their bytes (int as
+// i64, usize as u64, real as f64); str the u32 index of its string; Bytes a
+// u32 length and the bytes; struct as its layout says; array a u32 count,
+// then the elements; fixed array its elements; union a u16 variant index,
+// then the value; literal and none nothing.
+//
+// ── Reading another version ────────────────────────────────────────────
+//
+// The file names every field and type, so reading matches them by name, once
+// per file and type: fields may come in another order, a field the code no
+// longer has is skipped, a field the code has and the file lacks gets its
+// default (none, or its literal's value) and one without a default refuses
+// the file. Anything else that differs refuses it too, with a message saying
+// what and where: a field of another type (i64 to i32), a variant the code
+// does not have, a fixed array of another length. Nothing is converted, and
+// nothing a mismatch would misread is ever read. Renaming a field reads as
+// removing it and adding another, so the new one, if needed, refuses old
+// files. (TODO: a rename annotation naming the field's old names.) A change
+// that needs more than that keeps the old types under another namespace:
+// readFile<OldRoot, OldChunk> reads the files they describe, and a function
+// converts what it returns. Every version is just another set of types; no
+// version number exists to be forgotten.
+//
+// A container number this build does not know, or a type kind or primitive
+// it does not know in an intact header, is "made by a newer Haze Notes".
+
+// ── Errors ──────────────────────────────────────────────────────────────
+
+export enum HznoteProblem {
+    // The file is no .hznote at all.
+    NotANote,
+    // Made by a newer Haze Notes: a container or a type this build does not
+    // know.
+    Newer,
+    // Damaged: a checksum, a size or a value that cannot be.
+    Damaged,
+    // Intact, but holding something this build's types cannot take.
+    Incompatible,
+}
+
+export struct HznoteError {
+    problem: HznoteProblem;
+    // What went wrong, in one line.
+    message: str;
+    // Where in the file it was noticed (from the start of the file), or -1.
+    offset: int = -1;
+    // The chunk it is in, -1 for the header (or none).
+    chunk: int = -1;
+    // The value it is in: "Page.shapes[12].LineShape.points".
+    path: str = "";
+
+    fn describe(): str {
+        let text = this.message;
+        if this.path.length > 0 {
+            text = text + f" (at {this.path})";
+        }
+        if this.chunk >= 0 {
+            text = text + f", chunk {this.chunk}";
+        }
+        if this.offset >= 0 {
+            text = text + f", byte {this.offset}";
+        }
+        return text;
+    }
+}
+
+// ── Constants ───────────────────────────────────────────────────────────
+
+const comptime containerVersion = 1;
+
+const comptime kindPrimitive = 1;
+const comptime kindStruct = 2;
+const comptime kindArray = 3;
+const comptime kindFixedArray = 4;
+const comptime kindUnion = 5;
+const comptime kindLiteral = 6;
+const comptime kindNone = 7;
+
+const comptime primBool = 1;
+const comptime primStr = 15;
+const comptime primBytes = 16;
+const comptime primCount = 16;
+
+// How deep values may nest before a file counts as damaged: the notes nest
+// about six deep; no intact file comes near.
+const comptime maxNesting = 200;
+
+fn writeMagic(out: mut stackref ByteBuffer) {
+    out.push(0x89 as u8);
+    out.push("HZNOTE\n");
+}
+
+// Whether `head`, the first bytes of a file, are an .hznote's.
+export fn isHznote(head: Bytes): bool {
+    if head.length < 8 {
+        return false;
+    }
+    return head[0] == 0x89 && head.slice(1, 8).string() == "HZNOTE\n";
+}
+
+// The primitive code of T, see the layout above.
+fn primCode<T>(): int {
+    if comptime T is bool { return 1; }
+    else if comptime T is i8 { return 2; }
+    else if comptime T is i16 { return 3; }
+    else if comptime T is i32 { return 4; }
+    else if comptime T is i64 { return 5; }
+    else if comptime T is int { return 6; }
+    else if comptime T is u8 { return 7; }
+    else if comptime T is u16 { return 8; }
+    else if comptime T is u32 { return 9; }
+    else if comptime T is u64 { return 10; }
+    else if comptime T is usize { return 11; }
+    else if comptime T is f32 { return 12; }
+    else if comptime T is f64 { return 13; }
+    else if comptime T is real { return 14; }
+    else if comptime T is str { return 15; }
+    else if comptime T is Bytes { return 16; }
+    else { static_assert(false, f"hznote: {T.prettyName} is no primitive"); }
+    sys.unreachable();
+}
+
+// The byte size of a number primitive, 0 for bool, str and Bytes (which are
+// no plain numbers).
+fn primNumberSize(code: int): int {
+    if code == 2 || code == 7 { return 1; }
+    if code == 3 || code == 8 { return 2; }
+    if code == 4 || code == 9 || code == 12 { return 4; }
+    if code == 5 || code == 6 || code == 10 || code == 11 || code == 13 || code == 14 { return 8; }
+    return 0;
+}
+
+fn primName(code: int): str {
+    let names: [16]str = ["bool", "i8", "i16", "i32", "i64", "int", "u8", "u16", "u32", "u64", "usize", "f32", "f64", "real", "str", "Bytes"];
+    if code >= 1 && code <= 16 {
+        return names[code - 1];
+    }
+    return "?";
+}
+
+// A count, length or size as the u32 it is written as. A note never comes
+// near 4 GB; one that did would be refused here rather than written wrong.
+fn u32of(n: int): u32 {
+    assert(n >= 0 && n <= 4294967295, "hznote: more than a u32 holds");
+    return n as u32;
+}
+
+fn u8of(n: int): u8 {
+    assert(n >= 0 && n <= 255, "hznote: more than a u8 holds");
+    return n as u8;
+}
+
+fn u16of(n: int): u16 {
+    assert(n >= 0 && n <= 65535, "hznote: more than a u16 holds (65535 names or types at most)");
+    return n as u16;
+}
+
+// ── The types, as a file stores them ────────────────────────────────────
+
+struct SchemaField {
+    name: int;
+    typeId: int;
+    // The field's place in its struct's T.fields (only in a schema made from
+    // code; -1 in one read from a file).
+    index: int = -1;
+}
+
+ref struct SchemaType {
+    kind: int;
+    prim: int = 0;
+    name: int = -1;
+    raw: bool = false;
+    fields: []SchemaField = [];
+    element: int = -1;
+    length: int = 0;
+    variants: []int = [];
+    literalIsStr: bool = false;
+    literalText: int = -1;
+    literalInt: i64 = 0;
+    // Bytes a raw struct (or a number) takes, 0 for anything else.
+    rawSize: int = 0;
+}
+
+ref struct Schema {
+    names: []str = [];
+    nameIds: LinearMap<str, int> = {};
+    types: []SchemaType = [];
+
+    fn name(text: str): int {
+        if let id = this.nameIds.get(text) {
+            return id;
+        }
+        let id = this.names.length;
+        this.names.push(text);
+        this.nameIds.set(text, id);
+        return id;
+    }
+
+    // A type, as people read it, for messages.
+    fn typeText(id: int): str :: final {
+        if id < 0 || id >= this.types.length {
+            return "?";
+        }
+        let t = this.types[id];
+        if t.kind == kindPrimitive { return primName(t.prim); }
+        if t.kind == kindStruct { return this.names[t.name]; }
+        if t.kind == kindArray { return f"[]{this.typeText(t.element)}"; }
+        if t.kind == kindFixedArray { return f"[{t.length}]{this.typeText(t.element)}"; }
+        if t.kind == kindNone { return "none"; }
+        if t.kind == kindLiteral {
+            if t.literalIsStr { return f"\"{this.names[t.literalText]}\""; }
+            return f"{t.literalInt}";
+        }
+        let text = "";
+        for v in t.variants {
+            text = text.length > 0 ? f"{text} | {this.typeText(v)}" : this.typeText(v);
+        }
+        return text;
+    }
+
+    fn encode(out: mut stackref ByteBuffer) {
+        out.pushU16(u16of(this.names.length));
+        for name in this.names {
+            out.pushU16(u16of(name.length));
+            out.push(name);
+        }
+        out.pushU16(u16of(this.types.length));
+        for t in this.types {
+            out.push(u8of(t.kind));
+            if t.kind == kindPrimitive {
+                out.push(u8of(t.prim));
+            }
+            else if t.kind == kindStruct {
+                out.pushU16(u16of(t.name));
+                out.push(t.raw ? 1 as u8 : 0 as u8);
+                out.pushU16(u16of(t.fields.length));
+                for f in t.fields {
+                    out.pushU16(u16of(f.name));
+                    out.pushU16(u16of(f.typeId));
+                }
+            }
+            else if t.kind == kindArray {
+                out.pushU16(u16of(t.element));
+            }
+            else if t.kind == kindFixedArray {
+                out.pushU32(u32of(t.length));
+                out.pushU16(u16of(t.element));
+            }
+            else if t.kind == kindUnion {
+                out.pushU16(u16of(t.variants.length));
+                for v in t.variants {
+                    out.pushU16(u16of(v));
+                }
+            }
+            else if t.kind == kindLiteral {
+                if t.literalIsStr {
+                    out.push(1 as u8);
+                    out.pushU16(u16of(t.literalText));
+                }
+                else {
+                    out.push(2 as u8);
+                    out.pushI64(t.literalInt);
+                }
+            }
+        }
+    }
+}
+
+// The schema of the code's own types, as traverse describes them: what a
+// writer stores, and what a reader compares a file's types with.
+ref struct CodeSchema {
+    skipAttribute: "hznote.skip" = "hznote.skip";
+    schema: Schema = {};
+    // The id of each type described, by its fingerprint (valid in this
+    // program only, which is all it is used for).
+    ids: LinearMap<int, int> = {};
+
+    fn typeRef<T>(): int {
+        if let id = this.ids.get(T.fingerprint) {
+            return id;
+        }
+        return traverse.describe<CodeSchema, T>(this);
+    }
+
+    fn add(t: SchemaType, key: int): int {
+        let id = this.schema.types.length;
+        this.schema.types.push(t);
+        this.ids.set(key, id);
+        return id;
+    }
+
+    fn describePrimitive<T>(): int {
+        let code = primCode<T>();
+        return this.add(SchemaType { kind: kindPrimitive, prim: code, rawSize: primNumberSize(code) }, T.fingerprint);
+    }
+
+    fn describeLiteral<T>(): int {
+        if comptime T.baseType is str {
+            return this.add(SchemaType { kind: kindLiteral, literalIsStr: true, literalText: this.schema.name(T.literalValue) }, T.fingerprint);
+        }
+        else {
+            let value: i64 = T.literalValue;
+            return this.add(SchemaType { kind: kindLiteral, literalInt: value }, T.fingerprint);
+        }
+        sys.unreachable();
+    }
+
+    fn describeNone(): int {
+        // none has one type; any fixed key not a real fingerprint will do.
+        if let id = this.ids.get(0) {
+            return id;
+        }
+        return this.add(SchemaType { kind: kindNone }, 0);
+    }
+
+    fn describeStruct<T>(): int {
+        let raw = traverse.isPlain<CodeSchema, T>();
+        let size = raw ? traverse.plainSize<CodeSchema, T>() : 0;
+        return this.add(SchemaType { kind: kindStruct, name: this.schema.name(traverse.typeName<T>()), raw: raw, rawSize: size }, T.fingerprint);
+    }
+
+    fn describeField<T, FieldType>(id: int, name: str, index: int) {
+        let typeId = this.typeRef<FieldType>();
+        this.schema.types[id].fields.push(SchemaField { name: this.schema.name(name), typeId: typeId, index: index });
+    }
+
+    fn endDescribeStruct<T>(id: int) {}
+
+    fn describeArray<T, Element>(): int {
+        let element = this.typeRef<Element>();
+        return this.add(SchemaType { kind: kindArray, element: element }, T.fingerprint);
+    }
+
+    fn describeFixedArray<T, Element>(length: int): int {
+        let element = this.typeRef<Element>();
+        return this.add(SchemaType { kind: kindFixedArray, element: element, length: length }, T.fingerprint);
+    }
+
+    fn describeUnion<T>(): int {
+        return this.add(SchemaType { kind: kindUnion }, T.fingerprint);
+    }
+
+    fn describeVariant<T, V>(id: int, index: int) {
+        let variant = this.typeRef<V>();
+        this.schema.types[id].variants.push(variant);
+    }
+
+    fn endDescribeUnion<T>(id: int) {}
+}
+
+// ── Writing ─────────────────────────────────────────────────────────────
+
+// Writes values as value blocks; its CodeSchema collects every type they
+// use, for the header.
+ref struct HznoteWriter {
+    skipAttribute: "hznote.skip" = "hznote.skip";
+    code: CodeSchema = {};
+    body: ByteBuffer;
+    strings: []str = [];
+    stringIds: LinearMap<str, int> = {};
+    // Where each open sized struct's size goes.
+    sizes: []int = [];
+
+    fn writePrimitive<T>(value: T) {
+        if comptime T is bool { this.body.push(value ? 1 as u8 : 0 as u8); }
+        else if comptime T is i8 { this.body.pushI8(value); }
+        else if comptime T is i16 { this.body.pushI16(value); }
+        else if comptime T is i32 { this.body.pushI32(value); }
+        else if comptime T is i64 || T is int { this.body.pushI64(value); }
+        else if comptime T is u8 { this.body.push(value); }
+        else if comptime T is u16 { this.body.pushU16(value); }
+        else if comptime T is u32 { this.body.pushU32(value); }
+        else if comptime T is u64 || T is usize { this.body.pushU64(value); }
+        else if comptime T is f32 { this.body.pushF32(value); }
+        else if comptime T is f64 || T is real { this.body.pushF64(value); }
+        else if comptime T is str { this.body.pushU32(u32of(this.stringIndex(value))); }
+        else if comptime T is Bytes {
+            this.body.pushU32(u32of(value.length));
+            this.body.push(value);
+        }
+        else { static_assert(false, f"hznote: {T.prettyName} is no primitive"); }
+    }
+
+    fn stringIndex(text: str): int {
+        if let id = this.stringIds.get(text) {
+            return id;
+        }
+        let id = this.strings.length;
+        this.strings.push(text);
+        this.stringIds.set(text, id);
+        return id;
+    }
+
+    fn writeLiteral<T>() {}
+
+    fn beginStruct<T>() {
+        this.sizes.push(this.body.length());
+        this.body.pushU32(0);
+    }
+
+    fn endStruct<T>() {
+        let at = this.sizes.pop();
+        this.body.setU32At(at, u32of(this.body.length() - at - 4));
+    }
+
+    fn beginField<T>(name: str, index: int) {}
+    fn endField<T>(name: str, index: int) {}
+
+    fn beginArray<T>(length: int) {
+        if comptime T.category == meta.TypeCategory.DynamicArray {
+            this.body.pushU32(u32of(length));
+        }
+    }
+
+    fn endArray<T>() {}
+
+    fn beginVariant<T, V>(index: int) {
+        this.body.pushU16(u16of(index));
+    }
+
+    fn endVariant<T, V>(index: int) {}
+
+    // Every plain value is written raw: its type says so (CodeSchema marks
+    // plain structs raw), so the reader knows.
+    fn writesPlain<T>(): bool {
+        return true;
+    }
+
+    fn writePlain<T>(memory: RawMemory, count: int) {
+        this.body.push(memory);
+    }
+
+    // `value` as a value block, its types added to the schema.
+    fn block<T>(value: T): Bytes {
+        this.code.typeRef<T>();
+        this.body = ByteBuffer();
+        this.strings.clear();
+        this.stringIds.clear();
+        traverse.write<HznoteWriter, T>(this, value);
+        assert(this.sizes.length == 0);
+        this.body.commit();
+        let body = this.body.bytes();
+        let out = ByteBuffer();
+        out.pushU32(u32of(body.length));
+        out.push(body);
+        out.pushU32(u32of(this.strings.length));
+        for text in this.strings {
+            out.pushU32(u32of(text.length));
+            out.push(text);
+        }
+        out.commit();
+        return out.bytes();
+    }
+}
+
+// A file: `root` in the header, each of `chunks` a chunk.
+fn writeFile<Root, Chunk>(root: Root, chunks: []Chunk): Bytes {
+    let writer = HznoteWriter { body: ByteBuffer() };
+    // Every type first: the header lists them before any value.
+    let rootType = writer.code.typeRef<Root>();
+    let chunkType = writer.code.typeRef<Chunk>();
+    let rootBlock = writer.block<Root>(root);
+    let chunkBlocks: []Bytes = [];
+    for chunk in chunks {
+        chunkBlocks.push(writer.block<Chunk>(chunk));
+    }
+
+    let stackref header = ByteBuffer();
+    writer.code.schema.encode(header);
+    header.pushU16(u16of(rootType));
+    header.push(rootBlock);
+    header.commit();
+    let headerBytes = header.bytes();
+
+    let stackref out = ByteBuffer();
+    writeMagic(out);
+    out.pushU16(containerVersion);
+    out.pushU32(u32of(headerBytes.length));
+    out.push(headerBytes);
+    out.pushU32(crc32c.hash(headerBytes));
+    for block in chunkBlocks {
+        let chunk = ByteBuffer();
+        chunk.push(1 as u8);
+        chunk.pushU32(u32of(2 + block.length));
+        chunk.pushU16(u16of(chunkType));
+        chunk.push(block);
+        chunk.commit();
+        let bytes = chunk.bytes();
+        out.push(bytes);
+        out.pushU32(crc32c.hash(bytes));
+    }
+    let end = ByteBuffer();
+    end.push(0 as u8);
+    end.pushU32(u32of(chunkBlocks.length));
+    end.commit();
+    out.push(end.bytes());
+    out.pushU32(crc32c.hash(end.bytes()));
+    out.commit();
+    return out.bytes();
+}
+
+// ── Reading ─────────────────────────────────────────────────────────────
+
+// How many plain values or arrays reading has copied in one go so far: what
+// tests/hznote-tests.hz checks the copies by.
+let plainCopiesCounted = 0;
+
+const comptime contextStruct = 1;
+const comptime contextArray = 2;
+const comptime contextUnion = 3;
+
+// Reads value blocks against the file's schema, mapping its types onto the
+// code's by name (see "Reading another version" above).
+ref struct HznoteReader {
+    skipAttribute: "hznote.skip" = "hznote.skip";
+    code: CodeSchema = {};
+    file: Schema = {};
+    // The block being read: its body, and the strings it uses.
+    input: BinaryReader;
+    strings: []str = [];
+    // Where the body starts in the file, and the chunk, for messages.
+    bodyOffset: int = 0;
+    chunk: int = -1;
+    // The type of the block's value.
+    rootType: int = -1;
+
+    // The values being read, innermost last: what kind of value, its file
+    // type, and per kind: a struct's field (or a union's variant file type,
+    // or an array's element count so far) and where a sized struct ends.
+    contextKinds: []int = [];
+    contextTypes: []int = [];
+    contextCursors: []int = [];
+    contextEnds: []int = [];
+    contextPlans: []int = [];
+
+    // How a file struct (or union) maps onto a code one: per file field (or
+    // variant), the code's index, or -1 for one the code does not have.
+    planIds: LinearMap<int, int> = {};
+    planMaps: [][]int = [];
+    // Whether a file type is exactly a code type, byte for byte.
+    identicalTypes: LinearMap<int, bool> = {};
+
+    error: HznoteError | none = none;
+
+    // ── Failing ──
+
+    fn fail(problem: HznoteProblem, message: str) {
+        if this.error {
+            return;
+        }
+        this.error = HznoteError {
+            problem: problem,
+            message: message,
+            offset: this.bodyOffset + this.input.position(),
+            chunk: this.chunk,
+            path: this.path(),
+        };
+    }
+
+    fn failed(): bool {
+        if this.error {
+            return true;
+        }
+        if this.input.overran() {
+            this.fail(HznoteProblem.Damaged, "the file ends in the middle of a value");
+            return true;
+        }
+        return false;
+    }
+
+    // Where reading is, as "Page.shapes[3].LineShape.points".
+    fn path(): str {
+        let text = "";
+        if this.rootType >= 0 && this.rootType < this.file.types.length {
+            text = this.file.typeText(this.rootType);
+        }
+        for (let i = 0; i < this.contextKinds.length; i++) {
+            let kind = this.contextKinds[i];
+            let typeId = this.file.types[this.contextTypes[i]];
+            if kind == contextStruct {
+                let cursor = this.contextCursors[i];
+                if cursor >= 0 && cursor < typeId.fields.length {
+                    text = text + "." + this.file.names[typeId.fields[cursor].name];
+                }
+            }
+            else if kind == contextArray {
+                text = text + f"[{this.contextCursors[i] - 1}]";
+            }
+            else if kind == contextUnion {
+                let variant = this.contextCursors[i];
+                if this.file.types[variant].kind == kindStruct {
+                    text = text + "." + this.file.typeText(variant);
+                }
+            }
+        }
+        return text;
+    }
+
+    // ── Where a value's type comes from ──
+
+    // The file type of the value about to be read: the root, the current
+    // field, the array's element (counted), or the union's variant.
+    fn valueType(): int {
+        let n = this.contextKinds.length;
+        if n == 0 {
+            return this.rootType;
+        }
+        let kind = this.contextKinds[n - 1];
+        let container = this.file.types[this.contextTypes[n - 1]];
+        if kind == contextStruct {
+            return container.fields[this.contextCursors[n - 1]].typeId;
+        }
+        if kind == contextArray {
+            this.contextCursors[n - 1] = this.contextCursors[n - 1] + 1;
+            return container.element;
+        }
+        return this.contextCursors[n - 1];
+    }
+
+    // As valueType, without counting an array element: for asking about a
+    // value before reading it.
+    fn peekType(): int {
+        let n = this.contextKinds.length;
+        if n == 0 {
+            return this.rootType;
+        }
+        let kind = this.contextKinds[n - 1];
+        let container = this.file.types[this.contextTypes[n - 1]];
+        if kind == contextStruct {
+            return container.fields[this.contextCursors[n - 1]].typeId;
+        }
+        if kind == contextArray {
+            return container.element;
+        }
+        return this.contextCursors[n - 1];
+    }
+
+    fn enter(kind: int, typeId: int, cursor: int, end: int, plan: int) {
+        if this.contextKinds.length >= maxNesting {
+            this.fail(HznoteProblem.Damaged, "values nested deeper than any note's");
+            return;
+        }
+        this.contextKinds.push(kind);
+        this.contextTypes.push(typeId);
+        this.contextCursors.push(cursor);
+        this.contextEnds.push(end);
+        this.contextPlans.push(plan);
+    }
+
+    fn leave() {
+        this.contextKinds.pop();
+        this.contextTypes.pop();
+        this.contextCursors.pop();
+        this.contextEnds.pop();
+        this.contextPlans.pop();
+    }
+
+    // ── Comparing the file's types with the code's ──
+
+    fn mismatch(fileType: int, codeType: int) {
+        this.fail(HznoteProblem.Incompatible, f"the file holds {this.file.typeText(fileType)} where this version of Haze Notes has {this.code.schema.typeText(codeType)}");
+    }
+
+    // Whether a file value of `fileType` can be read as `codeType` at all:
+    // the same kind, and for primitives, literals and fixed arrays the same
+    // one. Structs, unions and arrays are compared further when their values
+    // are read.
+    fn sameKind(fileType: int, codeType: int): bool {
+        let f = this.file.types[fileType];
+        let c = this.code.schema.types[codeType];
+        if f.kind != c.kind {
+            return false;
+        }
+        if f.kind == kindPrimitive {
+            return f.prim == c.prim;
+        }
+        if f.kind == kindLiteral {
+            if f.literalIsStr != c.literalIsStr {
+                return false;
+            }
+            if f.literalIsStr {
+                return this.file.names[f.literalText] == this.code.schema.names[c.literalText];
+            }
+            return f.literalInt == c.literalInt;
+        }
+        if f.kind == kindFixedArray {
+            return f.length == c.length;
+        }
+        return true;
+    }
+
+    // Whether a file type is exactly the code's: the same numbers, raw, in
+    // the same order -- so its bytes are the code value's memory.
+    fn identical(fileType: int, codeType: int): bool :: final {
+        let key = fileType * 65536 + codeType;
+        if let known = this.identicalTypes.get(key) {
+            return known;
+        }
+        let result = false;
+        let f = this.file.types[fileType];
+        let c = this.code.schema.types[codeType];
+        if f.kind == kindPrimitive && c.kind == kindPrimitive {
+            result = f.prim == c.prim && primNumberSize(f.prim) > 0;
+        }
+        else if f.kind == kindStruct && c.kind == kindStruct && f.raw && c.raw && f.fields.length == c.fields.length && f.rawSize == c.rawSize {
+            result = true;
+            for (let i = 0; i < f.fields.length; i++) {
+                if this.file.names[f.fields[i].name] != this.code.schema.names[c.fields[i].name] || !this.identical(f.fields[i].typeId, c.fields[i].typeId) {
+                    result = false;
+                }
+            }
+        }
+        this.identicalTypes.set(key, result);
+        return result;
+    }
+
+    // How file struct `fileType` maps onto code struct `codeType`, checking
+    // every field both have is of the same kind.
+    fn structPlan(fileType: int, codeType: int): int {
+        let key = fileType * 65536 + codeType;
+        if let known = this.planIds.get(key) {
+            return known;
+        }
+        let f = this.file.types[fileType];
+        let c = this.code.schema.types[codeType];
+        let map: []int = [];
+        for field in f.fields {
+            let name = this.file.names[field.name];
+            let index = -1;
+            for codeField in c.fields {
+                if this.code.schema.names[codeField.name] == name {
+                    if !this.sameKind(field.typeId, codeField.typeId) {
+                        this.fail(HznoteProblem.Incompatible, f"{this.file.names[f.name]}.{name} is {this.file.typeText(field.typeId)} in the file, {this.code.schema.typeText(codeField.typeId)} in this version of Haze Notes");
+                        return -1;
+                    }
+                    index = codeField.index;
+                }
+            }
+            map.push(index);
+        }
+        let id = this.planMaps.length;
+        this.planMaps.push(map);
+        this.planIds.set(key, id);
+        return id;
+    }
+
+    // How file union `fileType`'s variants map onto code union `codeType`'s:
+    // a struct by its name, anything else by being the same.
+    fn unionPlan(fileType: int, codeType: int): int {
+        let key = fileType * 65536 + codeType;
+        if let known = this.planIds.get(key) {
+            return known;
+        }
+        let f = this.file.types[fileType];
+        let c = this.code.schema.types[codeType];
+        let map: []int = [];
+        for fileVariant in f.variants {
+            let index = -1;
+            for (let i = 0; i < c.variants.length; i++) {
+                let fv = this.file.types[fileVariant];
+                let cv = this.code.schema.types[c.variants[i]];
+                if fv.kind == kindStruct && cv.kind == kindStruct {
+                    if this.file.names[fv.name] == this.code.schema.names[cv.name] {
+                        index = i;
+                    }
+                }
+                else if this.sameKind(fileVariant, c.variants[i]) {
+                    index = i;
+                }
+            }
+            map.push(index);
+        }
+        let id = this.planMaps.length;
+        this.planMaps.push(map);
+        this.planIds.set(key, id);
+        return id;
+    }
+
+    // ── Skipping a value the code has no field for ──
+
+    fn skipValue(typeId: int): void :: final {
+        if this.contextKinds.length >= maxNesting {
+            this.fail(HznoteProblem.Damaged, "values nested deeper than any note's");
+            return;
+        }
+        let t = this.file.types[typeId];
+        if t.kind == kindPrimitive {
+            if t.prim == primBool { this.input.skip(1); }
+            else if t.prim == primStr { this.input.skip(4); }
+            else if t.prim == primBytes { this.input.skip(this.input.readU32() as int); }
+            else { this.input.skip(primNumberSize(t.prim)); }
+        }
+        else if t.kind == kindStruct {
+            if t.raw { this.input.skip(t.rawSize); }
+            else { this.input.skip(this.input.readU32() as int); }
+        }
+        else if t.kind == kindArray {
+            let count = this.input.readU32() as int;
+            let element = this.file.types[t.element];
+            if element.rawSize > 0 {
+                this.input.skip(count * element.rawSize);
+            }
+            else {
+                for (let i = 0; i < count && !this.failed(); i++) {
+                    this.skipValue(t.element);
+                }
+            }
+        }
+        else if t.kind == kindFixedArray {
+            for (let i = 0; i < t.length && !this.failed(); i++) {
+                this.skipValue(t.element);
+            }
+        }
+        else if t.kind == kindUnion {
+            let index = this.input.readU16() as int;
+            if index >= t.variants.length {
+                this.fail(HznoteProblem.Damaged, "a variant the union does not have");
+                return;
+            }
+            this.skipValue(t.variants[index]);
+        }
+    }
+
+    // ── traverse's hooks ──
+
+    fn readPrimitive<T>(): T {
+        let typeId = this.valueType();
+        let code = primCode<T>();
+        let t = this.file.types[typeId];
+        if t.kind != kindPrimitive || t.prim != code {
+            this.mismatch(typeId, this.code.typeRef<T>());
+        }
+        if comptime T is bool {
+            let byte = this.input.readU8();
+            if byte > 1 {
+                this.fail(HznoteProblem.Damaged, "a bool that is neither 0 nor 1");
+            }
+            return byte == 1;
+        }
+        else if comptime T is i8 { return this.input.readI8(); }
+        else if comptime T is i16 { return this.input.readI16(); }
+        else if comptime T is i32 { return this.input.readI32(); }
+        else if comptime T is i64 || T is int { return this.input.readI64(); }
+        else if comptime T is u8 { return this.input.readU8(); }
+        else if comptime T is u16 { return this.input.readU16(); }
+        else if comptime T is u32 { return this.input.readU32(); }
+        else if comptime T is u64 || T is usize { return this.input.readU64(); }
+        else if comptime T is f32 { return this.input.readF32(); }
+        else if comptime T is f64 || T is real { return this.input.readF64(); }
+        else if comptime T is str {
+            let index = this.input.readU32() as int;
+            if index >= this.strings.length {
+                this.fail(HznoteProblem.Damaged, "a string the block does not have");
+                return "";
+            }
+            return this.strings[index];
+        }
+        else if comptime T is Bytes {
+            let length = this.input.readU32() as int;
+            return this.input.readBytes(length);
+        }
+        else { static_assert(false, f"hznote: {T.prettyName} is no primitive"); }
+        sys.unreachable();
+    }
+
+    fn readLiteral<T>() {
+        let typeId = this.valueType();
+        let codeType = this.code.typeRef<T>();
+        if !this.sameKind(typeId, codeType) {
+            this.mismatch(typeId, codeType);
+        }
+    }
+
+    fn beginReadStruct<T>() {
+        let typeId = this.valueType();
+        let codeType = this.code.typeRef<T>();
+        let t = this.file.types[typeId];
+        if t.kind != kindStruct {
+            this.mismatch(typeId, codeType);
+            return;
+        }
+        let plan = this.structPlan(typeId, codeType);
+        if plan < 0 {
+            return;
+        }
+        let end = -1;
+        if !t.raw {
+            let size = this.input.readU32() as int;
+            if size > this.input.remaining() {
+                this.fail(HznoteProblem.Damaged, f"{this.file.names[t.name]} larger than what holds it");
+                return;
+            }
+            end = this.input.position() + size;
+        }
+        this.enter(contextStruct, typeId, -1, end, plan);
+    }
+
+    fn nextField<T>(): int {
+        let n = this.contextKinds.length;
+        let typeId = this.file.types[this.contextTypes[n - 1]];
+        let map = this.planMaps[this.contextPlans[n - 1]];
+        while true {
+            let cursor = this.contextCursors[n - 1] + 1;
+            this.contextCursors[n - 1] = cursor;
+            if cursor >= typeId.fields.length {
+                return -1;
+            }
+            if map[cursor] >= 0 {
+                return map[cursor];
+            }
+            this.skipValue(typeId.fields[cursor].typeId);
+            if this.failed() {
+                return -1;
+            }
+        }
+        sys.unreachable();
+    }
+
+    fn endReadStruct<T>() {
+        let n = this.contextKinds.length;
+        let end = this.contextEnds[n - 1];
+        if end >= 0 && this.input.position() != end {
+            this.fail(HznoteProblem.Damaged, f"{this.file.typeText(this.contextTypes[n - 1])} whose size is not its fields'");
+        }
+        this.leave();
+    }
+
+    fn missingField<T>(name: str) {
+        this.fail(HznoteProblem.Incompatible, f"{traverse.typeName<T>()} in the file has no {name}, which this version of Haze Notes needs");
+    }
+
+    fn duplicateField<T>(name: str) {
+        this.fail(HznoteProblem.Damaged, f"{traverse.typeName<T>()} with {name} twice");
+    }
+
+    fn beginReadArray<T>(): int {
+        let typeId = this.valueType();
+        let codeType = this.code.typeRef<T>();
+        if !this.sameKind(typeId, codeType) {
+            this.mismatch(typeId, codeType);
+            return 0;
+        }
+        let t = this.file.types[typeId];
+        let count = t.length;
+        if t.kind == kindArray {
+            count = this.input.readU32() as int;
+            // No element takes less than a byte but literals and none, and
+            // an array of nothing but those is no note's: so more elements
+            // than bytes left is damage, before anything is allocated.
+            if count > this.input.remaining() {
+                this.fail(HznoteProblem.Damaged, "an array longer than what holds it");
+                return 0;
+            }
+        }
+        this.enter(contextArray, typeId, 0, -1, -1);
+        return count;
+    }
+
+    fn endReadArray<T>() {
+        this.leave();
+    }
+
+    fn readVariant<T>(): int {
+        let typeId = this.valueType();
+        let codeType = this.code.typeRef<T>();
+        let t = this.file.types[typeId];
+        if t.kind != kindUnion {
+            this.mismatch(typeId, codeType);
+            return 0;
+        }
+        let index = this.input.readU16() as int;
+        if index >= t.variants.length {
+            this.fail(HznoteProblem.Damaged, "a variant the union does not have");
+            return 0;
+        }
+        let plan = this.unionPlan(typeId, codeType);
+        let codeIndex = this.planMaps[plan][index];
+        if codeIndex < 0 {
+            this.fail(HznoteProblem.Incompatible, f"the file holds {this.file.typeText(t.variants[index])}, which this version of Haze Notes does not know");
+            return 0;
+        }
+        this.enter(contextUnion, typeId, t.variants[index], -1, plan);
+        return codeIndex;
+    }
+
+    fn endReadVariant<T>() {
+        this.leave();
+    }
+
+    fn readsPlain<T>(): bool {
+        return this.identical(this.peekType(), this.code.typeRef<T>());
+    }
+
+    fn readPlain<T>(memory: RawMemory, count: int) {
+        plainCopiesCounted = plainCopiesCounted + 1;
+        let n = this.contextKinds.length;
+        if n > 0 && this.contextKinds[n - 1] == contextArray {
+            this.contextCursors[n - 1] = this.contextCursors[n - 1] + count;
+        }
+        this.input.readInto(memory);
+    }
+
+    // ── Blocks ──
+
+    // Reads a value block of `type` out of `block` (which it must fill
+    // exactly) as a T.
+    fn readBlock<T>(block: mut stackref BinaryReader, blockOffset: int, typeId: int): T | none {
+        let bodySize = block.readU32() as int;
+        let bodyStart = block.position();
+        let body = block.sub(bodySize);
+        let count = block.readU32() as int;
+        if count > block.remaining() / 4 {
+            this.input = body;
+            this.fail(HznoteProblem.Damaged, "more strings than the block has room for");
+            return none;
+        }
+        this.strings.clear();
+        for (let i = 0; i < count; i++) {
+            let length = block.readU32() as int;
+            this.strings.push(block.readStr(length));
+        }
+        this.input = body;
+        this.bodyOffset = blockOffset + bodyStart;
+        if block.overran() || !block.atEnd() {
+            this.fail(HznoteProblem.Damaged, "a block whose sizes do not add up");
+            return none;
+        }
+        if typeId < 0 || typeId >= this.file.types.length {
+            this.fail(HznoteProblem.Damaged, "a block of a type the file does not have");
+            return none;
+        }
+        this.rootType = typeId;
+        this.contextKinds.clear();
+        this.contextTypes.clear();
+        this.contextCursors.clear();
+        this.contextEnds.clear();
+        this.contextPlans.clear();
+        let value = traverse.read<HznoteReader, T>(this);
+        if !value {
+            if !this.error {
+                this.fail(HznoteProblem.Damaged, "the value could not be read");
+            }
+            return none;
+        }
+        if !this.input.atEnd() {
+            this.fail(HznoteProblem.Damaged, "bytes after the value");
+            return none;
+        }
+        let result: T = value;
+        return result;
+    }
+
+    // ── The header's schema ──
+
+    fn readSchema(r: mut stackref BinaryReader): bool {
+        let nameCount = r.readU16() as int;
+        for (let i = 0; i < nameCount && !r.overran(); i++) {
+            let length = r.readU16() as int;
+            this.file.names.push(r.readStr(length));
+        }
+        let typeCount = r.readU16() as int;
+        for (let i = 0; i < typeCount && !r.overran(); i++) {
+            let kind = r.readU8() as int;
+            let t = SchemaType { kind: kind };
+            if kind == kindPrimitive {
+                t.prim = r.readU8() as int;
+                if t.prim < 1 || t.prim > primCount {
+                    return this.headerFails(HznoteProblem.Newer, f"a primitive type this version does not know ({t.prim})");
+                }
+                t.rawSize = primNumberSize(t.prim);
+            }
+            else if kind == kindStruct {
+                t.name = r.readU16() as int;
+                let layout = r.readU8() as int;
+                if layout > 1 {
+                    return this.headerFails(HznoteProblem.Newer, f"a struct layout this version does not know ({layout})");
+                }
+                t.raw = layout == 1;
+                let fieldCount = r.readU16() as int;
+                for (let j = 0; j < fieldCount && !r.overran(); j++) {
+                    let name = r.readU16() as int;
+                    let typeId = r.readU16() as int;
+                    t.fields.push(SchemaField { name: name, typeId: typeId });
+                }
+            }
+            else if kind == kindArray {
+                t.element = r.readU16() as int;
+            }
+            else if kind == kindFixedArray {
+                t.length = r.readU32() as int;
+                t.element = r.readU16() as int;
+            }
+            else if kind == kindUnion {
+                let variantCount = r.readU16() as int;
+                for (let j = 0; j < variantCount && !r.overran(); j++) {
+                    t.variants.push(r.readU16() as int);
+                }
+            }
+            else if kind == kindLiteral {
+                let base = r.readU8() as int;
+                if base == 1 {
+                    t.literalIsStr = true;
+                    t.literalText = r.readU16() as int;
+                }
+                else if base == 2 {
+                    t.literalInt = r.readI64();
+                }
+                else {
+                    return this.headerFails(HznoteProblem.Newer, f"a literal this version does not know ({base})");
+                }
+            }
+            else if kind != kindNone {
+                return this.headerFails(HznoteProblem.Newer, f"a type kind this version does not know ({kind})");
+            }
+            this.file.types.push(t);
+        }
+        if r.overran() {
+            return this.headerFails(HznoteProblem.Damaged, "the header ends in the middle of its types");
+        }
+        return this.checkSchema();
+    }
+
+    fn headerFails(problem: HznoteProblem, message: str): bool {
+        if !this.error {
+            this.error = HznoteError { problem: problem, message: message, chunk: -1 };
+        }
+        return false;
+    }
+
+    // Every reference in range, struct fields named once, raw structs made
+    // of numbers only and their sizes.
+    fn checkSchema(): bool {
+        let names = this.file.names.length;
+        let types = this.file.types.length;
+        for t in this.file.types {
+            if t.kind == kindStruct {
+                if t.name < 0 || t.name >= names {
+                    return this.headerFails(HznoteProblem.Damaged, "a struct whose name the file does not have");
+                }
+                for (let i = 0; i < t.fields.length; i++) {
+                    let f = t.fields[i];
+                    if f.name >= names || f.typeId >= types {
+                        return this.headerFails(HznoteProblem.Damaged, "a field whose name or type the file does not have");
+                    }
+                    for (let j = 0; j < i; j++) {
+                        if t.fields[j].name == f.name {
+                            return this.headerFails(HznoteProblem.Damaged, f"a struct with {this.file.names[f.name]} twice");
+                        }
+                    }
+                }
+            }
+            else if t.kind == kindArray || t.kind == kindFixedArray {
+                if t.element < 0 || t.element >= types {
+                    return this.headerFails(HznoteProblem.Damaged, "an array of a type the file does not have");
+                }
+            }
+            else if t.kind == kindUnion {
+                if t.variants.length == 0 {
+                    return this.headerFails(HznoteProblem.Damaged, "a union without variants");
+                }
+                for v in t.variants {
+                    if v >= types {
+                        return this.headerFails(HznoteProblem.Damaged, "a variant of a type the file does not have");
+                    }
+                }
+            }
+            else if t.kind == kindLiteral && t.literalIsStr {
+                if t.literalText < 0 || t.literalText >= names {
+                    return this.headerFails(HznoteProblem.Damaged, "a literal whose text the file does not have");
+                }
+            }
+        }
+        // Raw structs: their sizes, in as many passes as they nest (a raw
+        // struct that contains itself never gets one, and is damage).
+        let pending = true;
+        let passes = 0;
+        while pending && passes <= types {
+            pending = false;
+            passes = passes + 1;
+            for t in this.file.types {
+                if t.kind == kindStruct && t.raw && t.rawSize == 0 {
+                    let size = 0;
+                    let leaf = 0;
+                    let ready = true;
+                    for f in t.fields {
+                        let ft = this.file.types[f.typeId];
+                        let fieldLeaf = 0;
+                        if ft.kind == kindPrimitive {
+                            fieldLeaf = primNumberSize(ft.prim);
+                            if fieldLeaf == 0 {
+                                return this.headerFails(HznoteProblem.Damaged, "a raw struct holding more than numbers");
+                            }
+                        }
+                        else if ft.kind == kindStruct && ft.raw {
+                            if ft.rawSize == 0 {
+                                ready = false;
+                            }
+                        }
+                        else {
+                            return this.headerFails(HznoteProblem.Damaged, "a raw struct holding more than numbers");
+                        }
+                        size = size + ft.rawSize;
+                    }
+                    if ready {
+                        if size == 0 {
+                            return this.headerFails(HznoteProblem.Damaged, "a raw struct without numbers");
+                        }
+                        t.rawSize = size;
+                    }
+                    else {
+                        pending = true;
+                    }
+                }
+            }
+        }
+        if pending {
+            return this.headerFails(HznoteProblem.Damaged, "a raw struct that contains itself");
+        }
+        return true;
+    }
+}
+
+// The pieces of a file: its header's value, as Root, and each chunk's, as
+// Chunk.
+struct HznoteFile<Root, Chunk> {
+    root: Root;
+    chunks: []Chunk;
+}
+
+fn readFile<Root, Chunk>(data: Bytes): HznoteFile<Root, Chunk> | HznoteError {
+    let r = BinaryReader(data);
+    if !isHznote(data) {
+        return HznoteError { problem: HznoteProblem.NotANote, message: "this is no Haze Notes file" };
+    }
+    r.skip(8);
+    let container = r.readU16() as int;
+    if container > containerVersion {
+        return HznoteError { problem: HznoteProblem.Newer, message: f"made by a newer Haze Notes (file layout {container})", offset: 8 };
+    }
+    if container != containerVersion {
+        return HznoteError { problem: HznoteProblem.Damaged, message: f"a file layout that never existed ({container})", offset: 8 };
+    }
+    let headerSize = r.readU32() as int;
+    let headerOffset = r.position();
+    if headerSize > r.remaining() - 4 {
+        return HznoteError { problem: HznoteProblem.Damaged, message: "the file ends inside its header", offset: headerOffset };
+    }
+    let headerBytes = r.readView(headerSize);
+    if crc32c.hash(headerBytes) != r.readU32() {
+        return HznoteError { problem: HznoteProblem.Damaged, message: "the header's checksum is wrong", offset: headerOffset };
+    }
+    let reader = HznoteReader { input: BinaryReader(Bytes()) };
+    let stackref header = BinaryReader(headerBytes);
+    if !reader.readSchema(header) {
+        if let e = reader.error {
+            let failure: HznoteError = e;
+            failure.offset = headerOffset + header.position();
+            return failure;
+        }
+        return HznoteError { problem: HznoteProblem.Damaged, message: "the header's types are damaged", offset: headerOffset };
+    }
+    let rootType = header.readU16() as int;
+    let stackref rootBlock = header.sub(header.remaining());
+    let root = reader.readBlock<Root>(rootBlock, headerOffset + header.position(), rootType);
+    if let e = reader.error {
+        return e;
+    }
+    if !root {
+        return HznoteError { problem: HznoteProblem.Damaged, message: "the header's value could not be read", offset: headerOffset };
+    }
+    let chunks: []Chunk = [];
+    while true {
+        let tagOffset = r.position();
+        let tag = r.readU8() as int;
+        if r.overran() {
+            return HznoteError { problem: HznoteProblem.Damaged, message: "the file ends before its end marker: it was cut off", offset: tagOffset };
+        }
+        if tag == 0 {
+            let count = r.readU32() as int;
+            let marker = data.slice(tagOffset, tagOffset + 5);
+            let checksum = r.readU32();
+            if r.overran() || crc32c.hash(marker) != checksum {
+                return HznoteError { problem: HznoteProblem.Damaged, message: "the end marker is damaged", offset: tagOffset };
+            }
+            if count != chunks.length {
+                return HznoteError { problem: HznoteProblem.Damaged, message: f"the end marker counts {count} chunks, the file has {chunks.length}", offset: tagOffset };
+            }
+            if !r.atEnd() {
+                return HznoteError { problem: HznoteProblem.Damaged, message: "bytes after the end marker", offset: r.position() };
+            }
+            break;
+        }
+        if tag != 1 {
+            return HznoteError { problem: HznoteProblem.Damaged, message: f"a chunk of an unknown kind ({tag})", offset: tagOffset, chunk: chunks.length };
+        }
+        let size = r.readU32() as int;
+        if size < 2 || size > r.remaining() - 4 {
+            return HznoteError { problem: HznoteProblem.Damaged, message: "a chunk larger than the rest of the file", offset: tagOffset, chunk: chunks.length };
+        }
+        let payloadOffset = r.position();
+        r.skip(size);
+        let checksum = r.readU32();
+        if crc32c.hash(data.slice(tagOffset, payloadOffset + size)) != checksum {
+            return HznoteError { problem: HznoteProblem.Damaged, message: "a chunk's checksum is wrong", offset: tagOffset, chunk: chunks.length };
+        }
+        let stackref payload = BinaryReader(data.slice(payloadOffset, payloadOffset + size));
+        let typeId = payload.readU16() as int;
+        reader.chunk = chunks.length;
+        let value = reader.readBlock<Chunk>(payload, payloadOffset + 2, typeId);
+        if let e = reader.error {
+            return e;
+        }
+        if !value {
+            return HznoteError { problem: HznoteProblem.Damaged, message: "a chunk could not be read", offset: payloadOffset, chunk: chunks.length };
+        }
+        let chunk: Chunk = value;
+        chunks.push(chunk);
+    }
+    let rootValue: Root = root;
+    return HznoteFile<Root, Chunk> { root: rootValue, chunks: chunks };
+}
+
+// ── Notes ───────────────────────────────────────────────────────────────
+
+// The note as a file: its settings in the header, each page a chunk.
+export fn encodeNote(doc: DocumentFile): Bytes {
+    return writeFile<DocumentBody, Page>(doc.data, doc.data.pages);
+}
+
+export fn decodeNote(data: Bytes): DocumentFile | HznoteError {
+    let file = readFile<DocumentBody, Page>(data);
+    if file is HznoteError {
+        return file;
+    }
+    let body = file.root;
+    body.pages = file.chunks;
+    return DocumentFile { data: body };
+}
+
+// ── Shapes on the clipboard ─────────────────────────────────────────────
+
+// What Ctrl+C puts on the clipboard: the shapes in this same format, as a
+// file without chunks. Nothing but Haze Notes reads it.
+export const comptime shapesMimeType = "application/x-haze-notes-shapes";
+
+struct ShapesOnClipboard {
+    shapes: []Shape;
+}
+
+export fn encodeShapes(shapes: []Shape): Bytes {
+    let noPages: []Page = [];
+    return writeFile<ShapesOnClipboard, Page>(ShapesOnClipboard { shapes: shapes }, noPages);
+}
+
+export fn decodeShapes(data: Bytes): []Shape | HznoteError {
+    let file = readFile<ShapesOnClipboard, Page>(data);
+    if file is HznoteError {
+        return file;
+    }
+    return file.root.shapes;
+}

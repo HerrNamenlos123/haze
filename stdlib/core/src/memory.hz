@@ -327,6 +327,97 @@ export nocopy opaque struct ByteBuffer {
         this._length += 1;
     }
 
+    // --- Binary writes (build phase) -------------------------------------------
+    //
+    // Numbers in their in-memory byte order, which on every target Haze builds
+    // for is little-endian (HZSTD_ASSERT_LITTLE_ENDIAN stops any other build).
+    // BinaryReader reads them back.
+
+    mut fn pushU16(value: u16): void :: final {
+        let at = this._appendForNumber(2);
+        __c__("if (at) { HZSTD_ASSERT_LITTLE_ENDIAN(); memcpy(at, &value, 2); }");
+    }
+
+    mut fn pushU32(value: u32): void :: final {
+        let at = this._appendForNumber(4);
+        __c__("if (at) { HZSTD_ASSERT_LITTLE_ENDIAN(); memcpy(at, &value, 4); }");
+    }
+
+    mut fn pushU64(value: u64): void :: final {
+        let at = this._appendForNumber(8);
+        __c__("if (at) { HZSTD_ASSERT_LITTLE_ENDIAN(); memcpy(at, &value, 8); }");
+    }
+
+    mut fn pushI8(value: i8): void :: final {
+        let at = this._appendForNumber(1);
+        __c__("if (at) { memcpy(at, &value, 1); }");
+    }
+
+    mut fn pushI16(value: i16): void :: final {
+        let at = this._appendForNumber(2);
+        __c__("if (at) { HZSTD_ASSERT_LITTLE_ENDIAN(); memcpy(at, &value, 2); }");
+    }
+
+    mut fn pushI32(value: i32): void :: final {
+        let at = this._appendForNumber(4);
+        __c__("if (at) { HZSTD_ASSERT_LITTLE_ENDIAN(); memcpy(at, &value, 4); }");
+    }
+
+    mut fn pushI64(value: i64): void :: final {
+        let at = this._appendForNumber(8);
+        __c__("if (at) { HZSTD_ASSERT_LITTLE_ENDIAN(); memcpy(at, &value, 8); }");
+    }
+
+    // The value's exact bits: -0, NaN payloads and infinities included.
+    mut fn pushF32(value: f32): void :: final {
+        let at = this._appendForNumber(4);
+        __c__("if (at) { HZSTD_ASSERT_LITTLE_ENDIAN(); memcpy(at, &value, 4); }");
+    }
+
+    mut fn pushF64(value: f64): void :: final {
+        let at = this._appendForNumber(8);
+        __c__("if (at) { HZSTD_ASSERT_LITTLE_ENDIAN(); memcpy(at, &value, 8); }");
+    }
+
+    // Overwrites the 4 bytes at `index`, which must already be written: for
+    // filling in a size or a checksum once what it describes is written.
+    mut fn setU32At(index: int, value: u32): void :: final {
+        this._assertBuilding();
+        if index < 0 || index > this._length - 4 {
+            sys.panic("ByteBuffer: index out of bounds");
+        }
+        if this._measuring {
+            return;
+        }
+        this._makeWritable(this._length, true);
+        __c__("HZSTD_ASSERT_LITTLE_ENDIAN(); memcpy((hzstd_u8_t*)this->_data + index, &value, 4);");
+    }
+
+    // Copies `memory` in, as it is: the bytes of a plain value or of a plain
+    // array's elements (see traverse.RawMemory), one copy whatever its size.
+    mut fn push(memory: RawMemory): void :: final {
+        let n = memory.length;
+        if n == 0 {
+            this._assertBuilding();
+            return;
+        }
+        let at = this._appendForNumber(n);
+        let source = memory._data;
+        // A plain value's numbers, as memory holds them: little-endian.
+        __c__("HZSTD_ASSERT_LITTLE_ENDIAN(); if (at) { memcpy(at, source, (size_t)n); }");
+    }
+
+    // Room for a number of `count` bytes at the end, or none for a measuring
+    // buffer, which only counts them.
+    mut fn _appendForNumber(count: int): cptr :: final {
+        if this._measuring {
+            this._assertBuilding();
+            this._length += count;
+            return none as cptr;
+        }
+        return this._appendUninitialized(count);
+    }
+
     // The values, formatted exactly as fmt.format formats them, written
     // straight into this buffer: nothing is allocated but this buffer's own
     // growth. It takes any buffer, a struct field included, which a
@@ -860,6 +951,11 @@ export opaque struct Bytes {
     fn operator==(other: Bytes) {
         if this.length != other.length {
             return false;
+        }
+        // The very same memory is equal without reading it: what a cache
+        // keyed by Bytes meets on every lookup of the key it was given.
+        if this.refersToSameMemory(other) {
+            return true;
         }
 
         if this.singleByte || other.singleByte {

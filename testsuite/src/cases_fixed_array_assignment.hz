@@ -1,0 +1,48 @@
+// ============================================================================
+// REGRESSION TEST -- this is a real, load-bearing test, not a placeholder.
+//
+// Bug: assigning a fixed-size array ([N]T) -- to a local, a value struct's
+// field or a ref struct's field -- crashed the compiler with an internal
+// "Assertion failed" in the C generator's assignment (CodeGenerator.ts,
+// ExprAssignmentExpr): only primitives, structs, dynamic arrays and unions
+// were handled. A fixed array is a C struct ({ T data[N]; }), so plain C
+// assignment copies it. Hit by stdlib/core/src/traverse.hz reading a struct
+// with a fixed array field.
+//
+// Fix: the assignment handles FixedArrayDatatype like a struct.
+// ============================================================================
+
+namespace cases_fixed_array_assignment {
+
+    export fn register(s: mut testsuite.Suite) {
+
+        s.run(
+            "fixed arrays: assigned to a local, a value struct field and a ref struct field, copied",
+            """
+struct V { arr: [3]int; }
+ref struct R { arr: [2]real; }
+
+fn main(): int {
+    let a: [2]int = [1, 2];
+    let b: [2]int = [3, 4];
+    a = b;
+    b[0] = 100;
+    fmt.println(a[0] + a[1]);
+    let v = V { arr: [1, 2, 3] };
+    v.arr = [7, 8, 9];
+    fmt.println(v.arr[2]);
+    let r = R { arr: [0.5, 1.5] };
+    let other: [2]real = [2.5, 3.5];
+    r.arr = other;
+    other[1] = 0.0;
+    fmt.println(r.arr[1]);
+    return 0;
+}
+""",
+            """
+7
+9
+3.5
+""");
+    }
+}

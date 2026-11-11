@@ -74,6 +74,7 @@ filedialog = { path = "../stdlib/filedialog" }
 clipboard = { path = "../stdlib/clipboard" }
 image = { path = "../stdlib/image" }
 base64 = { path = "../stdlib/base64" }
+crc32c = { path = "../stdlib/crc32c" }
 hzui = { path = "../stdlib/hzui" }
 pdf = { path = "../stdlib/pdf" }
 unicode = { path = "../stdlib/unicode" }

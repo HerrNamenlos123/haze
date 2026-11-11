@@ -1,0 +1,61 @@
+// CRC-32C against values from an independent bitwise implementation (Python,
+// the reflected polynomial 0x82F63B78, one bit at a time), across lengths
+// that reach every alignment and tail of the eight-bytes-per-step loop.
+//
+// Run: scripts/run-stdlib-test.sh stdlib/crc32c/tests/crc32c-tests.hz crc32c
+
+import crc32c
+
+let failures = 0;
+
+fn check(name: str, ok: bool) {
+    if !ok {
+        fmt.println(f"FAIL {name}");
+        failures = failures + 1;
+    }
+}
+
+// (i * 7 + 3) mod 256 for i in [0, n).
+fn pattern(n: int): Bytes {
+    let buffer = ByteBuffer();
+    for (let i = 0; i < n; i++) {
+        let value = (i * 7 + 3) % 256;
+        if value >= 0 && value <= 255 {
+            buffer.push(value as u8);
+        }
+    }
+    buffer.commit();
+    return buffer.bytes();
+}
+
+fn main(): int {
+    check("empty", crc32c.hash(Bytes()) == 0);
+    check("a", crc32c.hash(Bytes("a")) == 0xc1d04330);
+    check("123456789", crc32c.hash(Bytes("123456789")) == 0xe3069283);
+    check("pattern 1000", crc32c.hash(pattern(1000)) == 0xdd2edff7);
+    check("update continues", crc32c.update(crc32c.hash(Bytes("hello")), Bytes(" world")) == 0xc99465aa);
+    check("hello world", crc32c.hash(Bytes("hello world")) == 0xc99465aa);
+    // Every length up to 40, summed: each misaligned start and tail.
+    let sum: u64 = 0;
+    for (let n = 0; n <= 40; n++) {
+        sum = (sum + crc32c.hash(pattern(n)) as u64) % 4294967296;
+    }
+    check("lengths 0..40", sum == 0xd186dc30);
+    // A slice that starts at an odd offset of its block.
+    let shifted = ByteBuffer();
+    shifted.push(Bytes("xyz"));
+    shifted.push(pattern(1000));
+    shifted.commit();
+    check("slice of a larger block", crc32c.hash(shifted.bytes().slice(3, 1003)) == 0xdd2edff7);
+    // The raw-memory form agrees.
+    let raw = shifted.bytes();
+    let memory = RawMemory {};
+    __c__("memory._data = (hzstd_u8_t*)raw.basePtr + raw.offset + 3; memory.length = 1000;");
+    check("raw memory", crc32c.hash(memory) == 0xdd2edff7);
+    if failures > 0 {
+        fmt.println(f"{failures} failed");
+        return 1;
+    }
+    fmt.println("crc32c: all passed");
+    return 0;
+}

@@ -217,7 +217,14 @@ export namespace fs {
 
     export fn writeBinary(allocator: Allocator, path: str, data: Bytes): Result<none, Error> {
         let ptr = none as cptr;
-        __c__("ptr = data.basePtr + data.offset;");
+        // A single byte is held inline, with no buffer of its own.
+        let single: u8 = 0;
+        if let byte = data.singleByte {
+            single = byte;
+            __c__("ptr = &single;");
+        } else {
+            __c__("ptr = data.basePtr + data.offset;");
+        }
         let result = ffi.hzstd_write_file_binary(allocator, path, ptr, data.length);
         if result.code == ffi.hzstd_fs_error_code_none {
             return Result<none, Error>.Ok(none);
@@ -252,6 +259,26 @@ export namespace fs {
     // the in-place write this exists to avoid.
     export fn replaceText(path: str, text: str): Result<none, Error> {
         let result = ffi.hzstd_replace_file_text(path, text);
+        if result.code == ffi.hzstd_fs_error_code_none {
+            return Result<none, Error>.Ok(none);
+        }
+        return Result<none, Error>.Err(mapErrorEnum(result.code));
+    }
+
+    // replaceText for bytes: the same single step that leaves the old
+    // content or the new, never neither. (A str is bytes to the C side; the
+    // bytes are handed over as one, without a copy.)
+    export fn replaceBinary(path: str, data: Bytes): Result<none, Error> {
+        let result = ffi.hzstd_replace_file_text(path, data.string());
+        if result.code == ffi.hzstd_fs_error_code_none {
+            return Result<none, Error>.Ok(none);
+        }
+        return Result<none, Error>.Err(mapErrorEnum(result.code));
+    }
+
+    // createText for bytes: a NEW file, never replacing anything at `path`.
+    export fn createBinary(path: str, data: Bytes): Result<none, Error> {
+        let result = ffi.hzstd_create_file_text(Alloc.heap(), path, data.string());
         if result.code == ffi.hzstd_fs_error_code_none {
             return Result<none, Error>.Ok(none);
         }

@@ -587,7 +587,9 @@ static cJSON_bool print_number(const cJSON* const item, printbuffer* const outpu
   if (isnan(d) || isinf(d)) {
     length = sprintf((char*)number_buffer, "null");
   }
-  else if (d == (double)item->valueint) {
+  /* Haze: -0.0 == 0 as well, but %d would drop its sign; the real
+   * formatter below writes it. */
+  else if (d == (double)item->valueint && !(d == 0 && signbit(d))) {
     length = sprintf((char*)number_buffer, "%d", item->valueint);
   }
   else {

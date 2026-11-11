@@ -1,0 +1,39 @@
+__c__("#include \"ffi/crc32c.c\"");
+
+// CRC-32C (Castagnoli): the 32-bit checksum of iSCSI, ext4 and btrfs. It finds
+// every burst of up to 32 changed bits and all but one in 2^32 of everything
+// else, which is what a file format needs to tell damaged bytes from intact
+// ones. Not a cryptographic hash: anyone can make bytes with a given CRC.
+//
+// The standard definition (initial value ~0, reflected, final xor ~0):
+// hash("123456789") is 0xE3069283.
+
+// The CRC-32C of `data`.
+export fn hash(data: Bytes): u32 {
+    return update(0, data);
+}
+
+// Continues `crc`, the CRC-32C of some bytes, with `data` after them:
+// update(hash(a), b) is the CRC-32C of a followed by b. hash(x) is
+// update(0, x).
+export fn update(crc: u32, data: Bytes): u32 {
+    if let single = data.singleByte {
+        let byte: u8 = single;
+        let result: u32 = 0;
+        __c__("result = haze_crc32c_update(crc, &byte, 1);");
+        return result;
+    }
+    let result: u32 = 0;
+    let length = data.length;
+    __c__("result = haze_crc32c_update(crc, (const hzstd_u8_t*)data.basePtr + data.offset, length);");
+    return result;
+}
+
+// The CRC-32C of raw memory (see RawMemory), for bytes that are not Bytes.
+export fn hash(memory: RawMemory): u32 {
+    let result: u32 = 0;
+    let length = memory.length;
+    let data = memory._data;
+    __c__("result = haze_crc32c_update(0, data, length);");
+    return result;
+}

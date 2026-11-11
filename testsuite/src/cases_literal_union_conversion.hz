@@ -1,0 +1,64 @@
+// ============================================================================
+// REGRESSION TEST -- this is a real, load-bearing test, not a placeholder.
+//
+// Bug: a string (or integer) literal was not accepted into a union of
+// literal types: `let g: "lines" | "dots" = "lines";` failed with H4001 "No
+// suitable conversion from str to (const "lines" | const "dots")", although
+// the same literal into the single literal type "lines" converts. Such a
+// union could only ever be filled by json.parse. Hit making a new note's
+// settings in code (haze-notes/src/persistence.hz).
+//
+// Fix: the value-to-union conversion (src/Semantic/Conversion.ts) takes a
+// literal into the member that is that very literal. One no member is stays
+// an error.
+// ============================================================================
+
+namespace cases_literal_union_conversion {
+
+    export fn register(s: mut testsuite.Suite) {
+
+        s.run(
+            "a literal into a union of literal types: a let, a struct field, an argument, a return",
+            """
+ref struct D { grid: "lines" | "dots"; }
+
+fn take(mode: 1 | 2 | 3): int {
+    if mode is 2 { return 20; }
+    return 0;
+}
+
+fn pick(): "lines" | "dots" {
+    return "dots";
+}
+
+fn main(): int {
+    let g: "lines" | "dots" = "lines";
+    let d = D { grid: "dots" };
+    fmt.println(g is "lines");
+    fmt.println(d.grid is "dots");
+    fmt.println(take(2));
+    fmt.println(pick() is "dots");
+    d.grid = "lines";
+    fmt.println(d.grid is "lines");
+    return 0;
+}
+""",
+            """
+true
+true
+20
+true
+true
+""");
+
+        s.compileFails(
+            "a literal that is no member of the union is still refused",
+            """
+fn main(): int {
+    let g: "lines" | "dots" = "grid";
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.NoSuitableConversionFound)]);
+    }
+}

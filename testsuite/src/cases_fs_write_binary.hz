@@ -1,0 +1,65 @@
+// ============================================================================
+// REGRESSION TEST -- this is a real, load-bearing test, not a placeholder.
+//
+// Bug: fs.writeBinary refused to write an empty file ("invalid buffer or
+// length", reported as InvalidPath), and refused a one-byte Bytes too: a
+// single byte is held inline, without a buffer, so the pointer handed to C
+// was null. Both are ordinary data. Hit writing an empty fixture in
+// haze-notes/tests/document-load-tests.hz.
+//
+// Fix: hzstd_write_file_binary (stdlib/core/src/hzstd/src/hzstd_filesystem.c)
+// takes a length of 0, and fs.writeBinary (stdlib/core/src/filesystem.hz)
+// hands C the inline byte.
+// ============================================================================
+
+namespace cases_fs_write_binary {
+
+    export fn register(s: mut testsuite.Suite) {
+
+        s.run(
+            "fs.writeBinary: empty, one byte and more, each read back exactly",
+            """
+fn workPath(name: str): str {
+    let dir = env.get("HAZE_TEST_WORKDIR");
+    if dir is str {
+        return f"{dir}/{name}";
+    }
+    return f"/tmp/{name}";
+}
+
+fn roundTrip(name: str, data: Bytes): bool {
+    let path = workPath(name);
+    if !fs.writeBinary(path, data) {
+        return false;
+    }
+    let back = fs.readBinary(path);
+    fs.removeFile(path);
+    if !back {
+        return false;
+    }
+    let bytes: Bytes = back;
+    return bytes == data;
+}
+
+fn main(): int {
+    fmt.println(roundTrip("fs-write-binary-empty.bin", Bytes()));
+    fmt.println(roundTrip("fs-write-binary-one.bin", Bytes(42 as u8)));
+    fmt.println(roundTrip("fs-write-binary-more.bin", Bytes("abc\\u0000def")));
+    // Overwriting with nothing leaves an empty file.
+    let path = workPath("fs-write-binary-truncate.bin");
+    fs.writeBinary(path, Bytes("long contents"));
+    fs.writeBinary(path, Bytes());
+    let after = fs.statFile(path);
+    fmt.println(after ? after.size == 0 : false);
+    fs.removeFile(path);
+    return 0;
+}
+""",
+            """
+true
+true
+true
+true
+""");
+    }
+}

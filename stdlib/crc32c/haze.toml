@@ -1,0 +1,7 @@
+name = "crc32c"
+id = "Cr32cQ7m"
+version = "1.0.0"
+description = "CRC-32C (Castagnoli), the checksum of iSCSI, ext4 and btrfs, for checking that bytes arrived unchanged"
+license = "MIT"
+authors = ["HerrNamenlos123"]
+type = "lib"

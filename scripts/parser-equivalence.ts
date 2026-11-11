@@ -46,8 +46,9 @@ import { setDiagnosticSink } from "../src/shared/Errors";
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const VERBOSE = process.argv.includes("--verbose");
 
-// node_modules holds no Haze; .git holds no working tree.
-const SKIP_DIRECTORIES = new Set(["node_modules", ".git", "target"]);
+// node_modules holds no Haze; .git holds no working tree. .claude holds the
+// sessions' worktrees and scratch copies, which are not this tree.
+const SKIP_DIRECTORIES = new Set(["node_modules", ".git", "target", ".claude"]);
 
 // The ASTBuilder takes a ModuleConfig but never reads it -- module identity
 // comes from the source text, not from the project a file happens to sit in,

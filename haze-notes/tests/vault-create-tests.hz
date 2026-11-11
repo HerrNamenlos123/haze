@@ -116,7 +116,7 @@ fn main(): int {
 
     // ── The keep file ───────────────────────────────────────────────
     let root = fixtureDir();
-    fs.writeText(f"{root}/note.tsk", "{}");
+    fs.writeText(f"{root}/note.hznote", "{}");
     fs.writeText(f"{root}/Kept/.hznotekeep", "");
     fs.writeText(f"{root}/Kept with pdf/.hznotekeep", "");
     fs.writeText(f"{root}/Kept with pdf/scan.pdf", "pdf");
@@ -138,7 +138,7 @@ fn main(): int {
     state.check("an empty folder is not", !isShownFolder(f"{root}/Empty"));
     state.check("a folder named .hznotekeep is no keep file", !isShownFolder(f"{root}/Keep is a folder"));
     state.check("a missing folder is not", !isShownFolder(f"{root}/Missing"));
-    state.check("a note is no folder", !isShownFolder(f"{root}/note.tsk"));
+    state.check("a note is no folder", !isShownFolder(f"{root}/note.hznote"));
 
     // ── Names ───────────────────────────────────────────────────────
     state.check("an empty name is refused", entryNameError("", false).length > 0);
@@ -150,14 +150,14 @@ fn main(): int {
         state.check(f"refused as a note: {name}", entryNameError(name, false).length > 0);
         state.check(f"refused as a folder: {name}", entryNameError(name, true).length > 0);
     }
-    let accepted: []str = ["Physik", "12.03.2024 Analysis", "Übung 3 (Lösung)", "日本語", "a.tsk", "x.TSK", "  padded  ", "a-b_c+d=e'f,g;h[i]j{k}l!m@n#o$p%q^r&s"];
+    let accepted: []str = ["Physik", "12.03.2024 Analysis", "Übung 3 (Lösung)", "日本語", "a.hznote", "x.HZNOTE", "  padded  ", "a-b_c+d=e'f,g;h[i]j{k}l!m@n#o$p%q^r&s"];
     for name in accepted {
         state.checkStr(f"accepted as a note: {name}", entryNameError(name, false), "");
         state.checkStr(f"accepted as a folder: {name}", entryNameError(name, true), "");
     }
     // Names Windows keeps for devices, whatever the case and whatever
     // extension follows: a vault synced there cannot hold them.
-    let reserved: []str = ["con", "PRN", "Aux", "nul", "NUL.tsk", "com1", "COM9", "lpt1", "Lpt9", "nul.backup"];
+    let reserved: []str = ["con", "PRN", "Aux", "nul", "NUL.hznote", "com1", "COM9", "lpt1", "Lpt9", "nul.backup"];
     for name in reserved {
         state.check(f"a device name is refused as a note: {name}", entryNameError(name, false).length > 0);
         state.check(f"a device name is refused as a folder: {name}", entryNameError(name, true).length > 0);
@@ -166,54 +166,54 @@ fn main(): int {
     for name in notReserved {
         state.checkStr(f"only the device names themselves: {name}", entryNameError(name, false), "");
     }
-    // A note called ".tsk" would be a nameless dot-file.
-    state.check("a note name that is only the extension is refused", entryNameError(".tsk", false).length > 0);
-    state.check("also padded", entryNameError("  .tsk ", false).length > 0);
-    state.checkStr("a folder may be called that, though", entryNameError("x.tsk", true), "");
+    // A note called ".hznote" would be a nameless dot-file.
+    state.check("a note name that is only the extension is refused", entryNameError(".hznote", false).length > 0);
+    state.check("also padded", entryNameError("  .hznote ", false).length > 0);
+    state.checkStr("a folder may be called that, though", entryNameError("x.hznote", true), "");
     state.checkStr("a note may start with a dot", entryNameError(".scratch", false), "");
     state.check("a folder may not: the tree would hide it", entryNameError(".scratch", true).length > 0);
-    state.checkStr("a note may end with a dot: .tsk follows it", entryNameError("Draft.", false), "");
+    state.checkStr("a note may end with a dot: .hznote follows it", entryNameError("Draft.", false), "");
     state.check("a folder may not: Windows drops the dot", entryNameError("Draft.", true).length > 0);
 
-    state.checkStr("a note's file name gets .tsk", noteFileName("Physik"), "Physik.tsk");
-    state.checkStr("not twice", noteFileName("Physik.tsk"), "Physik.tsk");
-    state.checkStr("trimmed", noteFileName("  Physik  "), "Physik.tsk");
-    // The tree takes a file for a note when its name contains ".tsk", which
-    // ".TSK" does not, so this one needs the extension to show up.
-    state.checkStr("an upper-case extension is not the extension", noteFileName("x.TSK"), "x.TSK.tsk");
-    state.checkStr("a note ending in a dot", noteFileName("Draft."), "Draft..tsk");
+    state.checkStr("a note's file name gets .hznote", noteFileName("Physik"), "Physik.hznote");
+    state.checkStr("not twice", noteFileName("Physik.hznote"), "Physik.hznote");
+    state.checkStr("trimmed", noteFileName("  Physik  "), "Physik.hznote");
+    // The tree takes a file for a note when its name ends in ".hznote", which
+    // ".HZNOTE" does not, so this one needs the extension to show up.
+    state.checkStr("an upper-case extension is not the extension", noteFileName("x.HZNOTE"), "x.HZNOTE.hznote");
+    state.checkStr("a note ending in a dot", noteFileName("Draft."), "Draft..hznote");
 
     // ── New notes ───────────────────────────────────────────────────
     let notes = f"{root}/Notes";
     fs.createDirectory(notes);
-    let created = createNote(notes, "  First  ", "{\"new\":1}");
+    let created = createNote(notes, "  First  ", Bytes("{\"new\":1}"));
     state.checkStr("a new note: no error", created.error, "");
-    state.checkStr("a new note: its path", created.path, f"{notes}/First.tsk");
-    state.checkStr("a new note: holds what it was given", textOf(f"{notes}/First.tsk"), "{\"new\":1}");
+    state.checkStr("a new note: its path", created.path, f"{notes}/First.hznote");
+    state.checkStr("a new note: holds what it was given", textOf(f"{notes}/First.hznote"), "{\"new\":1}");
     state.checkStr("a new note is in the tree", treeText(notes), "- First\n");
 
-    fs.writeText(f"{notes}/Kept.tsk", "precious");
-    let again = createNote(notes, "Kept", "{\"new\":2}");
+    fs.writeText(f"{notes}/Kept.hznote", "precious");
+    let again = createNote(notes, "Kept", Bytes("{\"new\":2}"));
     state.check("an existing note: an error", again.error.length > 0);
     state.checkStr("an existing note: no path", again.path, "");
-    state.checkStr("an existing note is never replaced", textOf(f"{notes}/Kept.tsk"), "precious");
-    let withExtension = createNote(notes, "Kept.tsk", "{\"new\":3}");
+    state.checkStr("an existing note is never replaced", textOf(f"{notes}/Kept.hznote"), "precious");
+    let withExtension = createNote(notes, "Kept.hznote", Bytes("{\"new\":3}"));
     state.check("an existing note named with its extension: an error", withExtension.error.length > 0);
-    state.checkStr("and still not replaced", textOf(f"{notes}/Kept.tsk"), "precious");
+    state.checkStr("and still not replaced", textOf(f"{notes}/Kept.hznote"), "precious");
 
     // A folder where the note would go.
-    fs.createDirectory(f"{notes}/Clash.tsk");
-    let clash = createNote(notes, "Clash", "{}");
+    fs.createDirectory(f"{notes}/Clash.hznote");
+    let clash = createNote(notes, "Clash", Bytes("{}"));
     state.check("a folder in the note's place: an error", clash.error.length > 0);
-    state.check("and the folder is left alone", isDirectory(f"{notes}/Clash.tsk"));
+    state.check("and the folder is left alone", isDirectory(f"{notes}/Clash.hznote"));
 
-    let badNote = createNote(notes, "a/b", "{}");
+    let badNote = createNote(notes, "a/b", Bytes("{}"));
     state.check("a refused name: an error", badNote.error.length > 0);
     state.check("a refused name: nothing written", !exists(f"{notes}/a"));
 
     // A folder deleted outside the app since the tree last looked is not
     // made again by creating something in it.
-    let deep = createNote(f"{notes}/Gone", "Deep", "{}");
+    let deep = createNote(f"{notes}/Gone", "Deep", Bytes("{}"));
     state.check("a note in a folder that is not there: an error", deep.error.length > 0);
     state.checkStr("a note in a folder that is not there: no path", deep.path, "");
     state.check("and the folder is not made again", !exists(f"{notes}/Gone"));
@@ -245,7 +245,7 @@ fn main(): int {
     // A hidden folder with a keep file that has something in it: the file
     // is not replaced.
     fs.writeText(f"{folders}/Odd/.hznotekeep", "someone wrote here");
-    fs.writeText(f"{folders}/Odd/.hidden/x.tsk", "{}");
+    fs.writeText(f"{folders}/Odd/.hidden/x.hznote", "{}");
     state.check("a folder with a keep file is shown", isShownFolder(f"{folders}/Odd"));
     let odd = createFolder(folders, "Odd");
     state.check("so creating it again is an error", odd.error.length > 0);
@@ -253,7 +253,7 @@ fn main(): int {
 
     // A folder that holds a note is shown; creating it is an error and
     // writes nothing into it.
-    fs.writeText(f"{folders}/Busy/n.tsk", "{}");
+    fs.writeText(f"{folders}/Busy/n.hznote", "{}");
     let busy = createFolder(folders, "Busy");
     state.check("a folder with notes: an error", busy.error.length > 0);
     state.check("a folder with notes gets no keep file", !exists(f"{folders}/Busy/.hznotekeep"));
@@ -278,14 +278,14 @@ fn main(): int {
 
     // ── Every file ──────────────────────────────────────────────────
     let everything = f"{root}/Everything";
-    fs.writeText(f"{everything}/note.tsk", "{}");
+    fs.writeText(f"{everything}/note.hznote", "{}");
     fs.writeText(f"{everything}/scan.pdf", "pdf");
     fs.writeText(f"{everything}/.DS_Store", "x");
     fs.writeText(f"{everything}/Kept/.hznotekeep", "");
     fs.writeText(f"{everything}/Kept/photo.png", "png");
     fs.writeText(f"{everything}/Assets/img.png", "png");
     fs.writeText(f"{everything}/Assets/Deeper/more.png", "png");
-    fs.writeText(f"{everything}/Mixed/inner.tsk", "{}");
+    fs.writeText(f"{everything}/Mixed/inner.hznote", "{}");
     fs.writeText(f"{everything}/Mixed/readme.md", "md");
     fs.writeText(f"{everything}/.git/HEAD", "ref");
     state.checkStr("every file: what is not a note is a ghost, no keep file, no hidden folder",

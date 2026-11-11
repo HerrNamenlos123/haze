@@ -1,0 +1,65 @@
+// ============================================================================
+// REGRESSION TEST -- this is a real, load-bearing test, not a placeholder.
+//
+// Bug: a constructor that calls its own struct's constructor (the same
+// overload, while it is still being elaborated) crashed the compiler with an
+// internal "Assertion failed" in resolveStructConstructor: the callee's type
+// is still the deferred placeholder at that point. Every other recursive call
+// of a function that is not `:: final` reports H7023 ("is not fully
+// elaborated yet ... requires a :: final annotation"); a constructor now
+// does too. With `:: final` the recursion already worked, and still does.
+// Hit writing BinaryReader's constructor (stdlib/core/src/binary.hz).
+//
+// Fix: resolveStructConstructor (src/Semantic/Elaborate.ts) reports H7023
+// instead of asserting.
+// ============================================================================
+
+namespace cases_constructor_self_call {
+
+    export fn register(s: mut testsuite.Suite) {
+
+        s.compileFails(
+            "constructor: calling itself without :: final is H7023, not a compiler crash",
+            """
+struct R {
+    n: int;
+    fn constructor(n: int): R {
+        if n > 1 {
+            return R(1);
+        }
+        return R { n: n };
+    }
+}
+
+fn main(): int {
+    let r = R(5);
+    return r.n;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.FunctionNotFullyElaboratedYetIfItPart)]);
+
+        s.run(
+            "constructor: a :: final constructor may call itself",
+            """
+struct R {
+    n: int;
+    fn constructor(n: int): R :: final {
+        if n > 1 {
+            return R(n - 1);
+        }
+        return R { n: n * 10 };
+    }
+}
+
+fn main(): int {
+    fmt.println(R(5).n);
+    fmt.println(R(1).n);
+    return 0;
+}
+""",
+            """
+10
+10
+""");
+    }
+}

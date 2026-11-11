@@ -1377,12 +1377,10 @@ ref struct Parser {
             this.w.hoist(at, moved);
 
             this.w.key("returnType");
-            // The grammar's return type is a typeExprModified, so
-            // `extern C () -> A | B` is `(extern C () -> A) | B`. The plain
-            // form reads `-> (A | B)` instead, against the grammar; that is an
-            // open question about the plain form, not copied into this one.
-            if externC { this.typeExprModified(); }
-            else { this.typeExpr(); }
+            // The return type takes a union, as in TypeScript: `() => A | B`
+            // returns `A | B`; a union with a function in it wraps it,
+            // `(() => A) | B`. The same for `extern C`.
+            this.typeExpr();
             this.w.key("requires");
             this.requiresBlock();
             this.w.keyInt("mutability", 1);   // EDatatypeMutability.Default

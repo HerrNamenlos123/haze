@@ -1,0 +1,612 @@
+// traverse: every hook is called when it should be (a format that records
+// each call, against the exact expected sequence), values of every supported
+// shape survive a write and a read through a small binary format, the
+// field rules of reading (defaults, none, literals, missing, duplicate,
+// unknown and reordered fields), and the plain-memory copies: which types
+// are plain, that a plain array is copied in one call, and that copying and
+// walking give the very same values.
+//
+// Run: scripts/run-stdlib-test.sh stdlib/core/tests/traverse-tests.hz
+
+let failures = 0;
+
+fn check(name: str, ok: bool) {
+    if !ok {
+        fmt.println(f"FAIL {name}");
+        failures = failures + 1;
+    }
+}
+
+// ── The types walked ────────────────────────────────────────────────────
+
+struct Point {
+    x: real;
+    y: real;
+    pressure: real;
+}
+
+struct Mixed {
+    a: f64;
+    b: i32;
+}
+
+struct Flagged {
+    a: f64;
+    on: bool;
+}
+
+struct Nested {
+    start: Point;
+    end: Point;
+}
+
+struct WithSkip {
+    a: f64;
+    [[test.skip]]
+    cache: f64 = 0.0;
+}
+
+struct Box {
+    left: real;
+    top: real;
+}
+
+ref struct Line {
+    variant: "Line";
+    points: []Point;
+    color: str;
+    width: real;
+    box?: Box;
+    [[test.skip]]
+    tessellated: []real = [];
+}
+
+ref struct Picture {
+    variant: "Picture";
+    at: Vec2;
+    size: Vec2;
+    data: Bytes;
+}
+
+ref struct Label {
+    variant: "Label";
+    text: str;
+    flags: [3]u8;
+}
+
+type Shape = Line | Picture | Label;
+
+ref struct Sheet {
+    title: str;
+    shapes: []Shape;
+    note: str | none;
+    count: i64;
+    small: i8;
+    wide: u16;
+    big: u64;
+    ratio: f32;
+    done: bool;
+    grid: [][]i32;
+    pairs: [2]Point;
+    tags: []str = [];
+}
+
+// ── A format that records every call ────────────────────────────────────
+
+ref struct Recorder {
+    skipAttribute: "test.skip" = "test.skip";
+    log: []str = [];
+    copies: bool = false;
+
+    fn writePrimitive<T>(value: T) {
+        if comptime T is Bytes {
+            this.log.push(f"prim Bytes {value.length}");
+        }
+        else {
+            this.log.push(f"prim {traverse.typeName<T>()} {value}");
+        }
+    }
+    fn writeLiteral<T>() { this.log.push(f"literal {T.literalValue}"); }
+    fn beginStruct<T>() { this.log.push(f"struct {traverse.typeName<T>()}"); }
+    fn endStruct<T>() { this.log.push(f"/struct {traverse.typeName<T>()}"); }
+    fn beginField<T>(name: str, index: int) { this.log.push(f"field {name} {index}"); }
+    fn endField<T>(name: str, index: int) { this.log.push(f"/field {name}"); }
+    fn beginArray<T>(length: int) { this.log.push(f"array {length}"); }
+    fn endArray<T>() { this.log.push("/array"); }
+    fn beginVariant<T, V>(index: int) { this.log.push(f"variant {index} {traverse.typeName<V>()}"); }
+    fn endVariant<T, V>(index: int) { this.log.push(f"/variant {index}"); }
+    fn writesPlain<T>(): bool { return this.copies; }
+    fn writePlain<T>(memory: RawMemory, count: int) { this.log.push(f"plain {traverse.typeName<T>()} x{count} {memory.length} bytes"); }
+
+    fn describePrimitive<T>(): int { this.log.push(f"d prim {traverse.typeName<T>()}"); return 1; }
+    fn describeLiteral<T>(): int { this.log.push(f"d literal {T.literalValue}"); return 2; }
+    fn describeNone(): int { this.log.push("d none"); return 3; }
+    fn describeStruct<T>(): int { this.log.push(f"d struct {traverse.typeName<T>()}"); return 4; }
+    fn describeField<T, FieldType>(id: int, name: str, index: int) {
+        this.log.push(f"d field {name} {index}");
+        traverse.describe<Recorder, FieldType>(this);
+    }
+    fn endDescribeStruct<T>(id: int) { this.log.push(f"d /struct {traverse.typeName<T>()}"); }
+    fn describeArray<T, Element>(): int {
+        this.log.push("d array");
+        traverse.describe<Recorder, Element>(this);
+        return 5;
+    }
+    fn describeFixedArray<T, Element>(length: int): int {
+        this.log.push(f"d fixed {length}");
+        traverse.describe<Recorder, Element>(this);
+        return 6;
+    }
+    fn describeUnion<T>(): int { this.log.push("d union"); return 7; }
+    fn describeVariant<T, V>(id: int, index: int) {
+        this.log.push(f"d variant {index}");
+        traverse.describe<Recorder, V>(this);
+    }
+    fn endDescribeUnion<T>(id: int) { this.log.push("d /union"); }
+}
+
+fn u16of(n: int): u16 {
+    assert(n >= 0 && n <= 65535, "more than a u16 holds");
+    return n as u16;
+}
+
+fn f64of(value: real): f64 {
+    return value;
+}
+
+fn literalText(value: str): str {
+    return value;
+}
+
+// A length or count as the u32 the format writes it as.
+fn u32of(n: int): u32 {
+    assert(n >= 0 && n <= 4294967295, "longer than a u32 holds");
+    return n as u32;
+}
+
+fn joined(log: []str): str {
+    let text = "";
+    for line in log {
+        text = text + line + "\n";
+    }
+    return text;
+}
+
+fn testHookSequence() {
+    let line = Line {
+        variant: "Line",
+        points: [Point { x: 1.0, y: 2.0, pressure: 0.5 }],
+        color: "#000",
+        width: 0.25,
+        box: Box { left: 1.0, top: 2.0 },
+    };
+    let shapes: []Shape = [line];
+    let r = Recorder {};
+    traverse.write<Recorder, []Shape>(r, shapes);
+    let expected = "array 1\n"
+        + f"variant {variantOf(line)} Line\n"
+        + "struct Line\n"
+        + "field variant 0\nliteral Line\n/field variant\n"
+        + "field points 1\narray 1\nstruct Point\n"
+        + "field x 0\nprim real 1\n/field x\n"
+        + "field y 1\nprim real 2\n/field y\n"
+        + "field pressure 2\nprim real 0.5\n/field pressure\n"
+        + "/struct Point\n/array\n/field points\n"
+        + "field color 2\nprim str #000\n/field color\n"
+        + "field width 3\nprim real 0.25\n/field width\n"
+        + "field box 4\n"
+        + f"variant {boxVariantIndex()} Box\n"
+        + "struct Box\nfield left 0\nprim real 1\n/field left\nfield top 1\nprim real 2\n/field top\n/struct Box\n"
+        + f"/variant {boxVariantIndex()}\n"
+        + "/field box\n"
+        + "/struct Line\n"
+        + f"/variant {variantOf(line)}\n"
+        + "/array\n";
+    check("write hook sequence", joined(r.log) == expected);
+    if joined(r.log) != expected {
+        fmt.println(joined(r.log));
+    }
+
+    // With plain copies allowed: the points array is one call, Box one more.
+    let p = Recorder { copies: true };
+    traverse.write<Recorder, Line>(p, line);
+    let text = joined(p.log);
+    check("plain array is one call", text.contains("array 1\nplain Point x1 24 bytes\n/array\n"));
+    check("plain struct is one call", text.contains(f"variant {boxVariantIndex()} Box\nplain Box x1 16 bytes\n"));
+    check("skipped field is never walked", !text.contains("tessellated"));
+
+    let d = Recorder {};
+    traverse.describe<Recorder, Line>(d);
+    let described = joined(d.log);
+    let expectedDescribe = "d struct Line\n"
+        + "d field variant 0\nd literal Line\n"
+        + "d field points 1\nd array\nd struct Point\nd field x 0\nd prim real\nd field y 1\nd prim real\nd field pressure 2\nd prim real\nd /struct Point\n"
+        + "d field color 2\nd prim str\n"
+        + "d field width 3\nd prim real\n"
+        + "d field box 4\nd union\n";
+    check("describe sequence", described.startsWith(expectedDescribe) && described.endsWith("d /union\nd /struct Line\n") && !described.contains("tessellated"));
+    if !(described.startsWith(expectedDescribe) && described.endsWith("d /union\nd /struct Line\n")) {
+        fmt.println(described);
+    }
+}
+
+// Where Line sits in Shape's variants, and Box in Box | none: the compiler's
+// order, not the declaration's.
+fn variantOf(line: Line): int {
+    let shape: Shape = line;
+    for comptime V, i in Shape.variants {
+        if shape is V {
+            return i;
+        }
+    }
+    return -1;
+}
+
+type MaybeBox = Box | none;
+
+fn boxVariantIndex(): int {
+    let value: MaybeBox = Box { left: 0.0, top: 0.0 };
+    for comptime V, i in MaybeBox.variants {
+        if value is V {
+            return i;
+        }
+    }
+    return -1;
+}
+
+// ── A small tagged binary format ────────────────────────────────────────
+//
+// A struct is its field count, then per field its name, its value's size
+// and its value: so fields can come in any order, be unknown (skipped by
+// size), missing or doubled. Plain values, when allowed, are their memory.
+
+ref struct Tagged {
+    skipAttribute: "test.skip" = "test.skip";
+    copies: bool = false;
+    out: ByteBuffer;
+    // Where each open struct's count and each open field's size are.
+    starts: []int = [];
+    counts: []int = [];
+    plainCalls: int = 0;
+    primitiveCalls: int = 0;
+
+    // Reading.
+    input: BinaryReader;
+    remaining: []int = [];
+    failure: str = "";
+
+    fn writePrimitive<T>(value: T) {
+        this.primitiveCalls = this.primitiveCalls + 1;
+        if comptime T is bool { this.out.push(value ? 1 as u8 : 0 as u8); }
+        else if comptime T is i8 { this.out.pushI8(value); }
+        else if comptime T is i16 { this.out.pushI16(value); }
+        else if comptime T is i32 { this.out.pushI32(value); }
+        else if comptime T is i64 || T is int { this.out.pushI64(value); }
+        else if comptime T is u8 { this.out.push(value); }
+        else if comptime T is u16 { this.out.pushU16(value); }
+        else if comptime T is u32 { this.out.pushU32(value); }
+        else if comptime T is u64 || T is usize { this.out.pushU64(value); }
+        else if comptime T is f32 { this.out.pushF32(value); }
+        else if comptime T is f64 || T is real { this.out.pushF64(value); }
+        else if comptime T is str { this.out.pushU32(u32of(value.length)); this.out.push(value); }
+        else if comptime T is Bytes { this.out.pushU32(u32of(value.length)); this.out.push(value); }
+        else { static_assert(false, "unsupported"); }
+    }
+    fn writeLiteral<T>() {}
+    fn beginStruct<T>() {
+        this.starts.push(this.out.length());
+        this.counts.push(0);
+        this.out.pushU32(0);
+    }
+    fn endStruct<T>() {
+        let at = this.starts.pop();
+        let count = this.counts.pop();
+        this.out.setU32At(at, u32of(count));
+    }
+    fn beginField<T>(name: str, index: int) {
+        this.counts[this.counts.length - 1] = this.counts[this.counts.length - 1] + 1;
+        this.out.pushU32(u32of(name.length));
+        this.out.push(name);
+        this.starts.push(this.out.length());
+        this.out.pushU32(0);
+    }
+    fn endField<T>(name: str, index: int) {
+        let at = this.starts.pop();
+        this.out.setU32At(at, u32of(this.out.length() - at - 4));
+    }
+    fn beginArray<T>(length: int) { this.out.pushU32(u32of(length)); }
+    fn endArray<T>() {}
+    fn beginVariant<T, V>(index: int) { this.out.pushU16(u16of(index)); }
+    fn endVariant<T, V>(index: int) {}
+    fn writesPlain<T>(): bool { return this.copies; }
+    fn writePlain<T>(memory: RawMemory, count: int) {
+        this.plainCalls = this.plainCalls + 1;
+        this.out.push(memory);
+    }
+
+    fn fail(message: str) {
+        if this.failure.length == 0 {
+            this.failure = message;
+        }
+    }
+    fn failed(): bool {
+        if this.input.overran() {
+            this.fail("ran past the end");
+        }
+        return this.failure.length > 0;
+    }
+    fn readPrimitive<T>(): T {
+        if comptime T is bool { return this.input.readU8() != 0; }
+        else if comptime T is i8 { return this.input.readI8(); }
+        else if comptime T is i16 { return this.input.readI16(); }
+        else if comptime T is i32 { return this.input.readI32(); }
+        else if comptime T is i64 || T is int { return this.input.readI64(); }
+        else if comptime T is u8 { return this.input.readU8(); }
+        else if comptime T is u16 { return this.input.readU16(); }
+        else if comptime T is u32 { return this.input.readU32(); }
+        else if comptime T is u64 || T is usize { return this.input.readU64(); }
+        else if comptime T is f32 { return this.input.readF32(); }
+        else if comptime T is f64 || T is real { return this.input.readF64(); }
+        else if comptime T is str { let n = this.input.readU32(); return this.input.readStr(n as int); }
+        else if comptime T is Bytes { let n = this.input.readU32(); return this.input.readBytes(n as int); }
+        else { static_assert(false, "unsupported"); }
+        sys.unreachable();
+    }
+    fn readLiteral<T>() {}
+    fn beginReadStruct<T>() {
+        this.remaining.push(this.input.readU32() as int);
+    }
+    fn nextField<T>(): int {
+        while this.remaining[this.remaining.length - 1] > 0 {
+            this.remaining[this.remaining.length - 1] = this.remaining[this.remaining.length - 1] - 1;
+            let nameLength = this.input.readU32();
+            let name = this.input.readStr(nameLength as int);
+            let size = this.input.readU32();
+            if this.input.overran() {
+                return -1;
+            }
+            let index = traverse.fieldIndex<Tagged, T>(name);
+            if index >= 0 {
+                return index;
+            }
+            this.input.skip(size as int);
+        }
+        return -1;
+    }
+    fn endReadStruct<T>() {
+        this.remaining.pop();
+    }
+    fn missingField<T>(name: str) { this.fail(f"missing {traverse.typeName<T>()}.{name}"); }
+    fn duplicateField<T>(name: str) { this.fail(f"duplicate {traverse.typeName<T>()}.{name}"); }
+    fn beginReadArray<T>(): int {
+        let count = this.input.readU32() as int;
+        if count > this.input.remaining() {
+            this.fail("array longer than the input");
+            return 0;
+        }
+        if comptime T.category == meta.TypeCategory.Array {
+            if count != T.length {
+                this.fail("fixed array of another length");
+                return 0;
+            }
+        }
+        return count;
+    }
+    fn endReadArray<T>() {}
+    fn readVariant<T>(): int {
+        let index = this.input.readU16() as int;
+        if index >= T.variants.length {
+            this.fail("unknown variant");
+            return 0;
+        }
+        return index;
+    }
+    fn endReadVariant<T>() {}
+    fn readsPlain<T>(): bool { return this.copies; }
+    fn readPlain<T>(memory: RawMemory, count: int) {
+        this.plainCalls = this.plainCalls + 1;
+        this.input.readInto(memory);
+    }
+}
+
+fn encode<T>(value: T, copies: bool): Bytes {
+    let f = Tagged { copies: copies, out: ByteBuffer(), input: BinaryReader(Bytes()) };
+    traverse.write<Tagged, T>(f, value);
+    f.out.commit();
+    return f.out.bytes();
+}
+
+fn decode<T>(data: Bytes, copies: bool): Result<T, traverse.Failed> {
+    let f = Tagged { copies: copies, out: ByteBuffer(), input: BinaryReader(data) };
+    return traverse.read<Tagged, T>(f);
+}
+
+fn decodeError<T>(data: Bytes): str {
+    let f = Tagged { out: ByteBuffer(), input: BinaryReader(data) };
+    let result = traverse.read<Tagged, T>(f);
+    if result {
+        return "";
+    }
+    return f.failure;
+}
+
+fn sampleSheet(): Sheet {
+    let points: []Point = [];
+    for (let i = 0; i < 1000; i++) {
+        points.push(Point { x: i as real * 0.1, y: -(i as real), pressure: 0.5 });
+    }
+    let shapes: []Shape = [];
+    shapes.push(Line { variant: "Line", points: points, color: "#1d4ed8", width: 0.35, box: Box { left: -1.0, top: 2.5 } });
+    shapes.push(Picture { variant: "Picture", at: Vec2(3.0, 4.0), size: Vec2(5.0, 6.0), data: Bytes("PNG\r\n") });
+    shapes.push(Label { variant: "Label", text: "héllo", flags: [1, 2, 255] });
+    shapes.push(Line { variant: "Line", points: [], color: "", width: 0.0 });
+    return Sheet {
+        title: "a sheet",
+        shapes: shapes,
+        note: none,
+        count: -42,
+        small: -7,
+        wide: 65535,
+        big: u64.max,
+        ratio: 1.5,
+        done: true,
+        grid: [[1, 2], [], [-3]],
+        pairs: [Point { x: 1.0, y: 2.0, pressure: 3.0 }, Point { x: -0.0, y: 5.0, pressure: 6.0 }],
+        tags: ["x", "yz"],
+    };
+}
+
+fn bitsOf(value: real): u64 {
+    let bits: u64 = 0;
+    __c__("memcpy(&bits, &value, 8);");
+    return bits;
+}
+
+fn samePoints(a: []Point, b: []Point): bool {
+    if a.length != b.length {
+        return false;
+    }
+    for (let i = 0; i < a.length; i++) {
+        if bitsOf(a[i].x) != bitsOf(b[i].x) || bitsOf(a[i].y) != bitsOf(b[i].y) || bitsOf(a[i].pressure) != bitsOf(b[i].pressure) {
+            return false;
+        }
+    }
+    return true;
+}
+
+fn sameSheet(a: Sheet, b: Sheet): bool {
+    if a.title != b.title || a.count != b.count || a.small != b.small || a.wide != b.wide || a.big != b.big
+        || a.ratio != b.ratio || a.done != b.done || a.shapes.length != b.shapes.length || a.tags.length != b.tags.length {
+        return false;
+    }
+    if (a.note is none) != (b.note is none) {
+        return false;
+    }
+    for (let i = 0; i < a.tags.length; i++) {
+        if a.tags[i] != b.tags[i] { return false; }
+    }
+    if a.grid.length != b.grid.length { return false; }
+    for (let i = 0; i < a.grid.length; i++) {
+        if a.grid[i].length != b.grid[i].length { return false; }
+        for (let j = 0; j < a.grid[i].length; j++) {
+            if a.grid[i][j] != b.grid[i][j] { return false; }
+        }
+    }
+    if !samePoints([a.pairs[0], a.pairs[1]], [b.pairs[0], b.pairs[1]]) { return false; }
+    for (let i = 0; i < a.shapes.length; i++) {
+        let x = a.shapes[i];
+        let y = b.shapes[i];
+        if x is Line {
+            if !(y is Line) { return false; }
+            if x.variant != y.variant || x.color != y.color || bitsOf(x.width) != bitsOf(y.width) || !samePoints(x.points, y.points) { return false; }
+            let bx = x.box;
+            let by = y.box;
+            if bx is Box {
+                if !(by is Box) { return false; }
+                if bx.left != by.left || bx.top != by.top { return false; }
+            } else if by is Box {
+                return false;
+            }
+        } else if x is Picture {
+            if !(y is Picture) { return false; }
+            if x.at.x != y.at.x || x.at.y != y.at.y || x.size.x != y.size.x || x.size.y != y.size.y || x.data != y.data { return false; }
+        } else if x is Label {
+            if !(y is Label) { return false; }
+            if x.text != y.text || x.flags[0] != y.flags[0] || x.flags[1] != y.flags[1] || x.flags[2] != y.flags[2] { return false; }
+        }
+    }
+    return true;
+}
+
+fn testRoundTrip() {
+    let sheet = sampleSheet();
+    let modes: []bool = [false, true];
+    for copies in modes {
+        let data = encode<Sheet>(sheet, copies);
+        let back = decode<Sheet>(data, copies);
+        check(f"round trip decodes (plain {copies})", back ? true : false);
+        if back {
+            check(f"round trip equal (plain {copies})", sameSheet(sheet, back));
+        }
+    }
+    // Both ways give the same values, and the copying one is one copy for the
+    // 1000 points.
+    let walked = Tagged { out: ByteBuffer(), input: BinaryReader(Bytes()) };
+    traverse.write<Tagged, Sheet>(walked, sheet);
+    let copied = Tagged { copies: true, out: ByteBuffer(), input: BinaryReader(Bytes()) };
+    traverse.write<Tagged, Sheet>(copied, sheet);
+    check("walking writes no plain copies", walked.plainCalls == 0);
+    // points (1), box (1), at and size (2), pairs (1), the two non-empty
+    // rows of grid (2) and flags (1): 8 copies.
+    check("plain copies: one per plain array or struct", copied.plainCalls == 8);
+    if copied.plainCalls != 8 {
+        fmt.println(f"plain copies: {copied.plainCalls}");
+    }
+    check("the 1000 points were not walked", walked.primitiveCalls - copied.primitiveCalls >= 3000);
+    let reader = Tagged { copies: true, out: ByteBuffer(), input: BinaryReader(encode<Sheet>(sheet, true)) };
+    let back = traverse.read<Tagged, Sheet>(reader);
+    check("plain copies when reading", back ? reader.plainCalls == 8 : false);
+}
+
+// A struct the reading code knows, written by older or newer code.
+ref struct V1 { a: i64; b: str; }
+ref struct V2 { b: str; a: i64; extra: real; }
+ref struct WithDefaults { a: i64; b: str = "default b"; c: str | none; variant: "Fixed"; }
+ref struct OnlyA { a: i64; }
+
+fn testFieldRules() {
+    // Reordered, with a field the reader does not know: skipped.
+    let v2 = V2 { b: "bee", a: 7, extra: 9.5 };
+    let asV1 = decode<V1>(encode<V2>(v2, false), false);
+    check("reordered and unknown fields", asV1 ? asV1.a == 7 && asV1.b == "bee" : false);
+    // Missing fields: the default, none, the literal.
+    let defaulted = decode<WithDefaults>(encode<OnlyA>(OnlyA { a: 3 }, false), false);
+    check("missing fields filled", defaulted ? defaulted.a == 3 && defaulted.b == "default b" && defaulted.c is none && literalText(defaulted.variant) == "Fixed" : false);
+    // Missing and required.
+    check("missing required field refused", decodeError<V1>(encode<OnlyA>(OnlyA { a: 3 }, false)) == "missing V1.b");
+    // A field twice.
+    let doubled = ByteBuffer();
+    doubled.pushU32(2);
+    for (let i = 0; i < 2; i++) {
+        doubled.pushU32(1);
+        doubled.push("a");
+        doubled.pushU32(8);
+        doubled.pushI64(5);
+    }
+    doubled.commit();
+    check("duplicate field refused", decodeError<OnlyA>(doubled.bytes()) == "duplicate OnlyA.a");
+    // Cut short.
+    let full = encode<V1>(V1 { a: 1, b: "long enough" }, false);
+    check("cut short refused", decodeError<V1>(full.slice(0, full.length - 3)) == "ran past the end");
+    // Skipped fields: never written, never read, filled with their default.
+    let skip = WithSkip { a: 2.5, cache: 99.0 };
+    let skipBack = decode<WithSkip>(encode<WithSkip>(skip, false), false);
+    check("skipped field gets its default", skipBack ? skipBack.a == f64of(2.5) && skipBack.cache == f64of(0.0) : false);
+}
+
+fn testPlainTypes() {
+    check("Point is plain", traverse.isPlain<Tagged, Point>() && traverse.plainSize<Tagged, Point>() == 24);
+    check("Vec2 is plain", traverse.isPlain<Tagged, Vec2>() && traverse.plainSize<Tagged, Vec2>() == 16);
+    check("nested plain", traverse.isPlain<Tagged, Nested>() && traverse.plainSize<Tagged, Nested>() == 48);
+    check("mixed sizes are not plain", !traverse.isPlain<Tagged, Mixed>());
+    check("bool is not plain", !traverse.isPlain<Tagged, Flagged>());
+    check("a skipped field makes it not plain", !traverse.isPlain<Tagged, WithSkip>());
+    check("a ref struct is not plain", !traverse.isPlain<Tagged, Line>());
+    check("Bytes is not plain", !traverse.isPlain<Tagged, Bytes>());
+    check("numbers are plain", traverse.isPlain<Tagged, i32>() && traverse.isPlain<Tagged, real>() && !traverse.isPlain<Tagged, bool>() && !traverse.isPlain<Tagged, str>());
+    check("typeName", traverse.typeName<Line>() == "Line" && traverse.typeName<Vec2>() == "Vec2" && traverse.typeName<real>() == "real");
+    check("fieldIndex", traverse.fieldIndex<Tagged, Line>("color") == 2 && traverse.fieldIndex<Tagged, Line>("tessellated") == -1 && traverse.fieldIndex<Tagged, Line>("nope") == -1);
+}
+
+fn main(): int {
+    testPlainTypes();
+    testHookSequence();
+    testRoundTrip();
+    testFieldRules();
+    if failures > 0 {
+        fmt.println(f"{failures} failed");
+        return 1;
+    }
+    fmt.println("traverse: all passed");
+    return 0;
+}

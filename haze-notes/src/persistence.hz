@@ -1,288 +1,79 @@
-// Saving and loading a document a piece per frame.
-//
-// json.stringify and json.parse of a whole document are one call each, and
-// for a 50 MB document each takes the better part of a second -- a freeze on
-// every autosave and every open. DocumentSave and DocumentLoad do the same
-// work in steps: each step() runs until a deadline and picks up where the last
-// one stopped, so the editor stays responsive however large the document is.
-
-fn indexOfSubstring(haystack: str, needle: str): int {
-    let last = haystack.length - needle.length;
-    for (let i = 0; i <= last; i++) {
-        let match = true;
-        for (let j = 0; j < needle.length; j++) {
-            if haystack[i + j] != needle[j] {
-                match = false;
-                break;
-            }
-        }
-        if match {
-            return i;
-        }
-    }
-    return -1;
-}
-
-// ── What a note is ─────────────────────────────────────────────────────
+// Saving and loading a note: an .hznote file (hznote.hz), written and read
+// in one go each. Even the largest note reads and decodes in a few tens of
+// ms: there is nothing left worth spreading over frames. (The strokes'
+// outlines and tessellations, the expensive part of showing a note, are
+// still computed tile by tile as they come into view; see render.hz.)
 
 // What a new note holds: technicalsketcher.web's new document (createDocument
 // in its store.ts), one blank ruled A4 page.
-fn newDocumentText(): str {
-    return "{\"filetype\":\"technicalsketcher\",\"fileversion\":1,\"data\":{\"pageColor\":\"#ffffff\",\"gridColor\":\"#5252524f\",\"gridType\":\"lines\",\"pages\":[{\"shapes\":[]}],\"pageWidthMm\":210,\"pageHeightMm\":297,\"currentPageIndex\":0}}";
+fn newNoteBytes(): Bytes {
+    let blank: []Shape = [];
+    let pages: []Page = [Page { shapes: blank }];
+    return encodeNote(DocumentFile {
+        data: DocumentBody {
+            pageColor: "#ffffff",
+            gridColor: "#5252524f",
+            gridType: "lines",
+            pages: pages,
+            pageWidthMm: 210.0,
+            pageHeightMm: 297.0,
+            currentPageIndex: 0,
+        },
+    });
 }
 
 // How much of a file is read to tell whether it is a note at all.
-const comptime noteHeadBytes = 4096;
-
-fn isJsonSpace(c: int): bool {
-    return c == 32 || c == 9 || c == 10 || c == 13;
-}
-
-fn skipJsonSpace(text: str, start: int): int {
-    let i = start;
-    while i < text.length && isJsonSpace(text[i] as int) {
-        i = i + 1;
-    }
-    return i;
-}
-
-// Whether `head`, the start of a file, is the start of a note: a JSON object
-// that says "filetype": "technicalsketcher", which every note says before its
-// pages (the web app and this one both write it first). Anything else, a PDF,
-// a picture or some other program's JSON, is no note.
-fn isNoteHead(head: str): bool {
-    let start = skipJsonSpace(head, 0);
-    if start >= head.length || head[start] as int != 123 { // '{'
-        return false;
-    }
-    let key = "\"filetype\"";
-    let value = "\"technicalsketcher\"";
-    let searchFrom = start;
-    while searchFrom < head.length {
-        let found = indexOfSubstring(head.slice(searchFrom, head.length), key);
-        if found < 0 {
-            return false;
-        }
-        let i = skipJsonSpace(head, searchFrom + found + key.length);
-        if i < head.length && head[i] as int == 58 { // ':'
-            i = skipJsonSpace(head, i + 1);
-            if head.slice(i, min(head.length, i + value.length)) == value {
-                return true;
-            }
-        }
-        searchFrom = searchFrom + found + key.length;
-    }
-    return false;
-}
+const comptime noteHeadBytes = 16;
 
 // ── Saving ──────────────────────────────────────────────────────────────
 
-// Writes `doc` to `path`, a few shapes per step().
-//
-// It writes the pages' shapes as they were when the save began; a shape
-// changed since is written as it is now, always whole (a step writes a shape
-// in one go), and the change that altered it asks for another save anyway.
-//
-// The JSON goes to a file beside the real one, which is moved over it only
-// once complete -- a crash or a failed write leaves the old file intact.
+// Writes `doc` to `path` when stepped. The file is replaced in one step
+// (fs.replaceBinary): a crash or a failed write leaves the old file intact.
+// A save that has not started yet is replaced by a newer one (see
+// EditorControls.saveNow), and the document stays in memory until its last
+// save is written.
 ref struct DocumentSave {
     path: str;
     doc: DocumentFile;
-    pages: [][]Shape;
-    // The document's JSON with its pages left empty, split where they go.
-    before: str;
-    after: str;
-    writer?: mut fs.FileWriter;
-    page: int = 0;
-    shape: int = 0;
-    pageOpen: bool = false;
     finished: bool = false;
     failed: bool = false;
 
     fn constructor(path: str, doc: DocumentFile): DocumentSave {
-        let pages: [][]Shape = [];
-        for page in doc.data.pages {
-            let shapes: []Shape = [];
-            shapes.reserve(page.shapes.length);
-            for shape in page.shapes {
-                shapes.push(shape);
-            }
-            pages.push(shapes);
-        }
-
-        // Everything but the pages, serialized the one way the document
-        // always is -- only the pages are written by hand.
-        let noPages: []Page = [];
-        let header = json.stringify(DocumentFile {
-            filetype: doc.filetype,
-            fileversion: doc.fileversion,
-            data: DocumentBody {
-                pageColor: doc.data.pageColor,
-                gridColor: doc.data.gridColor,
-                gridType: doc.data.gridType,
-                pages: noPages,
-                pageWidthMm: doc.data.pageWidthMm,
-                pageHeightMm: doc.data.pageHeightMm,
-                currentPageIndex: doc.data.currentPageIndex,
-                viewport: doc.data.viewport,
-            },
-        });
-        let marker = "\"pages\":[";
-        let at = indexOfSubstring(header, "\"pages\":[]");
-        assert(at >= 0, "DocumentSave: no pages in the serialized document");
-        let split = at + marker.length;
-        return DocumentSave {
-            path: path,
-            doc: doc,
-            pages: pages,
-            before: header.slice(0, split),
-            after: header.slice(split, header.length),
-        };
+        return DocumentSave { path: path, doc: doc };
     }
 
     // Whether writing has begun.
     fn started(): bool {
-        if this.writer {
-            return true;
-        }
         return this.finished;
     }
 
-    fn fail(message: str) {
-        fmt.println(f"Failed to save {this.path}: {message}");
-        if let w = this.writer {
-            w.close();
-        }
-        this.failed = true;
-        this.finished = true;
-    }
-
-    fn write(text: str): bool {
-        if let w = this.writer {
-            if w.write(text) != fs.Error.None {
-                this.fail("write error");
-                return false;
-            }
-            return true;
-        }
-        return false;
-    }
-
-    // Writes until `deadline` (time.now() seconds). True once the save is
-    // over -- done or failed.
+    // Writes the note. True once the save is over -- done or failed.
     fn step(deadline: real): bool {
         if this.finished {
             return true;
         }
-        let temporary = f"{this.path}.saving";
-        if !this.writer {
-            let opened = fs.openWrite(temporary);
-            if opened is fs.Error {
-                this.fail("cannot create the file");
-                return true;
-            }
-            this.writer = opened;
-            if !this.write(this.before) {
-                return true;
-            }
+        this.finished = true;
+        let written = fs.replaceBinary(this.path, encodeNote(this.doc));
+        if !written {
+            fmt.println(f"Failed to save {this.path}: {written}");
+            this.failed = true;
         }
-        while true {
-            if this.page >= this.pages.length {
-                if !this.write(this.after) {
-                    return true;
-                }
-                if let w = this.writer {
-                    if w.close() != fs.Error.None {
-                        this.fail("write error");
-                        return true;
-                    }
-                }
-                if !fs.move(temporary, this.path, { overwrite: true }) {
-                    this.fail("cannot replace the file");
-                    return true;
-                }
-                this.finished = true;
-                return true;
-            }
-            let shapes = this.pages[this.page];
-            if !this.pageOpen {
-                if !this.write(this.page > 0 ? ",{\"shapes\":[" : "{\"shapes\":[") {
-                    return true;
-                }
-                this.pageOpen = true;
-            }
-            if this.shape >= shapes.length {
-                if !this.write("]}") {
-                    return true;
-                }
-                this.page += 1;
-                this.shape = 0;
-                this.pageOpen = false;
-                continue;
-            }
-            let text = json.stringify(shapes[this.shape]);
-            if !this.write(this.shape > 0 ? f",{text}" : text) {
-                return true;
-            }
-            this.shape += 1;
-            if time.now() >= deadline {
-                return false;
-            }
-        }
-        return false;
+        return true;
     }
 
-    // Writes the rest now, however long that takes -- for when there are no
-    // more frames to spread it over.
+    // Writes it now.
     fn finish() {
-        this.step(time.now() + 1000000.0);
+        this.step(0.0);
     }
 }
 
 // ── Loading ─────────────────────────────────────────────────────────────
 
-// How much of the file one read takes: a few ms at disk-cache speed.
-const comptime readChunkBytes = 2097152;
-
-// Reads the document at `path`, a piece per step().
-//
-// A document is almost entirely shapes, so those are what gets spread out: a
-// scan over the text finds where each one is -- without parsing anything --
-// then the document is parsed with its pages' shapes cut out, and the shapes
-// one by one. The scan is resumable too; only reading the file happens in one
-// go.
+// Reads the note at `path` when stepped: the frame before shows that it is
+// being opened.
 ref struct DocumentLoad {
     path: str;
-    // The file, read a piece per step -- a large one takes tens of ms to
-    // read at all.
-    reader?: mut fs.FileReader;
-    text: str = "";
-    hasText: bool = false;
-
-    // Scan state. `kinds` holds, per open container, 1 for an object and 2
-    // for an array; `tags` what the object key naming it was (see keyTag);
-    // `expectKey` whether an object's next string is a key.
-    pos: int = 0;
-    kinds: []int = [];
-    tags: []int = [];
-    expectKey: []bool = [];
-    lastKeyTag: int = 0;
-    scanned: bool = false;
-
-    // Each shape's JSON as [start, end) into `text`, with the page it is on,
-    // and the text without them: where each page's shapes array was, it is
-    // empty.
-    shapeStart: []int = [];
-    shapeEnd: []int = [];
-    shapePage: []int = [];
-    pageCount: int = 0;
-    skeleton: []str = [];
-    skeletonFrom: int = 0;
-    currentShapeStart: int = -1;
-
     doc: DocumentFile | none = none;
-    parsedShapes: int = 0;
-
     finished: bool = false;
     failed: bool = false;
     // It failed because the file is not a note at all, rather than a note
@@ -301,301 +92,99 @@ ref struct DocumentLoad {
         this.finished = true;
     }
 
-    // Gives up on the load -- another document was asked for first.
     fn cancel() {
-        if let reader = this.reader {
-            reader.close();
-            this.reader = none;
-        }
         this.finished = true;
+        this.failed = true;
     }
 
-    // How far along it is, 0 to 1 -- for a progress display.
     fn progress(): real {
-        if this.finished {
-            return 1.0;
-        }
-        if !this.hasText {
-            if let reader = this.reader {
-                if reader.size > 0 {
-                    return 0.1 * (reader.position as real / reader.size as real);
-                }
-            }
-            return 0.0;
-        }
-        if !this.scanned {
-            if this.text.length == 0 {
-                return 0.1;
-            }
-            return 0.1 + 0.2 * (this.pos as real / this.text.length as real);
-        }
-        if this.shapeStart.length == 0 {
-            return 1.0;
-        }
-        return 0.3 + 0.7 * (this.parsedShapes as real / this.shapeStart.length as real);
+        return this.finished ? 1.0 : 0.0;
     }
 
-    // What an object key is, for the few the scan needs to recognize: 1
-    // "data", 2 "pages", 3 "shapes", 0 anything else.
-    fn keyTag(start: int, end: int): int {
-        let length = end - start;
-        let t = this.text;
-        if length == 4 && t[start] == b"d" && t[start + 1] == b"a" && t[start + 2] == b"t" && t[start + 3] == b"a" {
-            return 1;
-        }
-        if length == 5 && t[start] == b"p" && t[start + 1] == b"a" && t[start + 2] == b"g" && t[start + 3] == b"e" && t[start + 4] == b"s" {
-            return 2;
-        }
-        if length == 6 && t[start] == b"s" && t[start + 1] == b"h" && t[start + 2] == b"a" && t[start + 3] == b"p" && t[start + 4] == b"e" && t[start + 5] == b"s" {
-            return 3;
-        }
-        return 0;
-    }
-
-    // Whether the innermost open container is the shapes array of a page:
-    // root { "data": { "pages": [ { "shapes": [ here.
-    fn inShapesArray(): bool {
-        let d = this.kinds.length;
-        return d == 5 && this.kinds[4] == 2 && this.tags[4] == 3 && this.kinds[3] == 1
-            && this.kinds[2] == 2 && this.tags[2] == 2 && this.kinds[1] == 1 && this.tags[1] == 1;
-    }
-
-    // A value starts at `pos`, in whatever container is open.
-    fn valueStarts(pos: int) {
-        if this.inShapesArray() {
-            this.currentShapeStart = pos;
-        }
-    }
-
-    // The value that started at currentShapeStart ended just before `end`.
-    fn valueEnds(end: int) {
-        if this.currentShapeStart >= 0 && this.inShapesArray() {
-            this.shapeStart.push(this.currentShapeStart);
-            this.shapeEnd.push(end);
-            this.shapePage.push(this.pageCount - 1);
-            this.currentShapeStart = -1;
-        }
-    }
-
-    // Scans until `deadline`; true once the whole text is scanned, or once
-    // the scan has failed (see `failed`).
-    fn scan(deadline: real): bool {
-        let t = this.text;
-        let n = t.length;
-        let i = this.pos;
-        // Checking the clock every byte would cost more than the scan itself.
-        let nextClockCheck = i + 65536;
-        while i < n {
-            if i >= nextClockCheck {
-                if time.now() >= deadline {
-                    this.pos = i;
-                    return false;
-                }
-                nextClockCheck = i + 65536;
-            }
-            let c = t[i];
-            if c == b"\"" {
-                let start = i + 1;
-                let j = start;
-                while j < n && t[j] != b"\"" {
-                    if t[j] == b"\\" {
-                        j += 1;
-                    }
-                    j += 1;
-                }
-                let d = this.kinds.length;
-                if d > 0 && this.kinds[d - 1] == 1 && this.expectKey[d - 1] {
-                    this.lastKeyTag = this.keyTag(start, j);
-                    this.expectKey[d - 1] = false;
-                } else {
-                    this.valueStarts(i);
-                    this.valueEnds(j + 1);
-                }
-                i = j + 1;
-                continue;
-            }
-            if c == b"{" || c == b"[" {
-                let d = this.kinds.length;
-                let tag = 0;
-                if d > 0 && this.kinds[d - 1] == 1 {
-                    tag = this.lastKeyTag;
-                }
-                this.valueStarts(i);
-                this.kinds.push(c == b"{" ? 1 : 2);
-                this.tags.push(tag);
-                this.expectKey.push(c == b"{");
-                if this.inShapesArray() {
-                    // A page's shapes array opens: the text so far is kept,
-                    // up to and including the bracket.
-                    this.pageCount += 1;
-                    this.skeleton.push(t.slice(this.skeletonFrom, i + 1));
-                }
-                i += 1;
-                continue;
-            }
-            if c == b"}" || c == b"]" {
-                // A bracket that closes nothing: the file is not a document
-                // at all -- a PDF picked in the file tree, say.
-                if this.kinds.length == 0 {
-                    this.fail("the file is not a document");
-                    return true;
-                }
-                if this.inShapesArray() {
-                    // ...and closes: its content is left out.
-                    this.skeletonFrom = i;
-                }
-                this.kinds.pop();
-                this.tags.pop();
-                this.expectKey.pop();
-                this.valueEnds(i + 1);
-                i += 1;
-                continue;
-            }
-            if c == b"," {
-                let d = this.kinds.length;
-                if d > 0 && this.kinds[d - 1] == 1 {
-                    this.expectKey[d - 1] = true;
-                }
-                i += 1;
-                continue;
-            }
-            if c == b":" || c == b" " || c == b"\n" || c == b"\r" || c == b"\t" {
-                i += 1;
-                continue;
-            }
-            // A number, true, false or null: up to the next delimiter.
-            let start = i;
-            while i < n {
-                let e = t[i];
-                if e == b"," || e == b"}" || e == b"]" || e == b" " || e == b"\n" || e == b"\r" || e == b"\t" {
-                    break;
-                }
-                i += 1;
-            }
-            this.valueStarts(start);
-            this.valueEnds(i);
-        }
-        this.pos = n;
-        this.skeleton.push(t.slice(this.skeletonFrom, n));
-        return true;
-    }
-
-    // Loads until `deadline` (time.now() seconds). True once the load is
-    // over -- see `doc`, none when it failed.
+    // Loads the note. True once the load is over -- see `doc`, none when it
+    // failed.
     fn step(deadline: real): bool {
         if this.finished {
             return true;
         }
-        if !this.hasText {
-            if !this.reader {
-                // What a file is, its first bytes say. A file that is no note
-                // is turned down before it is read: it may be a video of
-                // several gigabytes.
-                let head = fs.readHead(this.path, noteHeadBytes);
-                if !head {
-                    // Only a regular file is read: a folder, or a named pipe
-                    // (which would never answer), is no note either.
-                    if head == fs.Error.NotAFile {
-                        this.notANote = true;
-                    } else if head == fs.Error.NotFound {
-                        this.hint = "It is not there any more: it was moved or deleted outside Haze Notes.";
-                    } else if head == fs.Error.PermissionDenied {
-                        this.hint = "Haze Notes is not allowed to read it.";
-                    } else {
-                        this.hint = "It could not be read.";
-                    }
-                    this.fail(f"cannot open {this.path}");
-                    return true;
-                }
-                let headText: str = head;
-                if !isNoteHead(headText) {
-                    this.notANote = true;
-                    this.fail(f"{this.path} is not a note");
-                    return true;
-                }
-                let opened = fs.openRead(this.path);
-                if opened is fs.Error {
-                    this.fail(f"cannot open {this.path}");
-                    return true;
-                }
-                this.reader = opened;
+        // What a file is, its first bytes say. A file that is no note is
+        // turned down before it is read: it may be a video of several
+        // gigabytes.
+        let head = fs.readHead(this.path, noteHeadBytes);
+        if !head {
+            // Only a regular file is read: a folder, or a named pipe (which
+            // would never answer), is no note either.
+            if head == fs.Error.NotAFile {
+                this.notANote = true;
+            } else if head == fs.Error.NotFound {
+                this.hint = "It is not there any more: it was moved or deleted outside Haze Notes.";
+            } else if head == fs.Error.PermissionDenied {
+                this.hint = "Haze Notes is not allowed to read it.";
+            } else {
+                this.hint = "It could not be read.";
             }
-            let reader = this.reader;
-            assert(reader);
-            while !reader.done() {
-                if reader.readSome(readChunkBytes) != fs.Error.None {
-                    reader.close();
-                    this.fail(f"cannot read {this.path}");
-                    return true;
-                }
-                if time.now() >= deadline {
-                    return false;
-                }
-            }
-            this.text = reader.text();
-            this.reader = none;
-            this.hasText = true;
-            if time.now() >= deadline {
-                return false;
-            }
+            this.fail(f"cannot open {this.path}");
+            return true;
         }
-        if !this.scanned {
-            if !this.scan(deadline) {
-                return false;
-            }
-            if this.failed {
-                return true;
-            }
-            this.scanned = true;
-            if this.kinds.length != 0 {
-                this.fail("the file ends in the middle of the document");
-                return true;
-            }
-            let skeleton = String();
-            for part in this.skeleton {
-                skeleton.append(part);
-            }
-            let parsed = json.parse<DocumentFile>(skeleton.cloneString());
-            if !parsed {
-                this.fail(f"{parsed.error()}");
-                return true;
-            }
-            let doc: DocumentFile = parsed;
-            if doc.data.pages.length != this.pageCount {
-                this.fail("unexpected document structure");
-                return true;
-            }
-            this.doc = doc;
-            if time.now() >= deadline {
-                return false;
-            }
+        let headText: str = head;
+        if !isHznote(Bytes(headText)) {
+            this.notANote = true;
+            this.fail(f"{this.path} is not a note");
+            return true;
         }
-        let doc = this.doc;
-        assert(doc);
-        while this.parsedShapes < this.shapeStart.length {
-            let k = this.parsedShapes;
-            let shape = json.parse<Shape>(this.text.slice(this.shapeStart[k], this.shapeEnd[k]));
-            if !shape {
-                this.fail(f"shape {k}: {shape.error()}");
-                return true;
+        let data = fs.readBinary(this.path);
+        if !data {
+            this.hint = "It could not be read.";
+            this.fail(f"cannot read {this.path}");
+            return true;
+        }
+        let decoded = decodeNote(data);
+        if decoded is HznoteError {
+            if decoded.problem == HznoteProblem.NotANote {
+                this.notANote = true;
+            } else if decoded.problem == HznoteProblem.Newer {
+                this.hint = "It was saved by a newer Haze Notes.";
+            } else if decoded.problem == HznoteProblem.Incompatible {
+                this.hint = f"It holds something this version of Haze Notes cannot read: {decoded.describe()}.";
+            } else {
+                this.hint = f"The file is damaged: {decoded.describe()}.";
             }
-            forgetStoredOutline(shape);
-            // Earlier builds left a shape dragged onto another page on the
-            // one it came from, where nothing showed it any more.
-            let page = this.shapePage[k];
+            this.fail(f"{this.path}: {decoded.describe()}");
+            return true;
+        }
+        let doc: DocumentFile = decoded;
+        settleLoadedShapes(doc);
+        this.doc = doc;
+        this.finished = true;
+        return true;
+    }
+}
+
+// Earlier builds left a shape dragged onto another page on the one it came
+// from, where nothing showed it any more: every shape goes to the page it
+// lies on (pageShapeLiesOn), in the order of the file. In memory only; the
+// next save writes it so.
+fn settleLoadedShapes(doc: DocumentFile) {
+    let count = doc.data.pages.length;
+    let settled: [][]Shape = [];
+    for (let i = 0; i < count; i++) {
+        let shapes: []Shape = [];
+        settled.push(shapes);
+    }
+    let moved = false;
+    for (let page = 0; page < count; page++) {
+        for shape in doc.data.pages[page].shapes {
             let liesOn = pageShapeLiesOn(doc, page, shape);
             if liesOn != page {
                 shiftShapeToPage(doc, shape, page, liesOn);
+                moved = true;
             }
-            doc.data.pages[liesOn].shapes.push(shape);
-            this.parsedShapes += 1;
-            if time.now() >= deadline {
-                return false;
-            }
+            settled[liesOn].push(shape);
         }
-        // The text is no longer needed; nothing keeps it alive past here.
-        this.text = "";
-        this.finished = true;
-        return true;
+    }
+    if moved {
+        for (let page = 0; page < count; page++) {
+            doc.data.pages[page].shapes = settled[page];
+        }
     }
 }

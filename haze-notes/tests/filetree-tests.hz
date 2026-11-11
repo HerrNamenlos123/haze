@@ -70,13 +70,15 @@ fn main(): int {
 
     // ── Indexing ────────────────────────────────────────────────────
     let root = fixtureDir();
-    fs.writeText(f"{root}/b note.tsk", "{}");
-    fs.writeText(f"{root}/A note.tsk", "{}");
+    fs.writeText(f"{root}/b note.hznote", "{}");
+    fs.writeText(f"{root}/A note.hznote", "{}");
     fs.writeText(f"{root}/readme.md", "not a note");
-    fs.writeText(f"{root}/.hidden.tsk", "{}");
+    fs.writeText(f"{root}/old.tsk", "{}");
+    fs.writeText(f"{root}/backup.hznote.bak", "x");
+    fs.writeText(f"{root}/.hidden.hznote", "{}");
     fs.writeText(f"{root}/.hznotes/vault.json", "{}");
-    fs.writeText(f"{root}/Week 10/x.tsk", "{}");
-    fs.writeText(f"{root}/Week 2/Inner/deep.tsk", "{}");
+    fs.writeText(f"{root}/Week 10/x.hznote", "{}");
+    fs.writeText(f"{root}/Week 2/Inner/deep.hznote", "{}");
     fs.writeText(f"{root}/Week 2/scan.pdf", "pdf");
     fs.writeText(f"{root}/Only pdfs/scan.pdf", "pdf");
     fs.createDirectory(f"{root}/Empty");
@@ -86,8 +88,8 @@ fn main(): int {
     let out: []TreeRow = [];
     let everything: []str = [f"{root}/Week 2", f"{root}/Week 2/Inner", f"{root}/Week 10"];
     flattenTree(index, expandedSet(everything), 0, out);
-    // technicalsketcher.web's rules: files whose name contains ".tsk" (a
-    // dot-file note included), no folder starting with ".", no folder left
+    // Notes are the files ending in ".hznote" (a dot-file note included; a
+    // .tsk is no note any more), no folder starting with ".", no folder left
     // empty by that.
     state.checkStr("index: notes only, no hidden folders, no note-less folders",
         rowsText(out),
@@ -102,24 +104,24 @@ fn main(): int {
     flattenTree(index, expandedSet(onlyInner), 0, inner);
     state.checkStr("an open folder inside a closed one stays hidden", rowsText(inner),
         "> Week 2\n> Week 10\n- .hidden\n- A note\n- b note\n");
-    state.check("rowIndexOf finds a row", rowIndexOf(out, f"{root}/A note.tsk") == 6);
-    state.check("rowIndexOf misses", rowIndexOf(out, f"{root}/nope.tsk") == -1);
+    state.check("rowIndexOf finds a row", rowIndexOf(out, f"{root}/A note.hznote") == 6);
+    state.check("rowIndexOf misses", rowIndexOf(out, f"{root}/nope.hznote") == -1);
 
     // ── The folders a note is in ────────────────────────────────────
     let chain: []str = [];
-    state.check("folderChainTo finds a nested note", folderChainTo(index, f"{root}/Week 2/Inner/deep.tsk", chain));
+    state.check("folderChainTo finds a nested note", folderChainTo(index, f"{root}/Week 2/Inner/deep.hznote", chain));
     state.check("its chain is outermost first",
         chain.length == 2 && chain[0] == f"{root}/Week 2" && chain[1] == f"{root}/Week 2/Inner");
     let topChain: []str = [];
-    state.check("a top-level note has no folders", folderChainTo(index, f"{root}/A note.tsk", topChain) && topChain.length == 0);
+    state.check("a top-level note has no folders", folderChainTo(index, f"{root}/A note.hznote", topChain) && topChain.length == 0);
     let missChain: []str = ["kept"];
     state.check("a missing note is not found, and out is left as it was",
-        !folderChainTo(index, f"{root}/Week 2/Inner/gone.tsk", missChain) && missChain.length == 1 && missChain[0] == "kept");
+        !folderChainTo(index, f"{root}/Week 2/Inner/gone.hznote", missChain) && missChain.length == 1 && missChain[0] == "kept");
     // A path that only shares a name's beginning with a folder ("Week 2" in
     // "Week 20/...") is not in it.
     let prefixChain: []str = [];
     state.check("a folder name that is a prefix of another is not its parent",
-        !folderChainTo(index, f"{root}/Week 20/x.tsk", prefixChain) && prefixChain.length == 0);
+        !folderChainTo(index, f"{root}/Week 20/x.hznote", prefixChain) && prefixChain.length == 0);
     // A folder is found as well: the folders around it, not the folder itself.
     let folderChain: []str = [];
     state.check("folderChainTo finds a nested folder", folderChainTo(index, f"{root}/Week 2/Inner", folderChain));
@@ -129,14 +131,14 @@ fn main(): int {
     state.check("a top-level folder has no folders around it",
         folderChainTo(index, f"{root}/Week 10", topFolderChain) && topFolderChain.length == 0);
 
-    state.checkStr("parentFolder of a note", parentFolder(f"{root}/Week 2/Inner/deep.tsk"), f"{root}/Week 2/Inner");
+    state.checkStr("parentFolder of a note", parentFolder(f"{root}/Week 2/Inner/deep.hznote"), f"{root}/Week 2/Inner");
     state.checkStr("parentFolder of a folder", parentFolder(f"{root}/Week 2"), root);
     // Inside a vault the separator is "/" on every system (fs.listDir joins
     // with it), and on Linux a name may hold a backslash.
-    state.checkStr("parentFolder keeps a backslash in a name", parentFolder("/v/sub/a\\b.tsk"), "/v/sub");
-    state.checkStr("noteTitle keeps a backslash in a name", noteTitle("/v/sub/a\\b.tsk"), "a\\b");
-    state.checkStr("parentFolder below a Windows vault path", parentFolder("C:\\Users\\me\\Vault/Physik/x.tsk"), "C:\\Users\\me\\Vault/Physik");
-    state.checkStr("noteTitle below a Windows vault path", noteTitle("C:\\Users\\me\\Vault/x.tsk"), "x");
+    state.checkStr("parentFolder keeps a backslash in a name", parentFolder("/v/sub/a\\b.hznote"), "/v/sub");
+    state.checkStr("noteTitle keeps a backslash in a name", noteTitle("/v/sub/a\\b.hznote"), "a\\b");
+    state.checkStr("parentFolder below a Windows vault path", parentFolder("C:\\Users\\me\\Vault/Physik/x.hznote"), "C:\\Users\\me\\Vault/Physik");
+    state.checkStr("noteTitle below a Windows vault path", noteTitle("C:\\Users\\me\\Vault/x.hznote"), "x");
 
     // ── Toggling ────────────────────────────────────────────────────
     let paths: []str = ["a", "b"];

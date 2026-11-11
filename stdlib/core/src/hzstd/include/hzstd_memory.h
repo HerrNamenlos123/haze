@@ -4,6 +4,16 @@
 
 #include "../hzstd_types.h"
 
+// Haze's binary building blocks (ByteBuffer's number writes, BinaryReader,
+// the whole-memory copies of plain values in traverse) move numbers between
+// memory and byte streams exactly as they are in memory, which makes every
+// such stream little-endian. A build for a big-endian target stops at the
+// first of them instead of writing or reading wrong bytes. A statement: use
+// it inside a function body.
+#define HZSTD_ASSERT_LITTLE_ENDIAN()                                                                                   \
+  _Static_assert(__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__,                                                            \
+                 "Haze's binary reads and writes need a little-endian target")
+
 // skip_n_frames follows this codebase's standard convention (see
 // sys.panic/sys.unreachable/sys.buildStacktrace in system.hz): the plain,
 // no-suffix function is what almost every caller should use, and always

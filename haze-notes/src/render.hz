@@ -1,5 +1,4 @@
 import renderer
-import base64
 import image
 
 // A zoom gesture is considered "finished" once the live zoom value has held
@@ -55,46 +54,25 @@ fn currentPageOf(doc: DocumentFile): int {
     return i;
 }
 
-// ImageShape.base64ImageData is stored as a full data URL
-// ("data:image/png;base64,<payload>", per how browsers/paste handlers
-// typically produce it), not a raw base64 payload -- base64.decode only
-// accepts the latter, so the "data:...;base64," header has to be stripped
-// first. A data URL's header can never itself contain a comma (it's
-// exactly "data:[<mediatype>][;base64]"), so the first comma is always the
-// header/payload boundary. Strings with no comma at all (already a raw
-// base64 payload) pass through unchanged.
-fn stripDataUrlPrefix(data: str): str {
-    for (let i = 0; i < data.length; i++) {
-        if data[i] == b"," {
-            return data.slice(i + 1, i + 1 + data.length);
-        }
-    }
-    return data;
-}
-
-// Decoded-image GPU textures, keyed by the shape's raw base64ImageData
-// string. Deliberately *not* a field on ImageShape itself: that struct
-// participates in json.parse<DocumentFile>/json.stringify for the whole
-// document, and a field whose type reaches into opaque wgpu FFI handles
-// (wgpu.Texture/TextureView/BindGroup are forward-declared-only C structs)
-// breaks that generic codegen -- sizeof() on an intentionally-incomplete
-// struct -- even when marked [[json.ignore]]. Living on DocumentRenderer
-// instead (alongside TilePool, which is the same kind of GPU-resource-cache
-// paired with the serializable document) sidesteps that entirely, and keying
-// by content rather than shape identity means two shapes pasted from the
-// same image share one upload for free.
+// Decoded-image GPU textures, keyed by the shape's PNG bytes. Deliberately
+// *not* a field on ImageShape itself: the shape is what a note saves, and a
+// GPU texture is nothing a file holds. Living on DocumentRenderer instead
+// (alongside TilePool, the same kind of GPU-resource cache paired with the
+// document) keeps them apart, and keying by content rather than shape
+// identity means two shapes pasted from the same image share one upload for
+// free. (Bytes compare their length first, then their contents.)
 ref struct ImageTextureCache {
-    textures: LinearMap<str, renderer.gfx.Texture> = {};
-    // Tracks base64 strings that failed to decode, so a corrupt/invalid
-    // image is only ever attempted once rather than every frame.
-    failed: LinearMap<str, bool> = {};
+    textures: LinearMap<Bytes, renderer.gfx.Texture> = {};
+    // Images that failed to decode, so a corrupt/invalid image is only ever
+    // attempted once rather than every frame.
+    failed: LinearMap<Bytes, bool> = {};
 
     // Images on their way to the GPU.
-    loads: LinearMap<str, ImageLoad> = {};
+    loads: LinearMap<Bytes, ImageLoad> = {};
 
     // Whether the image has arrived -- or failed to, so it never will.
     fn isReady(shape: ImageShape): bool {
-        return this.textures.has(shape.base64ImageData) || this.failed.has(shape.base64ImageData);
+        return this.textures.has(shape.png) || this.failed.has(shape.png);
     }
 
     fn isLoading(): bool {
@@ -104,7 +82,7 @@ ref struct ImageTextureCache {
     // Starts getting the shape's image onto the GPU, unless it is there or
     // on its way. Cheap: the work is all done on worker threads.
     fn request(shape: ImageShape) {
-        let key = shape.base64ImageData;
+        let key = shape.png;
         if this.isReady(shape) || this.loads.has(key) {
             return;
         }
@@ -115,7 +93,7 @@ ref struct ImageTextureCache {
     // one expensive step is the upload of a finished mip chain (~1 ms per
     // megapixel), so after `deadline` the rest wait for the next call.
     fn advance(gfx: mut renderer.gfx.Context, deadline: real) {
-        let finished: []str = [];
+        let finished: []Bytes = [];
         for (let i = 0; i < this.loads.keys.length; i++) {
             if time.now() >= deadline {
                 break;
@@ -140,7 +118,7 @@ ref struct ImageTextureCache {
 
     // The shape's texture: none while it is loading, or if it failed to.
     fn get(shape: ImageShape): renderer.gfx.Texture | none {
-        return this.textures.get(shape.base64ImageData);
+        return this.textures.get(shape.png);
     }
 
     // Frees every texture -- the document they came from is gone. Nothing
@@ -156,19 +134,17 @@ ref struct ImageTextureCache {
     }
 }
 
-// One image on its way to the GPU: its base64 text decoded, then the PNG or
-// JPEG in it, then its mip chain built -- each on a worker thread, as each
-// takes tens of ms per megapixel. A step only ever starts one of them, or
-// collects one that is done.
+// One image on its way to the GPU: its PNG decoded, then its mip chain
+// built -- each on a worker thread, as each takes tens of ms per megapixel.
+// A step only ever starts one of them, or collects one that is done.
 ref struct ImageLoad {
-    text?: base64.Base64Decode;
     decoding?: image.ImageDecode;
     uploading?: renderer.gfx.PendingTexture;
     texture?: renderer.gfx.Texture;
     failed: bool = false;
 
-    fn constructor(base64ImageData: str): ImageLoad {
-        return ImageLoad { text: base64.decodeAsync(stripDataUrlPrefix(base64ImageData)) };
+    fn constructor(png: Bytes): ImageLoad {
+        return ImageLoad { decoding: image.decodeAsync(png) };
     }
 
     // Moves the load along. True once it has its texture, or has failed.
@@ -191,18 +167,6 @@ ref struct ImageLoad {
                 // it to the premultiplied form this renderer's textured-quad
                 // shader assumes.
                 this.uploading = gfx.createRGBATextureAsync(img.pixels, img.width, img.height, true);
-                return false;
-            }
-            this.failed = true;
-            return true;
-        }
-        if let text = this.text {
-            if !text.done() {
-                return false;
-            }
-            this.text = none;
-            if let bytes = text.result() {
-                this.decoding = image.decodeAsync(bytes);
                 return false;
             }
             this.failed = true;

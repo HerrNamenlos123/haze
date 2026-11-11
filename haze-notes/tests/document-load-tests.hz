@@ -1,13 +1,11 @@
-// Drives haze-notes' DocumentLoad (src/persistence.hz) over files that are
-// not documents. Clicking a PDF in the file tree once made
-// the scan pop an empty container stack and panic, and the PDF stayed the
-// vault's lastOpenedFile, so every start crashed. A file that is not a
-// document must end the load as failed, never take the app down.
+// Drives haze-notes' DocumentLoad and DocumentSave (src/persistence.hz): a
+// note saved and loaded back, a new note, and files that are not notes.
+// Clicking a PDF in the file tree once made the load panic, and the PDF
+// stayed the vault's lastOpenedFile, so every start crashed. A file that is
+// not a note must end the load as failed, never take the app down, and be
+// told apart from a note that is damaged.
 //
-// haze-notes is an executable, so nothing can depend on it: run this from a
-// throwaway exe project inside the repository that depends on renderer,
-// tesselate and perfect_freehand, with src/persistence.hz, src/documents.hz
-// and src/tiles.hz copied in verbatim and this file as its main.hz.
+// Run: TMPDIR=<scratch> haze-notes/tests/run-test.sh haze-notes/tests/document-load-tests.hz persistence.hz hznote.hz documents.hz tiles.hz
 
 ref struct State {
     checks: int = 0;
@@ -41,52 +39,38 @@ fn fixtureDir(): str {
     return "/tmp/haze-notes-document-load-tests";
 }
 
-// Parsed rather than built: a literal-union field (gridType) cannot be set
-// from a string literal in a struct literal yet.
 fn sampleDocument(): DocumentFile {
-    let parsed = json.parse<DocumentFile>("{\"filetype\":\"technicalsketcher\",\"fileversion\":1,\"data\":{\"pageColor\":\"#ffffff\",\"gridColor\":\"#cccccc\",\"gridType\":\"dots\",\"pages\":[{\"shapes\":[{\"variant\":\"Line\",\"points\":[{\"x\":10,\"y\":10,\"pressure\":0.5},{\"x\":20,\"y\":15,\"pressure\":0.5},{\"x\":30,\"y\":12,\"pressure\":0.5}],\"penColor\":\"#000000\",\"penThickness\":1}]},{\"shapes\":[]}],\"pageWidthMm\":210,\"pageHeightMm\":297,\"currentPageIndex\":0}}");
-    assert(parsed, "sample document parses");
-    let doc: DocumentFile = parsed;
-    return doc;
+    let points: []Point = [Point { x: 10.0, y: 10.0, pressure: 0.5 }, Point { x: 20.0, y: 15.0, pressure: 0.5 }, Point { x: 30.0, y: 12.0, pressure: 0.5 }];
+    let first: []Shape = [LineShape { variant: "Line", points: points, penColor: "#000000", penThickness: 1.0 }];
+    let second: []Shape = [];
+    let pages: []Page = [Page { shapes: first }, Page { shapes: second }];
+    return DocumentFile {
+        data: DocumentBody {
+            pageColor: "#ffffff",
+            gridColor: "#cccccc",
+            gridType: "dots",
+            pages: pages,
+            pageWidthMm: 210.0,
+            pageHeightMm: 297.0,
+            currentPageIndex: 0,
+        },
+    };
 }
 
-// Steps the load the way the editor does, a short budget at a time, until
-// it is over. False when it never ends.
-fn loadToEnd(load: DocumentLoad): bool {
-    for (let i = 0; i < 100000; i++) {
-        if load.step(time.now() + 0.005) {
-            return true;
-        }
-    }
-    return false;
-}
-
-// Loads a file holding `text`; true when the load ended as a failure with
-// no document.
-fn failsToLoad(state: mut State, name: str, text: str): bool {
-    fmt.println(f"case: {name}");
-    let path = f"{fixtureDir()}/{name}.tsk";
-    state.check(f"{name}: fixture written", fs.writeText(path, text) ? true : false);
-    let load = DocumentLoad(path);
-    state.check(f"{name}: load ends", loadToEnd(load));
-    return load.failed && !load.doc;
-}
-
-// Loads a file holding `text`; "note", "not a note" (the file is not one at
-// all) or "damaged" (it is a note, but a broken one).
-fn loadOutcome(state: mut State, name: str, text: str): str {
-    let path = f"{fixtureDir()}/{name}";
-    state.check(f"{name}: fixture written", fs.writeText(path, text) ? true : false);
-    let load = DocumentLoad(path);
-    state.check(f"{name}: load ends", loadToEnd(load));
+// Loads `path` the way the editor does; "note", "not a note" (the file is
+// not one at all) or "damaged" (it is a note, but one that cannot be read).
+fn outcomeOf(load: DocumentLoad): str {
+    load.step(time.now() + 10.0);
     if !load.failed && load.doc {
         return "note";
     }
     return load.notANote ? "not a note" : "damaged";
 }
 
-fn checkOutcome(state: mut State, name: str, text: str, expected: str) {
-    let actual = loadOutcome(state, name, text);
+fn checkOutcome(state: mut State, name: str, data: Bytes, expected: str) {
+    let path = f"{fixtureDir()}/{name}";
+    state.check(f"{name}: fixture written", fs.writeBinary(path, data) ? true : false);
+    let actual = outcomeOf(DocumentLoad(path));
     state.check(f"{name}: {expected} (got {actual})", actual == expected);
 }
 
@@ -94,40 +78,42 @@ fn main(): int {
     let state = State {};
     fs.createDirectory(fixtureDir());
 
-    // A real document, saved and loaded back: the scan must still accept
-    // everything a save writes.
+    // A real document, saved and loaded back.
     fmt.println("case: round trip");
-    let path = f"{fixtureDir()}/roundtrip.tsk";
-    let save = DocumentSave(path, sampleDocument());
+    let path = f"{fixtureDir()}/roundtrip.hznote";
+    let original = sampleDocument();
+    let save = DocumentSave(path, original);
     save.finish();
-    state.check("round trip: saved", !save.failed);
+    state.check("round trip: saved", !save.failed && save.started());
     let load = DocumentLoad(path);
-    state.check("round trip: load ends", loadToEnd(load));
-    state.check("round trip: loaded", !load.failed);
+    state.check("round trip: loaded", outcomeOf(load) == "note");
     if let doc = load.doc {
-        state.check("round trip: 2 pages", doc.data.pages.length == 2);
-        if doc.data.pages.length == 2 {
-            state.check("round trip: page 1 has its stroke", doc.data.pages[0].shapes.length == 1);
-            state.check("round trip: page 2 is empty", doc.data.pages[1].shapes.length == 0);
-        }
+        state.check("round trip: the same note", documentDifference(original, doc) == "");
     } else {
         state.check("round trip: has a document", false);
     }
-    let saved = fs.readText(path);
-    state.check("round trip: file readable", saved ? true : false);
-    let valid: str = saved ? saved : "";
+    // A save replaces the file: saved again with a stroke more, it holds
+    // that, and no `.saving` file is left beside it.
+    original.data.pages[1].shapes.push(LineShape { variant: "Line", points: [Point { x: 1.0, y: 2.0, pressure: 0.5 }], penColor: "#ff0000", penThickness: 0.5 });
+    DocumentSave(path, original).finish();
+    let again = DocumentLoad(path);
+    state.check("saved again: loaded", outcomeOf(again) == "note");
+    if let doc = again.doc {
+        state.check("saved again: the new stroke is there", documentDifference(original, doc) == "");
+    }
+    state.check("saved again: nothing left beside it", !fs.statFile(f"{path}.saving"));
+    let savedBytes = fs.readBinary(path);
+    state.check("round trip: file readable", savedBytes ? true : false);
+    let valid: Bytes = savedBytes ? savedBytes : Bytes();
 
     // What a note created in the app starts as: technicalsketcher.web's new
     // document, which the editor opens as one blank A4 page.
     fmt.println("case: new note");
-    let newPath = f"{fixtureDir()}/new-note.tsk";
-    state.check("new note: written", fs.writeText(newPath, newDocumentText()) ? true : false);
+    let newPath = f"{fixtureDir()}/new-note.hznote";
+    state.check("new note: written", fs.writeBinary(newPath, newNoteBytes()) ? true : false);
     let fresh = DocumentLoad(newPath);
-    state.check("new note: load ends", loadToEnd(fresh));
-    state.check("new note: loaded", !fresh.failed);
+    state.check("new note: loaded", outcomeOf(fresh) == "note");
     if let doc = fresh.doc {
-        state.check("new note: a technicalsketcher file, version 1",
-            doc.filetype == "technicalsketcher" && doc.fileversion == 1);
         state.check("new note: one page", doc.data.pages.length == 1);
         if doc.data.pages.length == 1 {
             state.check("new note: the page is blank", doc.data.pages[0].shapes.length == 0);
@@ -135,42 +121,32 @@ fn main(): int {
         state.check("new note: A4", doc.data.pageWidthMm == 210.0 && doc.data.pageHeightMm == 297.0);
         state.check("new note: the web app's colours",
             doc.data.pageColor == "#ffffff" && doc.data.gridColor == "#5252524f");
-        // A literal union has no == with a str; its JSON is the word.
-        state.check("new note: ruled", json.stringify(doc.data.gridType) == "\"lines\"");
+        state.check("new note: ruled", doc.data.gridType is "lines");
         state.check("new note: on its first page", doc.data.currentPageIndex == 0);
     } else {
         state.check("new note: has a document", false);
     }
 
-    // Files that are not documents. Each one closes a container it never
-    // opened -- the first byte that does is where the scan used to die.
-    state.check("a lone ']' fails", failsToLoad(state, "lone-bracket", "]"));
-    state.check("a lone '}' fails", failsToLoad(state, "lone-brace", "}"));
-    state.check("'{}}' fails", failsToLoad(state, "extra-brace", "{}}"));
-    state.check("a document with a ']' after it fails", failsToLoad(state, "trailing-bracket", f"{valid}]"));
-    state.check("a PDF fails", failsToLoad(state, "pdf",
-        "%PDF-1.7\n%\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\nstream\n]x}\nendstream\n"));
-
     // ── Not a note ──────────────────────────────────────────────────
     //
-    // A note is JSON whose "filetype" is "technicalsketcher", which is what
-    // its first bytes say; anything else is not a note, however it fails,
-    // and is told apart from a note that is damaged.
+    // A note is an .hznote, which its first bytes say; anything else is not
+    // a note, however it fails, and is told apart from a note that is
+    // damaged.
     fmt.println("case: not a note");
-    checkOutcome(state, "doc.pdf", "%PDF-1.7\n%\n1 0 obj\n<< /Type /Catalog >>\nendobj\n", "not a note");
-    checkOutcome(state, "readme.md", "# Notes\nhello", "not a note");
-    checkOutcome(state, "empty.bin", "", "not a note");
-    checkOutcome(state, "other.json", "{\"a\":1}", "not a note");
-    checkOutcome(state, "other-filetype.json", "{\"filetype\":\"excalidraw\",\"fileversion\":1}", "not a note");
-    checkOutcome(state, "array.json", "[{\"filetype\":\"technicalsketcher\"}]", "not a note");
-    checkOutcome(state, "the word later.txt", "hello technicalsketcher \"filetype\":\"technicalsketcher\"", "not a note");
-    checkOutcome(state, "saved.tsk", valid, "note");
-    // Written by another program, spaced out.
-    checkOutcome(state, "pretty.tsk",
-        "{\n  \"filetype\" : \"technicalsketcher\",\n  \"fileversion\": 1,\n  \"data\": {\"pageColor\":\"#ffffff\",\"gridColor\":\"#cccccc\",\"gridType\":\"lines\",\"pages\":[{\"shapes\":[]}],\"pageWidthMm\":210,\"pageHeightMm\":297,\"currentPageIndex\":0}\n}\n",
-        "note");
-    checkOutcome(state, "truncated.tsk", valid.slice(0, valid.length / 2), "damaged");
-    checkOutcome(state, "garbled.tsk", "{\"filetype\":\"technicalsketcher\",\"fileversion\":1,\"data\":]]]", "damaged");
+    checkOutcome(state, "doc.pdf", Bytes("%PDF-1.7\n%\n1 0 obj\n<< /Type /Catalog >>\nendobj\n"), "not a note");
+    checkOutcome(state, "readme.md", Bytes("# Notes\nhello"), "not a note");
+    checkOutcome(state, "empty.bin", Bytes(), "not a note");
+    // The magic's first four bytes only (0x89 'H' 'Z' 'N').
+    let magicStart = ByteBuffer();
+    magicStart.push(0x89 as u8);
+    magicStart.push("HZN");
+    magicStart.commit();
+    checkOutcome(state, "short.bin", magicStart.bytes(), "not a note");
+    checkOutcome(state, "old.tsk", Bytes("{\"filetype\":\"technicalsketcher\",\"fileversion\":1,\"data\":{}}"), "not a note");
+    checkOutcome(state, "saved.hznote", valid, "note");
+    checkOutcome(state, "truncated.hznote", valid.slice(0, valid.length / 2), "damaged");
+    checkOutcome(state, "cut-at-the-end.hznote", valid.slice(0, valid.length - 1), "damaged");
+    checkOutcome(state, "only-the-magic.hznote", valid.slice(0, 8), "damaged");
 
     // A large file that is no note is turned down by its first bytes, at the
     // load's first step: it is never read whole.
@@ -181,20 +157,28 @@ fn main(): int {
     }
     let bigPath = f"{fixtureDir()}/video.mp4";
     state.check("large file: fixture written", fs.writeText(bigPath, bigText.cloneString()) ? true : false);
+    let started = time.now();
     let big = DocumentLoad(bigPath);
     state.check("large file: over at the first step", big.step(time.now() + 10.0));
     state.check("large file: not a note", big.failed && big.notANote);
-    state.check("large file: nothing read past its start", big.text.length == 0 && !big.reader);
+    state.check("large file: turned down without reading it", time.now() - started < 0.01);
 
     // ── Why a file could not be opened ──────────────────────────────
     fmt.println("case: why not");
-    let missing = DocumentLoad(f"{fixtureDir()}/deleted elsewhere.tsk");
-    state.check("missing: load ends", loadToEnd(missing));
-    state.check("missing: failed, and not for being no note", missing.failed && !missing.notANote);
+    let missing = DocumentLoad(f"{fixtureDir()}/deleted elsewhere.hznote");
+    state.check("missing: failed, and not for being no note", outcomeOf(missing) == "damaged");
     state.check(f"missing: says it is gone ({missing.hint})", missing.hint.contains("not there any more"));
-    let broken = DocumentLoad(f"{fixtureDir()}/truncated.tsk");
-    state.check("damaged: load ends", loadToEnd(broken));
-    state.check(f"damaged: says so ({broken.hint})", broken.failed && !broken.notANote && broken.hint == "The file is damaged.");
+    let broken = DocumentLoad(f"{fixtureDir()}/truncated.hznote");
+    outcomeOf(broken);
+    state.check(f"damaged: says so ({broken.hint})", broken.failed && !broken.notANote && broken.hint.startsWith("The file is damaged"));
+    let newerBytes = ByteBuffer(valid);
+    newerBytes.setAt(8, 2 as u8);
+    newerBytes.commit();
+    let newerPath = f"{fixtureDir()}/newer.hznote";
+    fs.writeBinary(newerPath, newerBytes.bytes());
+    let newer = DocumentLoad(newerPath);
+    outcomeOf(newer);
+    state.check(f"newer: says so ({newer.hint})", newer.failed && newer.hint.contains("newer Haze Notes"));
     // A named pipe is listed while the tree shows every file. Opening it must
     // not wait for a writer that never comes: it is simply no note.
     let pipePath = f"{fixtureDir()}/pipe";
@@ -206,11 +190,7 @@ fn main(): int {
     state.check("a folder: over at the first step", folderLoad.step(time.now() + 10.0));
     state.check("a folder: not a note", folderLoad.failed && folderLoad.notANote);
 
-    // Already failing cleanly before; kept so the fix does not lose them.
-    state.check("a truncated document fails", failsToLoad(state, "truncated", valid.slice(0, valid.length - 1)));
-    state.check("text with no JSON at all fails", failsToLoad(state, "no-json", "%PDF-1.7\nhello"));
-    state.check("an empty file fails", failsToLoad(state, "empty", ""));
-
+    fs.removeFile(bigPath);
     if state.failures > 0 {
         fmt.println(f"{state.failures} of {state.checks} checks FAILED");
         return 1;

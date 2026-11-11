@@ -1344,7 +1344,7 @@ class ASTBuilder extends HazeParserListener {
     }
 
     const members = produced as ASTExpr[];
-    const tags = ctx.id();
+    const tags = ctx.memberNameId();
 
     if (members.length !== tags.length) {
       throw new InternalError("TypeExpr tagged union stack mismatch");
@@ -1563,11 +1563,7 @@ class ASTBuilder extends HazeParserListener {
       );
     }
 
-    const names = ctx.id().map((c) => c.getText());
-    const generics = ctx
-      .id()
-      .slice(1)
-      .map((g) => g.getText());
+    const generics = ctx.id().map((g) => g.getText());
 
     this.stack.push({
       variant: "FunctionDefinition",
@@ -1584,7 +1580,7 @@ class ASTBuilder extends HazeParserListener {
       requires: requires,
       static: false,
       methodType: EMethodType.None,
-      name: names[0],
+      name: ctx._fnName!.getText(),
       methodRequiredMutability: null,
       methodReceiverStorage: null,
       operatorOverloading: undefined,

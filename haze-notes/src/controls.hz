@@ -3,7 +3,6 @@ import renderer
 import filedialog
 import clipboard
 import image
-import base64
 
 // Everything the editor does with the pen, the mouse, fingers and the
 // keyboard: drawing, erasing, lasso and tap selection, moving and resizing a
@@ -177,24 +176,23 @@ fn eraserTouches(polygon: []Vec2, start: Vec2, end: Vec2, radius: real): bool {
 }
 
 // An image on its way from the clipboard into the document. The clipboard is
-// read when this is made -- at the Ctrl+V -- and what it held then is turned
-// into the data URL an ImageShape stores: a PNG, converted from whatever the
-// source offered, as base64 text. A screenshot is megabytes, so both happen
-// on worker threads; a step only ever starts one, or collects it.
+// read when this is made -- at the Ctrl+V -- and what it held then becomes
+// the PNG an ImageShape stores: converted from whatever the source offered.
+// A screenshot is megabytes, so that happens on a worker thread; a step
+// collects it once it is done.
 ref struct ImagePaste {
     reading?: clipboard.PngRead;
-    encoding?: base64.Base64Encode;
     // The image's size, in its own pixels.
     width: int = 0;
     height: int = 0;
-    dataUrl: str = "";
+    png: Bytes;
     failed: bool = false;
 
     fn constructor(): ImagePaste {
-        return ImagePaste { reading: clipboard.readPngAsync() };
+        return ImagePaste { reading: clipboard.readPngAsync(), png: Bytes() };
     }
 
-    // Moves the paste along. True once it has its dataUrl, or has failed.
+    // Moves the paste along. True once it has its PNG, or has failed.
     fn step(): bool {
         if let read = this.reading {
             if !read.done() {
@@ -211,15 +209,7 @@ ref struct ImagePaste {
             }
             this.width = info.width;
             this.height = info.height;
-            this.encoding = base64.encodeAsync(png);
-            return false;
-        }
-        if let encode = this.encoding {
-            if !encode.done() {
-                return false;
-            }
-            this.encoding = none;
-            this.dataUrl = "data:image/png;base64," + encode.result();
+            this.png = png;
         }
         return true;
     }
@@ -1340,6 +1330,9 @@ ref struct EditorControls {
         }
     }
 
+    // Puts the selection on the clipboard as Haze Notes' own shapes, which
+    // nothing else reads -- and a single image as its PNG too, exactly as it
+    // was pasted, for any other program.
     fn copySelection(ui: ui_components.UIContext) {
         if this.selected.length == 0 {
             return;
@@ -1348,48 +1341,56 @@ ref struct EditorControls {
         for shape in this.selected {
             shapes.push(cloneShape(shape));
         }
-        ui.setClipboardText(json.stringify(ShapesInClipboard { type: "technicalsketcher", shapes: shapes }));
+        let data: []clipboard.Data = [clipboard.Data { mimeType: shapesMimeType, data: encodeShapes(shapes) }];
+        let content = clipboard.Content { data: data };
+        if shapes.length == 1 {
+            let only = shapes[0];
+            if only is ImageShape {
+                content.png = only.png;
+            }
+        }
+        let written = clipboard.write(content);
+        if !written {
+            fmt.println(f"Copy: the clipboard could not be written: {written.message}");
+        }
     }
 
-    // Pastes an image off the clipboard -- a screenshot, a picture copied in
-    // a browser -- onto the page in the middle of the view (see
-    // placePastedImage). Otherwise pastes shapes copied here or from the web
-    // app, 10 mm down and to the right of where they were, onto the page the
-    // selection is on -- or the one in the middle of the view -- and selects
-    // them.
+    // Pastes shapes copied here, 10 mm down and to the right of where they
+    // were, onto the page the selection is on -- or the one in the middle of
+    // the view -- and selects them. Otherwise pastes an image off the
+    // clipboard -- a screenshot, a picture copied in a browser -- onto the
+    // page in the middle of the view (see placePastedImage).
     fn paste(ui: ui_components.UIContext) {
         let doc = this.doc;
         if !doc {
             return;
         }
-        // An image wins over text, as in the web app: copied shapes are
-        // text alone, while what offers a picture often describes it in
-        // text as well.
-        if clipboard.has("image/png") {
-            this.imagePastes.push(ImagePaste());
+        // Our own shapes win: a single image copied here is offered as a
+        // PNG as well, and pasted back it should stay where it was, as
+        // the same shape.
+        if !clipboard.has(shapesMimeType) {
+            if clipboard.has("image/png") {
+                this.imagePastes.push(ImagePaste());
+            }
             return;
         }
-        let text = ui.getClipboardText();
-        if text.length == 0 {
+        let read = clipboard.readData(shapesMimeType);
+        if !read {
             return;
         }
-        // Anything else on the clipboard (plain text, another app's JSON)
-        // is simply not ours to paste.
-        let clip = json.parse<ShapesInClipboard>(text);
-        if !clip {
+        let decoded = decodeShapes(read);
+        if decoded is HznoteError {
+            fmt.println(f"Paste: the copied shapes could not be read: {decoded.describe()}");
             return;
         }
-        if clip.type != "technicalsketcher" {
-            return;
-        }
+        let pasted: []Shape = decoded;
         let page = this.selectionPage;
         if this.selected.length == 0 {
             let center = Vec2(this.view.lastPanelSize.x / 2.0, this.view.lastPanelSize.y / 2.0);
             page = this.pageUnder(doc, center);
         }
         this.selected.clear();
-        for shape in clip.shapes {
-            forgetStoredOutline(shape);
+        for shape in pasted {
             translateShape(shape, Vec2(10.0, 10.0));
             doc.data.pages[page].shapes.push(shape);
             this.selected.push(shape);
@@ -1459,7 +1460,7 @@ ref struct EditorControls {
             y = pastedImageMarginMm;
         }
 
-        let shape: Shape = ImageShape { variant: "Image", position: Vec2(x, y), size: Vec2(width, height), base64ImageData: paste.dataUrl };
+        let shape: Shape = ImageShape { variant: "Image", position: Vec2(x, y), size: Vec2(width, height), png: paste.png };
         doc.data.pages[page].shapes.push(shape);
         this.view.markShapeDirty(page, shape);
         this.selected.clear();

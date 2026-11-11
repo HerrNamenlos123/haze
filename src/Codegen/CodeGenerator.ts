@@ -3262,7 +3262,9 @@ class CodeGenerator {
           );
         } else if (
           typeDef.variant === Lowered.ENode.StructDatatype ||
-          typeDef.variant === Lowered.ENode.DynamicArrayDatatype
+          typeDef.variant === Lowered.ENode.DynamicArrayDatatype ||
+          // A fixed array is a C struct ({ T data[N]; }): assigned, copied.
+          typeDef.variant === Lowered.ENode.FixedArrayDatatype
         ) {
           if (expr.assignRefTarget) {
             outWriter.write(
@@ -3419,8 +3421,14 @@ class CodeGenerator {
 
       case Lowered.ENode.LiteralExpr: {
         function stringifyWithDecimal(num: number) {
+          // toString() prints -0 as "0": the literal -0.0 would lose its sign.
+          if (Object.is(num, -0)) {
+            return "-0.0";
+          }
+          // Its exponent form ("1e+21", "1e-7") is a valid C literal as it
+          // is; ".0" after it would not be.
           const s = num.toString();
-          return s.includes(".") ? s : s + ".0";
+          return s.includes(".") || s.includes("e") ? s : s + ".0";
         }
 
         if (expr.literal.type === EPrimitive.cstr) {
