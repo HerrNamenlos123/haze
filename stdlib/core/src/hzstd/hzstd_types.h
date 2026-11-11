@@ -664,6 +664,7 @@ typedef enum {
   hzstd_fs_error_code_io_error, // generic read/write failure
   hzstd_fs_error_code_out_of_memory,
   hzstd_fs_error_code_not_empty, // a directory that still holds entries
+  hzstd_fs_error_code_busy, // locked by another holder (hzstd_file_lock)
 } hzstd_fs_error_code_t;
 
 typedef struct {
@@ -688,6 +689,13 @@ typedef struct {
   hzstd_str_t data;
   hzstd_fs_error_t error;
 } hzstd_read_file_text_result_t;
+
+// What hzstd_file_lock gives: the lock's handle (a file descriptor, or a
+// Windows HANDLE as an integer) when error.code is none.
+typedef struct {
+  int64_t handle;
+  hzstd_fs_error_t error;
+} hzstd_file_lock_result_t;
 
 typedef struct {
   bool exists;

@@ -7,6 +7,11 @@ import ui_components
 // from the previous layout, so a resize lands one frame late.
 
 @props
+// Where it starts scrolled to, in px: a scroll position restored from an
+// earlier run, there from the first frame. Read once, at mount; the content
+// is not measured then, so it is clamped only once it is (the first
+// setMetrics), and the first frame lays the content out already scrolled.
+initialScrollTop: real = 0.0;
 // Follows the end as content grows, but only while the reader is already
 // there. `bottomSlack` is how close to the end still counts as at it.
 stickToBottom: bool = false;
@@ -39,6 +44,10 @@ let barRef = elementRef<DivElement>();
 
 let scroll = ui_components.ScrollState();
 scroll.overflowX = ui_components.Overflow.Hidden;
+// Straight into the cell: scrollTo clamps to the content, unmeasured yet.
+if props.initialScrollTop > 0.0 {
+    scroll.scrollTop := props.initialScrollTop;
+}
 
 let viewportWidth = computed(() => {
     let view = rx.get(viewRef);

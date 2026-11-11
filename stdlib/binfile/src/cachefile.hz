@@ -1,0 +1,335 @@
+// CacheFile: a value kept in a file, reactive, and shared between processes.
+//
+// `data` is a deep reactive (rx.reactive) of the value: whatever writes to
+// any part of it, however deep -- a field, a field of a field, an element of
+// an array -- is noticed and written to the file. Other processes (other
+// instances of the same program) may have the same file open: what one of
+// them writes is read back into `data` here, and what both change is merged,
+// so neither loses the other's changes.
+//
+// The file is a binfile (see binfile.hz), whose root is a CacheRecord: the
+// value, and who wrote it. Reading it needs no lock: a write replaces the
+// file in one step (fs.replaceBinary), so it is always either the old file
+// or the new one, and a damaged file fails its checksum and counts as none.
+// What str and Bytes the value holds point into the file's bytes as read
+// (binfile views): loading a cache allocates the file and the reactive cells,
+// nothing per string.
+//
+// Writing takes `<file>.lock` (fs.tryLockFile), which the system lets go
+// when a process dies however it dies. Under it the file is read again, and
+// every top-level field of the value is taken from it unless this process
+// changed that field since it last wrote or read it; then the value is
+// written as one. Two processes changing different fields both keep their
+// change; changing the same one, the later write wins. Per top-level field:
+// a change anywhere inside a field takes the whole field, as written here.
+//
+// Changes are written once they settle (CacheFileOptions): a value written
+// every frame -- a scroll position while scrolling -- is written once,
+// a moment after it stops, not once per frame. flush() does it, and has to
+// be called regularly (once per frame); close() writes what is left.
+
+export struct CacheFileOptions {
+    // How long the value must stay unchanged before it is written.
+    settleSeconds: real = 0.25;
+    // Never later than this after the first unwritten change, even while it
+    // keeps changing.
+    maxDelaySeconds: real = 2.0;
+    // How long close() waits for another process's write to finish. flush()
+    // never waits: a busy lock is tried again at the next one.
+    lockWaitSeconds: real = 2.0;
+}
+
+// What a cache's file holds: the value, and which write of which process
+// this was.
+export struct CacheRecord<T> {
+    // The process that wrote it, when that CacheFile was made (wall clock,
+    // ms) and which CacheFile of the process: together never the same for
+    // two CacheFiles, even when the system hands out a process id again.
+    writerProcess: int;
+    writerStarted: int;
+    writerInstance: int;
+    // Counts the writes of the file: each is one more than the file held,
+    // taken under the lock, so no two writes share one.
+    generation: int;
+    value: T;
+}
+
+// A cache file has no chunks; this is their type. One field, not none: a
+// struct without fields makes traverse.readStruct emit a zero-length C array
+// (invalid C).
+export struct NoChunks {
+    unused: u8 = 0;
+}
+
+// "\x89HZCACH\n" (built byte by byte: the two parsers read a \x escape above
+// 0x7F differently).
+export fn cacheFormat(): Format {
+    let magic = ByteBuffer(8);
+    magic.push(0x89 as u8);
+    magic.push("HZCACH\n");
+    magic.commit();
+    return Format { magic: magic.bytes(), name: "Haze cache" };
+}
+
+// Numbers the CacheFiles of this process. Reached only through the function:
+// CacheFile is generic, and elaborated in the module that uses it, where this
+// variable does not exist.
+let __binfile_cacheInstances = 0;
+
+export fn nextCacheInstance(): int {
+    __binfile_cacheInstances = __binfile_cacheInstances + 1;
+    return __binfile_cacheInstances;
+}
+
+// A computed that reads every cell of `field` (see rx.traverse): it turns
+// dirty when anything in the field is written.
+export fn trackField<F>(field: F): rx.Computed<none> {
+    return rx.computed((): none => {
+        rx.traverse(field);
+    });
+}
+
+export ref struct CacheFile<T> {
+    // The value. Write to it like to any reactive; every change is noticed.
+    data: rx.Reactive<T>;
+    _path: str;
+    _lockPath: str;
+    _options: CacheFileOptions;
+    _process: int;
+    _started: int;
+    _instance: int;
+    // The generation of the file as this CacheFile last read or wrote it.
+    _generation: int = 0;
+    // Per top-level field of T, in T.fields order: a computed reading all of
+    // it (trackField). Dirty means changed since it was last read here.
+    _trackers: []rx.Computed<none> = [];
+    // Per top-level field: changed here and not written yet.
+    _pending: []bool = [];
+    // When the first and the last change not written yet were noticed, or -1.
+    _firstChange: real = -1.0;
+    _lastChange: real = -1.0;
+    // The file as this CacheFile's own last write left it: the watch fires
+    // for that write too, and this tells it apart without reading the file.
+    _writtenState: fs.FileState | none = none;
+    _watch?: fs.WatchHandle;
+    _closed: bool = false;
+
+    // The cache at `path`: what the file holds, or T's defaults when there is
+    // no file, or one that cannot be read (damaged, or holding what T cannot
+    // take; said once on stdout). Nothing is written before something
+    // changes.
+    fn constructor(path: str, options: CacheFileOptions = {}): CacheFile<T> {
+        let initial = T {};
+        let generation = 0;
+        if let record = CacheFile<T>._read(path) {
+            initial = record.value;
+            generation = record.generation;
+        }
+        let cache = CacheFile<T> {
+            data: rx.reactive<T>(initial),
+            _path: path,
+            _lockPath: f"{path}.lock",
+            _options: options,
+            _process: sys.processId(),
+            _started: time.wallClockMs(),
+            _instance: nextCacheInstance(),
+            _generation: generation,
+        };
+        for comptime field in T.fields {
+            cache._trackers.push(trackField(cache.data.[field.name]));
+            cache._pending.push(false);
+        }
+        for tracker in cache._trackers {
+            rx.untracked(() => rx.get(tracker));
+        }
+        cache._watch = fs.watch(path, (event: fs.FileChangeEvent): void => {
+            cache._fileChanged();
+        }, { immediate: false });
+        return cache;
+    }
+
+    // Writes what changed, once it has settled. Call it once per frame (or
+    // as often as the program can); it costs nothing while nothing changed.
+    fn flush() {
+        if this._closed {
+            return;
+        }
+        this._collectChanges();
+        if this._firstChange < 0.0 {
+            return;
+        }
+        let now = time.now();
+        if now - this._lastChange < this._options.settleSeconds && now - this._firstChange < this._options.maxDelaySeconds {
+            return;
+        }
+        this._write(false);
+    }
+
+    // Writes what changed now, settled or not, waiting for the lock up to
+    // lockWaitSeconds. False when it could not be written.
+    fn flushNow(): bool {
+        if this._closed {
+            return false;
+        }
+        this._collectChanges();
+        if this._firstChange < 0.0 {
+            return true;
+        }
+        return this._write(true);
+    }
+
+    // Done with the file: what changed is written (flushNow), and the file is
+    // no longer watched, so other processes' writes stop being read into
+    // `data`. A cache that is replaced (another vault opened) has to be
+    // closed, or it watches its file for the life of the process.
+    fn close() {
+        if this._closed {
+            return;
+        }
+        this.flushNow();
+        if let handle = this._watch {
+            fs.unwatch(handle);
+            this._watch = none;
+        }
+        this._closed = true;
+    }
+
+    // Marks every field changed since its tracker last ran, and reads the
+    // tracker again so the next change is noticed too.
+    fn _collectChanges() {
+        let changed = false;
+        for (let i = 0; i < this._trackers.length; i++) {
+            let tracker = this._trackers[i];
+            if rx.isDirty(tracker) {
+                this._pending[i] = true;
+                rx.untracked(() => rx.get(tracker));
+                changed = true;
+            }
+        }
+        if changed {
+            let now = time.now();
+            if this._firstChange < 0.0 {
+                this._firstChange = now;
+            }
+            this._lastChange = now;
+        }
+    }
+
+    // Whether `record` is this CacheFile's own last write.
+    fn _isOwn(record: CacheRecord<T>): bool {
+        return record.writerProcess == this._process && record.writerStarted == this._started
+            && record.writerInstance == this._instance && record.generation == this._generation;
+    }
+
+    // Takes what another process wrote into `data`: every field this one has
+    // not changed. In place (rx.assign), so whatever holds a field's cell
+    // keeps reading the live one.
+    fn _takeOthers(record: CacheRecord<T>) {
+        let i = 0;
+        for comptime field in T.fields {
+            if !this._pending[i] {
+                rx.assign(this.data.[field.name], record.value.[field.name]);
+                // Read, so the write just made does not count as a change of
+                // this process's.
+                let tracker = this._trackers[i];
+                rx.untracked(() => rx.get(tracker));
+            }
+            i = i + 1;
+        }
+        this._generation = record.generation;
+    }
+
+    fn _fileChanged() {
+        if this._closed || this._isOwnWriteOnDisk() {
+            return;
+        }
+        // First what changed here, so none of it is overwritten.
+        this._collectChanges();
+        if let record = CacheFile<T>._read(this._path) {
+            if !this._isOwn(record) {
+                this._takeOthers(record);
+            }
+        }
+    }
+
+    // Writes the value, merged with the file (see the top). False when it
+    // was not written: the lock was busy, or the write failed; what changed
+    // stays to be written later.
+    fn _write(wait: bool): bool {
+        let locked = wait ? fs.lockFile(this._lockPath, this._options.lockWaitSeconds) : fs.tryLockFile(this._lockPath);
+        if !locked {
+            // Busy: tried again at the next flush. Anything else is said,
+            // and tried again once settled anew, not every frame.
+            if locked != fs.Error.Busy {
+                fmt.println(f"Cache {this._path} could not be locked: {locked}");
+                this._lastChange = time.now();
+                this._firstChange = this._lastChange;
+            }
+            return false;
+        }
+        let lock: fs.FileLock = locked;
+        if let record = CacheFile<T>._read(this._path) {
+            if !this._isOwn(record) {
+                this._takeOthers(record);
+            }
+            if record.generation > this._generation {
+                this._generation = record.generation;
+            }
+        }
+        let generation = this._generation + 1;
+        let record = CacheRecord<T> {
+            writerProcess: this._process,
+            writerStarted: this._started,
+            writerInstance: this._instance,
+            generation: generation,
+            value: rx.toPlain<T, rx.Reactive<T>>(this.data),
+        };
+        let noChunks: []NoChunks = [];
+        let written = fs.replaceBinary(this._path, write<CacheRecord<T>, NoChunks>(cacheFormat(), record, noChunks));
+        let ok = written ? true : false;
+        if ok {
+            this._generation = generation;
+            this._writtenState = fs.statFile(this._path);
+            for (let i = 0; i < this._pending.length; i++) {
+                this._pending[i] = false;
+            }
+            this._firstChange = -1.0;
+            this._lastChange = -1.0;
+        } else {
+            fmt.println(f"Cache {this._path} could not be written: {written}");
+            this._lastChange = time.now();
+            this._firstChange = this._lastChange;
+        }
+        lock.unlock();
+        return ok;
+    }
+
+    // Whether the file is still exactly as this CacheFile's own last write
+    // left it. Taken right after the write, under the lock, so no other
+    // write can come in between.
+    fn _isOwnWriteOnDisk(): bool {
+        let written = this._writtenState;
+        if written is none {
+            return false;
+        }
+        let current = fs.statFile(this._path);
+        if current is none {
+            return false;
+        }
+        return current.mtime == written.mtime && current.size == written.size;
+    }
+
+    static fn _read(path: str): CacheRecord<T> | none {
+        let data = fs.readBinary(path);
+        if !data {
+            return none;
+        }
+        let bytes: Bytes = data;
+        let file = read<CacheRecord<T>, NoChunks>(cacheFormat(), bytes, { views: true });
+        if file is Error {
+            fmt.println(f"Cache {path} is not used: {file.describe()}");
+            return none;
+        }
+        return file.root;
+    }
+}

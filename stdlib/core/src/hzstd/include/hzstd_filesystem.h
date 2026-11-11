@@ -29,6 +29,19 @@ hzstd_fs_error_t hzstd_move_to_trash(hzstd_str_t path);
 hzstd_fs_error_t
 hzstd_write_file_binary(hzstd_allocator_t allocator, hzstd_str_t path, void* buffer, hzstd_int_t length);
 
+// ── File locks ──────────────────────────────────────────────────────────────
+//
+// An exclusive lock on the file at `path` (created empty when missing, with
+// the folders it is in), held until hzstd_file_unlock, or until the process
+// ends in any way: the lock belongs to an open file the system closes when
+// the process dies, crash and kill included. Children the process starts do
+// not inherit it. Only other locks on the same file are kept out; reading and
+// writing the file are not. With `wait` false a lock held elsewhere is
+// hzstd_fs_error_code_busy at once; with `wait` true this blocks until it is
+// free. Two locks taken in the same process exclude each other too.
+hzstd_file_lock_result_t hzstd_file_lock(hzstd_str_t path, bool wait);
+void hzstd_file_unlock(int64_t handle);
+
 // ── Streaming writes ────────────────────────────────────────────────────────
 //
 // hzstd_write_file_text above takes the ENTIRE file contents as one already-

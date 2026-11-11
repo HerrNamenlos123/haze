@@ -5326,14 +5326,32 @@ export opaque ref struct UIContext {
         return this._renderFeedbackPass;
     }
 
+    // Every hook a component registers runs, in the order registered:
+    // onMounted, onUnmount and onFrame may each be called any number of
+    // times. A component keeps one callback per kind, so a later hook is
+    // chained after the ones before it (no list, no allocation for the usual
+    // single hook); a panic in one stops the ones after it, which is the
+    // component crashing anyway.
     fn onMounted(callback: () => none) {
         let component = this.getCurrentComponent();
-        component.onMounted = callback;
+        if let hook = component.onMounted {
+            // A plain local: a closure does not see a narrowing.
+            let earlier: () => none = hook;
+            component.onMounted = () => { earlier(); callback(); };
+        } else {
+            component.onMounted = callback;
+        }
     }
 
     fn onUnmount(callback: () => none) {
         let component = this.getCurrentComponent();
-        component.onUnmount = callback;
+        if let hook = component.onUnmount {
+            // A plain local: a closure does not see a narrowing.
+            let earlier: () => none = hook;
+            component.onUnmount = () => { earlier(); callback(); };
+        } else {
+            component.onUnmount = callback;
+        }
     }
 
     // Runs once per frame, for as long as this component is being rendered.
@@ -5360,11 +5378,18 @@ export opaque ref struct UIContext {
     //
     // Prefer reactive state and events; reach for this only when neither can
     // see what you need.
+    //
+    // Called again, the component gets another hook beside the first (see
+    // onMounted): both run every frame, in the order registered.
     fn onFrame(callback: () => none) {
         let component = this.getCurrentComponent();
-        if !component.onFrame {
-            this._frameHooks.push(component);
+        if let hook = component.onFrame {
+            // A plain local: a closure does not see a narrowing.
+            let earlier: () => none = hook;
+            component.onFrame = () => { earlier(); callback(); };
+            return;
         }
+        this._frameHooks.push(component);
         component.onFrame = callback;
     }
 

@@ -253,14 +253,19 @@ fn fixtureDir(): str {
     return f"{base}/haze-notes-vault-order-tests-{stamp}";
 }
 
-fn flatten(entries: []FSEntry, indent: str, lines: []str): void :: final {
-    for entry in entries {
-        if entry is FSDirEntry {
-            lines.push(f"{indent}{entry.dirname}/");
-            flatten(entry.children, indent + "  ", lines);
+// The index as the expected list writes it: a folder's name with "/", each
+// level indented two spaces.
+fn flatten(index: VaultIndex, lines: []str) {
+    for (let i = 0; i < index.count; i++) {
+        let e = index.entry(i);
+        let indent = "";
+        for (let d = 0; d < e.depth as int; d++) {
+            indent = indent + "  ";
         }
-        if entry is FSFileEntry {
-            lines.push(f"{indent}{entry.filename}");
+        if isIndexFolder(e) {
+            lines.push(f"{indent}{index.name(e)}/");
+        } else {
+            lines.push(f"{indent}{index.name(e)}");
         }
     }
 }
@@ -280,14 +285,8 @@ fn main(): int {
         state.check(f"fixture written: {file}", fs.writeText(path, "") ? true : false);
     }
 
-    let vault = indexVault(root, { scanned: 0, unscanned: 0 }).vault;
-    // A deep reactive array is read element by element.
-    let top: []FSEntry = [];
-    for entry in vault.entries {
-        top.push(entry);
-    }
     let actual: []str = [];
-    flatten(top, "", actual);
+    flatten(indexNotes(root), actual);
     let expected = expectedOrder();
 
     state.check(f"entry count: {actual.length} listed, {expected.length} expected", actual.length == expected.length);

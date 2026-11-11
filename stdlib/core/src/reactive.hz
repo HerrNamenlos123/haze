@@ -438,6 +438,51 @@ namespace rx {
         return none;
     }
 
+    // The plain value `value` holds now, all the way down -- what assign()
+    // would write back: a reactive struct as its plain struct, field by
+    // field; a deep reactive array as a plain array of plain elements; any
+    // other cell as what it holds (a union or an array inside one is held
+    // whole). `P` is that plain type (rx.reactive<P> made `value`). Reading
+    // it subscribes the running computed to every cell it reads, as
+    // traverse does. Value structs only: a ref struct has no plain copy.
+    export fn toPlain<P, V>(value: V): P :: final {
+        if comptime V.category == meta.TypeCategory.Reactive || V.category == meta.TypeCategory.ShallowReactive {
+            if comptime rx.UnwrapReactive<V>.category == meta.TypeCategory.DynamicArray {
+                // Iterated, not read whole: that reads each element's cell
+                // (see traverse).
+                let result: P = [];
+                for element in value {
+                    result.push(toPlain<P.elementType, typeof(element)>(element));
+                }
+                return result;
+            }
+            else if comptime P.category == meta.TypeCategory.Struct {
+                return toPlainStruct<P, V>(value);
+            }
+            else {
+                return rx.get(value);
+            }
+        }
+        else if comptime V.category == meta.TypeCategory.Deep {
+            return toPlainStruct<P, V>(value);
+        }
+        else {
+            return value;
+        }
+        sys.unreachable();
+    }
+
+    export fn toPlainStruct<P, V>(value: V): P :: final {
+        static_assert(P.isValue, "rx.toPlain: a ref struct has no plain copy");
+        return do unsafe {
+            let result: P = uninitialized;
+            for comptime field in P.fields {
+                result.[field.name] = toPlain<typeof(result.[field.name]), typeof(value.[field.name])>(value.[field.name]);
+            }
+            result
+        };
+    }
+
     // Vue's hasChanged() (Object.is). A primitive or enum compares by
     // value; anything else -- a struct, array, union -- counts as changed on
     // every run, the way a freshly built object never `is` the previous one.

@@ -1,0 +1,176 @@
+// fs.tryLockFile / fs.lockFile: one holder at a time, in this process and
+// across processes, and a lock is let go when its holder dies -- by a panic
+// and by being killed -- with no unlock. The other processes are this program
+// again, started with "hold".
+//
+// Run: scripts/run-stdlib-test.sh stdlib/core/tests/filelock-tests.hz
+
+let failures = 0;
+
+fn check(name: str, ok: bool) {
+    if !ok {
+        fmt.println(f"FAIL {name}");
+        failures = failures + 1;
+    }
+}
+
+fn scratchDir(): str {
+    let base = "/tmp";
+    if let dir = env.get("TMPDIR") {
+        if dir.length > 0 { base = dir; }
+    }
+    return f"{base}/haze-filelock-tests-{sys.processId()}-{time.wallClockMs()}";
+}
+
+// The child: takes the lock, says so with `marker`, then ends as `how` says
+// ("panic": a panic; "wait": keeps it until it is killed; "unlock": lets it
+// go and ends normally).
+fn hold(lockPath: str, marker: str, how: str): int {
+    if let lock = fs.tryLockFile(lockPath) {
+        fs.writeText(marker, "held");
+        if how == "panic" {
+            time.sleep(0.2);
+            sys.panic("child: dies holding the lock");
+        }
+        if how == "wait" {
+            while true {
+                time.sleep(0.05);
+            }
+        }
+        // Long enough for the parent to find it held.
+        time.sleep(0.3);
+        lock.unlock();
+        return 0;
+    }
+    fmt.println("child: could not lock");
+    return 3;
+}
+
+fn waitFor(path: str, seconds: real): bool {
+    let deadline = time.now() + seconds;
+    while time.now() < deadline {
+        if let exists = fs.exists(path) {
+            if exists { return true; }
+        }
+        time.sleep(0.005);
+    }
+    return false;
+}
+
+fn testInProcess(dir: str) {
+    let path = f"{dir}/a.lock";
+    let first = fs.tryLockFile(path);
+    check("an unheld lock is taken", first ? true : false);
+    let created = false;
+    if let exists = fs.exists(path) { created = exists; }
+    check("the lock file is made, with its folder", created);
+    let second = fs.tryLockFile(path);
+    check("a second lock in the same process is refused", !second && second == fs.Error.Busy);
+    let waited = fs.lockFile(path, 0.05);
+    check("lockFile gives up after its timeout", !waited && waited == fs.Error.Busy);
+    if let held = first {
+        check("held", held.held());
+        held.unlock();
+        check("not held after unlock", !held.held());
+        held.unlock();
+    }
+    let again = fs.tryLockFile(path);
+    check("free again after unlock", again ? true : false);
+    if let lock = again {
+        lock.unlock();
+    }
+    let other = fs.tryLockFile(f"{dir}/b.lock");
+    let third = fs.tryLockFile(path);
+    check("two different files lock independently", (other ? true : false) && (third ? true : false));
+    if let l = other { l.unlock(); }
+    if let l = third { l.unlock(); }
+    let bad = fs.tryLockFile("");
+    check("an empty path is refused", !bad && bad == fs.Error.InvalidPath);
+}
+
+// A child holds the lock; this process is refused; the child ends as `how`
+// says; then the lock is free here.
+fn testChild(dir: str, how: str) {
+    let path = f"{dir}/{how}.lock";
+    let marker = f"{dir}/{how}.held";
+    let exe = sys.args()[0];
+    if let child = process.spawn(exe, ["hold", path, marker, how]) {
+        check(f"{how}: child took the lock", waitFor(marker, 10.0));
+        let whileHeld = fs.tryLockFile(path);
+        check(f"{how}: refused while the child holds it", !whileHeld && whileHeld == fs.Error.Busy);
+        if let wrong = whileHeld {
+            wrong.unlock();
+        }
+        if how == "wait" {
+            child.kill();
+        }
+        let code = child.join();
+        check(f"{how}: child ended as it should ({code})", how == "unlock" ? code == 0 : code != 0);
+        let after = fs.lockFile(path, 2.0);
+        check(f"{how}: free once the child is gone", after ? true : false);
+        if let lock = after {
+            lock.unlock();
+        }
+        return;
+    }
+    check(f"{how}: child started", false);
+}
+
+// A program started while the lock is held does not inherit it: once this
+// process lets go, the lock is free although that program still runs.
+fn testNotInherited(dir: str) {
+    let path = f"{dir}/inherit.lock";
+    if let lock = fs.tryLockFile(path) {
+        if let child = process.spawn(sys.args()[0], ["sleep"]) {
+            lock.unlock();
+            let again = fs.tryLockFile(path);
+            check("a child started while holding does not keep the lock", again ? true : false);
+            if let l = again { l.unlock(); }
+            child.kill();
+            child.join();
+            return;
+        }
+        check("sleeping child started", false);
+        return;
+    }
+    check("inherit: lock taken", false);
+}
+
+// What the tests left in `dir`, and `dir`: fs has no recursive remove.
+fn cleanUp(dir: str) {
+    fs.removeFile(f"{dir}/nested/a.lock");
+    fs.removeFile(f"{dir}/nested/b.lock");
+    fs.removeEmptyDirectory(f"{dir}/nested");
+    fs.removeFile(f"{dir}/inherit.lock");
+    let kinds: []str = ["unlock", "panic", "wait"];
+    for how in kinds {
+        fs.removeFile(f"{dir}/{how}.lock");
+        fs.removeFile(f"{dir}/{how}.held");
+    }
+    let removed = fs.removeEmptyDirectory(dir);
+    check("the scratch folder is left empty and removed", removed ? true : false);
+}
+
+fn main(): int {
+    let args = sys.args();
+    if args.length == 2 && args[1] == "sleep" {
+        time.sleep(3.0);
+        return 0;
+    }
+    if args.length == 5 && args[1] == "hold" {
+        return hold(args[2], args[3], args[4]);
+    }
+    let dir = scratchDir();
+    testInProcess(f"{dir}/nested");
+    testChild(dir, "unlock");
+    testChild(dir, "panic");
+    testChild(dir, "wait");
+    testNotInherited(dir);
+    cleanUp(dir);
+    if failures > 0 {
+        fmt.println(f"{failures} failed");
+        return 1;
+    }
+    fmt.println("filelock: all passed");
+    return 0;
+}

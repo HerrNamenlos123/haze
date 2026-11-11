@@ -1,3 +1,4 @@
+import binfile
 import base64
 
 // The one move of a vault from technicalsketcher's .tsk files to .hznote,
@@ -322,7 +323,7 @@ fn proveNote(text: str, hznote: Bytes): str {
     }
     let model: DocumentFile = converted;
     let decoded = decodeNote(hznote);
-    if decoded is HznoteError {
+    if decoded is binfile.Error {
         return f"the .hznote does not read back: {decoded.describe()}";
     }
     let back: DocumentFile = decoded;

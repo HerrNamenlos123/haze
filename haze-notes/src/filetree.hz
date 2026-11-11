@@ -11,6 +11,7 @@
 
 // One row of the tree.
 struct TreeRow {
+    // Vault-relative (see VaultIndex).
     path: str;
     // What the row says: a folder's name, or a note's title.
     name: str;
@@ -24,34 +25,44 @@ struct TreeRow {
     ghost: bool = false;
 }
 
-// The rows of `entries` and of every open folder below them, depth first --
-// the order they are drawn in. `expanded` holds the open folders' paths.
-fn flattenTree(entries: []FSEntry, expanded: LinearMap<str, bool>, depth: int, out: []TreeRow): void :: final {
-    for entry in entries {
-        if entry is FSDirEntry {
-            let open = expanded.has(entry.fullPath);
+// The rows of `index`: its top level and everything in the open folders,
+// depth first -- the order they are drawn in. `expanded` holds the open
+// folders' vault-relative paths. A closed folder's entries are skipped in
+// one step (IndexEntry.descendants), so this costs what is shown, not the
+// whole index.
+fn flattenTree(index: VaultIndex, expanded: LinearMap<str, bool>, out: []TreeRow) {
+    let i = 0;
+    while i < index.count {
+        let e = index.entry(i);
+        let path = index.path(e);
+        let ghost = isIndexGhost(e);
+        if isIndexFolder(e) {
+            let open = expanded.has(path);
             out.push(TreeRow {
-                path: entry.fullPath,
-                name: entry.dirname,
-                depth: depth,
+                path: path,
+                name: index.name(e),
+                depth: e.depth as int,
                 isDir: true,
                 open: open,
-                ghost: entry.ghost,
+                ghost: ghost,
             });
-            if open {
-                flattenTree(entry.children, expanded, depth + 1, out);
+            i = i + 1;
+            if !open {
+                i = i + e.descendants as int;
             }
-        } else if entry is FSFileEntry {
+        } else {
+            let name = index.name(e);
             out.push(TreeRow {
-                path: entry.fullPath,
+                path: path,
                 // A file that is no note keeps its whole name: the note
                 // extension is only left off where every name has it.
-                name: entry.ghost ? entry.filename : noteTitle(entry.filename),
-                depth: depth,
+                name: ghost ? name : noteTitle(name),
+                depth: e.depth as int,
                 isDir: false,
                 open: false,
-                ghost: entry.ghost,
+                ghost: ghost,
             });
+            i = i + 1;
         }
     }
 }
@@ -78,29 +89,27 @@ fn rowIndexOf(rows: []TreeRow, path: str): int {
     return -1;
 }
 
-// The folders the entry at `path` lies in, outermost first (the ones that
-// have to be open for its row to show), appended to `out`. The entry may be a
-// note or a folder. False, and `out` as it was, when no entry has that path.
-fn folderChainTo(entries: []FSEntry, path: str, out: []str): bool :: final {
-    for entry in entries {
-        if entry is FSDirEntry {
-            if entry.fullPath == path {
-                return true;
-            }
-            if path.startsWith(entry.fullPath + "/") {
-                out.push(entry.fullPath);
-                if folderChainTo(entry.children, path, out) {
-                    return true;
-                }
-                out.pop();
-            }
-        } else if entry is FSFileEntry {
-            if entry.fullPath == path {
-                return true;
-            }
+// The folders the entry at vault-relative `path` lies in, outermost first
+// (the ones that have to be open for its row to show), appended to `out`.
+// The entry may be a note or a folder. False, and `out` as it was, when no
+// entry has that path.
+fn folderChainTo(index: VaultIndex, path: str, out: []str): bool {
+    let target = index.find(path);
+    if target < 0 {
+        return false;
+    }
+    let depth = index.entry(target).depth as int;
+    let start = out.length;
+    // The folders around it are the nearest folder before it at each
+    // smaller depth.
+    for (let i = target - 1; i >= 0 && depth > 0; i--) {
+        let e = index.entry(i);
+        if isIndexFolder(e) && e.depth as int == depth - 1 && i + e.descendants as int >= target {
+            out.insert(start, index.path(e));
+            depth = depth - 1;
         }
     }
-    return false;
+    return true;
 }
 
 // `paths` with `path` added when it is missing and removed when it is there:
@@ -158,7 +167,8 @@ fn treeWindow(count: int, rowHeight: real, padding: real, scrollTop: real, viewH
     };
 }
 
-// The folder the entry at `path` is in (see entryName).
+// The folder the entry at `path` is in (see entryName): "" for an entry at
+// the top of a vault-relative path.
 fn parentFolder(path: str): str {
     return path.slice(0, max(0, path.length - entryName(path).length - 1));
 }
@@ -166,7 +176,8 @@ fn parentFolder(path: str): str {
 // A context menu asked for in the tree: by a right click, a pen's barrel
 // button, or a finger resting on a row.
 struct TreeMenuRequest {
-    // The row's entry, or "" for the tree's empty space, which is the vault.
+    // The row's entry, vault-relative, or "" for the tree's empty space,
+    // which is the vault.
     path: str = "";
     isDir: bool = false;
     ghost: bool = false;

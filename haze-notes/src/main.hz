@@ -106,6 +106,9 @@ fn main(): int {
     if args.length >= 2 && args[1] == "migrate-tsk" {
         return migrateCommand(args);
     }
+    // On worker threads while the window and the GPU come up (see
+    // startPaperDecode).
+    startPaperDecode();
     attempt {
         // The window is borderless and the UI draws the titlebar (see
         // TitleBar.hzui): where it is gets published to the window manager

@@ -59,6 +59,9 @@ bool hzstd_run_on_worker_thread(void (*fn)(void *arg), void *arg);
 hzstd_int_t hzstd_arg_count(void);
 hzstd_str_t hzstd_arg_at(hzstd_int_t index);
 
+// The operating system's id of this process (getpid / GetCurrentProcessId).
+hzstd_int_t hzstd_process_id(void);
+
 // ── The application ─────────────────────────────────────────────────────────
 //
 // The [app] appId from the program's haze.toml: the name the desktop knows the

@@ -10,12 +10,16 @@ const TREE_PADDING = 6.0;
 const TREE_OVERSCAN = 6;
 
 @props
-entries: Reactive<[]FSEntry>;
+index: VaultIndex;
 // The open folders' paths. A model, as v-model is in Vue: the tree writes it
 // when a folder is opened or closed, and its owner keeps (and saves) it --
 // rows come and go as they scroll, so no row could hold that state.
 expanded: Reactive<[]str>;
-// The note that is open in the editor.
+// Where the list is scrolled to, in px: a model too. The tree starts there
+// (a vault reopens where it was left, from the first frame) and writes it as
+// it scrolls.
+scrollTop: Reactive<real>;
+// The note that is open in the editor (vault-relative, as every path here).
 activePath: str = "";
 // An entry to bring into view, its folders opened: one just created. Asked
 // for again each time `revealSerial` changes.
@@ -31,20 +35,17 @@ menu: (TreeMenuRequest,);
 
 @setup
 let scrollView = ui.componentRef<ScrollView>();
+// Where the tree was left. Read once: from here on the tree writes it.
+let startScrollTop = rx.untracked(() => rx.get(props.scrollTop));
 
 let rows = computed((): []TreeRow => {
-    // Plain copies of the reactive top level and open paths: flattenTree
-    // indexes into a directory's children exactly as into these.
-    let top: []FSEntry = [];
-    for entry in props.entries {
-        top.push(entry);
-    }
+    // A plain copy of the open paths: flattenTree looks them up by value.
     let open: []str = [];
     for path in props.expanded {
         open.push(path);
     }
     let out: []TreeRow = [];
-    flattenTree(top, expandedSet(open), 0, out);
+    flattenTree(props.index, expandedSet(open), out);
     return out;
 });
 
@@ -59,7 +60,7 @@ let window = computed((): TreeWindow => {
     let all: []TreeRow = rx.get(rows);
     let view = rx.get(scrollView);
     if !view {
-        return treeWindow(all.length, props.rowHeight, TREE_PADDING, 0.0, UNMEASURED_VIEW_HEIGHT, TREE_OVERSCAN);
+        return treeWindow(all.length, props.rowHeight, TREE_PADDING, startScrollTop, UNMEASURED_VIEW_HEIGHT, TREE_OVERSCAN);
     }
     let viewHeight = rx.get(view.scroll.clientHeight);
     if viewHeight <= 0.0 {
@@ -128,39 +129,39 @@ let vaultMenu = (event: PointerEvent) => {
     emits.menu(TreeMenuRequest { path: "", pos: event.pos });
 };
 
-// An entry to scroll into view as soon as the list is measured. First the
-// open note, centred, so a vault reopens where it was left; later whatever
-// `reveal` asks for, scrolled to only as far as it takes. Folders it is in
-// that are closed are opened first, and it is scrolled to the frame after,
-// when its row exists.
-let revealPath: ref Box<str> = { value: props.activePath };
-let revealCentred: ref Box<bool> = { value: true };
-let revealed: ref Box<bool> = { value: false };
+// An entry to scroll into view, its folders opened: `reveal`, each time
+// `revealSerial` changes (one just created), scrolled to only as far as it
+// takes. Closed folders it is in are opened first, and it is scrolled to the
+// frame after, when its row exists. Nothing is revealed on mount: the tree
+// starts where it was left (scrollTop).
+let revealPath: ref Box<str> = { value: "" };
+let revealed: ref Box<bool> = { value: true };
 let openedForReveal: ref Box<bool> = { value: false };
 
 ui.watch(() => props.revealSerial, (serial, previous) => {
     if props.reveal.length == 0 { return; }
     revealPath.value = props.reveal;
-    revealCentred.value = false;
     revealed.value = false;
     openedForReveal.value = false;
 });
 
 ui.onFrame(() => {
-    if revealed.value { return; }
     let view = rx.get(scrollView);
     if !view { return; }
+    // The scroll position goes to the owner (the vault's cache, which
+    // writes it to disk once it has settled).
+    let top = rx.get(view.scroll.scrollTop);
+    if top != rx.untracked(() => rx.get(props.scrollTop)) {
+        props.scrollTop := top;
+    }
+    if revealed.value { return; }
     if rx.get(view.scroll.clientHeight) <= 0.0 || rx.get(view.scroll.scrollHeight) <= 0.0 { return; }
     let target = revealPath.value;
     let index = rowIndexOf(rx.get(rows), target);
     if index < 0 && !openedForReveal.value && target.length > 0 {
         openedForReveal.value = true;
-        let top: []FSEntry = [];
-        for entry in props.entries {
-            top.push(entry);
-        }
         let chain: []str = [];
-        if folderChainTo(top, target, chain) {
+        if folderChainTo(props.index, target, chain) {
             let current: []str = [];
             for open in props.expanded {
                 current.push(open);
@@ -188,18 +189,13 @@ ui.onFrame(() => {
     }
     revealed.value = true;
     if index >= 0 {
-        let top = TREE_PADDING + index as real * props.rowHeight;
-        if revealCentred.value {
-            view.scroll.centerInView(top, props.rowHeight);
-        } else {
-            view.scroll.scrollIntoView(top, props.rowHeight);
-        }
+        view.scroll.scrollIntoView(TREE_PADDING + index as real * props.rowHeight, props.rowHeight);
     }
 });
 
 @template [w-grow h-grow] @contextmenu=vaultMenu
 
-ScrollView [] ref=scrollView padding=[TREE_PADDING] barSize=[8.0]
+ScrollView [] ref=scrollView padding=[TREE_PADDING] barSize=[8.0] initialScrollTop=[startScrollTop]
     thumbColor=[theme().scrollThumb] thumbHoverColor=[theme().scrollThumbHover]
     thumbActiveColor=[theme().scrollThumbActive]
 {

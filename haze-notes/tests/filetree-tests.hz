@@ -9,10 +9,9 @@
 // that failed (rows taller than the arithmetic assumed) the list flickered up
 // and down at its end.
 //
-// haze-notes is an executable, so nothing can depend on it: run this from a
-// throwaway exe project inside the repository that depends on unicode, with
-// src/vault.hz and src/filetree.hz copied in verbatim and this file as its
-// main.hz.
+// Paths in the index and the rows are vault-relative.
+//
+// Run: haze-notes/tests/run-test.sh haze-notes/tests/filetree-tests.hz vault.hz filetree.hz
 
 ref struct State {
     checks: int = 0;
@@ -65,6 +64,34 @@ fn rowsText(rows: []TreeRow): str {
     return text;
 }
 
+// Every entry whose folders are all open, looked at one by one.
+fn naiveRows(index: VaultIndex, expanded: LinearMap<str, bool>): []TreeRow {
+    let out: []TreeRow = [];
+    for (let i = 0; i < index.count; i++) {
+        let e = index.entry(i);
+        let path = index.path(e);
+        let visible = true;
+        let folder = parentFolder(path);
+        while folder.length > 0 {
+            if !expanded.has(folder) {
+                visible = false;
+            }
+            folder = parentFolder(folder);
+        }
+        if visible {
+            let isDir = isIndexFolder(e);
+            out.push(TreeRow {
+                path: path,
+                name: isDir ? index.name(e) : noteTitle(index.name(e)),
+                depth: e.depth as int,
+                isDir: isDir,
+                open: isDir && expanded.has(path),
+            });
+        }
+    }
+    return out;
+}
+
 fn main(): int {
     let state = State {};
 
@@ -83,11 +110,11 @@ fn main(): int {
     fs.writeText(f"{root}/Only pdfs/scan.pdf", "pdf");
     fs.createDirectory(f"{root}/Empty");
 
-    let index = indexDirectory(Alloc.arena(), root);
+    let index = indexNotes(root);
     let all: []str = [];
     let out: []TreeRow = [];
-    let everything: []str = [f"{root}/Week 2", f"{root}/Week 2/Inner", f"{root}/Week 10"];
-    flattenTree(index, expandedSet(everything), 0, out);
+    let everything: []str = ["Week 2", "Week 2/Inner", "Week 10"];
+    flattenTree(index, expandedSet(everything), out);
     // Notes are the files ending in ".hznote" (a dot-file note included; a
     // .tsk is no note any more), no folder starting with ".", no folder left
     // empty by that.
@@ -97,39 +124,66 @@ fn main(): int {
 
     // ── Flattening ──────────────────────────────────────────────────
     let closed: []TreeRow = [];
-    flattenTree(index, expandedSet(all), 0, closed);
+    flattenTree(index, expandedSet(all), closed);
     state.checkStr("nothing open: only the top level", rowsText(closed), "> Week 2\n> Week 10\n- .hidden\n- A note\n- b note\n");
     let inner: []TreeRow = [];
-    let onlyInner: []str = [f"{root}/Week 2/Inner"];
-    flattenTree(index, expandedSet(onlyInner), 0, inner);
+    let onlyInner: []str = ["Week 2/Inner"];
+    flattenTree(index, expandedSet(onlyInner), inner);
     state.checkStr("an open folder inside a closed one stays hidden", rowsText(inner),
         "> Week 2\n> Week 10\n- .hidden\n- A note\n- b note\n");
-    state.check("rowIndexOf finds a row", rowIndexOf(out, f"{root}/A note.hznote") == 6);
-    state.check("rowIndexOf misses", rowIndexOf(out, f"{root}/nope.hznote") == -1);
+    state.check("rowIndexOf finds a row", rowIndexOf(out, "A note.hznote") == 6);
+    state.check("rowIndexOf misses", rowIndexOf(out, "nope.hznote") == -1);
 
     // ── The folders a note is in ────────────────────────────────────
     let chain: []str = [];
-    state.check("folderChainTo finds a nested note", folderChainTo(index, f"{root}/Week 2/Inner/deep.hznote", chain));
+    state.check("folderChainTo finds a nested note", folderChainTo(index, "Week 2/Inner/deep.hznote", chain));
     state.check("its chain is outermost first",
-        chain.length == 2 && chain[0] == f"{root}/Week 2" && chain[1] == f"{root}/Week 2/Inner");
+        chain.length == 2 && chain[0] == "Week 2" && chain[1] == "Week 2/Inner");
     let topChain: []str = [];
-    state.check("a top-level note has no folders", folderChainTo(index, f"{root}/A note.hznote", topChain) && topChain.length == 0);
+    state.check("a top-level note has no folders", folderChainTo(index, "A note.hznote", topChain) && topChain.length == 0);
     let missChain: []str = ["kept"];
     state.check("a missing note is not found, and out is left as it was",
-        !folderChainTo(index, f"{root}/Week 2/Inner/gone.hznote", missChain) && missChain.length == 1 && missChain[0] == "kept");
+        !folderChainTo(index, "Week 2/Inner/gone.hznote", missChain) && missChain.length == 1 && missChain[0] == "kept");
     // A path that only shares a name's beginning with a folder ("Week 2" in
     // "Week 20/...") is not in it.
     let prefixChain: []str = [];
     state.check("a folder name that is a prefix of another is not its parent",
-        !folderChainTo(index, f"{root}/Week 20/x.hznote", prefixChain) && prefixChain.length == 0);
+        !folderChainTo(index, "Week 20/x.hznote", prefixChain) && prefixChain.length == 0);
     // A folder is found as well: the folders around it, not the folder itself.
     let folderChain: []str = [];
-    state.check("folderChainTo finds a nested folder", folderChainTo(index, f"{root}/Week 2/Inner", folderChain));
+    state.check("folderChainTo finds a nested folder", folderChainTo(index, "Week 2/Inner", folderChain));
     state.check("its chain is the folders around it",
-        folderChain.length == 1 && folderChain[0] == f"{root}/Week 2");
+        folderChain.length == 1 && folderChain[0] == "Week 2");
     let topFolderChain: []str = [];
     state.check("a top-level folder has no folders around it",
-        folderChainTo(index, f"{root}/Week 10", topFolderChain) && topFolderChain.length == 0);
+        folderChainTo(index, "Week 10", topFolderChain) && topFolderChain.length == 0);
+
+    // ── Closed folders are skipped by their descendant count ────────
+    // The same rows as looking at every entry and keeping those whose
+    // folders are all open, for every combination of open folders.
+    let folders: []str = ["Week 2", "Week 2/Inner", "Week 10"];
+    for (let mask = 0; mask < 8; mask++) {
+        let open: []str = [];
+        let bit = 1;
+        for folder in folders {
+            if (mask / bit) % 2 == 1 {
+                open.push(folder);
+            }
+            bit = bit * 2;
+        }
+        let fast: []TreeRow = [];
+        flattenTree(index, expandedSet(open), fast);
+        state.checkStr(f"closed folders skipped (open set {mask})", rowsText(fast), rowsText(naiveRows(index, expandedSet(open))));
+    }
+
+    // ── Vault-relative paths ────────────────────────────────────────
+    state.checkStr("parentFolder at the top is the vault", parentFolder("A note.hznote"), "");
+    state.checkStr("vaultAbsolute", vaultAbsolute("/v", "Week 2/x.hznote"), "/v/Week 2/x.hznote");
+    state.checkStr("vaultAbsolute of the vault", vaultAbsolute("/v", ""), "/v");
+    state.check("vaultRelative", (vaultRelative("/v", "/v/Week 2/x.hznote") ?? "none") == "Week 2/x.hznote");
+    state.check("vaultRelative of the vault", (vaultRelative("/v", "/v") ?? "none") == "");
+    state.check("vaultRelative outside", vaultRelative("/v", "/other/x.hznote") is none);
+    state.check("vaultRelative: a name that only starts like the vault", vaultRelative("/v", "/vault2/x.hznote") is none);
 
     state.checkStr("parentFolder of a note", parentFolder(f"{root}/Week 2/Inner/deep.hznote"), f"{root}/Week 2/Inner");
     state.checkStr("parentFolder of a folder", parentFolder(f"{root}/Week 2"), root);

@@ -1,3 +1,4 @@
+import binfile
 // Saving and loading a note: an .hznote file (hznote.hz), written and read
 // in one go each. Even the largest note reads and decodes in a few tens of
 // ms: there is nothing left worth spreading over frames. (The strokes'
@@ -139,12 +140,12 @@ ref struct DocumentLoad {
             return true;
         }
         let decoded = decodeNote(data);
-        if decoded is HznoteError {
-            if decoded.problem == HznoteProblem.NotANote {
+        if decoded is binfile.Error {
+            if decoded.problem == binfile.Problem.NotThisFormat {
                 this.notANote = true;
-            } else if decoded.problem == HznoteProblem.Newer {
+            } else if decoded.problem == binfile.Problem.Newer {
                 this.hint = "It was saved by a newer Haze Notes.";
-            } else if decoded.problem == HznoteProblem.Incompatible {
+            } else if decoded.problem == binfile.Problem.Incompatible {
                 this.hint = f"It holds something this version of Haze Notes cannot read: {decoded.describe()}.";
             } else {
                 this.hint = f"The file is damaged: {decoded.describe()}.";

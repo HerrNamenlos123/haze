@@ -2285,3 +2285,103 @@ hzstd_stdin_line_part_t hzstd_stdin_read_line_part(void* dest, hzstd_int_t room)
   }
   return part;
 }
+
+// ── File locks ──────────────────────────────────────────────────────────────
+//
+// The lock is tied to an open file, never to a file on disk: flock() on Linux
+// belongs to the open file description, LockFileEx on Windows to the handle,
+// and the system closes both when the process ends, however it ends. That is
+// why a crashed holder never leaves the lock behind, and why the lock file is
+// never deleted: a holder that unlinked it would let the next one lock a new
+// file of the same name while a third still waits on the old one.
+//
+// O_CLOEXEC (Linux) and a non-inheritable handle (Windows) keep the lock out
+// of child processes: a child that inherited it would hold it on for as long
+// as it runs.
+#if defined(HAZE_PLATFORM_LINUX)
+#include <sys/file.h>
+#endif
+
+hzstd_file_lock_result_t hzstd_file_lock(hzstd_str_t path, bool wait)
+{
+  hzstd_file_lock_result_t result = { .handle = -1, .error = { .code = hzstd_fs_error_code_none, .message = HZSTD_STRING(NULL, 0) } };
+  if (path.length == 0 || memchr(path.data, '\0', (size_t)path.length)) {
+    result.error = (hzstd_fs_error_t) { .code = hzstd_fs_error_code_invalid_path, .message = HZSTD_STRING("invalid path", 12) };
+    return result;
+  }
+  HZSTD_SCRATCH_CSTR(cpath, path);
+  if (!cpath) {
+    result.error = (hzstd_fs_error_t) { .code = hzstd_fs_error_code_out_of_memory, .message = HZSTD_STRING("out of memory", 13) };
+    return result;
+  }
+  hzstd_mkdir_recursive(hzstd_fs_parent_dir(cpath));
+
+#if defined(HAZE_PLATFORM_LINUX)
+  int fd = open(cpath, O_RDWR | O_CREAT | O_CLOEXEC, 0666);
+  if (fd < 0) {
+    int err = errno;
+    result.error = (hzstd_fs_error_t) { .code = hzstd_fs_error_from_errno(err), .message = hzstd_fs_errno_message(err) };
+    return result;
+  }
+  int locked;
+  do {
+    locked = flock(fd, LOCK_EX | (wait ? 0 : LOCK_NB));
+  } while (locked != 0 && errno == EINTR);
+  if (locked != 0) {
+    int err = errno;
+    close(fd);
+    if (err == EWOULDBLOCK) {
+      result.error = (hzstd_fs_error_t) { .code = hzstd_fs_error_code_busy, .message = HZSTD_STRING("locked elsewhere", 16) };
+    } else {
+      result.error = (hzstd_fs_error_t) { .code = hzstd_fs_error_code_io_error, .message = hzstd_fs_errno_message(err) };
+    }
+    return result;
+  }
+  result.handle = fd;
+  return result;
+#elif defined(HAZE_PLATFORM_WIN32)
+  wchar_t wide[HAZE_MAX_PATH_LENGTH * 4];
+  if (MultiByteToWideChar(CP_UTF8, 0, cpath, -1, wide, (int)(sizeof(wide) / sizeof(wide[0]))) <= 0) {
+    result.error = (hzstd_fs_error_t) { .code = hzstd_fs_error_code_name_too_long, .message = HZSTD_STRING("path too long", 13) };
+    return result;
+  }
+  // NULL security attributes: the handle is not inherited.
+  HANDLE handle = CreateFileW(wide, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                              NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+  if (handle == INVALID_HANDLE_VALUE) {
+    DWORD err = GetLastError();
+    result.error = (hzstd_fs_error_t) { .code = hzstd_fs_error_from_windows_error(err), .message = hzstd_fs_windows_error(err) };
+    return result;
+  }
+  OVERLAPPED overlapped = { 0 };
+  DWORD flags = LOCKFILE_EXCLUSIVE_LOCK | (wait ? 0 : LOCKFILE_FAIL_IMMEDIATELY);
+  if (!LockFileEx(handle, flags, 0, 1, 0, &overlapped)) {
+    DWORD err = GetLastError();
+    CloseHandle(handle);
+    if (err == ERROR_LOCK_VIOLATION || err == ERROR_IO_PENDING) {
+      result.error = (hzstd_fs_error_t) { .code = hzstd_fs_error_code_busy, .message = HZSTD_STRING("locked elsewhere", 16) };
+    } else {
+      result.error = (hzstd_fs_error_t) { .code = hzstd_fs_error_from_windows_error(err), .message = hzstd_fs_windows_error(err) };
+    }
+    return result;
+  }
+  result.handle = (int64_t)(intptr_t)handle;
+  return result;
+#endif
+}
+
+void hzstd_file_unlock(int64_t handle)
+{
+  if (handle < 0) {
+    return;
+  }
+#if defined(HAZE_PLATFORM_LINUX)
+  // Closing the descriptor drops the lock.
+  close((int)handle);
+#elif defined(HAZE_PLATFORM_WIN32)
+  HANDLE h = (HANDLE)(intptr_t)handle;
+  OVERLAPPED overlapped = { 0 };
+  UnlockFileEx(h, 0, 1, 0, &overlapped);
+  CloseHandle(h);
+#endif
+}

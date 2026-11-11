@@ -112,6 +112,11 @@ static void hzstd_load_args(void)
   hzstd_args_count = count;
 }
 
+hzstd_int_t hzstd_process_id(void)
+{
+  return (hzstd_int_t)GetCurrentProcessId();
+}
+
 hzstd_int_t hzstd_arg_count(void)
 {
   if (hzstd_args_count < 0) {

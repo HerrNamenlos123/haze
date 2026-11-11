@@ -1,34 +1,5 @@
 import unicode
 
-struct FSFileEntry {
-  type: "file";
-  filename: str;
-  fullPath: str;
-  // Not a note: listed only while the tree shows every file (see
-  // indexAllFiles), and drawn faded. Never saved: the saved index holds notes
-  // only.
-  [[json.ignore]]
-  ghost: bool = false;
-}
-
-struct FSDirEntry {
-  type: "directory";
-  dirname: str;
-  fullPath: str;
-  children: []FSEntry;
-  // A folder the tree leaves out (no note in it, no keep file), listed only
-  // while it shows every file. Never saved, as for a file.
-  [[json.ignore]]
-  ghost: bool = false;
-}
-
-[[json.discriminator="type"]]
-type FSEntry = FSFileEntry | FSDirEntry;
-
-struct VaultFS {
-  entries: rx.Reactive<[]FSEntry>;
-}
-
 // ── Order ───────────────────────────────────────────────────────────────
 //
 // Every folder's entries are in technicalsketcher.web's order: its
@@ -178,10 +149,6 @@ fn compareVaultOrder(a: VaultOrderKey, b: VaultOrderKey): int {
     return compareBytes(a.name, b.name);
 }
 
-struct VaultOrderItem {
-    key: VaultOrderKey;
-    entry: FSEntry;
-}
 
 // ── Indexing ────────────────────────────────────────────────────────────
 //
@@ -215,139 +182,381 @@ const MAX_FOLDER_DEPTH = 32;
 // no note itself, and it is never listed.
 const KEEP_FILE = ".hznotekeep";
 
-// A folder as the tree sees it.
-struct IndexedFolder {
-    // What it lists inside.
-    entries: []FSEntry;
-    // It holds a keep file.
-    kept: bool;
-    // The tree shows it: it holds a keep file, or a note at any depth.
-    shown: bool;
+// ── The index ───────────────────────────────────────────────────────────
+//
+// What the tree lists, flat: every entry in the order the tree shows it,
+// each folder followed by everything in it (depth first), as plain records
+// over one text of vault-relative paths ("Physik/Woche 2/x.hznote", parts
+// joined by "/" on every system). Plain bytes, both: the vault's index cache
+// stores them as they are, and reading the cache hands them back as views
+// of the file's bytes, with nothing built. A walk (VaultWalk) writes them
+// into one arena.
+
+// The bytes of one IndexEntry.
+const comptime INDEX_ENTRY_BYTES = 28;
+
+// One entry: a note (in an index of every file, any file) or a folder.
+// Plain: seven u32, nothing else, so an array of them is one block of bytes.
+struct IndexEntry {
+    // Its vault-relative path, in VaultIndex.text.
+    pathStart: u32;
+    pathLength: u32;
+    // Its name: the last nameLength bytes of the path.
+    nameLength: u32;
+    // How many folders it is in: 0 at the vault's top.
+    depth: u32;
+    // 1 for a folder, 0 for a file.
+    folder: u32;
+    // 1 for what is not part of the notes: listed only in an index of every
+    // file.
+    ghost: u32;
+    // How many entries after it are inside it: what a closed folder skips.
+    descendants: u32;
 }
 
-// The folder at `path`. With `everything`, every file and every folder in it
-// is listed, and what the tree would leave out is marked a ghost; without,
-// only what the tree shows. Hidden folders stay out either way: the app's own
-// .hznotes and other tools' data, which no note belongs in. Every name and
-// path of the index (and the names of what it leaves out) goes into `arena`,
-// one arena for the whole walk.
-fn indexFolder(arena: Allocator, path: str, depth: int, everything: bool): IndexedFolder :: final {
-    let items: []VaultOrderItem = [];
-    let kept = false;
-    let shown = false;
-    if depth <= MAX_FOLDER_DEPTH {
-        if let dirs = fs.listDir(arena, path) {
+struct VaultIndex {
+    // `count` IndexEntry records, side by side, as in memory.
+    entries: Bytes;
+    count: int;
+    // Every entry's path, one after another.
+    text: str;
+
+    fn entry(i: int): IndexEntry {
+        if i < 0 || i >= this.count {
+            sys.panic(f"VaultIndex: entry {i} of {this.count}");
+        }
+        let e = IndexEntry { pathStart: 0, pathLength: 0, nameLength: 0, depth: 0, folder: 0, ghost: 0, descendants: 0 };
+        let bytes = this.entries;
+        let at = i * INDEX_ENTRY_BYTES;
+        do unsafe {
+            __c__("memcpy(&e, (const hzstd_u8_t*)bytes.basePtr + bytes.offset + at, sizeof(e));");
+        };
+        return e;
+    }
+
+    fn path(e: IndexEntry): str {
+        let start = e.pathStart as int;
+        return this.text.slice(start, start + e.pathLength as int);
+    }
+
+    fn name(e: IndexEntry): str {
+        let end = e.pathStart as int + e.pathLength as int;
+        return this.text.slice(end - e.nameLength as int, end);
+    }
+
+    // The entry with this vault-relative path, or -1.
+    fn find(path: str): int {
+        for (let i = 0; i < this.count; i++) {
+            if this.path(this.entry(i)) == path {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    // The same entries in the same order.
+    fn sameAs(other: VaultIndex): bool {
+        return this.count == other.count && this.text == other.text && this.entries == other.entries;
+    }
+}
+
+fn isIndexFolder(e: IndexEntry): bool {
+    return e.folder != 0;
+}
+
+fn isIndexGhost(e: IndexEntry): bool {
+    return e.ghost != 0;
+}
+
+fn emptyIndex(): VaultIndex {
+    return VaultIndex { entries: Bytes(), count: 0, text: "" };
+}
+
+// The vault-relative path `relative` as a path on disk. "" is the vault.
+fn vaultAbsolute(vaultPath: str, relative: str): str {
+    if relative.length == 0 {
+        return vaultPath;
+    }
+    return f"{vaultPath}/{relative}";
+}
+
+// The path of `absolute` inside the vault ("" for the vault itself), or
+// none for a path outside it.
+fn vaultRelative(vaultPath: str, absolute: str): str | none {
+    if absolute == vaultPath {
+        return "";
+    }
+    if absolute.length > vaultPath.length + 1 && absolute.startsWith(vaultPath) && absolute[vaultPath.length] as int == 47 {
+        return absolute.slice(vaultPath.length + 1, absolute.length);
+    }
+    return none;
+}
+
+// ── Walking a vault ─────────────────────────────────────────────────────
+
+// A folder of the walk.
+ref struct WalkFolder {
+    // Vault-relative ("" for the vault) and on disk.
+    relPath: str;
+    absPath: str;
+    depth: int;
+    listed: bool = false;
+    // It holds a keep file; a note right in it.
+    kept: bool = false;
+    noted: bool = false;
+    // The tree shows it: a keep file, or a note at any depth.
+    shown: bool = false;
+    // What it lists: its files at once, its folders once walked.
+    items: []WalkItem = [];
+    // Its folders, by name, to walk in turn.
+    subfolders: []str = [];
+    nextSubfolder: int = 0;
+}
+
+struct WalkItem {
+    key: VaultOrderKey;
+    name: str;
+    ghost: bool;
+    // A folder's own walk; none for a file.
+    folder: WalkFolder | none = none;
+}
+
+// The walk of a vault that the index is made of: one folder listed per step,
+// so it can be spread over frames, or run() at once. With `everything`,
+// every file and folder is listed and what the tree would leave out is a
+// ghost; without, only what the tree shows. Hidden folders stay out either
+// way: the app's own .hznotes and other tools' data, which no note belongs
+// in.
+//
+// Every name and path, and the index made at the end, go into one arena,
+// made for the walk and sized by `lastUsage`, what the walk before measured
+// (usage()): an unchanged vault walks into a single chunk.
+ref struct VaultWalk {
+    root: str;
+    everything: bool;
+    arena: Arena;
+    // The folders being walked, innermost last.
+    stack: []WalkFolder = [];
+    top?: WalkFolder;
+
+    fn constructor(root: str, everything: bool, lastUsage: ArenaUsage): VaultWalk {
+        let walk = VaultWalk {
+            root: root,
+            everything: everything,
+            arena: Alloc.arena(ArenaOptions { label: "vault index" }.sizedFor(lastUsage, 0.05)),
+        };
+        walk.stack.push(WalkFolder { relPath: "", absPath: root, depth: 0 });
+        return walk;
+    }
+
+    fn done(): bool {
+        return this.stack.length == 0;
+    }
+
+    // Walks on until `deadline` (time.now()) has passed, at least one step.
+    // True once the whole vault is walked.
+    fn step(deadline: real): bool {
+        while this.stack.length > 0 {
+            this.stepOnce();
+            if time.now() >= deadline {
+                break;
+            }
+        }
+        return this.stack.length == 0;
+    }
+
+    // All of it, now.
+    fn run() {
+        while this.stack.length > 0 {
+            this.stepOnce();
+        }
+    }
+
+    fn stepOnce() {
+        let folder = this.stack[this.stack.length - 1];
+        if !folder.listed {
+            this.list(folder);
+            return;
+        }
+        if folder.nextSubfolder < folder.subfolders.length {
+            let name = folder.subfolders[folder.nextSubfolder];
+            folder.nextSubfolder = folder.nextSubfolder + 1;
+            let rel = name;
+            if folder.relPath.length > 0 {
+                rel = fmt.formatWithAllocator(this.arena, folder.relPath, "/", name);
+            }
+            this.stack.push(WalkFolder {
+                relPath: rel,
+                absPath: fmt.formatWithAllocator(this.arena, this.root, "/", rel),
+                depth: folder.depth + 1,
+            });
+            return;
+        }
+        // Everything in it walked.
+        folder.items.sort((a: WalkItem, b: WalkItem) => compareVaultOrder(a.key, b.key));
+        this.stack.pop();
+        if this.stack.length == 0 {
+            this.top = folder;
+            return;
+        }
+        let parent = this.stack[this.stack.length - 1];
+        if folder.shown {
+            parent.shown = true;
+        }
+        if folder.shown || this.everything {
+            parent.items.push(WalkItem {
+                key: vaultOrderKey(true, entryName(folder.relPath)),
+                name: entryName(folder.relPath),
+                ghost: !folder.shown,
+                folder: folder,
+            });
+        }
+    }
+
+    fn list(folder: WalkFolder) {
+        folder.listed = true;
+        if folder.depth > MAX_FOLDER_DEPTH {
+            return;
+        }
+        if let dirs = fs.listDir(this.arena, folder.absPath) {
             for dir in dirs {
                 if dir.isFile && dir.name == KEEP_FILE {
-                    kept = true;
+                    folder.kept = true;
+                    folder.shown = true;
                 }
                 else if dir.isFile {
                     let note = isNoteFile(dir.name);
                     if note {
-                        shown = true;
+                        folder.noted = true;
+                        folder.shown = true;
                     }
-                    if note || everything {
-                        items.push(VaultOrderItem {
-                            key: vaultOrderKey(false, dir.name),
-                            entry: FSFileEntry {
-                                type: "file",
-                                filename: dir.name,
-                                fullPath: dir.path(arena),
-                                ghost: !note,
-                            },
-                        });
+                    if note || this.everything {
+                        folder.items.push(WalkItem { key: vaultOrderKey(false, dir.name), name: dir.name, ghost: !note });
                     }
                 }
                 else if dir.isDirectory && !isHiddenFolder(dir.name) {
-                    let dirPath = dir.path(arena);
-                    let child = indexFolder(arena, dirPath, depth + 1, everything);
-                    if child.shown {
-                        shown = true;
-                    }
-                    if child.shown || everything {
-                        items.push(VaultOrderItem {
-                            key: vaultOrderKey(true, dir.name),
-                            entry: FSDirEntry {
-                                type: "directory",
-                                dirname: dir.name,
-                                fullPath: dirPath,
-                                children: child.entries,
-                                ghost: !child.shown,
-                            },
-                        });
-                    }
+                    folder.subfolders.push(dir.name);
                 }
             }
         }
     }
-    items.sort((a: VaultOrderItem, b: VaultOrderItem) => compareVaultOrder(a.key, b.key));
-    let entries: []FSEntry = [];
-    entries.reserve(items.length);
-    for item in items {
-        entries.push(item.entry);
+
+    // Whether the tree shows the walked folder itself: false for a folder it
+    // leaves out, and for no folder at all. Once done().
+    fn shown(): bool {
+        if let t = this.top {
+            return t.shown;
+        }
+        return false;
     }
-    return IndexedFolder { entries: entries, kept: kept, shown: kept || shown };
+
+    // The index: the notes and the folders the tree shows, or with
+    // `ghosts` (an `everything` walk) every file and folder. Into the walk's
+    // arena, both parts allocated once at their exact size. Once done().
+    fn index(ghosts: bool): VaultIndex {
+        let t = this.top;
+        if t is none {
+            return emptyIndex();
+        }
+        let stackref measure = IndexSize {};
+        sizeItems(t, ghosts, measure);
+        if measure.count == 0 {
+            return emptyIndex();
+        }
+        let stackref entries = ByteBuffer.fixed(measure.count * INDEX_ENTRY_BYTES, this.arena);
+        let stackref text = ByteBuffer.fixed(measure.textBytes, this.arena);
+        writeItems(t, ghosts, 0, entries, text);
+        entries.commit();
+        text.commit();
+        return VaultIndex { entries: entries.bytes(), count: measure.count, text: text.string() };
+    }
+
+    // What the arena holds now: what the next walk of this vault is sized
+    // by (see the constructor).
+    fn usage(): ArenaUsage {
+        return this.arena.measure();
+    }
 }
 
-fn indexDirectory(arena: Allocator, path: str, depth: int = 0): []FSEntry {
-    return indexFolder(arena, path, depth, false).entries;
+// A count, length or offset of the index as the u32 it is stored as. An
+// index of 4 GB is no vault's.
+fn indexU32(n: int): u32 {
+    assert(n >= 0 && n <= 4294967295, "vault index: more than a u32 holds");
+    return n as u32;
 }
 
-// The notes index of a vault, and how much of its arena it used.
-struct VaultIndex {
-    vault: VaultFS;
-    // Remembered in the vault's cache (VaultCache.indexArenaScanned and
-    // indexArenaUnscanned) and handed to the next indexVault of the vault: an
-    // unchanged vault then indexes into a single, exactly sized chunk.
-    arenaUsage: ArenaUsage;
+struct IndexSize {
+    count: int = 0;
+    textBytes: int = 0;
 }
 
-// `lastUsage` is what the previous index of this vault measured (zero when
-// there was none: the arena then starts small and grows).
-fn indexVault(vaultPath: str, lastUsage: ArenaUsage): VaultIndex {
-    let arena = Alloc.arena(ArenaOptions { label: "vault index" }.sizedFor(lastUsage));
-    let vault = VaultFS {
-        entries: rx.reactive<[]FSEntry>(indexDirectory(arena, vaultPath)),
-    };
-    return VaultIndex { vault: vault, arenaUsage: arena.measure() };
+// The path of an item in `folder`.
+fn itemPathLength(folder: WalkFolder, item: WalkItem): int {
+    if folder.relPath.length == 0 {
+        return item.name.length;
+    }
+    return folder.relPath.length + 1 + item.name.length;
 }
 
-// The vault with every file and folder in it, for the tree's "show all
-// files": what the notes-only index leaves out is there as a ghost.
-fn indexAllFiles(vaultPath: str): VaultFS {
-    let arena = Alloc.arena({ label: "vault index (all files)" });
-    return VaultFS {
-        entries: rx.reactive<[]FSEntry>(indexFolder(arena, vaultPath, 0, true).entries),
-    };
-}
-
-// The notes index inside an index of every file: what indexDirectory gives
-// for the same folder, without walking it again.
-fn withoutGhosts(entries: []FSEntry): []FSEntry :: final {
-    let kept: []FSEntry = [];
-    for entry in entries {
-        if entry is FSDirEntry {
-            if !entry.ghost {
-                kept.push(FSDirEntry {
-                    type: "directory",
-                    dirname: entry.dirname,
-                    fullPath: entry.fullPath,
-                    children: withoutGhosts(entry.children),
-                });
-            }
-        } else if entry is FSFileEntry {
-            if !entry.ghost {
-                kept.push(entry);
-            }
+fn sizeItems(folder: WalkFolder, ghosts: bool, size: mut stackref IndexSize): void :: final {
+    for item in folder.items {
+        if item.ghost && !ghosts {
+            continue;
+        }
+        size.count = size.count + 1;
+        size.textBytes = size.textBytes + itemPathLength(folder, item);
+        if let child = item.folder {
+            sizeItems(child, ghosts, size);
         }
     }
-    return kept;
+}
+
+// Writes the entries of `folder` (at `depth`); how many it wrote, nested
+// ones included.
+fn writeItems(folder: WalkFolder, ghosts: bool, depth: int, entries: mut stackref ByteBuffer, text: mut stackref ByteBuffer): int :: final {
+    let written = 0;
+    for item in folder.items {
+        if item.ghost && !ghosts {
+            continue;
+        }
+        let pathStart = text.length();
+        if folder.relPath.length > 0 {
+            text.push(folder.relPath);
+            text.push("/");
+        }
+        text.push(item.name);
+        let isFolder = item.folder ? true : false;
+        let at = entries.length();
+        entries.pushU32(indexU32(pathStart));
+        entries.pushU32(indexU32(text.length() - pathStart));
+        entries.pushU32(indexU32(item.name.length));
+        entries.pushU32(indexU32(depth));
+        entries.pushU32(isFolder ? 1 as u32 : 0 as u32);
+        entries.pushU32(item.ghost ? 1 as u32 : 0 as u32);
+        entries.pushU32(0);
+        written = written + 1;
+        if let child = item.folder {
+            let inside = writeItems(child, ghosts, depth + 1, entries, text);
+            entries.setU32At(at + 24, indexU32(inside));
+            written = written + inside;
+        }
+    }
+    return written;
+}
+
+// The notes index of a vault, now (see VaultWalk).
+fn indexNotes(vaultPath: str): VaultIndex {
+    let walk = VaultWalk(vaultPath, false, ArenaUsage { scanned: 0, unscanned: 0 });
+    walk.run();
+    return walk.index(false);
 }
 
 // Whether the tree shows the folder at `path`: false for a folder it leaves
 // out, and for no folder at all.
 fn isShownFolder(path: str): bool {
-    return indexFolder(Alloc.arena({ label: "vault folder check" }), path, 0, false).shown;
+    let walk = VaultWalk(path, false, ArenaUsage { scanned: 0, unscanned: 0 });
+    walk.run();
+    return walk.shown();
 }
 
 // Whether `folder` holds a keep file, which shows it with no note in it.

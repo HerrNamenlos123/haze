@@ -1,0 +1,10 @@
+name = "binfile"
+id = "BnFlQ3k8"
+version = "1.0.0"
+description = "Typed binary files (a root value and chunks, read by field name, checked by CRC-32C) and CacheFile, a reactive value kept in such a file and shared between processes"
+license = "MIT"
+authors = ["HerrNamenlos123"]
+type = "lib"
+
+[dependencies]
+crc32c = { path = "../crc32c" }

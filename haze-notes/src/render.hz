@@ -176,6 +176,16 @@ ref struct ImageLoad {
     }
 }
 
+// The paper's JPEG, decoding since startPaperDecode (main(), before the
+// window and the GPU exist) until the first PaperTexture takes it.
+let earlyPaperDecode: image.ImageDecode | none = none;
+
+// Starts decoding the paper on worker threads, so the first page is drawn on
+// it as soon as there is a GPU to upload it to, not ~150 ms after.
+fn startPaperDecode() {
+    earlyPaperDecode = image.decodeAsync(embed.binary("resources/paper-texture.jpg"));
+}
+
 // The web app's paper texture, which every page is drawn on.
 ref struct PaperTexture {
     texture?: renderer.gfx.Texture;
@@ -206,6 +216,16 @@ ref struct PaperTexture {
             }
             return;
         }
+        if this.decoding is none {
+            // The decode main() started, when there is one (startPaperDecode).
+            if let early = earlyPaperDecode {
+                this.decoding = early;
+                earlyPaperDecode = none;
+            } else {
+                this.decoding = image.decodeAsync(embed.binary("resources/paper-texture.jpg"));
+                return;
+            }
+        }
         if let decode = this.decoding {
             if !decode.done() {
                 return;
@@ -217,9 +237,7 @@ ref struct PaperTexture {
                 fmt.println("Paper texture: failed to decode");
                 this.failed = true;
             }
-            return;
         }
-        this.decoding = image.decodeAsync(embed.binary("resources/paper-texture.jpg"));
     }
 }
 
@@ -969,16 +987,22 @@ ref struct DocumentRenderer {
 
         // Draw what the budget allows, nearest the middle of the view first.
         // Every tile shows the paper, so none is drawn before it is on the
-        // GPU.
+        // GPU -- but its shapes are tessellated meanwhile, from the first
+        // frame on: the paper and the tessellation are on their way at the
+        // same time, and a tile prepared before the paper is there is drawn
+        // the moment it is.
         this.sortWorkByDistance(doc, panelW / 2.0, panelH / 2.0);
         let drawn = 0;
         this.paper.prepare(this.gfx);
         for tile in work {
-            if time.now() >= deadline || !this.paper.isReady() {
+            if time.now() >= deadline {
                 break;
             }
             if !this.prepareTile(tile, doc.data.pages[tile.pageIndex], deadline) {
                 break;
+            }
+            if !this.paper.isReady() {
+                continue;
             }
             this.drawTile(tile, doc, r.frame);
             drawn += 1;

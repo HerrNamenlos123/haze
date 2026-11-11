@@ -6,9 +6,11 @@ from codicons import CodiconComponent
 
 @props
 vaultName: str;
-entries: Reactive<[]FSEntry>;
-// The open folders -- FileTree's model, passed through.
+index: VaultIndex;
+// The open folders and where the tree is scrolled to -- FileTree's models,
+// passed through.
 expanded: Reactive<[]str>;
+scrollTop: Reactive<real>;
 activePath: str = "";
 // Every file is listed, not only the notes.
 showAll: bool = false;
@@ -29,7 +31,7 @@ toggleShowAll: ();
 menu: (TreeMenuRequest,);
 
 @setup
-let hasNotes = computed((): bool => props.entries.length > 0);
+let hasNotes = computed((): bool => props.index.count > 0);
 let anyExpanded = computed((): bool => props.expanded.length > 0);
 
 let collapseAll = () => {
@@ -93,7 +95,7 @@ div [row w-grow h-[40]px items-center pl-3 pr-1.5 gap-2] {
     }
 }
 
-FileTree if=hasNotes [] entries=[props.entries] expanded=[props.expanded]
+FileTree if=hasNotes [] index=[props.index] expanded=[props.expanded] scrollTop=[props.scrollTop]
     activePath=[props.activePath] reveal=[props.reveal] revealSerial=[props.revealSerial]
     @open=openNote @menu=forwardMenu {}
 

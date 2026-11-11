@@ -1,0 +1,219 @@
+import binfile
+
+// binfile: files written by other versions of the types are read by name --
+// fields reordered, added, removed, a field with a default the file lacks --
+// or refused with a precise message when reading them would be wrong: a field
+// of another type, a required field missing, an unknown variant. The
+// plain-memory copy is taken exactly when the file's layout is the code's,
+// and both ways read the same values. Another format's file is refused, and
+// views read the same values as copies.
+//
+// Run: scripts/run-stdlib-test.sh stdlib/binfile/tests/binfile-tests.hz binfile crc32c
+
+let checks = 0;
+let failures = 0;
+
+fn check(name: str, ok: bool) {
+    checks = checks + 1;
+    if !ok {
+        failures = failures + 1;
+        fmt.println(f"FAIL: {name}");
+    }
+}
+
+fn bitsOf(value: real): u64 {
+    let bits: u64 = 0;
+    __c__("memcpy(&bits, &value, 8);");
+    return bits;
+}
+
+fn same(a: real, b: real): bool {
+    return bitsOf(a) == bitsOf(b);
+}
+
+fn formatWith(last: u8, name: str): binfile.Format {
+    let magic = ByteBuffer(8);
+    magic.push(0x89 as u8);
+    magic.push("BFTEST");
+    magic.push(last);
+    magic.commit();
+    return binfile.Format { magic: magic.bytes(), name: name };
+}
+
+fn testFormat(): binfile.Format {
+    return formatWith(10 as u8, "binfile tests");
+}
+
+// ── Other versions of the types ─────────────────────────────────────────
+//
+// Files written with one set of types and read with another. Types match by
+// name, so these are the same names in different namespaces.
+
+namespace v1 {
+    export struct Dot { x: real; y: real; pressure: real; }
+    export ref struct Item { name: str; count: i64; dots: []Dot; }
+    export ref struct Root { title: str; }
+}
+
+namespace reordered {
+    // Every field in another order, the plain struct too, and a field
+    // v1 does not know.
+    export struct Dot { pressure: real; x: real; y: real; }
+    export ref struct Item { dots: []Dot; extra: str; count: i64; name: str; }
+    export ref struct Root { title: str; }
+}
+
+namespace retyped {
+    export struct Dot { x: real; y: real; pressure: real; }
+    export ref struct Item { name: str; count: i32; dots: []Dot; }
+    export ref struct Root { title: str; }
+}
+
+namespace lacking {
+    // No count, which v1 requires.
+    export struct Dot { x: real; y: real; pressure: real; }
+    export ref struct Item { name: str; dots: []Dot; }
+    export ref struct Root { title: str; }
+}
+
+namespace defaulted {
+    // Reading v1 files: a count it does not need, a new field with a
+    // default, one that may be none, and one that is a literal.
+    export struct Dot { x: real; y: real; pressure: real; }
+    export ref struct Item { name: str; dots: []Dot; tag: str = "default"; maybe: str | none; kind: "Item"; }
+    export ref struct Root { title: str; }
+}
+
+namespace shapes1 {
+    export ref struct Circle { r: real; }
+    export ref struct Square { side: real; }
+    export type Shape = Circle | Square;
+    export ref struct Item { shape: Shape; }
+    export ref struct Root { title: str; }
+}
+
+namespace shapes2 {
+    // Triangle is unknown to shapes1.
+    export ref struct Circle { r: real; }
+    export ref struct Triangle { a: real; }
+    export type Shape = Circle | Triangle;
+    export ref struct Item { shape: Shape; }
+    export ref struct Root { title: str; }
+}
+
+fn v1Items(): []v1.Item {
+    let dots: []v1.Dot = [];
+    for (let i = 0; i < 100; i++) {
+        dots.push(v1.Dot { x: i as real, y: -(i as real), pressure: 0.25 * i as real });
+    }
+    let items: []v1.Item = [v1.Item { name: "first", count: 7, dots: dots }, v1.Item { name: "second", count: -1, dots: [] }];
+    return items;
+}
+
+fn reorderedItems(): []reordered.Item {
+    let dots: []reordered.Dot = [];
+    for (let i = 0; i < 100; i++) {
+        dots.push(reordered.Dot { x: i as real, y: -(i as real), pressure: 0.25 * i as real });
+    }
+    let items: []reordered.Item = [reordered.Item { name: "first", count: 7, dots: dots, extra: "unknown to v1" }, reordered.Item { name: "second", count: -1, dots: [], extra: "" }];
+    return items;
+}
+
+fn sameV1(items: []v1.Item, expected: []v1.Item): bool {
+    if items.length != expected.length { return false; }
+    for (let i = 0; i < items.length; i++) {
+        if items[i].name != expected[i].name || items[i].count != expected[i].count || items[i].dots.length != expected[i].dots.length { return false; }
+        for (let j = 0; j < items[i].dots.length; j++) {
+            let a = items[i].dots[j];
+            let b = expected[i].dots[j];
+            if !same(a.x, b.x) || !same(a.y, b.y) || !same(a.pressure, b.pressure) { return false; }
+        }
+    }
+    return true;
+}
+
+fn errorOf<R, C>(data: Bytes): binfile.Error | none {
+    let file = binfile.read<R, C>(testFormat(), data);
+    if file is binfile.Error {
+        return file;
+    }
+    return none;
+}
+
+fn testVersions() {
+    // The same types: the dots are one plain copy per array.
+    let same1 = binfile.write<v1.Root, v1.Item>(testFormat(), v1.Root { title: "t" }, v1Items());
+    let reader = binfile.read<v1.Root, v1.Item>(testFormat(), same1);
+    check("same types read back", reader is binfile.File<v1.Root, v1.Item> ? sameV1(reader.chunks, v1Items()) : false);
+    check("same types: dots copied in one go", plainCopiesReading<v1.Root, v1.Item>(same1) == 1);
+
+    // Reordered, with a field v1 does not know: read by name, field by
+    // field for the dots (their layout differs), the same values.
+    let other = binfile.write<reordered.Root, reordered.Item>(testFormat(), reordered.Root { title: "t" }, reorderedItems());
+    let fromOther = binfile.read<v1.Root, v1.Item>(testFormat(), other);
+    if fromOther is binfile.Error {
+        check(f"reordered fields read: {fromOther.describe()}", false);
+    } else {
+        check("reordered fields and an unknown one read by name", sameV1(fromOther.chunks, v1Items()));
+    }
+    check("reordered dots are not copied raw", plainCopiesReading<v1.Root, v1.Item>(other) == 0);
+
+    // A field of another type is refused, naming it.
+    let retypedItems: []retyped.Item = [retyped.Item { name: "x", count: 3, dots: [] }];
+    let wrongType = errorOf<v1.Root, v1.Item>(binfile.write<retyped.Root, retyped.Item>(testFormat(), retyped.Root { title: "t" }, retypedItems));
+    check("i32 where i64 is refused", wrongType is binfile.Error ? wrongType.problem == binfile.Problem.Incompatible && wrongType.message.contains("count") && wrongType.message.contains("i32") && wrongType.message.contains("i64") : false);
+
+    // A required field missing is refused.
+    let lackingItems: []lacking.Item = [lacking.Item { name: "x", dots: [] }];
+    let missing = errorOf<v1.Root, v1.Item>(binfile.write<lacking.Root, lacking.Item>(testFormat(), lacking.Root { title: "t" }, lackingItems));
+    check("a missing required field is refused", missing is binfile.Error ? missing.problem == binfile.Problem.Incompatible && missing.message.contains("count") : false);
+
+    // Fields the file lacks with a default, none, or a literal are filled;
+    // the one the code no longer has is skipped.
+    let filled = binfile.read<defaulted.Root, defaulted.Item>(testFormat(), same1);
+    if filled is binfile.Error {
+        check(f"defaults fill what the file lacks: {filled.describe()}", false);
+    } else {
+        let first = filled.chunks[0];
+        check("defaults fill what the file lacks", first.name == "first" && first.tag == "default" && first.maybe is none && first.dots.length == 100);
+    }
+
+    // An unknown variant is refused, a known one read.
+    let known: []shapes2.Item = [shapes2.Item { shape: shapes2.Circle { r: 2.5 } }];
+    let knownBack = binfile.read<shapes1.Root, shapes1.Item>(testFormat(), binfile.write<shapes2.Root, shapes2.Item>(testFormat(), shapes2.Root { title: "t" }, known));
+    check("a known variant reads", knownBack is binfile.File<shapes1.Root, shapes1.Item> ? knownBack.chunks[0].shape is shapes1.Circle : false);
+    let unknown: []shapes2.Item = [shapes2.Item { shape: shapes2.Triangle { a: 1.0 } }];
+    let unknownBack = errorOf<shapes1.Root, shapes1.Item>(binfile.write<shapes2.Root, shapes2.Item>(testFormat(), shapes2.Root { title: "t" }, unknown));
+    check("an unknown variant is refused", unknownBack is binfile.Error ? unknownBack.problem == binfile.Problem.Incompatible && unknownBack.message.contains("Triangle") : false);
+
+    // The error says where.
+    if unknownBack is binfile.Error {
+        check("the error names the chunk and the path", unknownBack.chunk == 0 && unknownBack.path.contains("shape") && unknownBack.offset > 0);
+    }
+}
+
+// How many plain copies reading `data` as R and C takes.
+fn plainCopiesReading<R, C>(data: Bytes): int {
+    binfile.resetPlainCopies();
+    binfile.read<R, C>(testFormat(), data);
+    return binfile.plainCopies();
+}
+
+
+// Another format's file is refused as not of the format, naming it; views
+// read the same values as copies, and point into the file's bytes.
+fn testFormatsAndViews() {
+    let data = binfile.write<v1.Root, v1.Item>(testFormat(), v1.Root { title: "t" }, v1Items());
+    check("isFormat", binfile.isFormat(testFormat(), data) && !binfile.isFormat(formatWith(11 as u8, "other"), data));
+    let other = binfile.read<v1.Root, v1.Item>(formatWith(11 as u8, "Other Program"), data);
+    check("another format's file is refused", other is binfile.Error ? other.problem == binfile.Problem.NotThisFormat && other.message.contains("Other Program") : false);
+    let viewed = binfile.read<v1.Root, v1.Item>(testFormat(), data, { views: true });
+    check("views read the same values", viewed is binfile.File<v1.Root, v1.Item> ? sameV1(viewed.chunks, v1Items()) && viewed.root.title == "t" : false);
+}
+
+fn main(): int {
+    testVersions();
+    testFormatsAndViews();
+    fmt.println(f"{checks} checks, {failures} failed");
+    return failures > 0 ? 1 : 0;
+}

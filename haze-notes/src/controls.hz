@@ -1,3 +1,4 @@
+import binfile
 import ui_components
 import renderer
 import filedialog
@@ -350,7 +351,8 @@ ref struct EditorControls {
     // ── The document ────────────────────────────────────────────────
 
     // Opens the document at `path`, or none: the current one is saved and
-    // closed at once, the new one loaded over the next frames -- see frame().
+    // closed at once, the new one loaded from now on, the first step at once
+    // and the rest (if any) over the next frames -- see frame().
     fn open(path: str | none) {
         if let previous = this.loading {
             previous.cancel();
@@ -375,6 +377,10 @@ ref struct EditorControls {
             this.loading = DocumentLoad(p);
             this.loadProgress := 0.0;
             this.loadingDocument := true;
+            // The first step now, in the frame that asked: a note that loads
+            // in one step is open in this very frame, with no frame of
+            // loading screen before it.
+            this.stepLoad();
         }
     }
 
@@ -477,6 +483,21 @@ ref struct EditorControls {
     }
 
     fn stepLoadAndSaves() {
+        if this.loading {
+            this.stepLoad();
+            // Saves wait: the frame's time went to the load.
+            return;
+        }
+        if this.saves.length > 0 {
+            if this.saves[0].step(time.now() + saveBudgetSeconds) {
+                this.saves.remove(0);
+            }
+        }
+    }
+
+    // One step of the load in flight, and when it is over, the document it
+    // gave (or why there is none).
+    fn stepLoad() {
         if let load = this.loading {
             let over = load.step(time.now() + loadBudgetSeconds);
             this.loadProgress := load.progress();
@@ -497,13 +518,6 @@ ref struct EditorControls {
                         this.notANote := true;
                     }
                 }
-            }
-            // Saves wait: the frame's time went to the load.
-            return;
-        }
-        if this.saves.length > 0 {
-            if this.saves[0].step(time.now() + saveBudgetSeconds) {
-                this.saves.remove(0);
             }
         }
     }
@@ -1379,7 +1393,7 @@ ref struct EditorControls {
             return;
         }
         let decoded = decodeShapes(read);
-        if decoded is HznoteError {
+        if decoded is binfile.Error {
             fmt.println(f"Paste: the copied shapes could not be read: {decoded.describe()}");
             return;
         }

@@ -1,14 +1,19 @@
 import filedialog
+from binfile import CacheFile
 
 // The app: which vault is open, and the welcome screen before any vault is.
 
+// What the app remembers between runs, in the platform's cache directory
+// (globalCachePath).
 struct GlobalCache {
     currentVaultDir: str | none = none;
     knownVaultDirs: []str | none = none;
 }
 
-// A key missing from the file (one written before the field existed) takes
-// the field's default, the same as a struct literal that leaves it out.
+// What the app remembers of a vault, in its .hznotes/vault.hzcache. A field
+// missing from the file (written before the field existed) takes its default.
+// Paths are vault-relative (see VaultIndex), so a vault moved or copied keeps
+// all of it.
 struct VaultCache {
     lastOpenedFile: str | none = none;
     expandedFolders: []str = [];
@@ -17,12 +22,21 @@ struct VaultCache {
     sidepanelOpen: bool = true;
     // The tree lists every file and folder, not only the notes.
     showAllFiles: bool = false;
-    // none until the vault is indexed, when it is opened.
-    vault: VaultFS | none = none;
-    // What the last notes index of this vault used of its arena, per chain
-    // (ArenaUsage): the next one allocates exactly that (see indexVault).
-    indexArenaScanned: int = 0;
-    indexArenaUnscanned: int = 0;
+    // Where the tree was scrolled to, in px.
+    treeScrollTop: real = 0.0;
+}
+
+// The vault's notes index as last walked, in its .hznotes/index.hzcache: the
+// tree shows it from the first frame, and the vault is walked again once the
+// app has settled (Workspace). A file of its own: the index is written only
+// when it changes, the rest of the vault's state whenever that does.
+struct IndexCache {
+    // none until the vault was first walked.
+    index: VaultIndex | none = none;
+    // What the walk that made it used of its arena (ArenaUsage): the next
+    // walk's arena is made that size (VaultWalk).
+    arenaScanned: int = 0;
+    arenaUnscanned: int = 0;
 }
 
 // An open vault. `id` counts vaults opened in this run, so each one mounts
@@ -30,22 +44,33 @@ struct VaultCache {
 ref struct VaultSession {
     id: int;
     path: str;
-    cache: json.CacheFile<VaultCache>;
+    cache: CacheFile<VaultCache>;
+    indexCache: CacheFile<IndexCache>;
+
+    fn flush() {
+        this.cache.flush();
+        this.indexCache.flush();
+    }
+
+    fn close() {
+        this.cache.close();
+        this.indexCache.close();
+    }
 }
 
 // Where the app keeps what it remembers between runs: the platform's cache
 // directory.
 fn globalCachePath(): str {
     if let dir = env.get("XDG_CACHE_HOME") {
-        if dir.length > 0 { return f"{dir}/haze-notes/cache.json"; }
+        if dir.length > 0 { return f"{dir}/haze-notes/app.hzcache"; }
     }
     if let home = env.get("HOME") {
-        if home.length > 0 { return f"{home}/.cache/haze-notes/cache.json"; }
+        if home.length > 0 { return f"{home}/.cache/haze-notes/app.hzcache"; }
     }
     if let local = env.get("LOCALAPPDATA") {
-        if local.length > 0 { return f"{local}/haze-notes/cache.json"; }
+        if local.length > 0 { return f"{local}/haze-notes/app.hzcache"; }
     }
-    return "haze-notes-cache.json";
+    return "haze-notes-app.hzcache";
 }
 
 // A folder picker in flight. The dialog runs beside the app rather than
@@ -59,7 +84,7 @@ ref struct VaultPicker {
 gfx: mut renderer.gfx.Context;
 
 @setup
-let cache = json.CacheFile<GlobalCache>(globalCachePath());
+let cache = CacheFile<GlobalCache>(globalCachePath());
 
 // Remembered vaults, the one opened last at the end.
 let rememberVault = (dir: str) => {
@@ -135,9 +160,9 @@ let recentVaults = computed((): []str => {
 
 // The open vault. A new vault is a new session, and a new session a new
 // Workspace. The same vault stays the same session however often its path
-// is written: a reload of cache.json writes every field again, and opening
-// the vault that is already open writes the same path -- neither may tear
-// the open note down.
+// is written: another instance's write of the cache may write it again, and
+// opening the vault that is already open writes the same path -- neither may
+// tear the open note down.
 let sessionCount: ref Box<int> = { value: 0 };
 let currentSession: ref Box<VaultSession | none> = { value: none };
 let session = computed((): VaultSession | none => {
@@ -153,35 +178,26 @@ let session = computed((): VaultSession | none => {
     let created = VaultSession {
         id: sessionCount.value,
         path: dir,
-        cache: json.CacheFile<VaultCache>(f"{dir}/.hznotes/vault.json"),
+        cache: CacheFile<VaultCache>(f"{dir}/.hznotes/vault.hzcache"),
+        indexCache: CacheFile<IndexCache>(f"{dir}/.hznotes/index.hzcache"),
     };
     currentSession.value = created;
     return created;
 });
 
-// Each vault is indexed as it opens, and the one it replaces is written out
-// and let go. Not inside the computed above: a computed must not write state,
-// and this write would dirty it again.
-let indexedSession: ref Box<VaultSession | none> = { value: none };
+// The vault a session replaces is written out and let go. Not inside the
+// computed above: a computed must not write state. (Indexing is the
+// Workspace's: from the cache at once, walked again once the app settled.)
+let activeSession: ref Box<VaultSession | none> = { value: none };
 ui.watch(() => rx.get(session), (value, old) => {
     let next = rx.get(session);
-    let previous = indexedSession.value;
-    if let p = previous {
+    if let p = activeSession.value {
         if let n = next {
             if p.id == n.id { return; }
         }
-        p.cache.close();
+        p.close();
     }
-    indexedSession.value = next;
-    if let n = next {
-        let index = indexVault(n.path, ArenaUsage {
-            scanned: rx.get(n.cache.data.indexArenaScanned),
-            unscanned: rx.get(n.cache.data.indexArenaUnscanned),
-        });
-        n.cache.data.vault := index.vault;
-        n.cache.data.indexArenaScanned := index.arenaUsage.scanned;
-        n.cache.data.indexArenaUnscanned := index.arenaUsage.unscanned;
-    }
+    activeSession.value = next;
 }, { immediate: true });
 
 let sessions = computed((): []VaultSession => {
@@ -205,17 +221,25 @@ let recentKey = computed((): str => {
     return key;
 });
 
-// Every frame, write what changed, until there is an async event loop.
+// Every frame, write what changed (once settled, see CacheFile), until there
+// is an async event loop; at exit, what is left.
 onFrame(() => {
     cache.flush();
     if let s = rx.get(session) {
-        s.cache.flush();
+        s.flush();
+    }
+});
+
+onExit(() => {
+    cache.close();
+    if let s = activeSession.value {
+        s.close();
     }
 });
 
 @template [col w-grow h-grow bg-[theme().chrome] text-color-[theme().text] font-size-13]
 
-Workspace for=[s in sessions] key=[s.id] [] cache=[s.cache] gfx=[props.gfx] vaultPath=[s.path]
+Workspace for=[s in sessions] key=[s.id] [] cache=[s.cache] indexCache=[s.indexCache] gfx=[props.gfx] vaultPath=[s.path]
     @switchVault=pickVault {}
 
 div if=[!hasSession] [col w-grow h-grow] {

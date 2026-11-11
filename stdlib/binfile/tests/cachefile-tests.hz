@@ -1,0 +1,312 @@
+import binfile
+from binfile import CacheFile, CacheFileOptions
+
+// CacheFile: a write anywhere inside the value is noticed and written (a top
+// field, a nested struct's field, an array element, an array replaced, a
+// union); two CacheFiles of one file merge field by field, so neither loses
+// the other's change, and each reads the other's writes back; changes are
+// written once they settle; a busy lock postpones the write without losing
+// it; a damaged file reads as defaults and is replaced by the next write; a
+// CacheFile's own write is not read back into it; and all of it across
+// processes too (this program again, started with "child").
+//
+// Run: scripts/run-stdlib-test.sh stdlib/binfile/tests/cachefile-tests.hz binfile crc32c
+
+let checks = 0;
+let failures = 0;
+
+fn check(name: str, ok: bool) {
+    checks = checks + 1;
+    if !ok {
+        failures = failures + 1;
+        fmt.println(f"FAIL: {name}");
+    }
+}
+
+struct Inner {
+    a: int = 0;
+    names: []str = [];
+}
+
+struct Blob {
+    bytes: Bytes;
+    n: int;
+}
+
+struct State {
+    count: int = 0;
+    label: str = "";
+    width: real = 1.5;
+    inner: Inner = {};
+    list: []str = [];
+    blob: Blob | none = none;
+}
+
+fn scratchDir(): str {
+    let base = "/tmp";
+    if let dir = env.get("TMPDIR") {
+        if dir.length > 0 { base = dir; }
+    }
+    return f"{base}/haze-cachefile-tests-{sys.processId()}-{time.wallClockMs()}";
+}
+
+fn exists(path: str): bool {
+    if let e = fs.exists(path) {
+        return e;
+    }
+    return false;
+}
+
+fn now(): CacheFileOptions {
+    return CacheFileOptions { settleSeconds: 0.0, maxDelaySeconds: 0.0 };
+}
+
+// The file's generation, -1 without a file.
+fn generationOf(path: str): int {
+    if let data = fs.readBinary(path) {
+        let file = binfile.read<binfile.CacheRecord<State>, binfile.NoChunks>(binfile.cacheFormat(), data);
+        if file is binfile.File<binfile.CacheRecord<State>, binfile.NoChunks> {
+            return file.root.generation;
+        }
+    }
+    return -1;
+}
+
+// Lets the watches see what changed on disk: they poll every 0.1 s.
+fn letWatchesSee() {
+    time.sleep(0.15);
+    fs.pollEvents();
+}
+
+fn testDeepWrites(dir: str) {
+    let path = f"{dir}/deep.hzcache";
+    let cache = CacheFile<State>(path, now());
+    cache.flush();
+    check("nothing is written before something changes", !exists(path));
+
+    cache.data.count := 3;
+    cache.flush();
+    check("a top-level field is written", generationOf(path) == 1);
+
+    cache.data.inner.a := 7;
+    cache.flush();
+    check("a nested field is written", generationOf(path) == 2);
+
+    let cells: []rx.Reactive<str> = [rx.reactive<str>("x"), rx.reactive<str>("y")];
+    cache.data.inner.names := cells;
+    cache.flush();
+    check("a nested array replaced is written", generationOf(path) == 3);
+
+    // An element's own cell (the backing array of a deep reactive array).
+    let elements: []rx.Reactive<str> = cache.data.inner.names;
+    let second = elements[1];
+    second := "z";
+    cache.flush();
+    check("an array element is written", generationOf(path) == 4);
+
+    cache.data.list.push(rx.reactive<str>("pushed"));
+    cache.flush();
+    check("a push is written", generationOf(path) == 5);
+
+    let payload = ByteBuffer();
+    payload.push(0 as u8);
+    payload.push(1 as u8);
+    payload.push("binary");
+    payload.commit();
+    cache.data.blob := Blob { bytes: payload.bytes(), n: 9 };
+    cache.flush();
+    check("a union is written", generationOf(path) == 6);
+
+    cache.flush();
+    check("nothing more is written while nothing changes", generationOf(path) == 6);
+
+    let back = CacheFile<State>(path, now());
+    check("read back: top", rx.get(back.data.count) == 3);
+    check("read back: nested", rx.get(back.data.inner.a) == 7);
+    let names: []str = [];
+    for n in back.data.inner.names {
+        names.push(n);
+    }
+    check("read back: nested array", names.length == 2 && names[0] == "x" && names[1] == "z");
+    let list: []str = [];
+    for n in back.data.list {
+        list.push(n);
+    }
+    check("read back: pushed", list.length == 1 && list[0] == "pushed");
+    let blob = rx.get(back.data.blob);
+    check("read back: union with Bytes", blob is Blob ? blob.n == 9 && blob.bytes == payload.bytes() : false);
+    check("read back: an untouched default", rx.get(back.data.width) == 1.5);
+    back.close();
+    cache.close();
+}
+
+fn testMerge(dir: str) {
+    let path = f"{dir}/merge.hzcache";
+    let a = CacheFile<State>(path, now());
+    let b = CacheFile<State>(path, now());
+    a.data.count := 1;
+    b.data.label := "from b";
+    a.flush();
+    b.flush();
+    let c = CacheFile<State>(path, now());
+    check("both changes are in the file", rx.get(c.data.count) == 1 && rx.get(c.data.label) == "from b");
+    c.close();
+    check("b took a's change when it wrote", rx.get(b.data.count) == 1);
+
+    letWatchesSee();
+    check("a reads b's write back", rx.get(a.data.label) == "from b");
+
+    // The same field: the later write wins, in both.
+    a.data.count := 10;
+    a.flush();
+    b.data.count := 20;
+    b.flush();
+    letWatchesSee();
+    check("the same field: the later write wins", rx.get(a.data.count) == 20 && rx.get(b.data.count) == 20);
+
+    // A change here that is not written yet is kept over another's write.
+    let slow = CacheFile<State>(path, CacheFileOptions { settleSeconds: 10.0, maxDelaySeconds: 10.0 });
+    slow.data.label := "slow";
+    slow.flush();
+    a.data.label := "fast";
+    a.flush();
+    letWatchesSee();
+    check("an unwritten change survives another's write", rx.get(slow.data.label) == "slow");
+    check("while the other fields are taken", rx.get(slow.data.count) == 20);
+    check("the change is written at close", slow.flushNow());
+    let d = CacheFile<State>(path, now());
+    check("and lands in the file", rx.get(d.data.label) == "slow" && rx.get(d.data.count) == 20);
+    d.close();
+    slow.close();
+    a.close();
+    b.close();
+}
+
+fn testOwnWriteNotReadBack(dir: str) {
+    let path = f"{dir}/own.hzcache";
+    let cache = CacheFile<State>(path, now());
+    let fired: ref Box<int> = { value: 0 };
+    let watcher = rx.watch(() => rx.get(cache.data.blob), (value, old) => {
+        fired.value = fired.value + 1;
+    }, { scheduler: (job: rx.WatchJob) => { job.run(); } });
+    cache.data.count := 5;
+    cache.flush();
+    letWatchesSee();
+    check("its own write is not read back into it", fired.value == 0);
+    watcher.stop();
+    cache.close();
+}
+
+fn testSettle(dir: str) {
+    let path = f"{dir}/settle.hzcache";
+    let cache = CacheFile<State>(path, CacheFileOptions { settleSeconds: 0.2, maxDelaySeconds: 0.5 });
+    cache.data.count := 1;
+    cache.flush();
+    check("not written before it settles", !exists(path));
+    time.sleep(0.25);
+    cache.flush();
+    check("written once settled", generationOf(path) == 1);
+    // Changed every 50 ms: written by maxDelaySeconds, not never.
+    let start = time.now();
+    let i = 0;
+    while time.now() - start < 0.8 {
+        i = i + 1;
+        cache.data.count := 100 + i;
+        cache.flush();
+        time.sleep(0.05);
+    }
+    check("a value that keeps changing is written after maxDelaySeconds", generationOf(path) >= 2);
+    check("but not once per change", generationOf(path) <= 4);
+    cache.close();
+}
+
+fn testBusyLock(dir: str) {
+    let path = f"{dir}/busy.hzcache";
+    let cache = CacheFile<State>(path, now());
+    if let lock = fs.tryLockFile(f"{path}.lock") {
+        cache.data.count := 1;
+        cache.flush();
+        check("a busy lock postpones the write", !exists(path));
+        lock.unlock();
+        cache.flush();
+        check("and the write follows once it is free", generationOf(path) == 1);
+    } else {
+        check("lock taken", false);
+    }
+    cache.close();
+}
+
+fn testDamaged(dir: str) {
+    let path = f"{dir}/damaged.hzcache";
+    let good = CacheFile<State>(path, now());
+    good.data.count := 4;
+    good.close();
+    let data = fs.readBinary(path)?!;
+    let damaged = ByteBuffer();
+    damaged.push(data.slice(0, data.length - 3));
+    damaged.commit();
+    fs.writeBinary(path, damaged.bytes());
+    let cache = CacheFile<State>(path, now());
+    check("a damaged file reads as the defaults", rx.get(cache.data.count) == 0);
+    cache.data.label := "fresh";
+    cache.flush();
+    let back = CacheFile<State>(path, now());
+    check("and is replaced by the next write", rx.get(back.data.label) == "fresh");
+    back.close();
+    cache.close();
+}
+
+// The child: sets the label (and keeps the parent's count) and ends.
+fn child(path: str, label: str): int {
+    let cache = CacheFile<State>(path, now());
+    cache.data.label := label;
+    cache.close();
+    return 0;
+}
+
+fn testOtherProcess(dir: str) {
+    let path = f"{dir}/process.hzcache";
+    let cache = CacheFile<State>(path, CacheFileOptions { settleSeconds: 10.0, maxDelaySeconds: 10.0 });
+    cache.data.count := 42;
+    if let p = process.spawn(sys.args()[0], ["child", path, "from the child"]) {
+        check("the child ended well", p.join() == 0);
+    } else {
+        check("child started", false);
+    }
+    letWatchesSee();
+    check("another process's write is read back", rx.get(cache.data.label) == "from the child");
+    check("without losing the change not written here yet", rx.get(cache.data.count) == 42);
+    cache.close();
+    let back = CacheFile<State>(path, now());
+    check("both in the file", rx.get(back.data.count) == 42 && rx.get(back.data.label) == "from the child");
+    back.close();
+}
+
+fn cleanUp(dir: str) {
+    let names: []str = ["deep", "merge", "own", "settle", "busy", "damaged", "process"];
+    for name in names {
+        fs.removeFile(f"{dir}/{name}.hzcache");
+        fs.removeFile(f"{dir}/{name}.hzcache.lock");
+    }
+    let removed = fs.removeEmptyDirectory(dir);
+    check("the scratch folder is left empty and removed", removed ? true : false);
+}
+
+fn main(): int {
+    let args = sys.args();
+    if args.length == 4 && args[1] == "child" {
+        return child(args[2], args[3]);
+    }
+    let dir = scratchDir();
+    fs.createDirectory(dir);
+    testDeepWrites(dir);
+    testMerge(dir);
+    testOwnWriteNotReadBack(dir);
+    testSettle(dir);
+    testBusyLock(dir);
+    testDamaged(dir);
+    testOtherProcess(dir);
+    cleanUp(dir);
+    fmt.println(f"{checks} checks, {failures} failed");
+    return failures > 0 ? 1 : 0;
+}

@@ -1,4 +1,5 @@
 from ui_widgets import SplitterComponent
+from binfile import CacheFile
 
 // An open vault: the app bar, the sidebar with its tree, and the open note.
 // Mounted once per vault (UI.hzui keys it by the vault), so switching vaults
@@ -13,7 +14,9 @@ const CANVAS_MIN = 520.0;
 
 @props
 [[hzui.untracked]]
-cache: json.CacheFile<VaultCache>;
+cache: CacheFile<VaultCache>;
+[[hzui.untracked]]
+indexCache: CacheFile<IndexCache>;
 [[hzui.untracked]]
 gfx: mut renderer.gfx.Context;
 vaultPath: str;
@@ -24,6 +27,11 @@ switchVault: ();
 @setup
 let rootRef = elementRef<DivElement>();
 
+// Notes and folders are named by their vault-relative path everywhere in
+// here (the tree, the cache); only the file system is handed the full one.
+let onDisk = (relative: str): str => vaultAbsolute(props.vaultPath, relative);
+
+// The open note, vault-relative.
 let currentDocumentPath = reactive<str | none>(none);
 if props.cache.data.lastOpenedFile {
     currentDocumentPath := props.cache.data.lastOpenedFile;
@@ -46,7 +54,7 @@ let openFile = (path: str) => {
     if let current = rx.get(currentDocumentPath) {
         if current == path {
             if rx.get(controls.loadFailed) {
-                controls.open(path);
+                controls.open(onDisk(path));
             }
             return;
         }
@@ -57,7 +65,11 @@ let openFile = (path: str) => {
 
 // The document lives in `controls`, which loads, edits and saves it.
 ui.watch(() => rx.get(currentDocumentPath), (old, new) => {
-    controls.open(rx.get(currentDocumentPath));
+    if let path = rx.get(currentDocumentPath) {
+        controls.open(onDisk(path));
+    } else {
+        controls.open(none);
+    }
 }, { immediate: true });
 
 // Unsaved work is written before the app goes -- there are no more frames to
@@ -96,9 +108,8 @@ let documentTitle = computed((): str => {
 // The folder the open note is in, unless it is the vault itself.
 let documentContext = computed((): str => {
     if !rx.get(controls.documentOpen) && !rx.get(controls.loadingDocument) { return ""; }
-    let path = rx.get(activePath);
-    let folder = parentFolder(path);
-    if folder.length == 0 || folder == props.vaultPath { return ""; }
+    let folder = parentFolder(rx.get(activePath));
+    if folder.length == 0 { return ""; }
     return entryName(folder);
 });
 
@@ -144,28 +155,68 @@ let showAll = computed((): bool => rx.get(props.cache.data.showAllFiles));
 
 // Every file and folder, while the tree shows them all. Not in the cache: the
 // saved index holds the notes alone.
-let allFiles = shallowReactive<VaultFS | none>(none);
+let allFiles = shallowReactive<VaultIndex | none>(none);
 
-// While every file is shown, the vault is walked once for both indexes.
-let refreshVault = () => {
-    if rx.get(showAll) {
-        let everything = indexFolder(Alloc.arena({ label: "vault index (all files)" }), props.vaultPath, 0, true).entries;
-        allFiles := VaultFS { entries: rx.reactive<[]FSEntry>(everything) };
-        props.cache.data.vault := VaultFS { entries: rx.reactive<[]FSEntry>(withoutGhosts(everything)) };
-        return;
-    }
-    let index = indexVault(props.vaultPath, ArenaUsage {
-        scanned: rx.get(props.cache.data.indexArenaScanned),
-        unscanned: rx.get(props.cache.data.indexArenaUnscanned),
-    });
-    props.cache.data.vault := index.vault;
-    props.cache.data.indexArenaScanned := index.arenaUsage.scanned;
-    props.cache.data.indexArenaUnscanned := index.arenaUsage.unscanned;
+// What the last walk measured of its arena, for the next (VaultWalk).
+let lastWalkUsage = (): ArenaUsage => ArenaUsage {
+    scanned: rx.untracked(() => rx.get(props.indexCache.data.arenaScanned)),
+    unscanned: rx.untracked(() => rx.get(props.indexCache.data.arenaUnscanned)),
 };
+
+// Whether the vault was walked in this Workspace: the background walk (below)
+// runs once, and not at all after any other walk.
+let backgroundWalked: ref Box<bool> = { value: false };
+
+// A finished walk's index, into the cache: written (to the cache's file, and
+// so to every other instance) only when it differs from the one there.
+let applyWalk = (walk: VaultWalk) => {
+    // Whatever walked the vault, it is up to date: no background walk after.
+    backgroundWalked.value = true;
+    let notes = walk.index(false);
+    let current = rx.untracked(() => rx.get(props.indexCache.data.index));
+    let same = false;
+    if let c = current {
+        same = c.sameAs(notes);
+    }
+    if !same {
+        props.indexCache.data.index := notes;
+    }
+    if walk.everything {
+        allFiles := walk.index(true);
+    }
+    let usage = walk.usage();
+    if usage.scanned != rx.untracked(() => rx.get(props.indexCache.data.arenaScanned)) {
+        props.indexCache.data.arenaScanned := usage.scanned;
+    }
+    if usage.unscanned != rx.untracked(() => rx.get(props.indexCache.data.arenaUnscanned)) {
+        props.indexCache.data.arenaUnscanned := usage.unscanned;
+    }
+};
+
+// The vault walked again now, all of it: after the app changed it (a note
+// created, deleted, a folder kept) or when asked to. While every file is
+// shown, one walk makes both indexes.
+let refreshVault = () => {
+    let walk = VaultWalk(props.vaultPath, rx.get(showAll), lastWalkUsage());
+    walk.run();
+    applyWalk(walk);
+};
+
+// A vault never walked before is walked now, so the tree has it in the first
+// frame. Otherwise the tree starts from the cached index, and the vault is
+// walked again in the background (below).
+// (Bound first: an immediate lambda inside an `if ... is` condition emits C
+// that names an environment it never declares.)
+let cachedIndex = rx.untracked(() => rx.get(props.indexCache.data.index));
+if cachedIndex is none {
+    refreshVault();
+}
 
 ui.watch(() => rx.get(showAll), (value, old) => {
     if rx.get(showAll) {
-        allFiles := indexAllFiles(props.vaultPath);
+        if !rx.get(allFiles) {
+            refreshVault();
+        }
     } else if rx.get(allFiles) {
         allFiles := none;
     }
@@ -175,11 +226,38 @@ let toggleShowAll = () => {
     props.cache.data.showAllFiles := !rx.get(props.cache.data.showAllFiles);
 };
 
-let treeVault = computed((): VaultFS | none => {
+let treeIndex = computed((): VaultIndex => {
     if rx.get(showAll) {
         if let all = rx.get(allFiles) { return all; }
     }
-    return rx.get(props.cache.data.vault);
+    if let index = rx.get(props.indexCache.data.index) { return index; }
+    return emptyIndex();
+});
+
+// The walk that brings the cached index up to date with the disk: started
+// once the app has settled -- the note loaded and every tile of it drawn --
+// and spread over the frames after, a short step each, so it never holds a
+// frame up. Once per Workspace.
+const INDEX_WALK_STEP_SECONDS = 0.002;
+let backgroundWalk: ref Box<VaultWalk | none> = { value: none };
+ui.onFrame(() => {
+    if backgroundWalked.value { return; }
+    if let walk = backgroundWalk.value {
+        if walk.step(time.now() + INDEX_WALK_STEP_SECONDS) {
+            backgroundWalk.value = none;
+            applyWalk(walk);
+        }
+        return;
+    }
+    if rx.get(controls.loadingDocument) {
+        return;
+    }
+    // An open note has to be drawn, its tiles all there; with none, there is
+    // nothing to wait for.
+    if rx.get(controls.documentOpen) && (documentRenderer.renderedDocument < 0 || documentRenderer.hasPendingWork()) {
+        return;
+    }
+    backgroundWalk.value = VaultWalk(props.vaultPath, rx.get(showAll), lastWalkUsage());
 });
 
 // An entry the tree is to scroll to: one just created.
@@ -204,13 +282,13 @@ ui.onFrame(() => {
     }
 });
 
-// Where something asked for in `folder` goes, for a dialog.
+// Where something asked for in `folder` (vault-relative) goes, for a dialog.
 let folderLabel = (folder: str): str => {
     let vaultName = baseName(props.vaultPath);
-    if folder.length <= props.vaultPath.length {
+    if folder.length == 0 {
         return f"In {vaultName}";
     }
-    return f"In {vaultName}/{folder.slice(props.vaultPath.length + 1, folder.length)}";
+    return f"In {vaultName}/{folder}";
 };
 
 // Gives the keys back to the workspace once a dialog or menu that had them is
@@ -230,9 +308,9 @@ let menuKept = reactive<bool>(false);
 let menuSerial = reactive<int>(0);
 
 // The folder the menu's entry stands for: the folder itself, a file's folder,
-// or the vault for the space around the rows.
+// or the vault ("") for the space around the rows.
 let menuFolder = (request: TreeMenuRequest): str => {
-    if request.path.length == 0 { return props.vaultPath; }
+    if request.path.length == 0 { return ""; }
     if request.isDir { return request.path; }
     return parentFolder(request.path);
 };
@@ -330,7 +408,7 @@ let switchVault = () => {
 
 let openMenu = (request: TreeMenuRequest) => {
     if rx.get(naming) || rx.get(deleting) { return; }
-    menuKept := request.isDir && hasKeepFile(request.path);
+    menuKept := request.isDir && hasKeepFile(onDisk(request.path));
     menuRequest := request;
     menuSerial := rx.get(menuSerial) + 1;
 };
@@ -340,11 +418,11 @@ let closeMenu = () => {
 };
 
 let newNoteInVault = () => {
-    startNaming("note", props.vaultPath);
+    startNaming("note", "");
 };
 
 let newFolderInVault = () => {
-    startNaming("folder", props.vaultPath);
+    startNaming("folder", "");
 };
 
 let pickMenu = (key: str) => {
@@ -357,7 +435,7 @@ let pickMenu = (key: str) => {
     } else if key == "folder" {
         startNaming("folder", folder);
     } else if key == "keep" {
-        let problem = setFolderKept(request.path, !rx.get(menuKept));
+        let problem = setFolderKept(onDisk(request.path), !rx.get(menuKept));
         if problem.length > 0 {
             showNotice(problem);
         }
@@ -375,26 +453,34 @@ let submitName = (text: str) => {
     if !rx.get(naming) { return; }
     if text.trim().length == 0 { return; }
     let folder = rx.get(namingFolder);
+    // What was created, vault-relative: it was made inside `folder`, which is
+    // in the vault.
+    let inVault = (created: str): str => {
+        let relative = vaultRelative(props.vaultPath, created);
+        assert(relative, "a note or folder created outside the vault");
+        let path: str = relative;
+        return path;
+    };
     if rx.get(namingKind) == "folder" {
-        let created = createFolder(folder, text);
+        let created = createFolder(onDisk(folder), text);
         if created.error.length > 0 {
             namingError := created.error;
             return;
         }
         closeNaming();
         refreshVault();
-        revealInTree(created.path);
+        revealInTree(inVault(created.path));
         return;
     }
-    let created = createNote(folder, text, newNoteBytes());
+    let created = createNote(onDisk(folder), text, newNoteBytes());
     if created.error.length > 0 {
         namingError := created.error;
         return;
     }
     closeNaming();
     refreshVault();
-    openFile(created.path);
-    revealInTree(created.path);
+    openFile(inVault(created.path));
+    revealInTree(inVault(created.path));
 };
 
 // The note is closed first if it is open, and saved: what goes to the trash
@@ -413,7 +499,7 @@ let confirmDelete = () => {
 
 ui.onFrame(() => {
     if !rx.get(deleteBusy) { return; }
-    let path = rx.get(deleteTarget);
+    let path = onDisk(rx.get(deleteTarget));
     if controls.isUsing(path) { return; }
     let trashed = fs.moveToTrash(path);
     deleteBusy := false;
@@ -479,8 +565,8 @@ div [relative row w-grow h-grow] {
     // Hidden rather than unmounted when collapsed, so the tree keeps where
     // it was scrolled to.
     div [h-grow w-[sidebarWidth]px [!sidebarOpen]?hidden] {
-        Sidebar if=[treeVault] [] vaultName=[vaultName]
-            entries=[treeVault.entries] expanded=[props.cache.data.expandedFolders]
+        Sidebar [] vaultName=[vaultName]
+            index=[treeIndex] expanded=[props.cache.data.expandedFolders] scrollTop=[props.cache.data.treeScrollTop]
             activePath=[activePath] showAll=[showAll] notice=[rx.get(notice)]
             reveal=[rx.get(revealTarget)] revealSerial=[rx.get(revealSerial)]
             @open=openFile @refresh=refreshVault @switchVault=switchVault

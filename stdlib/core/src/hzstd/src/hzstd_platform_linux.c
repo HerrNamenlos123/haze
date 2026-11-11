@@ -178,6 +178,11 @@ static void hzstd_load_args_from_proc(void)
   hzstd_argc = count;
 }
 
+hzstd_int_t hzstd_process_id(void)
+{
+  return (hzstd_int_t)getpid();
+}
+
 hzstd_int_t hzstd_arg_count(void)
 {
   if (hzstd_argc < 0 || !hzstd_argv) {

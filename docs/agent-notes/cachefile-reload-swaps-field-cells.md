@@ -1,4 +1,4 @@
-# CacheFile reload must not replace field cells
+# json.CacheFile reload must not replace field cells
 
 `json.CacheFile`'s watch used to replace `cache.data` with new field cells on its own writes, orphaning every held `cache.data.x` handle.
 
@@ -13,3 +13,4 @@ Current design (all in place):
 Observed gap at the time (not re-checked): `rx.reactive<S>` failed to compile (H4001) when struct S has a direct `rx.Reactive<U>` field.
 
 Related: [[cachefile-flush-dependency-loss]].
+- The binary `CacheFile` (stdlib/binfile) takes other instances' fields in with `rx.assign` for the same reason ([[binfile-and-cachefile]]).

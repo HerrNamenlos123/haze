@@ -1,0 +1,98 @@
+import ui_components
+import ui_elements
+
+// A component may register onFrame, onMounted and onUnmount as often as it
+// likes: every hook runs, in the order it was registered, and a later one
+// never replaces an earlier one. (Each used to be kept once per component,
+// so a second ui.onFrame silently dropped the first: haze-notes' Workspace
+// lost the hook that clears its notice that way.) Once the component is gone,
+// none of its frame hooks runs again.
+//
+// Run: scripts/run-stdlib-test.sh stdlib/ui_components/tests/lifecycle-hooks-tests.hz ui_components ui_elements
+
+ref struct TestArgs {}
+
+ref struct State {
+    log: []str = [];
+    failures: int = 0;
+    checks: int = 0;
+
+    mut fn check(name: str, ok: bool) {
+        this.checks = this.checks + 1;
+        if !ok {
+            this.failures = this.failures + 1;
+            fmt.println(f"FAIL: {name}");
+        }
+    }
+
+    // The log since the last call, joined, and cleared.
+    mut fn take(): str {
+        let text = "";
+        for entry in this.log {
+            text = text.length == 0 ? entry : text + " " + entry;
+        }
+        this.log.clear();
+        return text;
+    }
+}
+
+fn main(): int {
+    let state = State {};
+    let show = rx.reactive<bool>(true);
+
+    let ui = ui_components.UIContext({
+        ui: (ctx: ui_components.UIContext) => {
+            ctx.defineComponent(0, {} as TestArgs, (app: ui_components.InstanceData<TestArgs>) => {
+                return (): ui_components.DivProps => {
+                    if rx.get(show) {
+                        ctx.defineComponent(-10, {} as TestArgs, (instance: ui_components.InstanceData<TestArgs>) => {
+                            ctx.onFrame(() => { state.log.push("frame1"); });
+                            ctx.onMounted(() => { state.log.push("mounted1"); });
+                            ctx.onUnmount(() => { state.log.push("unmount1"); });
+                            ctx.onFrame(() => { state.log.push("frame2"); });
+                            ctx.onMounted(() => { state.log.push("mounted2"); });
+                            ctx.onUnmount(() => { state.log.push("unmount2"); });
+                            ctx.onFrame(() => { state.log.push("frame3"); });
+                            return (): ui_components.DivProps => {
+                                return { id: 0 };
+                            };
+                        });
+                    }
+                    return { id: 0 };
+                };
+            });
+        },
+        mousePos: (): Vec2 => { return Vec2(0.0, 0.0); },
+    });
+
+    ui.process();
+    state.check("both onMounted hooks ran once, in order", state.log.length > 0);
+    let first = state.take();
+    state.check(f"first frame: mounted hooks in order ({first})", first.contains("mounted1 mounted2"));
+    state.check(f"first frame: each mounted hook once ({first})", !first.contains("mounted1 mounted2 mounted1"));
+
+    ui.process();
+    let second = state.take();
+    state.check(f"every frame hook runs, in order ({second})", second == "frame1 frame2 frame3");
+
+    ui.process();
+    let third = state.take();
+    state.check(f"and again the next frame ({third})", third == "frame1 frame2 frame3");
+
+    show := false;
+    ui.process();
+    let gone = state.take();
+    state.check(f"both onUnmount hooks ran, in order ({gone})", gone.contains("unmount1 unmount2"));
+
+    ui.process();
+    ui.process();
+    let after = state.take();
+    state.check(f"no frame hook of an unmounted component runs ({after})", after.length == 0);
+
+    if state.failures > 0 {
+        fmt.println(f"{state.failures} of {state.checks} checks FAILED");
+        return 1;
+    }
+    fmt.println(f"all {state.checks} checks passed");
+    return 0;
+}

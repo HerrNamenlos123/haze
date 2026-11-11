@@ -15,6 +15,7 @@ namespace ffi {
         hzstd_fs_error_code_io_error, // generic read/write failure
         hzstd_fs_error_code_out_of_memory,
         hzstd_fs_error_code_not_empty, // a directory that still holds entries
+        hzstd_fs_error_code_busy, // locked by another holder
     };
 
     extern C noemit struct hzstd_fs_error_t {
@@ -86,6 +87,13 @@ namespace ffi {
 
     extern C fn hzstd_file_stat(path: str): hzstd_file_stat_t :: final;
 
+    extern C noemit struct hzstd_file_lock_result_t {
+        handle: i64;
+        error: hzstd_fs_error_t;
+    };
+    extern C fn hzstd_file_lock(path: str, wait: bool): hzstd_file_lock_result_t :: final;
+    extern C fn hzstd_file_unlock(handle: i64): void :: final;
+
     extern C noemit struct hzstd_open_dir_result_t {
         handle: cptr;
         error: hzstd_fs_error_code_t;
@@ -116,6 +124,8 @@ export namespace fs {
         IOError,
         OutOfMemory,
         NotEmpty,
+        // Locked by another holder (tryLockFile, lockFile).
+        Busy,
     }
 
     fn mapErrorEnum(error: ffi.hzstd_fs_error_code_t): Error {
@@ -151,6 +161,9 @@ export namespace fs {
         }
         else if error == ffi.hzstd_fs_error_code_not_empty {
             return Error.NotEmpty;
+        }
+        else if error == ffi.hzstd_fs_error_code_busy {
+            return Error.Busy;
         }
 
         // If this ever triggers, C and Haze enums are out of sync.
@@ -674,6 +687,67 @@ export namespace fs {
             return Result<none, Error>.Err(mapErrorEnum(result.code));
         }
         return Result<none, Error>.Ok(none);
+    }
+
+    // An exclusive lock on a file, from tryLockFile or lockFile, held until
+    // unlock() -- or until the process ends, however it ends: the system
+    // drops it with the process, a crash or a kill included, so a lock is
+    // never left behind. Programs the process starts do not inherit it.
+    //
+    // Only other locks on the same file are kept out (in this process too);
+    // the file itself can still be read and written by anyone. Programs that
+    // share a file agree on a lock file beside it, `<file>.lock`, and take it
+    // around what must not overlap. The lock file stays when unlocked: a
+    // holder that deleted it would let the next holder lock a new file of the
+    // same name while a third still waits on the old one.
+    //
+    // A handle: a copy is the same lock, and unlocking either unlocks both.
+    // Unlock it when done; dropped without, it is held until the process ends.
+    export ref struct FileLock {
+        _handle: i64 = -1;
+
+        fn held(): bool {
+            return this._handle >= 0;
+        }
+
+        // Lets the lock go. Nothing on a lock already let go.
+        fn unlock() {
+            if this._handle < 0 {
+                return;
+            }
+            ffi.hzstd_file_unlock(this._handle);
+            this._handle = -1;
+        }
+    }
+
+    // Locks the file at `path` (created empty, with its folders, when it is
+    // not there), if no one else holds it: Error.Busy at once when someone
+    // does. Never waits.
+    export fn tryLockFile(path: str): Result<FileLock, Error> {
+        let result = ffi.hzstd_file_lock(path, false);
+        if result.error.code != ffi.hzstd_fs_error_code_none {
+            return Result<FileLock, Error>.Err(mapErrorEnum(result.error.code));
+        }
+        return Result<FileLock, Error>.Ok(FileLock { _handle: result.handle });
+    }
+
+    // tryLockFile, tried again until the lock is free or `timeoutSeconds`
+    // have passed (Error.Busy then). A holder that stopped without ending --
+    // paused in a debugger, frozen -- keeps a lock for as long as it lives,
+    // so a wait without a limit could hang for good.
+    export fn lockFile(path: str, timeoutSeconds: real): Result<FileLock, Error> {
+        let deadline = time.now() + timeoutSeconds;
+        while true {
+            let tried = tryLockFile(path);
+            if tried {
+                return tried;
+            }
+            if tried != Error.Busy || time.now() >= deadline {
+                return tried;
+            }
+            time.sleep(0.001);
+        }
+        sys.unreachable();
     }
 
     export struct FileState {

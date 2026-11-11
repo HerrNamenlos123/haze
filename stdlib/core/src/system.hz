@@ -210,6 +210,7 @@ namespace ffi {
     extern C noemit fn hzstd_arg_count(): int :: final;
     extern C noemit fn hzstd_arg_at(index: int): str :: final;
     extern C noemit fn hzstd_app_id_get(): str :: final;
+    extern C noemit fn hzstd_process_id(): int :: final;
 }
 
 namespace sys {
@@ -223,6 +224,12 @@ namespace sys {
             result.push(ffi.hzstd_arg_at(i));
         }
         return result;
+    }
+
+    // The operating system's id of this process. Unique among the processes
+    // running at the same time; a later process may get it again.
+    export fn processId(): int {
+        return ffi.hzstd_process_id();
     }
 
     // The [app] appId from this program's haze.toml -- the name the desktop
