@@ -271,7 +271,7 @@ hzstd_read_file_text_result_t hzstd_read_file_text(hzstd_allocator_t allocator, 
     };
   }
 
-  char* buffer = hzstd_allocate(allocator, (size_t)size, NULL);
+  char* buffer = hzstd_allocate_unscanned(allocator, (size_t)size, NULL);
   if (!buffer) {
     fclose(f);
     return (hzstd_read_file_text_result_t) {
@@ -2052,7 +2052,7 @@ hzstd_open_dir_result_t hzstd_open_dir(hzstd_str_t path)
   return (hzstd_open_dir_result_t) { .handle = h, .error = hzstd_fs_error_code_none };
 }
 
-hzstd_dir_entry_t hzstd_read_next_dir_entry(void* handle)
+hzstd_dir_entry_t hzstd_read_next_dir_entry(void* handle, hzstd_allocator_t allocator)
 {
   hzstd_dir_handle_linux_t* h = (hzstd_dir_handle_linux_t*)handle;
   struct dirent* entry;
@@ -2078,7 +2078,7 @@ hzstd_dir_entry_t hzstd_read_next_dir_entry(void* handle)
     return (hzstd_dir_entry_t) {
       .valid = true,
       .is_dir = is_dir,
-      .name = hzstd_cstr_dup(entry->d_name),
+      .name = hzstd_str_from_cstr_dup(allocator, entry->d_name),
     };
   }
 
@@ -2134,7 +2134,7 @@ hzstd_open_dir_result_t hzstd_open_dir(hzstd_str_t path)
   return (hzstd_open_dir_result_t) { .handle = h, .error = hzstd_fs_error_code_none };
 }
 
-hzstd_dir_entry_t hzstd_read_next_dir_entry(void* handle)
+hzstd_dir_entry_t hzstd_read_next_dir_entry(void* handle, hzstd_allocator_t allocator)
 {
   hzstd_dir_handle_win32_t* h = (hzstd_dir_handle_win32_t*)handle;
 
@@ -2158,7 +2158,7 @@ hzstd_dir_entry_t hzstd_read_next_dir_entry(void* handle)
     return (hzstd_dir_entry_t) {
       .valid = true,
       .is_dir = is_dir,
-      .name = hzstd_cstr_dup(ffd.cFileName),
+      .name = hzstd_str_from_cstr_dup(allocator, ffd.cFileName),
     };
   }
 
@@ -2246,3 +2246,42 @@ hzstd_fs_error_t hzstd_remove_empty_directory(hzstd_str_t path)
 }
 
 #undef HZSTD_FS_DIRECTORY_PATH
+
+// ── Standard input ───────────────────────────────────────────────────────────
+//
+// Raw bytes on every system: Windows opens stdin in text mode, which turns
+// CRLF into LF, so a caller that was told "N bytes follow" would wait for
+// bytes that were already sent. Setting the mode is idempotent and cheap, so
+// it happens on every call instead of keeping a flag.
+
+static void hzstd_stdin_raw(void)
+{
+#if defined(HAZE_PLATFORM_WIN32)
+  _setmode(_fileno(stdin), _O_BINARY);
+#endif
+}
+
+hzstd_int_t hzstd_stdin_read(void* dest, hzstd_int_t count)
+{
+  hzstd_stdin_raw();
+  return (hzstd_int_t)fread(dest, 1, (size_t)count, stdin);
+}
+
+hzstd_stdin_line_part_t hzstd_stdin_read_line_part(void* dest, hzstd_int_t room)
+{
+  hzstd_stdin_raw();
+  hzstd_stdin_line_part_t part = { .got = 0, .status = 0 };
+  while (part.got < room) {
+    int ch = getc(stdin);
+    if (ch == EOF) {
+      part.status = 2;
+      break;
+    }
+    ((char*)dest)[part.got++] = (char)ch;
+    if (ch == '\n') {
+      part.status = 1;
+      break;
+    }
+  }
+  return part;
+}

@@ -2971,6 +2971,15 @@ export class SemanticElaborator {
     ) {
       return null;
     }
+    // findCastOperator scans the struct's elaborated `.methods`, which holds an
+    // `operator as` only once something elaborated it: without this the
+    // conversion depended on elaboration order (an Arena from memory.hz did not
+    // convert inside filesystem.hz, which is elaborated first).
+    this.ensureOperatorOverloadsElaborated(
+      this.resolveAlias(this.sr.exprNodes.get(sourceExprId).type),
+      "__operator_cast",
+      sourceloc
+    );
     return this.findCastOperator(sourceDef, targetTypeUseId, sourceloc);
   }
 
@@ -7181,6 +7190,12 @@ export class SemanticElaborator {
     // When no exact/non-exact match was found, try a third tier: check whether all
     // arguments can be implicitly converted to the parameter types.  If exactly one
     // overload accepts all arguments under implicit-conversion rules, pick it.
+    // Generic overloads take part like in the non-exact tier: a parameter whose
+    // type is still a generic placeholder does not reject the candidate, the
+    // concrete ones must convert (`json.stringify<T>(arena, value)` with an
+    // Arena for its `allocator: Allocator`). This tier only runs when nothing
+    // matched before, so it never changes which overload a call that compiled
+    // already picks.
     if (nonExactMatchingSignatures.filter((s) => s.matches).length === 0) {
       const implicitMatchingSignatures = (() => {
         const result = [] as {
@@ -7191,15 +7206,6 @@ export class SemanticElaborator {
         for (const overloadId of overloadGroup.overloads) {
           const overload = this.sr.cc.symbolNodes.get(overloadId);
           assert(overload.variant === Collect.ENode.FunctionSymbol);
-
-          if (overload.generics.length > 0) {
-            result.push({
-              matches: false,
-              signature: this.elaborateFunctionSignature(overloadId),
-              reason: "Contains generic parameters",
-            });
-            continue;
-          }
 
           const signatureId = this.elaborateFunctionSignature(overloadId);
           const signature = this.sr.symbolNodes.get(signatureId);
@@ -7272,6 +7278,9 @@ export class SemanticElaborator {
             // Only closure signatures ever have a null parameter type, and closures
             // are never part of a named overload group.
             assert(signatureParam.type !== null);
+            if (!isTypeConcrete(this.sr, signatureParam.type)) {
+              continue;
+            }
             const conversion = Conversion.CanImplicitlyConvert(
               this.sr,
               passed.exprId,

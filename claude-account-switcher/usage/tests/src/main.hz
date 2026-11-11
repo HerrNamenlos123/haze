@@ -170,10 +170,10 @@ fn scratch(name: str): str {
     if let entries = fs.listDir(dir) {
         for e in entries {
             if e.isFile {
-                fs.removeFile(e.path);
+                fs.removeFile(e.path());
             }
             else {
-                fs.removeEmptyDirectory(e.path);
+                fs.removeEmptyDirectory(e.path());
             }
         }
     }

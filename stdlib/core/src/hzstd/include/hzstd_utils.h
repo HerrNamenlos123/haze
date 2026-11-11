@@ -33,7 +33,7 @@ hzstd_color_from_hex_result_t hzstd_color_from_hex(hzstd_str_t hex, hzstd_bool_t
  * If omit_alpha_if_opaque is true and alpha rounds to 255, the alpha pair is
  * omitted and the result is always 6 characters (RRGGBB), regardless of mode.
  *
- * The returned string is heap-allocated via hzstd_heap_allocate_atomic.
+ * The returned string is heap-allocated via hzstd_heap_allocate_unscanned.
  */
 hzstd_str_t hzstd_color_to_hex(hzstd_color_t color, hzstd_bool_t omit_alpha_if_opaque, hzstd_bool_t argb_mode);
 

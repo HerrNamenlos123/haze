@@ -85,7 +85,7 @@ hz_filedialog_open_dialog_multiple(hzstd_str_t filters, hzstd_str_t defaultPath,
       NFD_OpenDialogMultiple(c_filters, c_defaultPath, &c_outPaths);
 
   if (result == NFD_OKAY) {
-    hzstd_allocator_t arena = hzstd_make_arena_allocator();
+    hzstd_allocator_t arena = hzstd_make_arena_allocator(HZSTD_ARENA_OPTIONS("File dialog paths"));
     for (size_t i = 0; i < NFD_PathSet_GetCount(&c_outPaths); ++i) {
       nfdchar_t *c_path = NFD_PathSet_GetPath(&c_outPaths, i);
       hzstd_str_t path = hzstd_str_from_cstr_dup(arena, c_path);
@@ -213,7 +213,7 @@ static void hz_filedialog_job_run(void *arg)
 
 static hzstd_cptr_t hz_filedialog_job_start(hz_filedialog_kind_t kind, hzstd_str_t filters, hzstd_str_t defaultPath)
 {
-  // GC memory, not atomic: it holds the strings below. The worker keeps it
+  // Scanned GC memory: it holds the strings below. The worker keeps it
   // alive while it runs, the Haze side for as long as it polls.
   hz_filedialog_job_t *job = hzstd_heap_allocate(sizeof(hz_filedialog_job_t), NULL);
   memset(job, 0, sizeof(*job));

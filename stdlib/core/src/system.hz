@@ -12,6 +12,13 @@ namespace ffi {
     extern C noemit fn hzstd_stringify_stacktrace(allocator: Allocator, st: hzstd_stacktrace_t): str :: final;
     extern C noemit fn hzstd_print_panic_info(info: hzstd_panic_info_t) :: final;
     extern C noemit fn hzstd_stringify_panic_info(allocator: Allocator, info: hzstd_panic_info_t): str :: final;
+
+    extern C noemit struct hzstd_stdin_line_part_t {
+        got: int;
+        status: int;
+    };
+    extern C noemit fn hzstd_stdin_read(dest: cptr, count: int): int :: final;
+    extern C noemit fn hzstd_stdin_read_line_part(dest: cptr, room: int): hzstd_stdin_line_part_t :: final;
 }
 
 namespace sys {
@@ -258,9 +265,59 @@ namespace sys {
         return none;
     }
 
+    // The process's standard input. Reads block until the data is there.
+    // read() and readLine() share one buffer, so they can be mixed (a line
+    // telling how many bytes follow, then exactly those bytes).
     export struct InputPipe {
         fn constructor() {
             return InputPipe {};
+        }
+
+        // The next `count` bytes, as they are (no text decoding); fewer only
+        // when the input ends first, "" when it has ended.
+        fn read(count: int): str {
+            if count < 0 {
+                panic("InputPipe.read: negative count");
+            }
+            if count == 0 {
+                return "";
+            }
+            let stackref buffer = ByteBuffer(count);
+            let got = ffi.hzstd_stdin_read(buffer._appendUninitialized(count), count);
+            buffer.truncate(got);
+            buffer.commit();
+            return buffer.string();
+        }
+
+        // The next line without its "\n" (or "\r\n"); the last line also when
+        // no "\n" ends it. none once the input has ended.
+        fn readLine(): str | none {
+            let stackref line = ByteBuffer();
+            let any = false;
+            let ended = false;
+            while !ended {
+                let start = line.length();
+                let room = 256;
+                let part = ffi.hzstd_stdin_read_line_part(line._appendUninitialized(room), room);
+                line.truncate(start + part.got);
+                if part.got > 0 {
+                    any = true;
+                }
+                ended = part.status != 0;
+            }
+            if !any {
+                return none;
+            }
+            let end = line.length();
+            if end > 0 && line.getAt(end - 1) == b"\n" {
+                end = end - 1;
+                if end > 0 && line.getAt(end - 1) == b"\r" {
+                    end = end - 1;
+                }
+            }
+            line.truncate(end);
+            line.commit();
+            return line.string();
         }
     }
 

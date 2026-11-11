@@ -131,7 +131,7 @@ static hzstd_str_t haze_si_static_str(const char *text)
 
 static char *haze_si_dup(hzstd_str_t value, hzstd_int_t *outLength)
 {
-  char *copy = (char *)hzstd_heap_allocate_atomic((size_t)value.length + 1, NULL);
+  char *copy = (char *)hzstd_heap_allocate_unscanned((size_t)value.length + 1, NULL);
   if (value.length > 0) {
     memcpy(copy, value.data, (size_t)value.length);
   }
@@ -285,7 +285,7 @@ static int haze_si_read_frame(haze_si_conn_t conn, hzstd_u32_t expectedType, uns
 
   unsigned char *payload = 0;
   if (length > 0) {
-    payload = (unsigned char *)hzstd_heap_allocate_atomic((size_t)length, NULL);
+    payload = (unsigned char *)hzstd_heap_allocate_unscanned((size_t)length, NULL);
     if (!haze_si_io(conn, payload, (hzstd_int_t)length, 1)) {
       return 0;
     }
@@ -321,7 +321,7 @@ static hzstd_i32_t haze_si_current_pid(void)
 static int haze_si_build_hello(unsigned char **outPayload, hzstd_int_t *outLength)
 {
   hzstd_int_t total = 4 + 4 + 8 + 4 + g_mangledLen + 4 + g_prettyLen;
-  unsigned char *payload = (unsigned char *)hzstd_heap_allocate_atomic((size_t)total, NULL);
+  unsigned char *payload = (unsigned char *)hzstd_heap_allocate_unscanned((size_t)total, NULL);
 
   hzstd_int_t offset = 0;
   haze_si_put_u32(payload, offset, HAZE_SI_VERSION);
@@ -484,7 +484,7 @@ respond : {
 
   hzstd_int_t messageLength = (hzstd_int_t)strlen(message);
   hzstd_int_t total = 4 + 4 + 4 + messageLength;
-  unsigned char *result = (unsigned char *)hzstd_heap_allocate_atomic((size_t)total, NULL);
+  unsigned char *result = (unsigned char *)hzstd_heap_allocate_unscanned((size_t)total, NULL);
   haze_si_put_u32(result, 0, (hzstd_u32_t)status);
   haze_si_put_u32(result, 4, (hzstd_u32_t)exitCode);
   haze_si_put_u32(result, 8, (hzstd_u32_t)messageLength);
@@ -523,7 +523,7 @@ hzstd_str_t haze_si_user_key(void)
     return haze_si_static_str("unknown");
   }
 
-  TOKEN_USER *info = (TOKEN_USER *)hzstd_heap_allocate_atomic((size_t)needed, NULL);
+  TOKEN_USER *info = (TOKEN_USER *)hzstd_heap_allocate_unscanned((size_t)needed, NULL);
   if (!GetTokenInformation(token, TokenUser, info, needed, &needed)) {
     CloseHandle(token);
     return haze_si_static_str("unknown");
@@ -537,19 +537,19 @@ hzstd_str_t haze_si_user_key(void)
 
   int wide = (int)wcslen(sidText);
   int bytes = WideCharToMultiByte(CP_UTF8, 0, sidText, wide, NULL, 0, NULL, NULL);
-  char *out = (char *)hzstd_heap_allocate_atomic((size_t)bytes + 1, NULL);
+  char *out = (char *)hzstd_heap_allocate_unscanned((size_t)bytes + 1, NULL);
   WideCharToMultiByte(CP_UTF8, 0, sidText, wide, out, bytes, NULL, NULL);
   out[bytes] = 0;
 
   if (!g_userSid) {
-    g_userSid = (wchar_t *)hzstd_heap_allocate_atomic(((size_t)wide + 1) * sizeof(wchar_t), NULL);
+    g_userSid = (wchar_t *)hzstd_heap_allocate_unscanned(((size_t)wide + 1) * sizeof(wchar_t), NULL);
     memcpy(g_userSid, sidText, ((size_t)wide + 1) * sizeof(wchar_t));
   }
   LocalFree(sidText);
 
   return HZSTD_STRING(out, bytes);
 #else
-  char *out = (char *)hzstd_heap_allocate_atomic(32, NULL);
+  char *out = (char *)hzstd_heap_allocate_unscanned(32, NULL);
   int written = snprintf(out, 32, "%lu", (unsigned long)getuid());
   return HZSTD_STRING(out, written);
 #endif
@@ -993,7 +993,7 @@ haze_si_send_result_t haze_si_send(hzstd_str_t json)
 #endif
 
   hzstd_int_t total = 4 + g_mangledLen + 8 + 4 + json.length;
-  unsigned char *payload = (unsigned char *)hzstd_heap_allocate_atomic((size_t)total, NULL);
+  unsigned char *payload = (unsigned char *)hzstd_heap_allocate_unscanned((size_t)total, NULL);
 
   hzstd_int_t offset = 0;
   haze_si_put_u32(payload, offset, (hzstd_u32_t)g_mangledLen);

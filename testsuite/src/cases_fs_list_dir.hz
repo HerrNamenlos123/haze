@@ -1,0 +1,191 @@
+// ============================================================================
+// fs.listDir and fs.DirEntry.
+//
+// An entry carries the path listDir was called with (`dir`) and its own file
+// name (`name`); the full path is built only when asked for, by `path()`. A
+// recursive scan lists thousands of entries and needs the path of few, so
+// building it eagerly was massive heap churn. The names go into one arena per
+// listing (or the caller's), not one heap string each. The cases check what an
+// entry holds, that path() joins the two, that the path reaches the entry on
+// disk, where names and paths are allocated, and how many allocations a
+// listing costs as the folder grows.
+// ============================================================================
+
+namespace cases_fs_list_dir {
+
+    export fn register(s: mut testsuite.Suite) {
+
+        s.run(
+            "fs.listDir: entries hold dir and name, path() joins them lazily",
+            """
+fn workPath(name: str): str {
+    let dir = env.get("HAZE_TEST_WORKDIR");
+    if dir is str {
+        return f"{dir}/{name}";
+    }
+    return f"/tmp/{name}";
+}
+
+fn main(): int {
+    let dir = workPath("fs_list_dir");
+    fs.createDirectory(dir);
+    fs.writeText(f"{dir}/alpha.txt", "a");
+    fs.writeText(f"{dir}/beta.txt", "b");
+    fs.createDirectory(f"{dir}/sub");
+    fs.writeText(f"{dir}/sub/inner.txt", "inner");
+
+    let listed = fs.listDir(dir);
+    if !listed {
+        fmt.println("listDir failed");
+        return 1;
+    }
+    let entries: []fs.DirEntry = listed;
+    fmt.println(f"count: {entries.length}");
+    let files = 0;
+    let folders = 0;
+    let dirsMatch = true;
+    let pathsMatch = true;
+    let readable = true;
+    let innerOk = false;
+    for entry in entries {
+        dirsMatch = dirsMatch && entry.dir == dir;
+        pathsMatch = pathsMatch && entry.path() == f"{dir}/{entry.name}";
+        if entry.isFile {
+            files = files + 1;
+            readable = readable && fs.readText(entry.path()) is str;
+        }
+        if entry.isDirectory {
+            folders = folders + 1;
+            if let inner = fs.listDir(entry.path()) {
+                let innerEntries: []fs.DirEntry = inner;
+                innerOk = innerEntries.length == 1
+                    && innerEntries[0].dir == entry.path()
+                    && innerEntries[0].name == "inner.txt"
+                    && innerEntries[0].path() == f"{dir}/sub/inner.txt";
+            }
+        }
+    }
+    fmt.println(f"files {files}, folders {folders}");
+    fmt.println(f"dir is the listed path: {dirsMatch}, path() is dir/name: {pathsMatch}");
+    fmt.println(f"every file reads back through path(): {readable}");
+    fmt.println(f"nested listing: {innerOk}");
+    return 0;
+}
+""",
+            """
+count: 3
+files 2, folders 1
+dir is the listed path: true, path() is dir/name: true
+every file reads back through path(): true
+nested listing: true
+""");
+
+        s.run(
+            "fs.listDir: with an arena, the names and path(arena) go into it",
+            """
+fn workPath(name: str): str {
+    let dir = env.get("HAZE_TEST_WORKDIR");
+    if dir is str {
+        return f"{dir}/{name}";
+    }
+    return f"/tmp/{name}";
+}
+
+fn main(): int {
+    let base = workPath("list_dir_arena");
+    fs.createDirectory(base);
+    fs.writeText(f"{base}/alpha.txt", "");
+    fs.writeText(f"{base}/beta.txt", "");
+    fs.createDirectory(f"{base}/sub");
+    let arena = Alloc.arena();
+    let listed = fs.listDir(arena, base);
+    if !listed {
+        return 1;
+    }
+    let entries: []fs.DirEntry = listed;
+    let afterNames = arena.measure();
+    fmt.println(f"names in the arena: {afterNames.unscanned} bytes for {entries.length} names, scanned {afterNames.scanned}");
+    let all = true;
+    let grew = true;
+    for entry in entries {
+        let before = arena.measure().unscanned;
+        let path = entry.path(arena);
+        let expected = f"{base}/{entry.name}";
+        all = all && path == expected;
+        let rounded = (path.length + 15) / 16 * 16;
+        grew = grew && arena.measure().unscanned - before == rounded;
+    }
+    fmt.println(f"path(arena) is dir/name: {all}, and in the arena: {grew}");
+    return 0;
+}
+""",
+            """
+names in the arena: 48 bytes for 3 names, scanned 0
+path(arena) is dir/name: true, and in the arena: true
+""");
+
+        // The profiler prints to stdout, so this one asserts and exits 0.
+        s.runExitCode(
+            "fs.listDir: the names cost a few doubling chunks, not an allocation per entry",
+            """
+fn workPath(name: str): str {
+    let dir = env.get("HAZE_TEST_WORKDIR");
+    if dir is str {
+        return f"{dir}/{name}";
+    }
+    return f"/tmp/{name}";
+}
+
+fn profiler(): Profiler {
+    return Profiler({ samplingRate: 0, memoryInstrumentation: true, memoryInstrumentationStacktraces: false });
+}
+
+struct Counts {
+    events: int;
+    nameChunks: int;
+    perName: int;
+}
+
+// What one fs.listDir(path) of a folder of `count` files allocates.
+fn countListing(dir: str, count: int): Counts {
+    fs.createDirectory(dir);
+    for (let i = 0; i < count; i++) {
+        let n = 1000 + i;
+        fs.writeText(f"{dir}/entry_{n}.txt", "");
+    }
+    let p = profiler();
+    let listed = fs.listDir(dir);
+    let r = p.stop();
+    assert(listed ? true : false, "listDir failed");
+    let names = 0;
+    let small = 0;
+    for frame in r.memoryInstrumentationFrames {
+        if frame.dataType == "fs.listDir names" && frame.allocationType == 6 {
+            names = names + 1;
+        }
+        if (frame.allocationType == 0 || frame.allocationType == 2) && frame.sizeBytes <= 16 {
+            small = small + 1;
+        }
+    }
+    return Counts { events: r.memoryInstrumentationFrames.length - 1, nameChunks: names, perName: small };
+}
+
+fn main(): int {
+    let base = workPath("list_dir_counts");
+    fs.createDirectory(base);
+    let a = countListing(f"{base}/a", 200);
+    let b = countListing(f"{base}/b", 400);
+    // 200 names of 13 bytes take 16 each: 512 + 1024 + 2048 bytes of chunks;
+    // 400 one more chunk. Before, every entry cost a heap string for its name
+    // and two for its path.
+    assert(a.nameChunks == 3, f"200 entries: {a.nameChunks} name chunks");
+    assert(b.nameChunks == 4, f"400 entries: {b.nameChunks} name chunks");
+    assert(b.events < 20, f"400 entries: {b.events} allocation events");
+    assert(b.events - a.events <= 3, f"200 more entries cost {b.events - a.events} more allocation events");
+    assert(b.perName <= 1, f"400 entries: {b.perName} small heap allocations");
+    return 0;
+}
+""",
+            0);
+    }
+}

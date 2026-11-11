@@ -97,14 +97,14 @@ fn recursiveListDir(indexContext: IndexContext, startTime: real, dir: str): Resu
 
     for entry in fs.listDir(dir)?! {
         if entry.isDirectory {
-            recursiveListDir(indexContext, entry.path);
+            recursiveListDir(indexContext, entry.path());
         }
         else {
             if entry.name == "STOP" {
                 indexContext.terminate();
                 return none;
             }
-            indexContext.pushJob(entry.path);
+            indexContext.pushJob(entry.path());
         }
     }
     return none;

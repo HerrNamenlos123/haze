@@ -99,7 +99,7 @@ export fn projectDirectories(configDir: str, cwd: str): []str {
     }
     for entry in listed {
         if entry.isDirectory && entry.name.startsWith(prefix) && entry.name != key {
-            directories.push(entry.path);
+            directories.push(entry.path());
         }
     }
     return directories;
@@ -157,7 +157,7 @@ export fn listSessions(configDir: str, cwd: str, options: ListOptions): []Sessio
             if !entry.isFile || !entry.name.endsWith(".jsonl") {
                 continue;
             }
-            let summary = readSessionSummary(entry.path);
+            let summary = readSessionSummary(entry.path());
             if !summary {
                 continue;
             }
@@ -687,7 +687,7 @@ export fn listRunningSessions(configDir: str): []RunningSession {
         if !entry.isFile || !entry.name.endsWith(".json") {
             continue;
         }
-        let text = fs.readText(entry.path);
+        let text = fs.readText(entry.path());
         if !text {
             continue;
         }

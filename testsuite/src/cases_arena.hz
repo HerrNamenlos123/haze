@@ -1,0 +1,776 @@
+// ============================================================================
+// Arenas (memory.hz, hzstd_memory.c).
+//
+// An arena has two chains of chunks: scanned (the GC searches it for
+// pointers) and unscanned (the GC never looks into it: string and Bytes data
+// only). Each chain is made at its first allocation, and sizes its chunks by
+// its ChunkPolicy: firstBytes, nextBytes, then times growth up to maxBytes;
+// an allocation bigger than the next chunk gets a chunk of its own. measure()
+// gives the bytes in use per chain, and ArenaOptions.sizedFor turns that into
+// a first chunk that holds the same work at once.
+//
+// The cases look at the chains directly (the C helpers at the top of each
+// program walk hzstd_arena_t), and at the collector itself: an object whose
+// only reference lies in unscanned memory must be collected, chunks the arena
+// still holds must not be, and a str viewing a chunk keeps that chunk alive.
+// Every string the stdlib makes must be a pointer-free block.
+// ============================================================================
+
+namespace cases_arena {
+
+    export fn register(s: mut testsuite.Suite) {
+
+        s.run(
+            "arena: chunk sizes follow the policy of each chain, and each chain is made at its first allocation",
+            """
+__c__("#define GC_THREADS");
+__c__("#include <gc/gc.h>");
+__c__("#include <gc/gc_mark.h>");
+__c__("#include <stdio.h>");
+__c__("#include <string.h>");
+__c__("
+static int hz_t_finalized[16];
+static void hz_t_fin(void *obj, void *cd) { (void)obj; hz_t_finalized[(intptr_t)cd] = 1; }
+void hz_t_watch(void *base, hzstd_int_t slot) { GC_register_finalizer(base, hz_t_fin, (void *)(intptr_t)slot, NULL, NULL); }
+__attribute__((noinline)) static void hz_t_scrub(void) { volatile char pad[65536]; memset((char *)pad, 0, sizeof pad); }
+hzstd_int_t hz_t_collected(hzstd_int_t slot) {
+    hz_t_scrub();
+    for (int i = 0; i < 3; i++) { GC_gcollect(); GC_invoke_finalizers(); }
+    return hz_t_finalized[slot];
+}
+hzstd_int_t hz_t_kind(void *p) {
+    void *base = GC_base(p);
+    if (!base) return -1;
+    return GC_get_kind_and_size(base, NULL);
+}
+hzstd_int_t hz_t_str_kind(hzstd_str_t s) { return hz_t_kind((void *)s.data); }
+hzstd_str_t hz_t_chunks(hzstd_allocator_t arena, bool unscanned) {
+    hzstd_arena_t *a = (hzstd_arena_t *)arena.ctx;
+    hzstd_arena_chain_t *c = unscanned ? &a->unscanned : &a->scanned;
+    char buf[2048];
+    size_t n = 0;
+    if (!c->first.data) {
+        n = (size_t)snprintf(buf, sizeof buf, \\"(none)\\");
+    }
+    for (hzstd_arena_chunk_t *k = c->first.data ? &c->first : NULL; k; k = k->next_chunk) {
+        n += (size_t)snprintf(buf + n, sizeof buf - n, \\"%s%zu\\", n ? \\" \\" : \\"\\", k->capacity);
+    }
+    return hzstd_str_dup(HZSTD_STRING(buf, n));
+}
+void *hz_t_alloc(hzstd_allocator_t arena, bool unscanned, hzstd_int_t size) {
+    return unscanned ? hzstd_allocate_unscanned(arena, (size_t)size, NULL) : hzstd_allocate(arena, (size_t)size, NULL);
+}
+// A GC object whose only reference is stored in the arena (scanned or
+// unscanned chain), watched in `slot`.
+__attribute__((noinline)) void hz_t_stash(hzstd_allocator_t arena, bool unscanned, hzstd_int_t slot) {
+    void *obj = GC_malloc(64);
+    hz_t_watch(obj, slot);
+    void **cell = (void **)hz_t_alloc(arena, unscanned, sizeof(void *));
+    *cell = obj;
+}
+// The data block of the chain's chunk number `index` (0 = first).
+void *hz_t_chunk_data(hzstd_allocator_t arena, bool unscanned, hzstd_int_t index) {
+    hzstd_arena_t *a = (hzstd_arena_t *)arena.ctx;
+    hzstd_arena_chunk_t *k = unscanned ? &a->unscanned.first : &a->scanned.first;
+    for (hzstd_int_t i = 0; i < index; i++) k = k->next_chunk;
+    return k->data;
+}
+// A view into the middle of an arena's first unscanned chunk, the only thing
+// left of that arena once this returns. The chunk is watched in `slot`.
+static const char *hz_t_view;
+__attribute__((noinline)) void hz_t_make_view(hzstd_int_t slot) {
+    hzstd_allocator_t a = hzstd_make_arena_allocator(HZSTD_ARENA_OPTIONS(\\"view\\"));
+    char *p = NULL;
+    for (int i = 0; i < 5; i++) {
+        p = hzstd_allocate_unscanned(a, 16, NULL);
+        memcpy(p, \\"0123456789abcdef\\", 16);
+    }
+    hz_t_watch(((hzstd_arena_t *)a.ctx)->unscanned.first.data, slot);
+    hz_t_view = p;
+}
+hzstd_bool_t hz_t_view_intact(void) { return hz_t_view && memcmp(hz_t_view, \\"0123456789abcdef\\", 16) == 0; }
+void hz_t_drop_view(void) { hz_t_view = NULL; }
+");
+extern C fn hz_t_collected(slot: int): int :: final;
+extern C fn hz_t_kind(p: cptr): int :: final;
+extern C fn hz_t_str_kind(s: str): int :: final;
+extern C fn hz_t_chunks(arena: Allocator, unscanned: bool): str :: final;
+extern C fn hz_t_alloc(arena: Allocator, unscanned: bool, size: int): cptr :: final;
+extern C fn hz_t_stash(arena: Allocator, unscanned: bool, slot: int): void :: final;
+extern C fn hz_t_chunk_data(arena: Allocator, unscanned: bool, index: int): cptr :: final;
+extern C fn hz_t_watch(p: cptr, slot: int): void :: final;
+extern C fn hz_t_make_view(slot: int): void :: final;
+extern C fn hz_t_view_intact(): bool :: final;
+extern C fn hz_t_drop_view(): void :: final;
+
+fn allocMany(arena: Allocator, unscanned: bool, size: int, count: int) {
+    for (let i = 0; i < count; i++) {
+        hz_t_alloc(arena, unscanned, size);
+    }
+}
+
+fn chunks(arena: Allocator): str {
+    return f"scanned [{hz_t_chunks(arena, false)}] unscanned [{hz_t_chunks(arena, true)}]";
+}
+
+fn main(): int {
+    let d = ChunkPolicy {};
+    let cFirst = 0;
+    let cNext = 0;
+    let cGrowth = 0.0;
+    let cMax = 0;
+    __c__("cFirst = HZSTD_ARENA_DEFAULT_FIRST_BYTES; cNext = HZSTD_ARENA_DEFAULT_NEXT_BYTES; cGrowth = HZSTD_ARENA_DEFAULT_GROWTH; cMax = HZSTD_ARENA_DEFAULT_MAX_BYTES;");
+    fmt.println(f"defaults: {d.firstBytes} {d.nextBytes} {d.growth} {d.maxBytes}, same as hzstd: {d.firstBytes == cFirst && d.nextBytes == cNext && d.growth == cGrowth && d.maxBytes == cMax}");
+
+    let doubling = Alloc.arena();
+    allocMany(doubling, true, 16, 8129);
+    allocMany(doubling, false, 16, 65);
+    fmt.println(f"default: {chunks(doubling)}");
+
+    let fixed = Alloc.arena({ unscanned: { firstBytes: 64, nextBytes: 32, growth: 1.0 } });
+    allocMany(fixed, true, 16, 9);
+    fmt.println(f"fixed: {hz_t_chunks(fixed, true)}");
+
+    let triple = Alloc.arena({ unscanned: { firstBytes: 32, nextBytes: 48, growth: 3.0, maxBytes: 1000 } });
+    allocMany(triple, true, 16, 104);
+    fmt.println(f"growth 3, at most 1000: {hz_t_chunks(triple, true)}");
+
+    let big = Alloc.arena({ scanned: { firstBytes: 256, nextBytes: 256, growth: 1.0 } });
+    let first = hz_t_alloc(big, false, 16);
+    hz_t_alloc(big, false, 1000);
+    let third = hz_t_alloc(big, false, 16);
+    let behind = false;
+    __c__("behind = (char *)third == (char *)first + 16;");
+    fmt.println(f"oversized: {hz_t_chunks(big, false)}, the next small one is in the first chunk: {behind}");
+
+    let gigabyteLike = Alloc.arena({ unscanned: { firstBytes: 4096, nextBytes: 256, growth: 1.0 } });
+    hz_t_alloc(gigabyteLike, true, 4096);
+    hz_t_alloc(gigabyteLike, true, 16);
+    fmt.println(f"full first chunk, then a small one: {hz_t_chunks(gigabyteLike, true)}");
+
+    let small = Alloc.arena({ unscanned: { firstBytes: 64 } });
+    hz_t_alloc(small, true, 100);
+    fmt.println(f"first allocation bigger than firstBytes: {hz_t_chunks(small, true)}");
+
+    let fixedNoMax = Alloc.arena({ unscanned: { firstBytes: 16, nextBytes: 4096, growth: 1.0, maxBytes: 1024 } });
+    allocMany(fixedNoMax, true, 16, 3);
+    fmt.println(f"fixed ignores maxBytes: {hz_t_chunks(fixedNoMax, true)}");
+
+    let stringsOnly = Alloc.arena();
+    fmt.formatWithAllocator(stringsOnly, "only a string");
+    let structsOnly = Alloc.arena();
+    hz_t_alloc(structsOnly, false, 32);
+    let unused = Alloc.arena();
+    fmt.println(f"strings only: {chunks(stringsOnly)}");
+    fmt.println(f"scanned only: {chunks(structsOnly)}");
+    fmt.println(f"unused: {chunks(unused)}");
+    return 0;
+}
+""",
+            """
+defaults: 1024 2048 2 65536, same as hzstd: true
+default: scanned [1024 2048] unscanned [1024 2048 4096 8192 16384 32768 65536 65536]
+fixed: 64 32 32 32
+growth 3, at most 1000: 32 48 144 432 1000 1000
+oversized: 256 1008, the next small one is in the first chunk: true
+full first chunk, then a small one: 4096 256
+first allocation bigger than firstBytes: 112
+fixed ignores maxBytes: 16 4096
+strings only: scanned [(none)] unscanned [1024]
+scanned only: scanned [1024] unscanned [(none)]
+unused: scanned [(none)] unscanned [(none)]
+""");
+
+        s.run(
+            "arena: measure counts the bytes in use; sizedFor fits the same work into one chunk per chain",
+            """
+__c__("#define GC_THREADS");
+__c__("#include <gc/gc.h>");
+__c__("#include <gc/gc_mark.h>");
+__c__("#include <stdio.h>");
+__c__("#include <string.h>");
+__c__("
+static int hz_t_finalized[16];
+static void hz_t_fin(void *obj, void *cd) { (void)obj; hz_t_finalized[(intptr_t)cd] = 1; }
+void hz_t_watch(void *base, hzstd_int_t slot) { GC_register_finalizer(base, hz_t_fin, (void *)(intptr_t)slot, NULL, NULL); }
+__attribute__((noinline)) static void hz_t_scrub(void) { volatile char pad[65536]; memset((char *)pad, 0, sizeof pad); }
+hzstd_int_t hz_t_collected(hzstd_int_t slot) {
+    hz_t_scrub();
+    for (int i = 0; i < 3; i++) { GC_gcollect(); GC_invoke_finalizers(); }
+    return hz_t_finalized[slot];
+}
+hzstd_int_t hz_t_kind(void *p) {
+    void *base = GC_base(p);
+    if (!base) return -1;
+    return GC_get_kind_and_size(base, NULL);
+}
+hzstd_int_t hz_t_str_kind(hzstd_str_t s) { return hz_t_kind((void *)s.data); }
+hzstd_str_t hz_t_chunks(hzstd_allocator_t arena, bool unscanned) {
+    hzstd_arena_t *a = (hzstd_arena_t *)arena.ctx;
+    hzstd_arena_chain_t *c = unscanned ? &a->unscanned : &a->scanned;
+    char buf[2048];
+    size_t n = 0;
+    if (!c->first.data) {
+        n = (size_t)snprintf(buf, sizeof buf, \\"(none)\\");
+    }
+    for (hzstd_arena_chunk_t *k = c->first.data ? &c->first : NULL; k; k = k->next_chunk) {
+        n += (size_t)snprintf(buf + n, sizeof buf - n, \\"%s%zu\\", n ? \\" \\" : \\"\\", k->capacity);
+    }
+    return hzstd_str_dup(HZSTD_STRING(buf, n));
+}
+void *hz_t_alloc(hzstd_allocator_t arena, bool unscanned, hzstd_int_t size) {
+    return unscanned ? hzstd_allocate_unscanned(arena, (size_t)size, NULL) : hzstd_allocate(arena, (size_t)size, NULL);
+}
+// A GC object whose only reference is stored in the arena (scanned or
+// unscanned chain), watched in `slot`.
+__attribute__((noinline)) void hz_t_stash(hzstd_allocator_t arena, bool unscanned, hzstd_int_t slot) {
+    void *obj = GC_malloc(64);
+    hz_t_watch(obj, slot);
+    void **cell = (void **)hz_t_alloc(arena, unscanned, sizeof(void *));
+    *cell = obj;
+}
+// The data block of the chain's chunk number `index` (0 = first).
+void *hz_t_chunk_data(hzstd_allocator_t arena, bool unscanned, hzstd_int_t index) {
+    hzstd_arena_t *a = (hzstd_arena_t *)arena.ctx;
+    hzstd_arena_chunk_t *k = unscanned ? &a->unscanned.first : &a->scanned.first;
+    for (hzstd_int_t i = 0; i < index; i++) k = k->next_chunk;
+    return k->data;
+}
+// A view into the middle of an arena's first unscanned chunk, the only thing
+// left of that arena once this returns. The chunk is watched in `slot`.
+static const char *hz_t_view;
+__attribute__((noinline)) void hz_t_make_view(hzstd_int_t slot) {
+    hzstd_allocator_t a = hzstd_make_arena_allocator(HZSTD_ARENA_OPTIONS(\\"view\\"));
+    char *p = NULL;
+    for (int i = 0; i < 5; i++) {
+        p = hzstd_allocate_unscanned(a, 16, NULL);
+        memcpy(p, \\"0123456789abcdef\\", 16);
+    }
+    hz_t_watch(((hzstd_arena_t *)a.ctx)->unscanned.first.data, slot);
+    hz_t_view = p;
+}
+hzstd_bool_t hz_t_view_intact(void) { return hz_t_view && memcmp(hz_t_view, \\"0123456789abcdef\\", 16) == 0; }
+void hz_t_drop_view(void) { hz_t_view = NULL; }
+");
+extern C fn hz_t_collected(slot: int): int :: final;
+extern C fn hz_t_kind(p: cptr): int :: final;
+extern C fn hz_t_str_kind(s: str): int :: final;
+extern C fn hz_t_chunks(arena: Allocator, unscanned: bool): str :: final;
+extern C fn hz_t_alloc(arena: Allocator, unscanned: bool, size: int): cptr :: final;
+extern C fn hz_t_stash(arena: Allocator, unscanned: bool, slot: int): void :: final;
+extern C fn hz_t_chunk_data(arena: Allocator, unscanned: bool, index: int): cptr :: final;
+extern C fn hz_t_watch(p: cptr, slot: int): void :: final;
+extern C fn hz_t_make_view(slot: int): void :: final;
+extern C fn hz_t_view_intact(): bool :: final;
+extern C fn hz_t_drop_view(): void :: final;
+
+fn allocMany(arena: Allocator, unscanned: bool, size: int, count: int) {
+    for (let i = 0; i < count; i++) {
+        hz_t_alloc(arena, unscanned, size);
+    }
+}
+
+fn chunks(arena: Allocator): str {
+    return f"scanned [{hz_t_chunks(arena, false)}] unscanned [{hz_t_chunks(arena, true)}]";
+}
+
+fn work(arena: Allocator) {
+    hz_t_alloc(arena, true, 1);
+    hz_t_alloc(arena, true, 16);
+    hz_t_alloc(arena, true, 17);
+    hz_t_alloc(arena, true, 100);
+    hz_t_alloc(arena, true, 3000);
+    hz_t_alloc(arena, false, 8);
+    hz_t_alloc(arena, false, 24);
+    hz_t_alloc(arena, false, 5000);
+}
+
+fn usageText(u: ArenaUsage): str {
+    return f"scanned {u.scanned} unscanned {u.unscanned}";
+}
+
+fn main(): int {
+    let first = Alloc.arena();
+    work(first);
+    let usage = first.measure();
+    fmt.println(f"grown: {chunks(first)}, {usageText(usage)}");
+
+    let sized = ArenaOptions {}.sizedFor(usage);
+    fmt.println(f"sizedFor: first chunks {sized.scanned.firstBytes} {sized.unscanned.firstBytes}, rest kept: {sized.unscanned.nextBytes} {sized.unscanned.growth} {sized.unscanned.maxBytes}");
+    let replay = Alloc.arena(sized);
+    work(replay);
+    fmt.println(f"replayed: {chunks(replay)}, {usageText(replay.measure())}");
+
+    let exact = Alloc.arena(ArenaOptions {}.sizedFor(usage, 0.0));
+    work(exact);
+    fmt.println(f"no spare: {chunks(exact)}");
+
+    let generous = ArenaOptions {}.sizedFor(usage, 0.5);
+    fmt.println(f"half spare: {generous.scanned.firstBytes} {generous.unscanned.firstBytes}");
+
+    let custom = ArenaOptions { unscanned: { nextBytes: 100, growth: 1.0 } }.sizedFor(ArenaUsage { scanned: 0, unscanned: 160 });
+    fmt.println(f"an empty chain keeps its policy: {custom.scanned.firstBytes}; the other keeps the rest of its own: {custom.unscanned.firstBytes} {custom.unscanned.nextBytes} {custom.unscanned.growth}");
+
+    let names = Alloc.arena();
+    fmt.formatWithAllocator(names, "abc");
+    fmt.formatWithAllocator(names, "0123456789abcdefX");
+    fmt.println(f"strings: {usageText(names.measure())}");
+    return 0;
+}
+""",
+            """
+grown: scanned [1024 5008] unscanned [1024 3008], scanned 5056 unscanned 3184
+sizedFor: first chunks 5107 3216, rest kept: 2048 2 65536
+replayed: scanned [5107] unscanned [3216], scanned 5056 unscanned 3184
+no spare: scanned [5056] unscanned [3184]
+half spare: 7584 4776
+an empty chain keeps its policy: 1024; the other keeps the rest of its own: 162 100 1
+strings: scanned 0 unscanned 48
+""");
+
+        s.run(
+            "arena: unscanned memory keeps nothing alive; chunk headers and views keep chunks alive",
+            """
+__c__("#define GC_THREADS");
+__c__("#include <gc/gc.h>");
+__c__("#include <gc/gc_mark.h>");
+__c__("#include <stdio.h>");
+__c__("#include <string.h>");
+__c__("
+static int hz_t_finalized[16];
+static void hz_t_fin(void *obj, void *cd) { (void)obj; hz_t_finalized[(intptr_t)cd] = 1; }
+void hz_t_watch(void *base, hzstd_int_t slot) { GC_register_finalizer(base, hz_t_fin, (void *)(intptr_t)slot, NULL, NULL); }
+__attribute__((noinline)) static void hz_t_scrub(void) { volatile char pad[65536]; memset((char *)pad, 0, sizeof pad); }
+hzstd_int_t hz_t_collected(hzstd_int_t slot) {
+    hz_t_scrub();
+    for (int i = 0; i < 3; i++) { GC_gcollect(); GC_invoke_finalizers(); }
+    return hz_t_finalized[slot];
+}
+hzstd_int_t hz_t_kind(void *p) {
+    void *base = GC_base(p);
+    if (!base) return -1;
+    return GC_get_kind_and_size(base, NULL);
+}
+hzstd_int_t hz_t_str_kind(hzstd_str_t s) { return hz_t_kind((void *)s.data); }
+hzstd_str_t hz_t_chunks(hzstd_allocator_t arena, bool unscanned) {
+    hzstd_arena_t *a = (hzstd_arena_t *)arena.ctx;
+    hzstd_arena_chain_t *c = unscanned ? &a->unscanned : &a->scanned;
+    char buf[2048];
+    size_t n = 0;
+    if (!c->first.data) {
+        n = (size_t)snprintf(buf, sizeof buf, \\"(none)\\");
+    }
+    for (hzstd_arena_chunk_t *k = c->first.data ? &c->first : NULL; k; k = k->next_chunk) {
+        n += (size_t)snprintf(buf + n, sizeof buf - n, \\"%s%zu\\", n ? \\" \\" : \\"\\", k->capacity);
+    }
+    return hzstd_str_dup(HZSTD_STRING(buf, n));
+}
+void *hz_t_alloc(hzstd_allocator_t arena, bool unscanned, hzstd_int_t size) {
+    return unscanned ? hzstd_allocate_unscanned(arena, (size_t)size, NULL) : hzstd_allocate(arena, (size_t)size, NULL);
+}
+// A GC object whose only reference is stored in the arena (scanned or
+// unscanned chain), watched in `slot`.
+__attribute__((noinline)) void hz_t_stash(hzstd_allocator_t arena, bool unscanned, hzstd_int_t slot) {
+    void *obj = GC_malloc(64);
+    hz_t_watch(obj, slot);
+    void **cell = (void **)hz_t_alloc(arena, unscanned, sizeof(void *));
+    *cell = obj;
+}
+// The data block of the chain's chunk number `index` (0 = first).
+void *hz_t_chunk_data(hzstd_allocator_t arena, bool unscanned, hzstd_int_t index) {
+    hzstd_arena_t *a = (hzstd_arena_t *)arena.ctx;
+    hzstd_arena_chunk_t *k = unscanned ? &a->unscanned.first : &a->scanned.first;
+    for (hzstd_int_t i = 0; i < index; i++) k = k->next_chunk;
+    return k->data;
+}
+// A view into the middle of an arena's first unscanned chunk, the only thing
+// left of that arena once this returns. The chunk is watched in `slot`.
+static const char *hz_t_view;
+__attribute__((noinline)) void hz_t_make_view(hzstd_int_t slot) {
+    hzstd_allocator_t a = hzstd_make_arena_allocator(HZSTD_ARENA_OPTIONS(\\"view\\"));
+    char *p = NULL;
+    for (int i = 0; i < 5; i++) {
+        p = hzstd_allocate_unscanned(a, 16, NULL);
+        memcpy(p, \\"0123456789abcdef\\", 16);
+    }
+    hz_t_watch(((hzstd_arena_t *)a.ctx)->unscanned.first.data, slot);
+    hz_t_view = p;
+}
+hzstd_bool_t hz_t_view_intact(void) { return hz_t_view && memcmp(hz_t_view, \\"0123456789abcdef\\", 16) == 0; }
+void hz_t_drop_view(void) { hz_t_view = NULL; }
+");
+extern C fn hz_t_collected(slot: int): int :: final;
+extern C fn hz_t_kind(p: cptr): int :: final;
+extern C fn hz_t_str_kind(s: str): int :: final;
+extern C fn hz_t_chunks(arena: Allocator, unscanned: bool): str :: final;
+extern C fn hz_t_alloc(arena: Allocator, unscanned: bool, size: int): cptr :: final;
+extern C fn hz_t_stash(arena: Allocator, unscanned: bool, slot: int): void :: final;
+extern C fn hz_t_chunk_data(arena: Allocator, unscanned: bool, index: int): cptr :: final;
+extern C fn hz_t_watch(p: cptr, slot: int): void :: final;
+extern C fn hz_t_make_view(slot: int): void :: final;
+extern C fn hz_t_view_intact(): bool :: final;
+extern C fn hz_t_drop_view(): void :: final;
+
+fn allocMany(arena: Allocator, unscanned: bool, size: int, count: int) {
+    for (let i = 0; i < count; i++) {
+        hz_t_alloc(arena, unscanned, size);
+    }
+}
+
+fn chunks(arena: Allocator): str {
+    return f"scanned [{hz_t_chunks(arena, false)}] unscanned [{hz_t_chunks(arena, true)}]";
+}
+
+fn main(): int {
+    // A GC object whose only reference lies in the arena.
+    let arena = Alloc.arena({ label: "gc test" });
+    hz_t_stash(arena, false, 1);
+    hz_t_stash(arena, true, 2);
+    fmt.println(f"referenced from scanned memory, collected: {hz_t_collected(1) == 1}");
+    fmt.println(f"referenced from unscanned memory only, collected: {hz_t_collected(2) == 1}");
+
+    // The later chunks of the unscanned chain hang off headers in scanned
+    // memory: they live as long as the arena, with nothing else pointing in.
+    allocMany(arena, true, 16, 70);
+    hz_t_watch(hz_t_chunk_data(arena, true, 1), 3);
+    fmt.println(f"second unscanned chunk of a live arena, collected: {hz_t_collected(3) == 1} ({hz_t_chunks(arena, true)})");
+
+    // A view into the middle of a chunk keeps that chunk alive after the
+    // arena is gone; without it, the chunk goes.
+    hz_t_make_view(4);
+    fmt.println(f"chunk held by a view only, collected: {hz_t_collected(4) == 1}, intact: {hz_t_view_intact()}");
+    hz_t_drop_view();
+    fmt.println(f"after the view is dropped, collected: {hz_t_collected(4) == 1}");
+    arena.measure();
+    return 0;
+}
+""",
+            """
+referenced from scanned memory, collected: false
+referenced from unscanned memory only, collected: true
+second unscanned chunk of a live arena, collected: false (1024 2048)
+chunk held by a view only, collected: false, intact: true
+after the view is dropped, collected: true
+""");
+
+        s.run(
+            "arena: every string the stdlib makes is a pointer-free block",
+            """
+__c__("#define GC_THREADS");
+__c__("#include <gc/gc.h>");
+__c__("#include <gc/gc_mark.h>");
+__c__("#include <stdio.h>");
+__c__("#include <string.h>");
+__c__("
+static int hz_t_finalized[16];
+static void hz_t_fin(void *obj, void *cd) { (void)obj; hz_t_finalized[(intptr_t)cd] = 1; }
+void hz_t_watch(void *base, hzstd_int_t slot) { GC_register_finalizer(base, hz_t_fin, (void *)(intptr_t)slot, NULL, NULL); }
+__attribute__((noinline)) static void hz_t_scrub(void) { volatile char pad[65536]; memset((char *)pad, 0, sizeof pad); }
+hzstd_int_t hz_t_collected(hzstd_int_t slot) {
+    hz_t_scrub();
+    for (int i = 0; i < 3; i++) { GC_gcollect(); GC_invoke_finalizers(); }
+    return hz_t_finalized[slot];
+}
+hzstd_int_t hz_t_kind(void *p) {
+    void *base = GC_base(p);
+    if (!base) return -1;
+    return GC_get_kind_and_size(base, NULL);
+}
+hzstd_int_t hz_t_str_kind(hzstd_str_t s) { return hz_t_kind((void *)s.data); }
+hzstd_str_t hz_t_chunks(hzstd_allocator_t arena, bool unscanned) {
+    hzstd_arena_t *a = (hzstd_arena_t *)arena.ctx;
+    hzstd_arena_chain_t *c = unscanned ? &a->unscanned : &a->scanned;
+    char buf[2048];
+    size_t n = 0;
+    if (!c->first.data) {
+        n = (size_t)snprintf(buf, sizeof buf, \\"(none)\\");
+    }
+    for (hzstd_arena_chunk_t *k = c->first.data ? &c->first : NULL; k; k = k->next_chunk) {
+        n += (size_t)snprintf(buf + n, sizeof buf - n, \\"%s%zu\\", n ? \\" \\" : \\"\\", k->capacity);
+    }
+    return hzstd_str_dup(HZSTD_STRING(buf, n));
+}
+void *hz_t_alloc(hzstd_allocator_t arena, bool unscanned, hzstd_int_t size) {
+    return unscanned ? hzstd_allocate_unscanned(arena, (size_t)size, NULL) : hzstd_allocate(arena, (size_t)size, NULL);
+}
+// A GC object whose only reference is stored in the arena (scanned or
+// unscanned chain), watched in `slot`.
+__attribute__((noinline)) void hz_t_stash(hzstd_allocator_t arena, bool unscanned, hzstd_int_t slot) {
+    void *obj = GC_malloc(64);
+    hz_t_watch(obj, slot);
+    void **cell = (void **)hz_t_alloc(arena, unscanned, sizeof(void *));
+    *cell = obj;
+}
+// The data block of the chain's chunk number `index` (0 = first).
+void *hz_t_chunk_data(hzstd_allocator_t arena, bool unscanned, hzstd_int_t index) {
+    hzstd_arena_t *a = (hzstd_arena_t *)arena.ctx;
+    hzstd_arena_chunk_t *k = unscanned ? &a->unscanned.first : &a->scanned.first;
+    for (hzstd_int_t i = 0; i < index; i++) k = k->next_chunk;
+    return k->data;
+}
+// A view into the middle of an arena's first unscanned chunk, the only thing
+// left of that arena once this returns. The chunk is watched in `slot`.
+static const char *hz_t_view;
+__attribute__((noinline)) void hz_t_make_view(hzstd_int_t slot) {
+    hzstd_allocator_t a = hzstd_make_arena_allocator(HZSTD_ARENA_OPTIONS(\\"view\\"));
+    char *p = NULL;
+    for (int i = 0; i < 5; i++) {
+        p = hzstd_allocate_unscanned(a, 16, NULL);
+        memcpy(p, \\"0123456789abcdef\\", 16);
+    }
+    hz_t_watch(((hzstd_arena_t *)a.ctx)->unscanned.first.data, slot);
+    hz_t_view = p;
+}
+hzstd_bool_t hz_t_view_intact(void) { return hz_t_view && memcmp(hz_t_view, \\"0123456789abcdef\\", 16) == 0; }
+void hz_t_drop_view(void) { hz_t_view = NULL; }
+");
+extern C fn hz_t_collected(slot: int): int :: final;
+extern C fn hz_t_kind(p: cptr): int :: final;
+extern C fn hz_t_str_kind(s: str): int :: final;
+extern C fn hz_t_chunks(arena: Allocator, unscanned: bool): str :: final;
+extern C fn hz_t_alloc(arena: Allocator, unscanned: bool, size: int): cptr :: final;
+extern C fn hz_t_stash(arena: Allocator, unscanned: bool, slot: int): void :: final;
+extern C fn hz_t_chunk_data(arena: Allocator, unscanned: bool, index: int): cptr :: final;
+extern C fn hz_t_watch(p: cptr, slot: int): void :: final;
+extern C fn hz_t_make_view(slot: int): void :: final;
+extern C fn hz_t_view_intact(): bool :: final;
+extern C fn hz_t_drop_view(): void :: final;
+
+fn allocMany(arena: Allocator, unscanned: bool, size: int, count: int) {
+    for (let i = 0; i < count; i++) {
+        hz_t_alloc(arena, unscanned, size);
+    }
+}
+
+fn chunks(arena: Allocator): str {
+    return f"scanned [{hz_t_chunks(arena, false)}] unscanned [{hz_t_chunks(arena, true)}]";
+}
+
+fn workPath(name: str): str {
+    let dir = env.get("HAZE_TEST_WORKDIR");
+    if dir is str {
+        return f"{dir}/{name}";
+    }
+    return f"/tmp/{name}";
+}
+
+fn main(): int {
+    let dir = workPath("arena_kinds");
+    fs.createDirectory(dir);
+    fs.writeText(f"{dir}/file.txt", "text in a file");
+    // 0 = pointer-free (unscanned), 1 = scanned.
+    let built = f"built {dir}";
+    fmt.println(f"f-string: {hz_t_str_kind(built)}");
+    if let text = fs.readText(f"{dir}/file.txt") {
+        fmt.println(f"fs.readText: {hz_t_str_kind(text)}");
+    }
+    if let home = env.get("HOME") {
+        fmt.println(f"env.get: {hz_t_str_kind(home)}");
+    }
+    let arena = Alloc.arena();
+    let inArena = fmt.formatWithAllocator(arena, "x", 1);
+    fmt.println(f"formatWithAllocator into an arena: {hz_t_str_kind(inArena)}");
+    fmt.println(f"scanned arena memory: {hz_t_kind(hz_t_alloc(arena, false, 16))}");
+    if let entries = fs.listDir(dir) {
+        for e in entries {
+            fmt.println(f"listDir name: {hz_t_str_kind(e.name)}, path(): {hz_t_str_kind(e.path())}, path(arena): {hz_t_str_kind(e.path(arena))}");
+        }
+    }
+    let stackref b = ByteBuffer(8);
+    b.push("bytes");
+    b.commit();
+    fmt.println(f"ByteBuffer: {hz_t_str_kind(b.string())}");
+    return 0;
+}
+""",
+            """
+f-string: 0
+fs.readText: 0
+env.get: 0
+formatWithAllocator into an arena: 0
+scanned arena memory: 1
+listDir name: 0, path(): 0, path(arena): 0
+ByteBuffer: 0
+""");
+
+        s.runExitCode(
+            "arena: the label names the arena and each chunk in allocation traces, one event per chunk",
+            """
+__c__("#define GC_THREADS");
+__c__("#include <gc/gc.h>");
+__c__("#include <gc/gc_mark.h>");
+__c__("#include <stdio.h>");
+__c__("#include <string.h>");
+__c__("
+static int hz_t_finalized[16];
+static void hz_t_fin(void *obj, void *cd) { (void)obj; hz_t_finalized[(intptr_t)cd] = 1; }
+void hz_t_watch(void *base, hzstd_int_t slot) { GC_register_finalizer(base, hz_t_fin, (void *)(intptr_t)slot, NULL, NULL); }
+__attribute__((noinline)) static void hz_t_scrub(void) { volatile char pad[65536]; memset((char *)pad, 0, sizeof pad); }
+hzstd_int_t hz_t_collected(hzstd_int_t slot) {
+    hz_t_scrub();
+    for (int i = 0; i < 3; i++) { GC_gcollect(); GC_invoke_finalizers(); }
+    return hz_t_finalized[slot];
+}
+hzstd_int_t hz_t_kind(void *p) {
+    void *base = GC_base(p);
+    if (!base) return -1;
+    return GC_get_kind_and_size(base, NULL);
+}
+hzstd_int_t hz_t_str_kind(hzstd_str_t s) { return hz_t_kind((void *)s.data); }
+hzstd_str_t hz_t_chunks(hzstd_allocator_t arena, bool unscanned) {
+    hzstd_arena_t *a = (hzstd_arena_t *)arena.ctx;
+    hzstd_arena_chain_t *c = unscanned ? &a->unscanned : &a->scanned;
+    char buf[2048];
+    size_t n = 0;
+    if (!c->first.data) {
+        n = (size_t)snprintf(buf, sizeof buf, \\"(none)\\");
+    }
+    for (hzstd_arena_chunk_t *k = c->first.data ? &c->first : NULL; k; k = k->next_chunk) {
+        n += (size_t)snprintf(buf + n, sizeof buf - n, \\"%s%zu\\", n ? \\" \\" : \\"\\", k->capacity);
+    }
+    return hzstd_str_dup(HZSTD_STRING(buf, n));
+}
+void *hz_t_alloc(hzstd_allocator_t arena, bool unscanned, hzstd_int_t size) {
+    return unscanned ? hzstd_allocate_unscanned(arena, (size_t)size, NULL) : hzstd_allocate(arena, (size_t)size, NULL);
+}
+// A GC object whose only reference is stored in the arena (scanned or
+// unscanned chain), watched in `slot`.
+__attribute__((noinline)) void hz_t_stash(hzstd_allocator_t arena, bool unscanned, hzstd_int_t slot) {
+    void *obj = GC_malloc(64);
+    hz_t_watch(obj, slot);
+    void **cell = (void **)hz_t_alloc(arena, unscanned, sizeof(void *));
+    *cell = obj;
+}
+// The data block of the chain's chunk number `index` (0 = first).
+void *hz_t_chunk_data(hzstd_allocator_t arena, bool unscanned, hzstd_int_t index) {
+    hzstd_arena_t *a = (hzstd_arena_t *)arena.ctx;
+    hzstd_arena_chunk_t *k = unscanned ? &a->unscanned.first : &a->scanned.first;
+    for (hzstd_int_t i = 0; i < index; i++) k = k->next_chunk;
+    return k->data;
+}
+// A view into the middle of an arena's first unscanned chunk, the only thing
+// left of that arena once this returns. The chunk is watched in `slot`.
+static const char *hz_t_view;
+__attribute__((noinline)) void hz_t_make_view(hzstd_int_t slot) {
+    hzstd_allocator_t a = hzstd_make_arena_allocator(HZSTD_ARENA_OPTIONS(\\"view\\"));
+    char *p = NULL;
+    for (int i = 0; i < 5; i++) {
+        p = hzstd_allocate_unscanned(a, 16, NULL);
+        memcpy(p, \\"0123456789abcdef\\", 16);
+    }
+    hz_t_watch(((hzstd_arena_t *)a.ctx)->unscanned.first.data, slot);
+    hz_t_view = p;
+}
+hzstd_bool_t hz_t_view_intact(void) { return hz_t_view && memcmp(hz_t_view, \\"0123456789abcdef\\", 16) == 0; }
+void hz_t_drop_view(void) { hz_t_view = NULL; }
+");
+extern C fn hz_t_collected(slot: int): int :: final;
+extern C fn hz_t_kind(p: cptr): int :: final;
+extern C fn hz_t_str_kind(s: str): int :: final;
+extern C fn hz_t_chunks(arena: Allocator, unscanned: bool): str :: final;
+extern C fn hz_t_alloc(arena: Allocator, unscanned: bool, size: int): cptr :: final;
+extern C fn hz_t_stash(arena: Allocator, unscanned: bool, slot: int): void :: final;
+extern C fn hz_t_chunk_data(arena: Allocator, unscanned: bool, index: int): cptr :: final;
+extern C fn hz_t_watch(p: cptr, slot: int): void :: final;
+extern C fn hz_t_make_view(slot: int): void :: final;
+extern C fn hz_t_view_intact(): bool :: final;
+extern C fn hz_t_drop_view(): void :: final;
+
+fn allocMany(arena: Allocator, unscanned: bool, size: int, count: int) {
+    for (let i = 0; i < count; i++) {
+        hz_t_alloc(arena, unscanned, size);
+    }
+}
+
+fn chunks(arena: Allocator): str {
+    return f"scanned [{hz_t_chunks(arena, false)}] unscanned [{hz_t_chunks(arena, true)}]";
+}
+
+fn profiler(): Profiler {
+    return Profiler({ samplingRate: 0, memoryInstrumentation: true, memoryInstrumentationStacktraces: false });
+}
+
+fn main(): int {
+    let p = profiler();
+    let labelled = Alloc.arena({ label: "probe arena" });
+    fmt.formatWithAllocator(labelled, "x");
+    hz_t_alloc(labelled, false, 16);
+    allocMany(labelled, true, 16, 64);
+    let unnamed = Alloc.arena();
+    hz_t_alloc(unnamed, true, 16);
+    let r = p.stop();
+    let lines = "";
+    let unlabelled = 0;
+    for frame in r.memoryInstrumentationFrames {
+        if frame.dataType == "probe arena" {
+            if frame.allocationType == 3 {
+                lines = lines + "[arena]";
+            } else {
+                lines = lines + f"[{frame.allocationType} {frame.sizeBytes}]";
+            }
+        } else if frame.dataType == "" && (frame.allocationType == 3 || frame.allocationType == 6) {
+            unlabelled = unlabelled + 1;
+        }
+    }
+    assert(lines == "[arena][6 1024][5 1024][6 2048]", f"labelled events: {lines}");
+    assert(unlabelled == 2, f"unlabelled arena events: {unlabelled}");
+    // Each chunk is one event, not also a heap allocation under it.
+    let events = r.memoryInstrumentationFrames.length - 1;
+    assert(events == 6, f"events in all: {events}");
+    return 0;
+}
+""",
+            0);
+
+        s.runExitCode(
+            "arena: measuring an Arena that does not hold an arena panics",
+            """
+fn main(): int {
+    Arena { _allocator: Alloc.heap() }.measure();
+    return 0;
+}
+""",
+            255);
+
+        s.runExitCode(
+            "arena: a negative spare panics",
+            """
+fn main(): int {
+    ArenaOptions {}.sizedFor(ArenaUsage { scanned: 16, unscanned: 16 }, -0.5);
+    return 0;
+}
+""",
+            255);
+
+        s.runExitCode(
+            "arena: growth below 1.0 panics",
+            """
+fn main(): int {
+    Alloc.arena({ scanned: { growth: 0.5 } });
+    return 0;
+}
+""",
+            255);
+
+        s.runExitCode(
+            "arena: a chunk size below 1 byte panics",
+            """
+fn main(): int {
+    Alloc.arena({ unscanned: { firstBytes: 0 } });
+    return 0;
+}
+""",
+            255);
+
+        s.runExitCode(
+            "arena: a growing policy whose maxBytes is below nextBytes panics",
+            """
+fn main(): int {
+    Alloc.arena({ scanned: { nextBytes: 4096, maxBytes: 1024 } });
+    return 0;
+}
+""",
+            255);
+
+    }
+}

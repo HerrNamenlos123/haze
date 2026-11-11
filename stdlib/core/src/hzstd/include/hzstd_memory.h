@@ -41,8 +41,10 @@
 // allocations with no user-facing type).
 void *hzstd_heap_allocate(size_t size, const char *dataType);
 void *hzstd_heap_allocate_n(size_t size, const char *dataType, int skip_n_frames);
-void *hzstd_heap_allocate_atomic(size_t size, const char *dataType);
-void *hzstd_heap_allocate_atomic_n(size_t size, const char *dataType, int skip_n_frames);
+// Unscanned: the GC never looks inside and the memory is not zeroed. Plain
+// bytes only, never a pointer to GC memory (see hzstd_allocator_t).
+void *hzstd_heap_allocate_unscanned(size_t size, const char *dataType);
+void *hzstd_heap_allocate_unscanned_n(size_t size, const char *dataType, int skip_n_frames);
 void *hzstd_heap_realloc(void *buffer, size_t size, const char *dataType);
 void *hzstd_heap_realloc_n(void *buffer, size_t size, const char *dataType, int skip_n_frames);
 void hzstd_memzero(void *target, size_t size);
@@ -89,13 +91,26 @@ void hzstd_release_unused_memory();
 // again until there is new garbage.
 void hzstd_release_idle_memory();
 
-// An arena's first chunk, and the size its chunks grow to: each one is twice
-// the last. A flat 64 KiB made every arena cost 64 KiB however little went
+// The default chunk policy of both arena chains: 1 KiB, then 2 KiB, doubling
+// up to 64 KiB. A flat 64 KiB made every arena cost 64 KiB however little went
 // into it, and arenas are made per call in many places (every json.stringify,
 // every json.array()) -- serializing a few thousand small values one at a
 // time allocated hundreds of megabytes and collected garbage the whole way.
-#define HZSTD_FIRST_ARENA_CHUNK_SIZE (1024)
-#define HZSTD_DEFAULT_ARENA_CHUNK_SIZE (64 * 1024)
+// The defaults of ChunkPolicy in memory.hz are these values; a test case
+// (cases_arena.hz) holds the two together.
+#define HZSTD_ARENA_DEFAULT_FIRST_BYTES ((hzstd_int_t)1024)
+#define HZSTD_ARENA_DEFAULT_NEXT_BYTES ((hzstd_int_t)2048)
+#define HZSTD_ARENA_DEFAULT_GROWTH (2.0)
+#define HZSTD_ARENA_DEFAULT_MAX_BYTES ((hzstd_int_t)64 * 1024)
+#define HZSTD_ARENA_DEFAULT_POLICY                                                                                     \
+  ((hzstd_arena_chunk_policy_t) { .first_bytes = HZSTD_ARENA_DEFAULT_FIRST_BYTES,                                      \
+                                  .next_bytes = HZSTD_ARENA_DEFAULT_NEXT_BYTES,                                        \
+                                  .growth = HZSTD_ARENA_DEFAULT_GROWTH,                                                \
+                                  .max_bytes = HZSTD_ARENA_DEFAULT_MAX_BYTES })
+// Default policies for both chains, with a label (a string literal) for traces.
+#define HZSTD_ARENA_OPTIONS(label_literal)                                                                             \
+  ((hzstd_arena_options_t) {                                                                                           \
+      .label = (label_literal), .scanned = HZSTD_ARENA_DEFAULT_POLICY, .unscanned = HZSTD_ARENA_DEFAULT_POLICY })
 
 #define HZSTD_ALLOC_STRUCT(allocator, struct_t, value, dataType)                                                       \
   ({                                                                                                                    \
@@ -133,10 +148,13 @@ void hzstd_release_idle_memory();
 typedef enum {
   hz_profiler_instrument_allocation_type_heap = 0,
   hz_profiler_instrument_allocation_type_heap_realloc = 1,
-  hz_profiler_instrument_allocation_type_heap_atomic = 2,
+  hz_profiler_instrument_allocation_type_heap_unscanned = 2,
+  // The arena itself (its header); dataType is the arena's label.
   hz_profiler_instrument_allocation_type_arena_create = 3,
   hz_profiler_instrument_allocation_type_arena_suballoc = 4,
-  hz_profiler_instrument_allocation_type_arena_enlarge = 5,
+  // A chunk of the arena's scanned / unscanned chain; dataType is the label.
+  hz_profiler_instrument_allocation_type_arena_chunk_scanned = 5,
+  hz_profiler_instrument_allocation_type_arena_chunk_unscanned = 6,
 } hz_profiler_instrument_allocation_type;
 
 typedef struct {
@@ -161,21 +179,33 @@ void hzstd_pop_memory_instrumentation(hzstd_memory_instrumentation_state_t prevS
 hzstd_memory_instrumentation_state_t hzstd_temporarily_disable_memory_instrumentation();
 void hzstd_temporarily_reenable_memory_instrumentation(hzstd_memory_instrumentation_state_t prev);
 
-hzstd_arena_t *hzstd_arena_create(const char *dataType);
-hzstd_arena_t *hzstd_arena_create_n(const char *dataType, int skip_n_frames);
+// Panics on a policy that cannot work (sizes below 1, growth below 1.0, a
+// growing policy whose max_bytes is below next_bytes).
+hzstd_arena_t *hzstd_arena_create(hzstd_arena_options_t options);
+hzstd_arena_t *hzstd_arena_create_n(hzstd_arena_options_t options, int skip_n_frames);
 
+// From the scanned chain: zeroed, may hold pointers.
 void *hzstd_arena_allocate(hzstd_arena_t *arena, size_t size);
 void *hzstd_arena_allocate_n(hzstd_arena_t *arena, size_t size, int skip_n_frames);
+// From the unscanned chain: not zeroed, plain bytes only.
+void *hzstd_arena_allocate_unscanned(hzstd_arena_t *arena, size_t size);
+void *hzstd_arena_allocate_unscanned_n(hzstd_arena_t *arena, size_t size, int skip_n_frames);
+
+hzstd_arena_usage_t hzstd_arena_measure(hzstd_arena_t *arena);
+// Whether the allocator is an arena allocator, and its arena's usage (panics
+// for any other allocator: only an arena can be measured).
+bool hzstd_allocator_is_arena(hzstd_allocator_t allocator);
+hzstd_arena_usage_t hzstd_arena_measure_allocator(hzstd_allocator_t allocator);
 
 void *hzstd_allocate(hzstd_allocator_t allocator, size_t size, const char *dataType);
 void *hzstd_allocate_n(hzstd_allocator_t allocator, size_t size, const char *dataType, int skip_n_frames);
-// For memory that will never hold a pointer (string bytes, numbers): the
-// garbage collector does not scan it.
-void *hzstd_allocate_atomic(hzstd_allocator_t allocator, size_t size, const char *dataType);
-void *hzstd_allocate_atomic_n(hzstd_allocator_t allocator, size_t size, const char *dataType, int skip_n_frames);
+// Unscanned (see hzstd_allocator_t): plain bytes only, not zeroed.
+void *hzstd_allocate_unscanned(hzstd_allocator_t allocator, size_t size, const char *dataType);
+void *hzstd_allocate_unscanned_n(hzstd_allocator_t allocator, size_t size, const char *dataType, int skip_n_frames);
 
 hzstd_allocator_t hzstd_make_heap_allocator();
-hzstd_allocator_t hzstd_make_arena_allocator();
+// A new arena. C callers pass HZSTD_ARENA_OPTIONS("label").
+hzstd_allocator_t hzstd_make_arena_allocator(hzstd_arena_options_t options);
 
 // Plain malloc, deliberately outside the GC heap: never blocks on BDWGC's
 // allocator lock, unlike hzstd_make_heap_allocator(). Never freed by this

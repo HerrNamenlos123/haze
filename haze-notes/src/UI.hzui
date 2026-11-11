@@ -19,6 +19,10 @@ struct VaultCache {
     showAllFiles: bool = false;
     // none until the vault is indexed, when it is opened.
     vault: VaultFS | none = none;
+    // What the last notes index of this vault used of its arena, per chain
+    // (ArenaUsage): the next one allocates exactly that (see indexVault).
+    indexArenaScanned: int = 0;
+    indexArenaUnscanned: int = 0;
 }
 
 // An open vault. `id` counts vaults opened in this run, so each one mounts
@@ -170,7 +174,13 @@ ui.watch(() => rx.get(session), (value, old) => {
     }
     indexedSession.value = next;
     if let n = next {
-        n.cache.data.vault := indexVault(n.path);
+        let index = indexVault(n.path, ArenaUsage {
+            scanned: rx.get(n.cache.data.indexArenaScanned),
+            unscanned: rx.get(n.cache.data.indexArenaUnscanned),
+        });
+        n.cache.data.vault := index.vault;
+        n.cache.data.indexArenaScanned := index.arenaUsage.scanned;
+        n.cache.data.indexArenaUnscanned := index.arenaUsage.unscanned;
     }
 }, { immediate: true });
 

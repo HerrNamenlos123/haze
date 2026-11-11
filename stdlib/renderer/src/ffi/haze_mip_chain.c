@@ -53,7 +53,7 @@ static haze_mip_level_t haze_mip_downsample_half(haze_mip_level_t src)
   hzstd_int_t dstWidth = width / 2 < 1 ? 1 : width / 2;
   hzstd_int_t dstHeight = height / 2 < 1 ? 1 : height / 2;
   const uint8_t *s = src.pixels;
-  uint8_t *d = hzstd_heap_allocate_atomic((size_t)dstWidth * (size_t)dstHeight * 4, "mip level");
+  uint8_t *d = hzstd_heap_allocate_unscanned((size_t)dstWidth * (size_t)dstHeight * 4, "mip level");
   for (hzstd_int_t y = 0; y < dstHeight; y++) {
     hzstd_int_t y0 = y * 2;
     hzstd_int_t y1 = y0 + 1 < height ? y0 + 1 : y0;
@@ -82,13 +82,13 @@ static void haze_mip_chain_build(void *chain_)
     w = w / 2 < 1 ? 1 : w / 2;
     h = h / 2 < 1 ? 1 : h / 2;
   }
-  // Not atomic: it points at the levels.
+  // Scanned: it points at the levels.
   haze_mip_level_t *levels = hzstd_heap_allocate(sizeof(haze_mip_level_t) * (size_t)count, "mip levels");
 
   const uint8_t *base = chain->source;
   if (chain->premultiply) {
     size_t texels = (size_t)chain->width * (size_t)chain->height;
-    uint8_t *d = hzstd_heap_allocate_atomic(texels * 4, "premultiplied pixels");
+    uint8_t *d = hzstd_heap_allocate_unscanned(texels * 4, "premultiplied pixels");
     for (size_t i = 0; i < texels; i++) {
       unsigned a = base[i * 4 + 3];
       d[i * 4 + 0] = (uint8_t)((base[i * 4 + 0] * a) / 255);

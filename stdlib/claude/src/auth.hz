@@ -489,7 +489,7 @@ export fn listBackups(store: ProfileStore, profileId: str): []str {
     }
     for entry in listed {
         if entry.isFile && entry.name.startsWith(profileId + "-") && entry.name.endsWith(".json") {
-            paths.push(entry.path);
+            paths.push(entry.path());
         }
     }
     // Names embed a millisecond timestamp of equal width for any plausible

@@ -228,13 +228,15 @@ struct IndexedFolder {
 // The folder at `path`. With `everything`, every file and every folder in it
 // is listed, and what the tree would leave out is marked a ghost; without,
 // only what the tree shows. Hidden folders stay out either way: the app's own
-// .hznotes and other tools' data, which no note belongs in.
-fn indexFolder(path: str, depth: int, everything: bool): IndexedFolder :: final {
+// .hznotes and other tools' data, which no note belongs in. Every name and
+// path of the index (and the names of what it leaves out) goes into `arena`,
+// one arena for the whole walk.
+fn indexFolder(arena: Allocator, path: str, depth: int, everything: bool): IndexedFolder :: final {
     let items: []VaultOrderItem = [];
     let kept = false;
     let shown = false;
     if depth <= MAX_FOLDER_DEPTH {
-        if let dirs = fs.listDir(path) {
+        if let dirs = fs.listDir(arena, path) {
             for dir in dirs {
                 if dir.isFile && dir.name == KEEP_FILE {
                     kept = true;
@@ -250,14 +252,15 @@ fn indexFolder(path: str, depth: int, everything: bool): IndexedFolder :: final 
                             entry: FSFileEntry {
                                 type: "file",
                                 filename: dir.name,
-                                fullPath: dir.path,
+                                fullPath: dir.path(arena),
                                 ghost: !note,
                             },
                         });
                     }
                 }
                 else if dir.isDirectory && !isHiddenFolder(dir.name) {
-                    let child = indexFolder(dir.path, depth + 1, everything);
+                    let dirPath = dir.path(arena);
+                    let child = indexFolder(arena, dirPath, depth + 1, everything);
                     if child.shown {
                         shown = true;
                     }
@@ -267,7 +270,7 @@ fn indexFolder(path: str, depth: int, everything: bool): IndexedFolder :: final 
                             entry: FSDirEntry {
                                 type: "directory",
                                 dirname: dir.name,
-                                fullPath: dir.path,
+                                fullPath: dirPath,
                                 children: child.entries,
                                 ghost: !child.shown,
                             },
@@ -286,22 +289,35 @@ fn indexFolder(path: str, depth: int, everything: bool): IndexedFolder :: final 
     return IndexedFolder { entries: entries, kept: kept, shown: kept || shown };
 }
 
-fn indexDirectory(path: str, depth: int = 0): []FSEntry {
-    return indexFolder(path, depth, false).entries;
+fn indexDirectory(arena: Allocator, path: str, depth: int = 0): []FSEntry {
+    return indexFolder(arena, path, depth, false).entries;
 }
 
-fn indexVault(vaultPath: str): VaultFS {
+// The notes index of a vault, and how much of its arena it used.
+struct VaultIndex {
+    vault: VaultFS;
+    // Remembered in the vault's cache (VaultCache.indexArenaScanned and
+    // indexArenaUnscanned) and handed to the next indexVault of the vault: an
+    // unchanged vault then indexes into a single, exactly sized chunk.
+    arenaUsage: ArenaUsage;
+}
+
+// `lastUsage` is what the previous index of this vault measured (zero when
+// there was none: the arena then starts small and grows).
+fn indexVault(vaultPath: str, lastUsage: ArenaUsage): VaultIndex {
+    let arena = Alloc.arena(ArenaOptions { label: "vault index" }.sizedFor(lastUsage));
     let vault = VaultFS {
-        entries: rx.reactive<[]FSEntry>(indexDirectory(vaultPath)),
+        entries: rx.reactive<[]FSEntry>(indexDirectory(arena, vaultPath)),
     };
-    return vault;
+    return VaultIndex { vault: vault, arenaUsage: arena.measure() };
 }
 
 // The vault with every file and folder in it, for the tree's "show all
 // files": what the notes-only index leaves out is there as a ghost.
 fn indexAllFiles(vaultPath: str): VaultFS {
+    let arena = Alloc.arena({ label: "vault index (all files)" });
     return VaultFS {
-        entries: rx.reactive<[]FSEntry>(indexFolder(vaultPath, 0, true).entries),
+        entries: rx.reactive<[]FSEntry>(indexFolder(arena, vaultPath, 0, true).entries),
     };
 }
 
@@ -331,7 +347,7 @@ fn withoutGhosts(entries: []FSEntry): []FSEntry :: final {
 // Whether the tree shows the folder at `path`: false for a folder it leaves
 // out, and for no folder at all.
 fn isShownFolder(path: str): bool {
-    return indexFolder(path, 0, false).shown;
+    return indexFolder(Alloc.arena({ label: "vault folder check" }), path, 0, false).shown;
 }
 
 // Whether `folder` holds a keep file, which shows it with no note in it.

@@ -190,12 +190,12 @@ void *hzstd_heap_allocate(size_t size, const char *dataType)
   return hzstd_heap_allocate_n(size, dataType, 1);
 }
 
-void *hzstd_heap_allocate_atomic_n(size_t size, const char *dataType, int skip_n_frames)
+void *hzstd_heap_allocate_unscanned_n(size_t size, const char *dataType, int skip_n_frames)
 {
   hzstd_memory_instrumentation_callback_t fn;
   void *data;
   if (hz_profiler_instrumentation_try_get(&fn, &data)) {
-    fn(hz_profiler_instrument_allocation_type_heap_atomic, size, dataType, 1 + skip_n_frames, data);
+    fn(hz_profiler_instrument_allocation_type_heap_unscanned, size, dataType, 1 + skip_n_frames, data);
   }
 
   void *ptr = GC_malloc_atomic(size);
@@ -205,9 +205,9 @@ void *hzstd_heap_allocate_atomic_n(size_t size, const char *dataType, int skip_n
   return ptr;
 }
 
-void *hzstd_heap_allocate_atomic(size_t size, const char *dataType)
+void *hzstd_heap_allocate_unscanned(size_t size, const char *dataType)
 {
-  return hzstd_heap_allocate_atomic_n(size, dataType, 1);
+  return hzstd_heap_allocate_unscanned_n(size, dataType, 1);
 }
 
 void *hzstd_heap_realloc_n(void *buffer, size_t size, const char *dataType, int skip_n_frames)
@@ -293,83 +293,191 @@ void hzstd_release_idle_memory()
   hzstd_release_unused_memory();
 }
 
-hzstd_arena_t *hzstd_arena_create_n(const char *dataType, int skip_n_frames)
+// ── Arenas ──────────────────────────────────────────────────────────────────
+//
+// An arena has two chains of chunks, one scanned (GC_malloc) and one unscanned
+// (GC_malloc_atomic). BDWGC decides scanned or not per allocation, for the
+// whole block, and cannot exempt a range inside a block after the fact; two
+// chains give the same result. Each chain is made lazily: an arena that only
+// ever holds strings never allocates a scanned chunk.
+//
+// Every chunk header is scanned memory (hzstd_arena_chunk_t). The first one of
+// each chain is inside hzstd_arena_t; a later scanned chunk carries its header
+// at the front of its own block; a later unscanned chunk has its header in a
+// small scanned block of its own, since the GC cannot see pointers inside the
+// unscanned data block. What keeps a chunk alive is the arena (through the
+// headers) or any pointer into the chunk's data: GC_all_interior_pointers is
+// on, so a str viewing the middle of a chunk keeps that chunk alive after the
+// arena itself is gone.
+
+#define HZSTD_ARENA_ALIGNMENT (alignof(max_align_t))
+
+static size_t hzstd_arena_round_up(size_t size)
 {
+  return (size + (HZSTD_ARENA_ALIGNMENT - 1)) & ~(HZSTD_ARENA_ALIGNMENT - 1);
+}
+
+static void hzstd_arena_check_policy(hzstd_arena_chunk_policy_t policy, const char *chain)
+{
+  if (policy.first_bytes < 1 || policy.next_bytes < 1) {
+    hzstd_panic_fmt("Arena: the %s chunk sizes must be at least 1 byte (firstBytes %lld, nextBytes %lld)",
+                    chain,
+                    (long long)policy.first_bytes,
+                    (long long)policy.next_bytes);
+  }
+  if (!(policy.growth >= 1.0)) {
+    hzstd_panic_fmt("Arena: the %s growth must be at least 1.0 (got %f)", chain, policy.growth);
+  }
+  if (policy.growth > 1.0 && policy.max_bytes < policy.next_bytes) {
+    hzstd_panic_fmt("Arena: the %s maxBytes (%lld) is below nextBytes (%lld)",
+                    chain,
+                    (long long)policy.max_bytes,
+                    (long long)policy.next_bytes);
+  }
+}
+
+static void hzstd_arena_chain_init(hzstd_arena_chain_t *chain, hzstd_arena_chunk_policy_t policy)
+{
+  *chain = (hzstd_arena_chain_t) { .policy = policy };
+}
+
+hzstd_arena_t *hzstd_arena_create_n(hzstd_arena_options_t options, int skip_n_frames)
+{
+  hzstd_arena_check_policy(options.scanned, "scanned");
+  hzstd_arena_check_policy(options.unscanned, "unscanned");
+  const char *label = (options.label && options.label[0]) ? options.label : NULL;
+
   hzstd_memory_instrumentation_callback_t fn;
   void *data;
   if (hz_profiler_instrumentation_try_get(&fn, &data)) {
-    fn(hz_profiler_instrument_allocation_type_arena_create, sizeof(hzstd_arena_t), dataType, 1 + skip_n_frames, data);
+    fn(hz_profiler_instrument_allocation_type_arena_create, sizeof(hzstd_arena_t), label, 1 + skip_n_frames, data);
   }
-
-  hzstd_arena_t *arena = (hzstd_arena_t *)hzstd_heap_allocate_n(sizeof(hzstd_arena_t), NULL, 1 + skip_n_frames);
+  // GC_malloc directly: the event above is this allocation, reported once.
+  hzstd_arena_t *arena = (hzstd_arena_t *)GC_malloc(sizeof(hzstd_arena_t));
+  if (!arena) {
+    hzstd_panic_fmt("System Out Of Memory while allocating %zu bytes", sizeof(hzstd_arena_t));
+  }
+  arena->label = label;
+  hzstd_arena_chain_init(&arena->scanned, options.scanned);
+  hzstd_arena_chain_init(&arena->unscanned, options.unscanned);
   return arena;
 }
 
-hzstd_arena_t *hzstd_arena_create(const char *dataType)
+hzstd_arena_t *hzstd_arena_create(hzstd_arena_options_t options)
 {
-  return hzstd_arena_create_n(dataType, 1);
+  return hzstd_arena_create_n(options, 1);
 }
 
-static hzstd_arena_chunk_t *hzstd_arena_create_chunk(size_t chunk_size, const char *dataType, int skip_n_frames)
+// The size of the chain's next regular chunk (see hzstd_arena_chunk_policy_t).
+static size_t hzstd_arena_next_regular_bytes(const hzstd_arena_chain_t *chain)
+{
+  if (chain->regular_chunks == 0) {
+    return (size_t)chain->policy.first_bytes;
+  }
+  if (chain->regular_chunks == 1 || chain->policy.growth == 1.0) {
+    return (size_t)chain->policy.next_bytes;
+  }
+  double grown = (double)chain->regular_bytes * chain->policy.growth;
+  double max = (double)chain->policy.max_bytes;
+  return (size_t)(grown < max ? grown : max);
+}
+
+// One new block of `capacity` data bytes for the chain. `header` is where its
+// header goes when the caller has one (the inline first chunk), else NULL.
+static hzstd_arena_chunk_t *hzstd_arena_new_chunk(hzstd_arena_t *arena,
+                                                  hzstd_arena_chain_t *chain,
+                                                  bool unscanned,
+                                                  hzstd_arena_chunk_t *header,
+                                                  size_t capacity,
+                                                  int skip_n_frames)
 {
   hzstd_memory_instrumentation_callback_t fn;
   void *data;
   if (hz_profiler_instrumentation_try_get(&fn, &data)) {
-    fn(hz_profiler_instrument_allocation_type_arena_enlarge, chunk_size, dataType, 1 + skip_n_frames, data);
+    fn(unscanned ? hz_profiler_instrument_allocation_type_arena_chunk_unscanned
+                 : hz_profiler_instrument_allocation_type_arena_chunk_scanned,
+       capacity,
+       arena->label,
+       1 + skip_n_frames,
+       data);
   }
-  size_t alloc_size = sizeof(hzstd_arena_chunk_t) + chunk_size;
-  hzstd_arena_chunk_t *chunk = (hzstd_arena_chunk_t *)hzstd_heap_allocate_n(alloc_size, NULL, 1 + skip_n_frames);
-  chunk->capacity = chunk_size;
-  return chunk;
+  // GC_malloc / GC_malloc_atomic directly: the event above is this chunk,
+  // reported once (header blocks are bookkeeping and not reported).
+  unsigned char *block;
+  if (unscanned) {
+    block = GC_malloc_atomic(capacity);
+    if (block && !header) {
+      header = GC_malloc(sizeof(hzstd_arena_chunk_t));
+    }
+  }
+  else if (header) {
+    block = GC_malloc(capacity);
+  }
+  else {
+    // Header and data in one scanned block. The header size is a multiple of
+    // the alignment, so the data stays aligned.
+    _Static_assert(sizeof(hzstd_arena_chunk_t) % alignof(max_align_t) == 0, "arena chunk header breaks alignment");
+    unsigned char *both = GC_malloc(sizeof(hzstd_arena_chunk_t) + capacity);
+    header = (hzstd_arena_chunk_t *)both;
+    block = both ? both + sizeof(hzstd_arena_chunk_t) : NULL;
+  }
+  if (!block || !header) {
+    hzstd_panic_fmt("System Out Of Memory while allocating an arena chunk of %zu bytes", capacity);
+  }
+  *header = (hzstd_arena_chunk_t) { .next_chunk = NULL, .data = block, .capacity = capacity, .used = 0 };
+  if (chain->tail) {
+    chain->tail->next_chunk = header;
+  }
+  chain->tail = header;
+  return header;
 }
 
-static hzstd_arena_chunk_t *
-hzstd_arena_enlarge(hzstd_arena_chunk_t *last_chunk, size_t chunk_size, const char *dataType, int skip_n_frames)
+static void *hzstd_arena_chain_allocate(hzstd_arena_t *arena, bool unscanned, size_t size, int skip_n_frames)
 {
-  last_chunk->next_chunk = hzstd_arena_create_chunk(chunk_size, dataType, 1 + skip_n_frames);
-  return last_chunk->next_chunk;
+  hzstd_assert(size != 0);
+  hzstd_arena_chain_t *chain = unscanned ? &arena->unscanned : &arena->scanned;
+  size_t needed = hzstd_arena_round_up(size);
+
+  hzstd_arena_chunk_t *chunk = chain->current;
+  if (!chunk || chunk->capacity - chunk->used < needed) {
+    size_t regular = hzstd_arena_next_regular_bytes(chain);
+    if (!chunk) {
+      // The chain's first allocation: its first chunk, big enough for it.
+      size_t capacity = needed > regular ? needed : regular;
+      chunk = hzstd_arena_new_chunk(arena, chain, unscanned, &chain->first, capacity, 1 + skip_n_frames);
+      chain->current = chunk;
+      chain->regular_chunks = 1;
+      chain->regular_bytes = capacity;
+    }
+    else if (needed > regular) {
+      // Larger than the next regular chunk: a chunk of its own, used up at
+      // once. It is not the bump target, so the current chunk keeps serving
+      // small allocations, and the regular sizes go on as if it was not there.
+      hzstd_arena_chunk_t *own = hzstd_arena_new_chunk(arena, chain, unscanned, NULL, needed, 1 + skip_n_frames);
+      own->used = needed;
+      chain->bytes_in_use += needed;
+      return own->data;
+    }
+    else {
+      chunk = hzstd_arena_new_chunk(arena, chain, unscanned, NULL, regular, 1 + skip_n_frames);
+      chain->current = chunk;
+      chain->regular_chunks += 1;
+      chain->regular_bytes = regular;
+    }
+  }
+
+  void *result = chunk->data + chunk->used;
+  chunk->used += needed;
+  chain->bytes_in_use += needed;
+  return result;
 }
 
 void *hzstd_arena_allocate_n(hzstd_arena_t *arena, size_t size, int skip_n_frames)
 {
-  hzstd_assert(size != 0);
-
-  // Suballocation tracking is deliberately off (way too crazy to track during json parsing,
-  // and arena suballocation is already the fast path -- if someone knowingly allocates into
-  // arenas, that's already a good thing since at least they use arenas). Growing is still
-  // tracked, via hzstd_arena_create_chunk/hzstd_arena_enlarge above, which is why this
-  // function doesn't need a dataType parameter of its own -- there is nothing to report here.
-
-  size_t alignment = alignof(max_align_t);
-
-  if (!arena->first_chunk) {
-    size_t first_size = HZSTD_MAX(HZSTD_FIRST_ARENA_CHUNK_SIZE, size + alignment);
-    arena->first_chunk = hzstd_arena_create_chunk(first_size, "Arena chunk", 1 + skip_n_frames);
-    arena->last_chunk = arena->first_chunk;
-  }
-
-  hzstd_arena_chunk_t *chunk = arena->last_chunk;
-
-  uintptr_t base = (uintptr_t)(chunk + 1);
-  uintptr_t current = base + chunk->used;
-  uintptr_t aligned = (current + (alignment - 1)) & ~(alignment - 1);
-
-  size_t new_used = (aligned - base) + size;
-
-  if (new_used > chunk->capacity) {
-    // Twice the last chunk, so an arena holds at most about twice what was
-    // put into it, up to the size where a chunk more is no longer a waste.
-    size_t grown = HZSTD_MIN(chunk->capacity * 2, HZSTD_DEFAULT_ARENA_CHUNK_SIZE);
-    size_t chunk_size = HZSTD_MAX(grown, size + alignment);
-    chunk = hzstd_arena_enlarge(chunk, chunk_size, "Arena chunk", 1 + skip_n_frames);
-    arena->last_chunk = chunk;
-    base = (uintptr_t)(chunk + 1);
-    aligned = (base + (alignment - 1)) & ~(alignment - 1);
-    new_used = (aligned - base) + size;
-  }
-
-  chunk->used = new_used;
-  return (void *)aligned;
+  // Suballocation is deliberately not reported (far too many during json
+  // parsing; arena suballocation is the fast path). New chunks are reported,
+  // labelled, in hzstd_arena_new_chunk.
+  return hzstd_arena_chain_allocate(arena, false, size, 1 + skip_n_frames);
 }
 
 void *hzstd_arena_allocate(hzstd_arena_t *arena, size_t size)
@@ -377,7 +485,25 @@ void *hzstd_arena_allocate(hzstd_arena_t *arena, size_t size)
   return hzstd_arena_allocate_n(arena, size, 1);
 }
 
-// These fire through the hzstd_allocator_t.allocate/allocateAtomic function
+void *hzstd_arena_allocate_unscanned_n(hzstd_arena_t *arena, size_t size, int skip_n_frames)
+{
+  return hzstd_arena_chain_allocate(arena, true, size, 1 + skip_n_frames);
+}
+
+void *hzstd_arena_allocate_unscanned(hzstd_arena_t *arena, size_t size)
+{
+  return hzstd_arena_allocate_unscanned_n(arena, size, 1);
+}
+
+hzstd_arena_usage_t hzstd_arena_measure(hzstd_arena_t *arena)
+{
+  return (hzstd_arena_usage_t) {
+    .scanned = (hzstd_int_t)arena->scanned.bytes_in_use,
+    .unscanned = (hzstd_int_t)arena->unscanned.bytes_in_use,
+  };
+}
+
+// These fire through the hzstd_allocator_t.allocate/allocateUnscanned function
 // pointers, always called from hzstd_allocate/hzstd_allocate_n below --
 // each adds exactly its own one frame on top of whatever skip_n_frames it
 // was given (the "+1" pattern, same as every other _n function in this
@@ -386,16 +512,16 @@ static void *heap_allocator_impl(void *ctx, size_t size, const char *dataType, i
 {
   return hzstd_heap_allocate_n(size, dataType, 1 + skip_n_frames);
 }
-static void *heap_allocator_atomic_impl(void *ctx, size_t size, const char *dataType, int skip_n_frames)
+static void *heap_allocator_unscanned_impl(void *ctx, size_t size, const char *dataType, int skip_n_frames)
 {
-  return hzstd_heap_allocate_atomic_n(size, dataType, 1 + skip_n_frames);
+  return hzstd_heap_allocate_unscanned_n(size, dataType, 1 + skip_n_frames);
 }
 
 hzstd_allocator_t hzstd_make_heap_allocator()
 {
   return (hzstd_allocator_t) {
     .allocate = heap_allocator_impl,
-    .allocateAtomic = heap_allocator_atomic_impl,
+    .allocateUnscanned = heap_allocator_unscanned_impl,
     .ctx = NULL,
   };
 }
@@ -413,11 +539,11 @@ static void *malloc_allocator_impl(void *ctx, size_t size, const char *dataType,
 
 hzstd_allocator_t hzstd_make_non_gc_raw_malloc_allocator()
 {
-  // Plain malloc has no GC "atomic" (unscanned) distinction to make -- there
-  // is nothing here for the collector to scan in the first place.
+  // Plain malloc has no scanned/unscanned distinction to make -- there is
+  // nothing here for the collector to scan in the first place.
   return (hzstd_allocator_t) {
     .allocate = malloc_allocator_impl,
-    .allocateAtomic = malloc_allocator_impl,
+    .allocateUnscanned = malloc_allocator_impl,
     .ctx = NULL,
   };
 }
@@ -428,22 +554,34 @@ static void *arena_allocator_impl(void *ctx, size_t size, const char *dataType, 
   return hzstd_arena_allocate_n((hzstd_arena_t *)ctx, size, 1 + skip_n_frames);
 }
 
-hzstd_allocator_t hzstd_make_arena_allocator()
+static void *arena_allocator_unscanned_impl(void *ctx, size_t size, const char *dataType, int skip_n_frames)
 {
-  // Arenas have no concept of atomic allocations since the entire arena is
-  // always scanned, so we just use the same allocation for both atomic and
-  // non-atomic.
-  // TODO: See if we can after the fact, mark a specific region inside the already allocated arena, as atomic,
-  // otherwise is is very wasteful to allocate strings and binary data in arenas and have the GC scan it.
-  // skip_n_frames=1 hides this function's own frame, so a captured
-  // allocation trace for the arena's own backing allocation shows this
-  // function's caller as its first frame, not hzstd_make_arena_allocator
-  // itself.
+  (void)dataType;
+  return hzstd_arena_allocate_unscanned_n((hzstd_arena_t *)ctx, size, 1 + skip_n_frames);
+}
+
+hzstd_allocator_t hzstd_make_arena_allocator(hzstd_arena_options_t options)
+{
+  // skip_n_frames=1 hides this function's own frame, so the arena's own
+  // allocation event shows this function's caller as its first frame.
   return (hzstd_allocator_t) {
     .allocate = arena_allocator_impl,
-    .allocateAtomic = arena_allocator_impl,
-    .ctx = hzstd_arena_create_n("Arena", 1),
+    .allocateUnscanned = arena_allocator_unscanned_impl,
+    .ctx = hzstd_arena_create_n(options, 1),
   };
+}
+
+bool hzstd_allocator_is_arena(hzstd_allocator_t allocator)
+{
+  return allocator.allocate == arena_allocator_impl;
+}
+
+hzstd_arena_usage_t hzstd_arena_measure_allocator(hzstd_allocator_t allocator)
+{
+  if (!hzstd_allocator_is_arena(allocator)) {
+    hzstd_panic("Only an arena can be measured: this allocator is not an arena");
+  }
+  return hzstd_arena_measure((hzstd_arena_t *)allocator.ctx);
 }
 
 void *hzstd_allocate_n(hzstd_allocator_t allocator, size_t size, const char *dataType, int skip_n_frames)
@@ -456,12 +594,12 @@ void *hzstd_allocate(hzstd_allocator_t allocator, size_t size, const char *dataT
   return hzstd_allocate_n(allocator, size, dataType, 1);
 }
 
-void *hzstd_allocate_atomic_n(hzstd_allocator_t allocator, size_t size, const char *dataType, int skip_n_frames)
+void *hzstd_allocate_unscanned_n(hzstd_allocator_t allocator, size_t size, const char *dataType, int skip_n_frames)
 {
-  return allocator.allocateAtomic(allocator.ctx, size, dataType, 1 + skip_n_frames);
+  return allocator.allocateUnscanned(allocator.ctx, size, dataType, 1 + skip_n_frames);
 }
 
-void *hzstd_allocate_atomic(hzstd_allocator_t allocator, size_t size, const char *dataType)
+void *hzstd_allocate_unscanned(hzstd_allocator_t allocator, size_t size, const char *dataType)
 {
-  return hzstd_allocate_atomic_n(allocator, size, dataType, 1);
+  return hzstd_allocate_unscanned_n(allocator, size, dataType, 1);
 }

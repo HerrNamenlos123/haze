@@ -106,6 +106,9 @@ fn main(): int {
     cases_fs_file_ops.register(suite);
     cases_wall_clock_and_directory_lock.register(suite);
     cases_fs_trash.register(suite);
+    cases_fs_list_dir.register(suite);
+    cases_arena.register(suite);
+    cases_stdin.register(suite);
     cases_reactive_write_operands.register(suite);
     cases_embed_binary.register(suite);
     cases_embed_literal.register(suite);

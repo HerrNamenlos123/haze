@@ -468,7 +468,7 @@ hzstd_str_t haze_unicode_collation_key(hzstd_str_t text, hzstd_bool_t numeric)
   haze_collation_build(text, numeric, &levels);
   size_t length = haze_collation_key_length(&levels);
   // Atomic: a key is bytes, nothing in it for the collector to scan.
-  unsigned char* out = (unsigned char*)hzstd_heap_allocate_atomic(length, NULL);
+  unsigned char* out = (unsigned char*)hzstd_heap_allocate_unscanned(length, NULL);
   haze_collation_write_key(&levels, out);
   haze_collation_levels_free(&levels);
   return HZSTD_STRING((char*)out, (hzstd_int_t)length);

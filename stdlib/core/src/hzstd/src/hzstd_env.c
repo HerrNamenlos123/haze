@@ -30,7 +30,7 @@ hzstd_env_get_result_t hzstd_env_get(hzstd_allocator_t allocator, hzstd_str_t na
   }
 
   size_t len = strlen(val);
-  char* copy = hzstd_allocate(allocator, len, NULL);
+  char* copy = hzstd_allocate_unscanned(allocator, len, NULL);
   if (!copy) {
     // Out of memory → treat as not found
     return result;

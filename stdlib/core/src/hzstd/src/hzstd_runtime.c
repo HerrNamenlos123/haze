@@ -290,7 +290,7 @@ static hzstd_str_t loc_line_col(hzstd_str_t loc)
 
 static hzstd_str_t frame_display_name(hzstd_allocator_t alloc, hzstd_str_t raw)
 {
-  char *tmp = (char *)hzstd_allocate(alloc, raw.length + 1, NULL);
+  char *tmp = (char *)hzstd_allocate_unscanned(alloc, raw.length + 1, NULL);
   if (!tmp) {
     return raw;
   }
@@ -318,7 +318,7 @@ static void sbuf_init(hzstd_sbuf_t *b, hzstd_allocator_t alloc)
 {
   b->alloc = alloc;
   b->cap = 512;
-  b->data = (char *)hzstd_allocate(alloc, b->cap, NULL);
+  b->data = (char *)hzstd_allocate_unscanned(alloc, b->cap, NULL);
   b->len = 0;
 }
 
@@ -326,7 +326,7 @@ static void sbuf_grow(hzstd_sbuf_t *b, size_t need)
 {
   while (b->len + need > b->cap) {
     size_t new_cap = b->cap * 2;
-    char *new_data = (char *)hzstd_allocate(b->alloc, new_cap, NULL);
+    char *new_data = (char *)hzstd_allocate_unscanned(b->alloc, new_cap, NULL);
     memcpy(new_data, b->data, b->len);
     b->cap = new_cap;
     b->data = new_data;
@@ -607,7 +607,7 @@ sbuf_frames(hzstd_sbuf_t *b, hzstd_allocator_t scratch, hzstd_dynamic_array_t *f
 // Prints the full panic report: header + message + "at" location + frames.
 void hzstd_print_panic_info(hzstd_panic_info_t info)
 {
-  hzstd_allocator_t alloc = hzstd_make_arena_allocator();
+  hzstd_allocator_t alloc = hzstd_make_arena_allocator(HZSTD_ARENA_OPTIONS("Panic report"));
 
   hzstd_str_t loc_str = { .data = NULL, .length = 0 };
   hzstd_str_t body = info.message;
@@ -658,7 +658,7 @@ void hzstd_print_panic_report(hzstd_panic_info_t *info)
 // Prints only the "Stack trace:" section (no message/type header).
 void hzstd_print_stacktrace(hzstd_stacktrace_t st)
 {
-  hzstd_allocator_t alloc = hzstd_make_arena_allocator();
+  hzstd_allocator_t alloc = hzstd_make_arena_allocator(HZSTD_ARENA_OPTIONS("Stack trace print"));
   print_frames_to_stderr(alloc, st.frames, st.skip_n_frames);
   fflush(stderr);
 }
@@ -669,7 +669,7 @@ hzstd_str_t hzstd_stringify_panic_info(hzstd_allocator_t alloc, hzstd_panic_info
   hzstd_sbuf_t b;
   sbuf_init(&b, alloc);
 
-  hzstd_allocator_t scratch = hzstd_make_arena_allocator();
+  hzstd_allocator_t scratch = hzstd_make_arena_allocator(HZSTD_ARENA_OPTIONS("Panic message scratch"));
 
   hzstd_str_t loc_str = { .data = NULL, .length = 0 };
   hzstd_str_t body = info.message;
@@ -720,7 +720,7 @@ hzstd_str_t hzstd_stringify_stacktrace(hzstd_allocator_t alloc, hzstd_stacktrace
 {
   hzstd_sbuf_t b;
   sbuf_init(&b, alloc);
-  hzstd_allocator_t scratch = hzstd_make_arena_allocator();
+  hzstd_allocator_t scratch = hzstd_make_arena_allocator(HZSTD_ARENA_OPTIONS("Stack trace scratch"));
   sbuf_frames(&b, scratch, st.frames, st.skip_n_frames);
   return sbuf_finish(&b);
 }

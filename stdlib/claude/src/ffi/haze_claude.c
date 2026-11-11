@@ -37,7 +37,7 @@ static hzstd_str_t haze_claude_make_str(hzstd_allocator_t allocator, const char 
   if (length == 0) {
     return (hzstd_str_t){ .data = "", .length = 0 };
   }
-  char *buffer = (char *)hzstd_allocate(allocator, length, "str");
+  char *buffer = (char *)hzstd_allocate_unscanned(allocator, length, "str");
   memcpy(buffer, data, length);
   return (hzstd_str_t){ .data = buffer, .length = (hzstd_int_t)length };
 }
@@ -179,7 +179,7 @@ static void haze_claude_sha256_final(haze_claude_sha256_ctx_t *ctx, unsigned cha
 
 static hzstd_str_t haze_claude_hex_digest(hzstd_allocator_t allocator, const unsigned char *digest, size_t length)
 {
-  char *buffer = (char *)hzstd_allocate(allocator, length * 2, "str");
+  char *buffer = (char *)hzstd_allocate_unscanned(allocator, length * 2, "str");
   for (size_t i = 0; i < length; i++) {
     buffer[i * 2] = HAZE_CLAUDE_HEX[(digest[i] >> 4) & 0xf];
     buffer[i * 2 + 1] = HAZE_CLAUDE_HEX[digest[i] & 0xf];
@@ -534,7 +534,7 @@ haze_claude_head_tail_t haze_claude_read_head_tail(hzstd_allocator_t allocator, 
     headLength = (size_t)limit;
   }
 
-  char *headBuffer = (char *)hzstd_allocate(allocator, headLength ? headLength : 1, "str");
+  char *headBuffer = (char *)hzstd_allocate_unscanned(allocator, headLength ? headLength : 1, "str");
   if (fseek(file, 0, SEEK_SET) != 0 || fread(headBuffer, 1, headLength, file) != headLength) {
     fclose(file);
     return result;
@@ -546,7 +546,7 @@ haze_claude_head_tail_t haze_claude_read_head_tail(hzstd_allocator_t allocator, 
     if (tailLength > (size_t)limit) {
       tailLength = (size_t)limit;
     }
-    char *tailBuffer = (char *)hzstd_allocate(allocator, tailLength, "str");
+    char *tailBuffer = (char *)hzstd_allocate_unscanned(allocator, tailLength, "str");
     if (fseek(file, (long)((size_t)size - tailLength), SEEK_SET) != 0
         || fread(tailBuffer, 1, tailLength, file) != tailLength) {
       fclose(file);

@@ -83,7 +83,7 @@ fn main(): int {
     fs.writeText(f"{root}/Only pdfs/scan.pdf", "pdf");
     fs.createDirectory(f"{root}/Empty");
 
-    let index = indexDirectory(root);
+    let index = indexDirectory(Alloc.arena(), root);
     let all: []str = [];
     let out: []TreeRow = [];
     let everything: []str = [f"{root}/Week 2", f"{root}/Week 2/Inner", f"{root}/Week 10"];

@@ -2,7 +2,7 @@
 // the plain-C world of hzcb.h. The only file here that knows about the Haze
 // runtime -- everything it includes is testable without one (tests/native).
 //
-// Data coming back to Haze is copied into GC-owned memory (atomic: it holds
+// Data coming back to Haze is copied into GC-owned memory (unscanned: it holds
 // no pointers), so it is an ordinary str / Bytes with no free obligation.
 // Data going out is copied into malloc'd memory by the core, because the
 // platform keeps it long after the Haze values may have been collected.
@@ -33,7 +33,7 @@ static hzstd_str_t haze_clipboard_str(const void *data, size_t length)
   if (length == 0) {
     return (hzstd_str_t){ .data = 0, .length = 0 };
   }
-  char *copy = hzstd_heap_allocate_atomic(length, NULL);
+  char *copy = hzstd_heap_allocate_unscanned(length, NULL);
   memcpy(copy, data, length);
   return HZSTD_STRING(copy, (int64_t)length);
 }

@@ -493,9 +493,10 @@ export ref struct Switcher {
             }
             let id = entry.name.slice(0, entry.name.length - ".token".length);
             if this.indexOf(id) < 0 {
-                let removed = fs.removeFile(entry.path);
+                let entryPath = entry.path();
+                let removed = fs.removeFile(entryPath);
                 if !removed {
-                    fmt.println(f"Claude Account Switcher could not remove {entry.path}: {removed}");
+                    fmt.println(f"Claude Account Switcher could not remove {entryPath}: {removed}");
                 }
             }
         }

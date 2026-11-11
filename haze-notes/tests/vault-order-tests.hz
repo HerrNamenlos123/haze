@@ -280,7 +280,7 @@ fn main(): int {
         state.check(f"fixture written: {file}", fs.writeText(path, "") ? true : false);
     }
 
-    let vault = indexVault(root);
+    let vault = indexVault(root, { scanned: 0, unscanned: 0 }).vault;
     // A deep reactive array is read element by element.
     let top: []FSEntry = [];
     for entry in vault.entries {

@@ -246,5 +246,46 @@ in 34
 out 56
 methods 7
 """);
+
+        // `operator as` is looked up in the struct's elaborated methods, which
+        // hold it only once something elaborated it. Here nothing else ever
+        // touches W's methods; the conversion used to depend on elaboration
+        // order (an Arena from memory.hz did not convert in filesystem.hz).
+        // The last two calls go to a GENERIC overload: its concrete parameter
+        // converts like any other, its generic one does not reject it.
+        s.run(
+            "operator as: found before anything else elaborated the struct's methods, also for a generic overload",
+            """
+struct Handle {
+    id: int = 0;
+}
+
+struct W {
+    inner: Handle;
+    fn operator as(): Handle { return this.inner; }
+}
+
+fn direct(h: Handle): int { return h.id; }
+fn picked(x: str, y: int = 0): int { return -1; }
+fn picked(h: Handle, x: str): int { return h.id * 10; }
+fn generic<T>(h: Handle, value: T): int { return h.id * 100; }
+fn generic<T>(value: T): int { return -2; }
+
+fn main(): int {
+    let w = W { inner: { id: 3 } };
+    let x = "x";
+    fmt.println(f"direct {direct(w)}");
+    fmt.println(f"overload {picked(w, x)}");
+    fmt.println(f"generic overload {generic<int>(w, 7)}");
+    fmt.println(f"the other generic overload still {generic<int>(7)}");
+    return 0;
+}
+""",
+            """
+direct 3
+overload 30
+generic overload 300
+the other generic overload still -2
+""");
     }
 }

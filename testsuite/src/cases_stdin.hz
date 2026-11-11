@@ -1,0 +1,97 @@
+// ============================================================================
+// sys.stdin(): InputPipe.read and readLine.
+//
+// read(n) gives the next n bytes as they are (NUL and CR kept), fewer only at
+// the end of the input. readLine gives a line without its "\n" or "\r\n",
+// "" for an empty line, the last line also without a "\n", and none once the
+// input has ended. The two share one buffer, so a line can announce how many
+// raw bytes follow (the native parser's TEXT request). The program points
+// its own stdin at a file it wrote.
+// ============================================================================
+
+namespace cases_stdin {
+
+    export fn register(s: mut testsuite.Suite) {
+
+        s.run(
+            "stdin: read and readLine, mixed, over CRLF, long lines and the end of the input",
+            """
+__c__("#include <stdio.h>");
+__c__("#include <string.h>");
+__c__("
+void hz_t_stdin_from(hzstd_str_t path) {
+    char buf[4096];
+    memcpy(buf, path.data, (size_t)path.length);
+    buf[path.length] = 0;
+    if (!freopen(buf, \\"rb\\", stdin)) { perror(\\"freopen\\"); }
+}
+");
+extern C fn hz_t_stdin_from(path: str): void :: final;
+
+fn workPath(name: str): str {
+    let dir = env.get("HAZE_TEST_WORKDIR");
+    if dir is str {
+        return f"{dir}/{name}";
+    }
+    return f"/tmp/{name}";
+}
+
+
+fn show(value: str | none): str {
+    if let text = value {
+        return f"'{text}' ({text.length})";
+    }
+    return "none";
+}
+
+fn main(): int {
+    let dir = workPath("stdin_reader");
+    fs.createDirectory(dir);
+    let path = f"{dir}/input.bin";
+    let stackref content = ByteBuffer();
+    content.push("first line\\r\\n");
+    content.push("\\n");
+    content.push("TEXT 7 x\\n");
+    content.push("ab");
+    content.push(0 as u8);
+    content.push("\\r\\ncd");
+    for (let i = 0; i < 300; i++) {
+        content.push(97 as u8);
+    }
+    content.push("\\n");
+    content.push("last, no newline");
+    content.commit();
+    fs.writeBinary(path, content.bytes());
+    hz_t_stdin_from(path);
+
+    let input = sys.stdin();
+    fmt.println(f"line: {show(input.readLine())}");
+    fmt.println(f"empty line: {show(input.readLine())}");
+    fmt.println(f"header: {show(input.readLine())}");
+    let raw = input.read(7);
+    fmt.println(f"7 raw bytes: {raw.length}, NUL kept {raw[2] == 0}, CR kept {raw[3] == 13}, then {raw.slice(5)}");
+    let longLine = input.readLine();
+    if let l = longLine {
+        fmt.println(f"rest of that line: {l.length} bytes, starts with {l.slice(0, 2)}");
+    }
+    fmt.println(f"last line: {show(input.readLine())}");
+    fmt.println(f"after the end: {show(input.readLine())}");
+    fmt.println(f"read after the end: {show(input.read(3))}");
+    fmt.println(f"read 0: {show(input.read(0))}");
+    return 0;
+}
+""",
+            """
+line: 'first line' (10)
+empty line: '' (0)
+header: 'TEXT 7 x' (8)
+7 raw bytes: 7, NUL kept true, CR kept true, then cd
+rest of that line: 300 bytes, starts with aa
+last line: 'last, no newline' (16)
+after the end: none
+read after the end: '' (0)
+read 0: '' (0)
+""");
+
+    }
+}

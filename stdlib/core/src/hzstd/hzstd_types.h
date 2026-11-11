@@ -307,23 +307,83 @@ typedef struct hzstd_module_metadata_t {
 // fixed constant -- it depends on how many wrapper layers (e.g.
 // hzstd_dynamic_array_create, hzstd_arena_allocate) sit between the actual
 // call site and hzstd_allocate, which varies by caller.
+//
+// Scanned and unscanned memory. The garbage collector looks for pointers in
+// scanned memory, word by word, every collection. Unscanned memory it never
+// looks into: whatever it holds keeps nothing alive. So unscanned memory is
+// for plain bytes only (string bytes, Bytes, pixels, numbers), and it is not
+// zeroed. A pointer to GC memory stored there is a use-after-free waiting to
+// happen. hzstd gives no guarantee here: C code calling allocateUnscanned is
+// expected to know this. Haze code cannot reach it except through the stdlib
+// (str, Bytes, ByteBuffer), which only ever puts bytes there.
 typedef struct hzstd_allocator_t {
   void *(*allocate)(void *ctx, size_t size, const char *dataType, int skip_n_frames);
-  void *(*allocateAtomic)(void *ctx, size_t size, const char *dataType, int skip_n_frames);
+  void *(*allocateUnscanned)(void *ctx, size_t size, const char *dataType, int skip_n_frames);
   void *ctx;
 } hzstd_allocator_t;
 
+// How one chain of an arena sizes its chunks. Chunk 1 is first_bytes, chunk 2
+// next_bytes, every later one the previous one times growth, at most
+// max_bytes. growth == 1.0 keeps every later chunk at next_bytes. An
+// allocation larger than the next chunk would be gets a chunk of its own,
+// exactly its size, which does not change the sizes of the regular chunks.
+// Mirrored by ChunkPolicy in memory.hz, which documents the defaults.
+typedef struct hzstd_arena_chunk_policy_t {
+  hzstd_int_t first_bytes;
+  hzstd_int_t next_bytes;
+  double growth;
+  hzstd_int_t max_bytes;
+} hzstd_arena_chunk_policy_t;
+
+// label: a string literal shown in allocation traces, or NULL / "" for none.
+// It is never copied, so it must live for the whole program (ccstr in Haze
+// can only be a literal). Mirrored by ArenaOptions in memory.hz.
+typedef struct hzstd_arena_options_t {
+  const char *label;
+  hzstd_arena_chunk_policy_t scanned;
+  hzstd_arena_chunk_policy_t unscanned;
+} hzstd_arena_options_t;
+
+// Bytes in use per chain: what one chunk per chain would need to hold
+// everything the arena holds (each allocation rounded up to the alignment;
+// no chunk headers, no unused chunk tails).
+typedef struct hzstd_arena_usage_t {
+  hzstd_int_t scanned;
+  hzstd_int_t unscanned;
+} hzstd_arena_usage_t;
+
+// Always lives in scanned memory, also for the unscanned chain: the GC would
+// not see next_chunk or data inside an unscanned block, and would free the
+// later chunks of the chain while the arena still uses them.
 typedef struct hzstd_arena_chunk_t {
   struct hzstd_arena_chunk_t *next_chunk;
+  unsigned char *data;
   size_t capacity;
   size_t used;
-  // After here comes the data
-  // dataPointer = chunkPointer + sizeof(ArenaChunk)
 } hzstd_arena_chunk_t;
 
+typedef struct hzstd_arena_chain_t {
+  // The chain's first chunk. data is NULL until the chain's first allocation:
+  // a chain that is never used costs nothing.
+  hzstd_arena_chunk_t first;
+  // Where allocations go (the latest regular chunk), and the end of the list
+  // (also dedicated chunks of oversized allocations). NULL while unused.
+  hzstd_arena_chunk_t *current;
+  hzstd_arena_chunk_t *tail;
+  // How many regular chunks were made, and the size of the latest one: what
+  // the next regular chunk is sized from.
+  hzstd_int_t regular_chunks;
+  size_t regular_bytes;
+  // See hzstd_arena_usage_t.
+  size_t bytes_in_use;
+  hzstd_arena_chunk_policy_t policy;
+} hzstd_arena_chain_t;
+
+// Never locked: an arena belongs to one thread at a time.
 typedef struct hzstd_arena_t {
-  hzstd_arena_chunk_t *first_chunk;
-  hzstd_arena_chunk_t *last_chunk;
+  const char *label;
+  hzstd_arena_chain_t scanned;
+  hzstd_arena_chain_t unscanned;
 } hzstd_arena_t;
 
 // ── Dynamic array ────────────────────────────────────────────────────────────
@@ -643,8 +703,16 @@ typedef struct {
 typedef struct {
   bool valid;
   bool is_dir;
-  hzstd_str_t name; // GC-owned via hzstd_cstr_dup
+  hzstd_str_t name; // copied into the allocator hzstd_read_next_dir_entry got
 } hzstd_dir_entry_t;
+
+// One piece of a stdin line (hzstd_stdin_read_line_part): `got` bytes were
+// read; status 0: the line goes on, 1: it ended with '\n' (included in the
+// bytes), 2: the input ended.
+typedef struct {
+  hzstd_int_t got;
+  hzstd_int_t status;
+} hzstd_stdin_line_part_t;
 
 // ── Platform ─────────────────────────────────────────────────────────────────
 

@@ -3,15 +3,150 @@ export extern C noemit struct hzstd_allocator_t {};
 export type Allocator = hzstd_allocator_t;
 
 export extern C fn hzstd_make_heap_allocator(): Allocator :: final;
-export extern C fn hzstd_make_arena_allocator(): Allocator :: final;
+
+extern C noemit struct hzstd_arena_chunk_policy_t {
+    first_bytes: int;
+    next_bytes: int;
+    growth: real;
+    max_bytes: int;
+};
+
+extern C noemit struct hzstd_arena_options_t {
+    label: ccstr;
+    scanned: hzstd_arena_chunk_policy_t;
+    unscanned: hzstd_arena_chunk_policy_t;
+};
+
+extern C noemit struct hzstd_arena_usage_t {
+    scanned: int;
+    unscanned: int;
+};
+
+extern C fn hzstd_make_arena_allocator(options: hzstd_arena_options_t): Allocator :: final;
+extern C fn hzstd_arena_measure_allocator(allocator: Allocator): hzstd_arena_usage_t :: final;
+
+// An arena hands out memory from big chunks and never frees anything by
+// itself: everything in it lives as long as anything still points into its
+// chunks. It has two chains of chunks:
+//   scanned    memory the garbage collector searches for pointers: anything
+//              that can hold one (structs, arrays, json nodes).
+//   unscanned  memory the garbage collector never looks into: string and
+//              Bytes data only. The stdlib puts every string and Bytes there
+//              by itself; Haze code cannot place anything else in it.
+// Each chain is made at its first allocation, so an arena that only ever
+// holds strings never allocates a scanned chunk.
+//
+// An arena is not locked: it belongs to one thread at a time. Never allocate
+// from one arena on two threads at once.
+
+// How one chain of an arena sizes its chunks. With the defaults: 1 KiB, 2 KiB,
+// 4 KiB, ... doubling up to 64 KiB, then 64 KiB chunks. An allocation bigger
+// than the next chunk would be always gets a chunk of its own, exactly its
+// size, and the regular sizes go on unchanged.
+export struct ChunkPolicy {
+    // The chain's first chunk, in bytes. Made at the chain's first
+    // allocation, never before.
+    firstBytes: int = 1024;
+    // The second chunk, in bytes.
+    nextBytes: int = 2048;
+    // Every chunk after the second is the previous one times this. 1.0 keeps
+    // every later chunk at nextBytes (fixed size, maxBytes unused). 2.0
+    // doubles.
+    growth: real = 2.0;
+    // Growth stops here: the chunks after the second are never bigger.
+    // (firstBytes and nextBytes may be bigger; a fixed policy ignores this.)
+    maxBytes: int = 65536;
+}
+
+export struct ArenaOptions {
+    // Shown in allocation traces for the arena and each of its chunks, so a
+    // profile tells which arena they belong to. A string literal.
+    label: ccstr = "";
+    // Chunk sizes of the scanned chain (memory that can hold pointers).
+    scanned: ChunkPolicy = {};
+    // Chunk sizes of the unscanned chain (string and Bytes data).
+    unscanned: ChunkPolicy = {};
+
+    // These options with each chain's first chunk set to hold `usage` (what
+    // measure() gave for an earlier arena doing the same work) plus
+    // `spare` of it: the same work then fits into one chunk per chain. A
+    // chain that held nothing keeps its policy. Everything else stays.
+    fn sizedFor(usage: ArenaUsage, spare: real = 0.01): ArenaOptions {
+        if spare < 0.0 {
+            sys.panic("ArenaOptions.sizedFor: spare must not be negative");
+        }
+        let result = this;
+        if usage.scanned > 0 {
+            result.scanned.firstBytes = _arenaBytesWithSpare(usage.scanned, spare);
+        }
+        if usage.unscanned > 0 {
+            result.unscanned.firstBytes = _arenaBytesWithSpare(usage.unscanned, spare);
+        }
+        return result;
+    }
+}
+
+fn _arenaBytesWithSpare(bytes: int, spare: real): int {
+    let wanted = (bytes as real) * (1.0 + spare);
+    let rounded = wanted as int;
+    if (rounded as real) < wanted {
+        rounded = rounded + 1;
+    }
+    return rounded;
+}
+
+// Bytes in use in an arena, per chain: what one chunk per chain would need
+// to hold everything it holds (allocations rounded up to the 16-byte
+// alignment; no chunk headers, no unused chunk ends).
+export struct ArenaUsage {
+    scanned: int;
+    unscanned: int;
+}
+
+// An arena, from Alloc.arena(). It passes as an Allocator wherever one is
+// expected (every API that allocates takes one), and it can tell how much it
+// holds. It is only a handle: a copy is the same arena, not a second one.
+export struct Arena {
+    // The arena's allocator; use the Arena itself where an Allocator is wanted.
+    _allocator: Allocator;
+
+    fn operator as(): Allocator {
+        return this._allocator;
+    }
+
+    // The bytes in use, per chain (see ArenaUsage). Remembered and handed to
+    // ArenaOptions.sizedFor, the next arena doing the same work fits into one
+    // chunk per chain.
+    fn measure(): ArenaUsage {
+        let usage = hzstd_arena_measure_allocator(this._allocator);
+        return ArenaUsage { scanned: usage.scanned, unscanned: usage.unscanned };
+    }
+}
+
+fn _arenaFfiPolicy(policy: ChunkPolicy): hzstd_arena_chunk_policy_t {
+    return hzstd_arena_chunk_policy_t {
+        first_bytes: policy.firstBytes,
+        next_bytes: policy.nextBytes,
+        growth: policy.growth,
+        max_bytes: policy.maxBytes,
+    };
+}
 
 export namespace Alloc {
     export fn heap() {
         return hzstd_make_heap_allocator();
     }
 
-    export fn arena() {
-        return hzstd_make_arena_allocator();
+    // A new arena. Panics on a policy that cannot work (a size below 1 byte,
+    // growth below 1.0, maxBytes below nextBytes while growing).
+    export fn arena(options: ArenaOptions = {}): Arena {
+        return Arena {
+            _allocator: hzstd_make_arena_allocator(hzstd_arena_options_t {
+                label: options.label,
+                scanned: _arenaFfiPolicy(options.scanned),
+                unscanned: _arenaFfiPolicy(options.unscanned),
+            }),
+        };
     }
 }
 
@@ -89,7 +224,7 @@ export nocopy opaque struct ByteBuffer {
         }
         let data = none as cptr;
         if capacity > 0 {
-            __c__("data = hzstd_heap_allocate_atomic((size_t)capacity, \"ByteBuffer\");");
+            __c__("data = hzstd_heap_allocate_unscanned((size_t)capacity, \"ByteBuffer\");");
         }
         return ByteBuffer { _data: data, _capacity: capacity, _owned: capacity > 0 };
     }
@@ -111,7 +246,7 @@ export nocopy opaque struct ByteBuffer {
         if let single = source.singleByte {
             let byte: u8 = single;
             let data = none as cptr;
-            __c__("data = hzstd_heap_allocate_atomic(1, \"ByteBuffer\"); ((hzstd_u8_t*)data)[0] = byte;");
+            __c__("data = hzstd_heap_allocate_unscanned(1, \"ByteBuffer\"); ((hzstd_u8_t*)data)[0] = byte;");
             return ByteBuffer { _data: data, _length: 1, _capacity: 1, _owned: true };
         }
         let data = none as cptr;
@@ -131,7 +266,7 @@ export nocopy opaque struct ByteBuffer {
         }
         let data = none as cptr;
         if capacity > 0 {
-            __c__("data = hzstd_allocate_atomic(allocator, (size_t)capacity, \"ByteBuffer\");");
+            __c__("data = hzstd_allocate_unscanned(allocator, (size_t)capacity, \"ByteBuffer\");");
         }
         return ByteBuffer { _data: data, _capacity: capacity, _fixed: true };
     }
@@ -193,7 +328,7 @@ export nocopy opaque struct ByteBuffer {
             return result;
         }
         __c__("""
-            char* copy = (char*)hzstd_heap_allocate_atomic((size_t)this->_length, "str");
+            char* copy = (char*)hzstd_heap_allocate_unscanned((size_t)this->_length, "str");
             memcpy(copy, this->_data, (size_t)this->_length);
             result = HZSTD_STRING(copy, this->_length);
         """);
@@ -214,7 +349,7 @@ export nocopy opaque struct ByteBuffer {
             return result;
         }
         __c__("""
-            void* copy = hzstd_heap_allocate_atomic((size_t)this->_length, "Bytes");
+            void* copy = hzstd_heap_allocate_unscanned((size_t)this->_length, "Bytes");
             memcpy(copy, this->_data, (size_t)this->_length);
             result.basePtr = copy;
             result.offset = 0;
@@ -726,7 +861,7 @@ export nocopy opaque struct ByteBuffer {
             // Borrowing (or empty): copy what there is into a block of our own.
             let length = this._length;
             __c__("""
-                void* fresh = hzstd_heap_allocate_atomic((size_t)newCapacity, "ByteBuffer");
+                void* fresh = hzstd_heap_allocate_unscanned((size_t)newCapacity, "ByteBuffer");
                 if (length > 0) { memcpy(fresh, this->_data, (size_t)length); }
                 this->_data = fresh;
             """);

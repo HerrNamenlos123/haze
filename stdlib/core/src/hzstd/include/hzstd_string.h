@@ -12,7 +12,7 @@
 
 #define HZSTD_STRING_FROM_BYTE(allocator, byte)                                                                        \
   ({                                                                                                                   \
-    char *buf = hzstd_allocate(allocator, 1, NULL);                                                                    \
+    char *buf = hzstd_allocate_unscanned(allocator, 1, NULL);                                                          \
     buf[0] = byte;                                                                                                     \
     HZSTD_STRING(buf, 1);                                                                                              \
   })

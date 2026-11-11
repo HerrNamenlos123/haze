@@ -233,7 +233,7 @@ export struct BinaryReader {
         }
         if count > 0 {
             __c__("""
-                void* copy = hzstd_heap_allocate_atomic((size_t)count, "Bytes");
+                void* copy = hzstd_heap_allocate_unscanned((size_t)count, "Bytes");
                 memcpy(copy, (const hzstd_u8_t*)this->_data + this->_position, (size_t)count);
                 result.basePtr = copy;
                 result.offset = 0;
@@ -254,7 +254,7 @@ export struct BinaryReader {
         }
         if count > 0 {
             __c__("""
-                char* copy = (char*)hzstd_heap_allocate_atomic((size_t)count, "str");
+                char* copy = (char*)hzstd_heap_allocate_unscanned((size_t)count, "str");
                 memcpy(copy, (const hzstd_u8_t*)this->_data + this->_position, (size_t)count);
                 result = HZSTD_STRING(copy, count);
             """);

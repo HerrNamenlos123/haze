@@ -86,3 +86,4 @@ and against which commit it was verified; re-check a note against the code befor
 - [wgpu-native fatal errors](wgpu-native-fatal-errors.md) - which calls abort the app; NULL error callbacks; lost panic message; crash offset to function via relink map
 - [.hznote format](hznote-format.md) - haze-notes' file format: chunks per page, read by name, plain copies, errors, the migrate-tsk conversion
 - [Binary building blocks](binary-building-blocks.md) - ByteBuffer binary writes, BinaryReader, RawMemory, crc32c, traverse hooks and plainness
+- [Arenas, scanned and unscanned memory](arenas-scanned-unscanned.md) - two chunk chains, ChunkPolicy, measure/sizedFor, ccstr labels, unscanned = bytes only

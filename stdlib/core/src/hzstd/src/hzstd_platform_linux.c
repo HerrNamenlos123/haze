@@ -408,7 +408,7 @@ static void hzstd_panic_build_frames(hzstd_allocator_t allocator, hzstd_dynamic_
 
       if (!pushed) {
         int maxNameLen = 4096;
-        hzstd_str_t name = HZSTD_STRING(hzstd_allocate(allocator, maxNameLen, NULL), 0);
+        hzstd_str_t name = HZSTD_STRING(hzstd_allocate_unscanned(allocator, maxNameLen, NULL), 0);
         unw_word_t offset;
         if (unw_get_proc_name(&cursor, (char *)name.data, maxNameLen, &offset) == 0) {
           name.length = strlen(name.data);
@@ -497,7 +497,7 @@ static void *hzstd_panic_handler_thread(void *_)
     else {
       // Panic path — heap-copy the reason string so it survives longjmp.
       size_t reason_len = panic_reason.length;
-      char *reason_data = (char *)hzstd_allocate(allocator, reason_len + 1, NULL);
+      char *reason_data = (char *)hzstd_allocate_unscanned(allocator, reason_len + 1, NULL);
       memcpy(reason_data, panic_reason.data, reason_len);
       reason_data[reason_len] = '\0';
 
@@ -1008,7 +1008,7 @@ static char **process_cstr_block(const hzstd_str_t *first, hzstd_dynamic_array_t
 static inline char *read_all_fd_gc(int fd)
 {
   size_t cap = 4096, len = 0;
-  char *buf = hzstd_heap_allocate_atomic(cap + 1, "process output");
+  char *buf = hzstd_heap_allocate_unscanned(cap + 1, "process output");
   for (;;) {
     if (len + 2048 > cap) {
       cap *= 2;
@@ -1048,7 +1048,7 @@ static inline char *process_build_error_message_gc(int err)
     return NULL;
   }
   size_t len = strlen(msg);
-  char *gc = hzstd_allocate(hzstd_make_heap_allocator(), len + 1, NULL);
+  char *gc = hzstd_allocate_unscanned(hzstd_make_heap_allocator(), len + 1, NULL);
   if (gc) {
     memcpy(gc, msg, len);
     gc[len] = '\0';
@@ -1221,7 +1221,7 @@ static inline hzstd_str_t process_read_available_gc(int fd)
       // Overflowed the scratch buffer: allocate once and copy.
       if (!buf && len == sizeof(scratch)) {
         cap = sizeof(scratch) * 2;
-        buf = hzstd_allocate(allocator, cap, NULL);
+        buf = hzstd_allocate_unscanned(allocator, cap, NULL);
         memcpy(buf, scratch, len);
       }
 
@@ -1244,7 +1244,7 @@ static inline hzstd_str_t process_read_available_gc(int fd)
       return HZSTD_STRING(NULL, 0);
     }
 
-    buf = hzstd_allocate(allocator, len, NULL);
+    buf = hzstd_allocate_unscanned(allocator, len, NULL);
     memcpy(buf, scratch, len);
   }
 

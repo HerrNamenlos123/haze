@@ -218,7 +218,7 @@ typedef struct hzstd_profiling_sample_chunk_t {
   struct hzstd_profiling_sample_chunk_t *next; // the only field the GC needs to scan in this header
   size_t count; // number of valid entries in this chunk (== capacity for every
                 // chunk but the tail)
-  // `entries` is its own separate, atomic (unscanned) allocation -- see
+  // `entries` is its own separate, unscanned allocation -- see
   // hzstd_profiling_samples_append for why this can't just be an inline array
   // in this same, GC-scanned struct.
   hzstd_profiling_raw_sample_t *entries;
@@ -234,7 +234,7 @@ typedef struct hzstd_profiling_sample_chunk_t {
 typedef struct hzstd_profiling_memory_capture_chunk_t {
   struct hzstd_profiling_memory_capture_chunk_t *next; // the only field the GC needs to scan in this header
   size_t count;
-  hzstd_memory_instrumentation_raw_frame_t *entries; // separate atomic (unscanned) allocation, see `entries` above
+  hzstd_memory_instrumentation_raw_frame_t *entries; // separate unscanned allocation, see `entries` above
 } hzstd_profiling_memory_capture_chunk_t;
 
 struct hzstd_profiling_context_t {
@@ -640,12 +640,12 @@ static void hzstd_profiling_memory_captures_append(hzstd_profiling_context_t *co
       || context->memoryCapturesTail->count == HZSTD_PROFILING_MEMORY_CAPTURE_CHUNK_CAPACITY) {
     // Same GC-scanning hazard as hzstd_profiling_sample_chunk_t's entries --
     // pcs[] values are opaque historical addresses, never real object
-    // pointers the GC should trace, so they live in their own atomic
-    // (unscanned) allocation.
+    // pointers the GC should trace, so they live in their own unscanned
+    // allocation.
     //
     // Instrumentation is suppressed for the duration of these two
     // allocations specifically because it must NOT be safe to assume
-    // otherwise: hzstd_heap_allocate/_atomic unconditionally check the
+    // otherwise: hzstd_heap_allocate/_unscanned unconditionally check the
     // instrumentation hook (see hzstd_memory.c) and, since this thread's
     // hook is very much still installed and not suppressed at this point,
     // an unguarded allocation here would re-invoke hzstd_trace_memory_impl
@@ -661,7 +661,7 @@ static void hzstd_profiling_memory_captures_append(hzstd_profiling_context_t *co
         = hzstd_heap_allocate(sizeof(hzstd_profiling_memory_capture_chunk_t), NULL);
     chunk->next = NULL;
     chunk->count = 0;
-    chunk->entries = hzstd_heap_allocate_atomic(
+    chunk->entries = hzstd_heap_allocate_unscanned(
         HZSTD_PROFILING_MEMORY_CAPTURE_CHUNK_CAPACITY * sizeof(hzstd_memory_instrumentation_raw_frame_t), NULL);
     hzstd_temporarily_reenable_memory_instrumentation(prevState);
     if (context->memoryCapturesTail) {
@@ -778,7 +778,7 @@ static void hzstd_profiling_samples_append(hzstd_profiling_context_t *context, h
     hzstd_profiling_sample_chunk_t *chunk = hzstd_heap_allocate(sizeof(hzstd_profiling_sample_chunk_t), NULL);
     chunk->next = NULL;
     chunk->count = 0;
-    chunk->entries = hzstd_heap_allocate_atomic(
+    chunk->entries = hzstd_heap_allocate_unscanned(
         HZSTD_PROFILING_SAMPLE_CHUNK_CAPACITY * sizeof(hzstd_profiling_raw_sample_t), NULL);
     if (context->samples_tail) {
       context->samples_tail->next = chunk;
@@ -3011,7 +3011,7 @@ static hzstd_profiling_frame_t hzstd_profiling_resolve_frame(void *address, bool
 // contiguous array only once, at the very end, when the final count is
 // finally known (see the end of hzstd_profiling_end). Unlike
 // hzstd_profiling_sample_chunk_t::entries, `entries` here is a plain inline
-// array in a normally-scanned allocation, not a separate atomic one -- each
+// array in a normally-scanned allocation, not a separate unscanned one -- each
 // hzstd_profiling_frame_t holds real, followable GC pointers (name,
 // sourceloc's filename) that the collector must be able to see.
 #define HZSTD_PROFILING_FRAME_CHUNK_CAPACITY 256
@@ -3551,7 +3551,7 @@ hzstd_profiling_result_t hzstd_profiling_end(hzstd_profiling_context_t *context)
     const char *dataType;
   } hzstd_profiling_memory_capture_interned_t;
   hzstd_arena_t *scratchArena
-      = context->memoryCaptureCount > 0 ? hzstd_arena_create("Profiling postprocess scratch arena") : NULL;
+      = context->memoryCaptureCount > 0 ? hzstd_arena_create(HZSTD_ARENA_OPTIONS("Profiling postprocess scratch arena")) : NULL;
   hzstd_profiling_memory_capture_interned_t *internedMemoryCaptures = context->memoryCaptureCount > 0
       ? hzstd_arena_allocate(scratchArena,
                              context->memoryCaptureCount * sizeof(hzstd_profiling_memory_capture_interned_t))
@@ -3659,7 +3659,7 @@ hzstd_profiling_result_t hzstd_profiling_end(hzstd_profiling_context_t *context)
   // hzstd_stacktrace_t inside memoryInstrumentationFrames, and every slice of
   // the stackframe block is referenced by one of those control structs, so
   // the two die precisely when the returned result does. They must be
-  // GC-scanned (plain hzstd_allocate, NOT the atomic variant): stackframes
+  // GC-scanned (plain hzstd_allocate, NOT the unscanned variant): stackframes
   // carry hzstd_str_t name/sourceloc pointers, and the control structs carry
   // buffer pointers.
   hzstd_stackframe_t *sharedStackframes = totalStackframeCount > 0

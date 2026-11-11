@@ -98,7 +98,7 @@ namespace ffi {
     };
 
     extern C fn hzstd_open_dir(path: str): hzstd_open_dir_result_t :: final;
-    extern C fn hzstd_read_next_dir_entry(handle: cptr): hzstd_dir_entry_t :: final;
+    extern C fn hzstd_read_next_dir_entry(handle: cptr, allocator: Allocator): hzstd_dir_entry_t :: final;
     extern C fn hzstd_close_dir(handle: cptr): void :: final;
 }
 
@@ -346,7 +346,7 @@ export namespace fs {
             let buffer = none as cptr;
             if size > 0 {
                 // Never holds pointers, so the collector need not scan it.
-                __c__("buffer = hzstd_heap_allocate_atomic((size_t)size, \"FileReader buffer\");");
+                __c__("buffer = hzstd_heap_allocate_unscanned((size_t)size, \"FileReader buffer\");");
             }
             return FileReader { handle: handle, buffer: buffer, size: size };
         }
@@ -693,22 +693,72 @@ export namespace fs {
         };
     }
 
+    // One entry of a directory listing.
+    //
+    // There is deliberately NO `path` field, only the `path()` method, and this
+    // must not be turned back into a field. Haze wants to hand the programmer
+    // the full path of an entry as a convenience instead of making every caller
+    // join it by hand, but building it eagerly costs a heap string per entry, and
+    // a recursive scan lists thousands of entries of which the caller usually
+    // needs the path of only a few (the directories it descends into, the files
+    // it opens). So the path is computed lazily: callers that never ask pay
+    // nothing, callers that ask pay one allocation, and the convenience stays.
+    //
+    // For that, the entry must carry everything `path()` needs, so the members
+    // mean exactly this:
+    //   dir  - the path `listDir` was called with, verbatim (not the entry's path,
+    //          not its parent's name). A str is a view of immutable bytes, so every
+    //          entry of one listing shares this one string; copying it allocates
+    //          nothing.
+    //   name - the entry's own file name, without any directory part. It lives in
+    //          the listing's arena (see listDir), not in a heap block of its own.
+    // `path()` is `dir + "/" + name`.
     export struct DirEntry {
-        path: str;
+        dir: str;
         name: str;
         isFile: bool;
         isDirectory: bool;
+
+        // The entry's full path, joined with "/" on every system. Allocates one
+        // string on the heap; call it only for the entries whose path is used.
+        fn path(): str {
+            return f"{this.dir}/{this.name}";
+        }
+
+        // The same, allocated from `allocator`: a recursive scan can put every
+        // path it needs into the arena it lists into.
+        fn path(allocator: Allocator): str {
+            return fmt.formatWithAllocator(allocator, this.dir, "/", this.name);
+        }
     }
 
-    export fn listDir(path: str): Result<[]DirEntry, Error> {
+    export struct ListDirOptions {
+        // Chunk sizes of the arena the entry names go into (one arena per
+        // listing, names only). The default first chunk holds a small
+        // directory's names; raise it for directories known to be large.
+        names: ChunkPolicy = { firstBytes: 512, nextBytes: 1024 };
+    }
+
+    // The entries of the directory at `path`, in the order the system lists
+    // them. The names go into one arena of their own, labelled "fs.listDir
+    // names" in allocation traces: a small directory costs that arena and one
+    // chunk, however many entries it has.
+    export fn listDir(path: str, options: ListDirOptions = {}): Result<[]DirEntry, Error> {
+        return listDir(Alloc.arena({ label: "fs.listDir names", unscanned: options.names }), path);
+    }
+
+    // The same, with the names in `allocator`. A recursive scan passes one
+    // arena to every listDir it makes (and to DirEntry.path), so the whole walk
+    // allocates its strings from a few chunks.
+    export fn listDir(allocator: Allocator, path: str): Result<[]DirEntry, Error> {
         let r = ffi.hzstd_open_dir(path);
         if r.error != ffi.hzstd_fs_error_code_none {
             return Result<[]DirEntry, Error>.Err(mapErrorEnum(r.error));
         }
         let entries: []DirEntry = [];
-        while let e = ffi.hzstd_read_next_dir_entry(r.handle); e.valid {
+        while let e = ffi.hzstd_read_next_dir_entry(r.handle, allocator); e.valid {
             entries.push(DirEntry {
-                path: path + "/" + e.name,
+                dir: path,
                 name: e.name,
                 isFile: !e.is_dir,
                 isDirectory: e.is_dir,

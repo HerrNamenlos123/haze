@@ -55,13 +55,14 @@ fn treeRows(dir: str, depth: int, expanded: []str, out: mut []TreeRow): void :: 
         sorted.insert(at, entry);
     }
     for entry in sorted {
-        let open = entry.isDirectory && treeExpanded(expanded, entry.path);
+        let entryPath = entry.path();
+        let open = entry.isDirectory && treeExpanded(expanded, entryPath);
         out.push(TreeRow {
-            path: entry.path, name: entry.name, depth: depth,
+            path: entryPath, name: entry.name, depth: depth,
             isDir: entry.isDirectory, open: open,
         });
         if open {
-            treeRows(entry.path, depth + 1, expanded, out);
+            treeRows(entryPath, depth + 1, expanded, out);
         }
     }
 }

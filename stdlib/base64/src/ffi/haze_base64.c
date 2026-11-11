@@ -39,7 +39,7 @@ hzstd_str_t haze_base64_encode(hzstd_cptr_t data, hzstd_int_t length)
 
   // Atomic: the encoded text has no internal pointers for the collector to scan,
   // same as the raw pixel buffer in stdlib/image's haze_image.c.
-  char* out = (char*)hzstd_heap_allocate_atomic((size_t)outLength, NULL);
+  char* out = (char*)hzstd_heap_allocate_unscanned((size_t)outLength, NULL);
 
   hzstd_int_t i = 0;
   hzstd_int_t o = 0;
@@ -104,7 +104,7 @@ haze_base64_decode_result_t haze_base64_decode(hzstd_str_t data)
   hzstd_int_t outLength = (length / 4) * 3 - padding;
   void* out = NULL;
   if (outLength > 0) {
-    out = hzstd_heap_allocate_atomic((size_t)outLength, NULL);
+    out = hzstd_heap_allocate_unscanned((size_t)outLength, NULL);
   }
   unsigned char* bytesOut = (unsigned char*)out;
 

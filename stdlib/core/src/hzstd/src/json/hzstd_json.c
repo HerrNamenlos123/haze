@@ -109,7 +109,7 @@ hzstd_json_node_t *hzstd_json_create_null(hzstd_allocator_t allocator) {
 
 hzstd_bool_t hzstd_json_object_has_attribute(hzstd_json_node_t *json,
                                              hzstd_str_t name) {
-  hzstd_arena_t *arena = hzstd_arena_create("JSON scratch arena");
+  hzstd_arena_t *arena = hzstd_arena_create(HZSTD_ARENA_OPTIONS("JSON scratch arena"));
   int r = cJSON_HasObjectItemLen((cJSON *)json, name.data, name.length);
   return r;
 }

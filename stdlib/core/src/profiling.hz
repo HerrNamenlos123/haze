@@ -410,10 +410,11 @@ namespace profiling {
     fn allocationKindName(allocationType: int): str {
         if allocationType == 0 { return "Heap alloc"; }       // hz_profiler_instrument_allocation_type_heap
         if allocationType == 1 { return "Grow"; }              // hz_profiler_instrument_allocation_type_heap_realloc
-        if allocationType == 2 { return "Heap alloc"; }        // hz_profiler_instrument_allocation_type_heap_atomic
-        if allocationType == 3 { return "Create"; }            // hz_profiler_instrument_allocation_type_arena_create
+        if allocationType == 2 { return "Heap alloc"; }        // hz_profiler_instrument_allocation_type_heap_unscanned
+        if allocationType == 3 { return "Arena"; }             // hz_profiler_instrument_allocation_type_arena_create (dataType: the label)
         if allocationType == 4 { return "Arena suballoc"; }    // hz_profiler_instrument_allocation_type_arena_suballoc (unused today)
-        if allocationType == 5 { return "Grow"; }              // hz_profiler_instrument_allocation_type_arena_enlarge
+        if allocationType == 5 { return "Arena chunk (scanned)"; }   // hz_profiler_instrument_allocation_type_arena_chunk_scanned
+        if allocationType == 6 { return "Arena chunk (unscanned)"; } // hz_profiler_instrument_allocation_type_arena_chunk_unscanned
         return "Allocation";
     }
 

@@ -104,7 +104,7 @@ static void hzstd_load_args(void)
       hzstd_args[i] = (hzstd_str_t) { .data = 0, .length = 0 };
       continue;
     }
-    char *utf8 = hzstd_heap_allocate_atomic((size_t)bytes, "char");
+    char *utf8 = hzstd_heap_allocate_unscanned((size_t)bytes, "char");
     WideCharToMultiByte(CP_UTF8, 0, wide[i], -1, utf8, bytes, NULL, NULL);
     hzstd_args[i] = (hzstd_str_t) { .data = utf8, .length = bytes - 1 };
   }
@@ -366,7 +366,7 @@ static DWORD WINAPI hzstd_panic_handler_thread(LPVOID _)
     else {
       // Panic path — heap-copy the reason string so it survives longjmp.
       size_t reason_len = panic_reason.length;
-      char* reason_data = (char*)hzstd_allocate(allocator, reason_len + 1, NULL);
+      char* reason_data = (char*)hzstd_allocate_unscanned(allocator, reason_len + 1, NULL);
       memcpy(reason_data, panic_reason.data, reason_len);
       reason_data[reason_len] = '\0';
 
@@ -609,7 +609,7 @@ static inline char* read_all_handle(HANDLE h)
   // the Haze side reads it as a C string.
   DWORD chunk = 4096;
   size_t cap = chunk, len = 0;
-  char* buf = hzstd_heap_allocate_atomic(cap + 1, "process output");
+  char* buf = hzstd_heap_allocate_unscanned(cap + 1, "process output");
   for (;;) {
     if (len + chunk > cap) {
       cap *= 2;
@@ -641,7 +641,7 @@ static inline char* process_build_error_message_gc(DWORD err)
                        NULL);
   char* gc = NULL;
   if (size > 0 && msg) {
-    gc = hzstd_allocate(hzstd_make_heap_allocator(), size + 1, NULL);
+    gc = hzstd_allocate_unscanned(hzstd_make_heap_allocator(), size + 1, NULL);
     if (gc) {
       memcpy(gc, msg, size);
       gc[size] = '\0';
@@ -768,7 +768,7 @@ static inline hzstd_str_t process_read_available_gc(HANDLE h)
     return HZSTD_STRING(NULL, 0);
   }
   hzstd_allocator_t allocator = hzstd_make_heap_allocator();
-  char* buf = hzstd_allocate(allocator, available, NULL);
+  char* buf = hzstd_allocate_unscanned(allocator, available, NULL);
   DWORD read_bytes = 0;
   if (!ReadFile(h, buf, available, &read_bytes, NULL)) {
     read_bytes = 0;

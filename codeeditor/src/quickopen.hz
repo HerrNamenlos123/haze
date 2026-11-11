@@ -17,8 +17,10 @@ fn quickOpenSkips(name: str): bool {
     return name.startsWith(".") || name == "node_modules" || name == "dist" || name == "target";
 }
 
-fn quickOpenScan(dir: str, prefix: str, out: mut []str): void :: final {
-    let listed = fs.listDir(dir);
+// `arena` holds the names and folder paths of the whole walk; what goes into
+// `out` is built on the heap, since it outlives the walk.
+fn quickOpenScan(arena: Allocator, dir: str, prefix: str, out: mut []str): void :: final {
+    let listed = fs.listDir(arena, dir);
     if !listed {
         return;
     }
@@ -31,7 +33,7 @@ fn quickOpenScan(dir: str, prefix: str, out: mut []str): void :: final {
         }
         let rel = prefix.length > 0 ? f"{prefix}/{entry.name}" : entry.name;
         if entry.isDirectory {
-            quickOpenScan(entry.path, rel, out);
+            quickOpenScan(arena, entry.path(arena), rel, out);
         } else {
             out.push(rel);
         }
@@ -50,7 +52,7 @@ fn quickOpenParent(path: str): str {
 fn quickOpenItems(root: str): []fuzzymatch.Item {
     let paths: mut []str = [];
     if root.length > 0 {
-        quickOpenScan(root, "", paths);
+        quickOpenScan(Alloc.arena({ label: "quick open scan" }), root, "", paths);
     }
     return fuzzymatch.itemsFromPaths(paths);
 }

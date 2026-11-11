@@ -51,7 +51,7 @@ haze_image_result_t haze_image_load_memory(hzstd_cptr_t data, hzstd_int_t length
     // Atomic: this buffer is opaque bytes with no internal pointers, so the
     // collector doesn't need to scan it for references -- just like
     // hzstd_string.c/hzstd_utils.c do for string data.
-    gcPixels = hzstd_heap_allocate_atomic(size, NULL);
+    gcPixels = hzstd_heap_allocate_unscanned(size, NULL);
     memcpy(gcPixels, decoded, size);
   }
   stbi_image_free(decoded);
@@ -126,7 +126,7 @@ haze_image_png_result_t haze_image_encode_png(hzstd_cptr_t pixels, hzstd_int_t w
   if (!png) {
     return result;
   }
-  void* gcPng = hzstd_heap_allocate_atomic((size_t)length, NULL);
+  void* gcPng = hzstd_heap_allocate_unscanned((size_t)length, NULL);
   memcpy(gcPng, png, (size_t)length);
   STBIW_FREE(png);
   result.data = gcPng;
@@ -150,7 +150,7 @@ void* haze_image_resize(hzstd_cptr_t pixels, hzstd_int_t width, hzstd_int_t heig
   default: return NULL;
   }
   size_t size = (size_t)newWidth * (size_t)newHeight * (size_t)channels;
-  void* gcPixels = hzstd_heap_allocate_atomic(size, NULL);
+  void* gcPixels = hzstd_heap_allocate_unscanned(size, NULL);
   if (!gcPixels) {
     // Never NULL to stbir: it would allocate a buffer of its own instead.
     return NULL;

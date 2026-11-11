@@ -128,7 +128,7 @@ static void hz_zlib_reserve(hz_zlib_deflater_t* d, int64_t extra)
     cap *= 2;
   }
   // Atomic: compressed bytes hold no pointers for the collector to follow.
-  d->out = d->out ? hzstd_heap_realloc(d->out, (size_t)cap, NULL) : hzstd_heap_allocate_atomic((size_t)cap, NULL);
+  d->out = d->out ? hzstd_heap_realloc(d->out, (size_t)cap, NULL) : hzstd_heap_allocate_unscanned((size_t)cap, NULL);
   d->outCap = cap;
 }
 
@@ -790,11 +790,11 @@ hzstd_cptr_t hz_zlib_deflater_create(hzstd_int_t level)
   hz_zlib_deflater_t* d = hzstd_heap_allocate(sizeof(hz_zlib_deflater_t), NULL);
   memset(d, 0, sizeof(*d));
   d->cap = HZ_ZLIB_WSIZE + HZ_ZLIB_LOOKAHEAD + HZ_ZLIB_CHUNK;
-  d->buf = hzstd_heap_allocate_atomic((size_t)d->cap, NULL);
-  d->head = hzstd_heap_allocate_atomic(sizeof(uint32_t) * HZ_ZLIB_HASH_SIZE, NULL);
-  d->prev = hzstd_heap_allocate_atomic(sizeof(uint16_t) * HZ_ZLIB_WSIZE, NULL);
-  d->symDist = hzstd_heap_allocate_atomic(sizeof(uint16_t) * HZ_ZLIB_BLOCK_SYMBOLS, NULL);
-  d->symValue = hzstd_heap_allocate_atomic(HZ_ZLIB_BLOCK_SYMBOLS, NULL);
+  d->buf = hzstd_heap_allocate_unscanned((size_t)d->cap, NULL);
+  d->head = hzstd_heap_allocate_unscanned(sizeof(uint32_t) * HZ_ZLIB_HASH_SIZE, NULL);
+  d->prev = hzstd_heap_allocate_unscanned(sizeof(uint16_t) * HZ_ZLIB_WSIZE, NULL);
+  d->symDist = hzstd_heap_allocate_unscanned(sizeof(uint16_t) * HZ_ZLIB_BLOCK_SYMBOLS, NULL);
+  d->symValue = hzstd_heap_allocate_unscanned(HZ_ZLIB_BLOCK_SYMBOLS, NULL);
   memset(d->head, 0, sizeof(uint32_t) * HZ_ZLIB_HASH_SIZE);
   memset(d->prev, 0, sizeof(uint16_t) * HZ_ZLIB_WSIZE);
   d->adlerA = 1;

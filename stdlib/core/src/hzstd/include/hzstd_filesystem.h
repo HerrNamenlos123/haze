@@ -88,7 +88,15 @@ hzstd_fs_error_t hzstd_fs_move(hzstd_str_t src, hzstd_str_t dst, hzstd_fs_copy_o
 hzstd_file_stat_t hzstd_file_stat(hzstd_str_t path);
 
 hzstd_open_dir_result_t hzstd_open_dir(hzstd_str_t path);
-hzstd_dir_entry_t hzstd_read_next_dir_entry(void* handle);
+// Up to `count` bytes of stdin into dest, raw on every system; fewer only at
+// the end of the input. Returns how many.
+hzstd_int_t hzstd_stdin_read(void* dest, hzstd_int_t count);
+// Up to `room` bytes of the current stdin line into dest, the '\n' included
+// when it comes (see hzstd_stdin_line_part_t).
+hzstd_stdin_line_part_t hzstd_stdin_read_line_part(void* dest, hzstd_int_t room);
+
+// The entry name is copied into `allocator` (unscanned).
+hzstd_dir_entry_t hzstd_read_next_dir_entry(void* handle, hzstd_allocator_t allocator);
 void hzstd_close_dir(void* handle);
 
 // One directory, never its parents; already_exists when anything is at the path

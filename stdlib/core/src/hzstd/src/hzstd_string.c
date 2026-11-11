@@ -9,13 +9,13 @@
 hzstd_cstr_t hzstd_cstr_from_str(hzstd_allocator_t allocator, hzstd_str_t data)
 {
   if (data.length > 0) {
-    hzstd_cstr_t buffer = hzstd_allocate(allocator, data.length + 1, NULL);
+    hzstd_cstr_t buffer = hzstd_allocate_unscanned(allocator, data.length + 1, NULL);
     memcpy(buffer, data.data, data.length);
     buffer[data.length] = '\0';
     return buffer;
   }
   else {
-    hzstd_cstr_t buffer = hzstd_allocate(allocator, 1, NULL);
+    hzstd_cstr_t buffer = hzstd_allocate_unscanned(allocator, 1, NULL);
     buffer[0] = '\0';
     return buffer;
   }
@@ -39,7 +39,7 @@ hzstd_str_t hzstd_str_from_ccstr_ref(hzstd_ccstr_t data)
 
 hzstd_str_t hzstd_str_dup(hzstd_str_t data)
 {
-  char *buffer = hzstd_heap_allocate_atomic(data.length, NULL);
+  char *buffer = hzstd_heap_allocate_unscanned(data.length, NULL);
   memcpy(buffer, data.data, data.length);
   return HZSTD_STRING(buffer, data.length);
 }
@@ -90,7 +90,7 @@ hzstd_str_t hzstd_utf8_sanitize_dup(const char *bytes, size_t length)
 {
   const unsigned char *s = (const unsigned char *)bytes;
   // Worst case every byte becomes the 3-byte U+FFFD.
-  char *out = hzstd_heap_allocate_atomic(length * 3 + 1, "char");
+  char *out = hzstd_heap_allocate_unscanned(length * 3 + 1, "char");
   size_t o = 0;
   for (size_t i = 0; i < length;) {
     size_t n = hzstd_utf8_valid_sequence(s, i, length);
@@ -118,7 +118,7 @@ hzstd_str_t hzstd_str_from_cstr_dup(hzstd_allocator_t allocator, hzstd_cstr_t da
     return (hzstd_str_t) { .length = 0, .data = 0 };
   }
   else {
-    char *buffer = hzstd_allocate_atomic(allocator, length, NULL);
+    char *buffer = hzstd_allocate_unscanned(allocator, length, NULL);
     memcpy(buffer, data, length);
     return (hzstd_str_t) {
       .data = buffer,

@@ -82,7 +82,7 @@ static void hz_pdf_buffer_reserve(hz_pdf_buffer_t* b, int64_t extra)
     cap *= 2;
   }
   // Atomic: text, no pointers for the collector to follow.
-  b->data = b->data ? hzstd_heap_realloc(b->data, (size_t)cap, NULL) : hzstd_heap_allocate_atomic((size_t)cap, NULL);
+  b->data = b->data ? hzstd_heap_realloc(b->data, (size_t)cap, NULL) : hzstd_heap_allocate_unscanned((size_t)cap, NULL);
   b->cap = cap;
 }
 
@@ -144,7 +144,7 @@ hzstd_str_t hz_pdf_format_number(hzstd_real_t value, hzstd_int_t decimals)
   }
   char text[40];
   int n = hz_pdf_format(value, (int)decimals, hz_pdf_powers[decimals], text);
-  char* data = hzstd_heap_allocate_atomic((size_t)n, NULL);
+  char* data = hzstd_heap_allocate_unscanned((size_t)n, NULL);
   memcpy(data, text, (size_t)n);
   return (hzstd_str_t) { .data = data, .length = n };
 }
@@ -225,7 +225,7 @@ hzstd_cptr_t hz_pdf_extract_channels(hzstd_cptr_t pixels_, hzstd_int_t pixelCoun
   const unsigned char* pixels = (const unsigned char*)pixels_;
   size_t size = (size_t)(pixelCount * count);
   // Atomic: pixel bytes, no pointers.
-  unsigned char* out = hzstd_heap_allocate_atomic(size > 0 ? size : 1, NULL);
+  unsigned char* out = hzstd_heap_allocate_unscanned(size > 0 ? size : 1, NULL);
   if (channels == 4 && first == 0 && count == 3) {
     for (int64_t i = 0; i < pixelCount; i++) {
       out[i * 3] = pixels[i * 4];

@@ -149,12 +149,18 @@ let allFiles = shallowReactive<VaultFS | none>(none);
 // While every file is shown, the vault is walked once for both indexes.
 let refreshVault = () => {
     if rx.get(showAll) {
-        let everything = indexFolder(props.vaultPath, 0, true).entries;
+        let everything = indexFolder(Alloc.arena({ label: "vault index (all files)" }), props.vaultPath, 0, true).entries;
         allFiles := VaultFS { entries: rx.reactive<[]FSEntry>(everything) };
         props.cache.data.vault := VaultFS { entries: rx.reactive<[]FSEntry>(withoutGhosts(everything)) };
         return;
     }
-    props.cache.data.vault := indexVault(props.vaultPath);
+    let index = indexVault(props.vaultPath, ArenaUsage {
+        scanned: rx.get(props.cache.data.indexArenaScanned),
+        unscanned: rx.get(props.cache.data.indexArenaUnscanned),
+    });
+    props.cache.data.vault := index.vault;
+    props.cache.data.indexArenaScanned := index.arenaUsage.scanned;
+    props.cache.data.indexArenaUnscanned := index.arenaUsage.unscanned;
 };
 
 ui.watch(() => rx.get(showAll), (value, old) => {

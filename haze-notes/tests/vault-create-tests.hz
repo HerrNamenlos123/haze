@@ -49,9 +49,23 @@ fn fixtureDir(): str {
     return f"{base}/haze-notes-vault-create-tests";
 }
 
+// How many unscanned chunks the arena of one indexVault(path, hint) takes.
+fn indexArenaChunks(path: str, hint: ArenaUsage): int {
+    let p = Profiler({ samplingRate: 0, memoryInstrumentation: true, memoryInstrumentationStacktraces: false });
+    indexVault(path, hint);
+    let r = p.stop();
+    let chunks = 0;
+    for frame in r.memoryInstrumentationFrames {
+        if frame.dataType == "vault index" && frame.allocationType == 6 {
+            chunks = chunks + 1;
+        }
+    }
+    return chunks;
+}
+
 // The whole tree, every folder open, one row per line.
 fn treeText(root: str): str {
-    let index = indexDirectory(root);
+    let index = indexDirectory(Alloc.arena(), root);
     let open: []str = [];
     collectFolders(index, open);
     let rows: []TreeRow = [];
@@ -67,7 +81,7 @@ fn treeText(root: str): str {
 
 // Every file, every folder open, ghosts marked with "~".
 fn allText(root: str): str {
-    let index = indexFolder(root, 0, true).entries;
+    let index = indexFolder(Alloc.arena(), root, 0, true).entries;
     let open: []str = [];
     collectFolders(index, open);
     let rows: []TreeRow = [];
@@ -295,16 +309,16 @@ fn main(): int {
     state.checkStr("notes only: the same vault without its ghosts",
         treeText(everything),
         "> Kept\n> Mixed\n  - inner\n- note\n");
-    let saved = json.stringify(indexFolder(everything, 0, true).entries);
+    let saved = json.stringify(indexFolder(Alloc.arena(), everything, 0, true).entries);
     state.check("a ghost is never saved", !saved.contains("ghost"));
     // The notes index inside the one of every file is the notes index, so a
     // vault is walked once for both.
     state.checkStr("every file without its ghosts is the notes index",
-        json.stringify(withoutGhosts(indexFolder(everything, 0, true).entries)),
-        json.stringify(indexFolder(everything, 0, false).entries));
+        json.stringify(withoutGhosts(indexFolder(Alloc.arena(), everything, 0, true).entries)),
+        json.stringify(indexFolder(Alloc.arena(), everything, 0, false).entries));
     state.checkStr("for the whole fixture too",
-        json.stringify(withoutGhosts(indexFolder(root, 0, true).entries)),
-        json.stringify(indexFolder(root, 0, false).entries));
+        json.stringify(withoutGhosts(indexFolder(Alloc.arena(), root, 0, true).entries)),
+        json.stringify(indexFolder(Alloc.arena(), root, 0, false).entries));
 
     // ── Keeping a folder ────────────────────────────────────────────
     state.check("a folder with a keep file is kept", hasKeepFile(f"{everything}/Kept"));
@@ -333,6 +347,37 @@ fn main(): int {
     state.checkStr("letting go of a kept folder with no note", setFolderKept(f"{everything}/Kept", false), "");
     state.checkStr("takes it out of the tree", treeText(everything), "> Mixed\n  - inner\n- note\n");
     state.checkStr("and keeps its files", textOf(f"{everything}/Kept/photo.png"), "png");
+
+    // ── The index arena ─────────────────────────────────────────────
+    // An index measures its arena; handed that measurement, the next index
+    // of the same vault fits into one chunk of exactly that size (+1%).
+    let big = fixtureDir();
+    for (let w = 0; w < 3; w++) {
+        for (let n = 0; n < 10; n++) {
+            fs.writeText(f"{big}/Week {w}/Lecture notes {n}.hznote", "{}");
+        }
+    }
+    let noHint = ArenaUsage { scanned: 0, unscanned: 0 };
+    let usage = indexVault(big, noHint).arenaUsage;
+    state.check("the index measures its arena: names and paths, nothing scanned", usage.unscanned > 0 && usage.scanned == 0);
+    let grown = indexArenaChunks(big, noHint);
+    state.check(f"without a measurement the arena grows chunk by chunk ({grown})", grown > 1);
+    let sized = indexArenaChunks(big, usage);
+    state.check(f"with it, the whole index is one chunk ({sized})", sized == 1);
+    state.check("using the same bytes", indexVault(big, usage).arenaUsage.unscanned == usage.unscanned);
+    // 1% of this small vault is less than one note's name and path.
+    fs.writeText(f"{big}/Week 0/One more.hznote", "{}");
+    let grownBy = indexArenaChunks(big, usage);
+    state.check(f"a note more than measured: one chunk more ({grownBy})", grownBy == 2);
+    state.check("and it is in the index", treeText(big).contains("One more"));
+    fs.removeFile(f"{big}/Week 0/One more.hznote");
+    for (let w = 0; w < 3; w++) {
+        for (let n = 0; n < 10; n++) {
+            fs.removeFile(f"{big}/Week {w}/Lecture notes {n}.hznote");
+        }
+        fs.removeEmptyDirectory(f"{big}/Week {w}");
+    }
+    state.check("its fixture is gone again", fs.removeEmptyDirectory(big) ? true : false);
 
     fmt.println(f"vault-create-tests: {state.checks - state.failures}/{state.checks} passed");
     return state.failures == 0 ? 0 : 1;
