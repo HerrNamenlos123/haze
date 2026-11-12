@@ -97,7 +97,7 @@ fn makeContext(): ui_layout.LayoutContext {
 // parent's size instead of the element's own) produces a visibly wrong
 // number rather than an accidentally-correct one.
 fn translatedTree(tx: real, ty: real, position: ui_styling.Position): ui_elements.Element {
-    let box = ui_elements.DivElement({
+    let box = ui_elements.DivElement {
         id: 0,
         globalId: "root/box",
         style: {
@@ -108,14 +108,14 @@ fn translatedTree(tx: real, ty: real, position: ui_styling.Position): ui_element
             translate: { x: tx, y: ty },
             backgroundColor: Color(1.0, 0.0, 0.0, 1.0),
         },
-    });
+    };
 
-    return ui_elements.DivElement({
+    return ui_elements.DivElement {
         id: 0,
         globalId: "root",
         children: [box],
         style: { width: 800.0, height: 600.0, backgroundColor: Color(0.0, 0.0, 0.0, 1.0) },
-    });
+    };
 }
 
 fn main(): int {
@@ -180,7 +180,7 @@ fn main(): int {
     // translated ABSOLUTE box sits alongside two in-flow siblings; the
     // siblings must land exactly where they would with no translate at all.
     let makeFlowTree = (tx: real, ty: real): ui_elements.Element => {
-        let floater = ui_elements.DivElement({
+        let floater = ui_elements.DivElement {
             id: 0,
             globalId: "root/floater",
             style: {
@@ -191,23 +191,23 @@ fn main(): int {
                 translate: { x: tx, y: ty },
                 backgroundColor: Color(1.0, 0.0, 0.0, 1.0),
             },
-        });
-        let first = ui_elements.DivElement({
+        };
+        let first = ui_elements.DivElement {
             id: 0,
             globalId: "root/first",
             style: { width: 30.0, height: 60.0, backgroundColor: Color(0.0, 1.0, 0.0, 1.0) },
-        });
-        let second = ui_elements.DivElement({
+        };
+        let second = ui_elements.DivElement {
             id: 0,
             globalId: "root/second",
             style: { width: 50.0, height: 70.0, backgroundColor: Color(0.0, 0.0, 1.0, 1.0) },
-        });
-        return ui_elements.DivElement({
+        };
+        return ui_elements.DivElement {
             id: 0,
             globalId: "root",
             children: [floater, first, second],
             style: { width: 800.0, height: 600.0, backgroundColor: Color(0.0, 0.0, 0.0, 1.0) },
-        });
+        };
     };
 
     let flowUntranslated = Recorder {};

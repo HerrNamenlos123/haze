@@ -802,18 +802,9 @@ export ref struct InputFeedback {
 
 // One entry in a parent element's own child-element cache -- see
 // ComponentElementRuntimeData.childElements below. Keyed by the child's bare
-// per-level id (unique only among its siblings, not globally), so finding an
-// already-created child never needs this module's slash-separated idPath
-// convention -- that convention still exists (see childIdPath()) but is only
-// ever computed once, the moment a given child is first created, and stored
-// permanently here afterwards.
+// per-level id (unique only among its siblings, not globally).
 export struct ChildElementEntry {
     id: int;
-    // Full slash-separated id path from the component root, computed once
-    // via childIdPath() when this entry was first created and never touched
-    // again. Not used for lookup -- kept only so this element's full path
-    // remains available without re-deriving it (e.g. for diagnostics).
-    path: str;
     element: mut ui_elements.Element;
 }
 
@@ -994,55 +985,19 @@ export fn runtimeDataOf(element: ui_elements.Element): ComponentElementRuntimeDa
     }
 }
 
-// Same convention ui_layout.hz uses to build its idPath while walking the
-// rendered tree, kept in sync here so both sides agree on what "the path to
-// this element" means. Only ever called when an element is first created
-// (see getOrCreateDiv/Text/Canvas below) -- every later frame's lookup for
-// that same element is a plain per-parent id comparison and never reaches
-// this function, which is the one that used to run, and allocate a fresh
-// string, for every element on every frame.
-fn childIdPath(parentPath: str, id: int): str {
-    return parentPath == "" ? f"{id}" : parentPath + "/" + f"{id}";
-}
-
 // A new element's own globally-unique id across the whole tree: its
 // parent's own globalId (see DivElement.globalId's own comment) extended
-// with its local `id`. Distinct from childIdPath() above -- that one is a
-// different, component-scoped convention this module only uses for its own
-// diagnostics; this is the one ui_layout actually registers elements with
-// Clay under, and the one AnchorTarget resolves anchorTo() targets through.
+// with its local `id`: the id ui_layout registers elements with Clay under,
+// and the one AnchorTarget resolves anchorTo() targets through.
 // Only ever called once per element, right here at creation, with an
 // already-constructed `parent`, whose own globalId is therefore always
 // already known (all the way up to the tree root -- see
 // makeCurrentComponentAvailable, the only place that ever mints one from
 // scratch instead of extending a parent's).
 fn childGlobalId(parent: ui_elements.DivElement, id: int): str {
-    return parent.globalId + "/" + f"{id}";
+    return f"{parent.globalId}/{id}";
 }
 
-struct DivLookup {
-    element: mut ui_elements.DivElement;
-    path: str;
-}
-
-struct TextLookup {
-    element: mut ui_elements.TextElement;
-    path: str;
-}
-
-struct CanvasLookup {
-    element: mut ui_elements.CanvasElement;
-    path: str;
-}
-
-// Finds `id`'s existing child of `parent`, or creates and caches a new one --
-// see ComponentElementRuntimeData.childElements for why this is a per-parent
-// cache keyed by plain id instead of one flat component-wide cache keyed by
-// full path. `parentPath` (parent's own full path, cheap to pass down --
-// it's just a stored string, not something built fresh here) is only read on
-// a genuine miss, to compute and permanently store this new element's own
-// full path; an existing element's path is read back off its cache entry
-// instead of being recomputed.
 // An element's own declaration id, across the union. Used to tell whether a
 // child slot is being filled with the SAME element as last frame: ids are
 // unique within one parent (getOrCreate* keys its cache on them, and asserts
@@ -1062,49 +1017,49 @@ fn elementDeclarationId(element: ui_elements.Element): int {
     return element.id;
 }
 
-fn getOrCreateDiv(parent: mut ui_elements.DivElement, id: int, parentPath: str): DivLookup {
+// Finds `id`'s existing child of `parent`, or creates and caches a new one --
+// see ComponentElementRuntimeData.childElements for why this is a per-parent
+// cache keyed by plain id instead of one flat component-wide cache.
+fn getOrCreateDiv(parent: mut ui_elements.DivElement, id: int): mut ui_elements.DivElement {
     let parentData = runtimeDataOf(parent);
     for n in parentData.childElements {
         if n.id == id {
             assert(n.element is mut ui_elements.DivElement, "Div expected but other node type encountered");
-            return { element: n.element, path: n.path };
+            return n.element;
         }
     }
-    let path = childIdPath(parentPath, id);
-    let newElement = ui_elements.DivElement({ id: id, globalId: childGlobalId(parent, id), style: {} });
+    let newElement = ui_elements.DivElement { id: id, globalId: childGlobalId(parent, id), style: {} };
     runtimeDataOf(newElement).owner = parentData.owner;
-    parentData.childElements.push({ id: id, path: path, element: newElement });
-    return { element: newElement, path: path };
+    parentData.childElements.push({ id: id, element: newElement });
+    return newElement;
 }
 
-fn getOrCreateText(parent: ui_elements.DivElement, id: int, parentPath: str): TextLookup {
+fn getOrCreateText(parent: ui_elements.DivElement, id: int): mut ui_elements.TextElement {
     let parentData = runtimeDataOf(parent);
     for n in parentData.childElements {
         if n.id == id {
             assert(n.element is mut ui_elements.TextElement, "Text element expected but other node type encountered");
-            return { element: n.element, path: n.path };
+            return n.element;
         }
     }
-    let path = childIdPath(parentPath, id);
-    let newElement = ui_elements.TextElement({ id: id, globalId: childGlobalId(parent, id), text: "", style: {} });
+    let newElement = ui_elements.TextElement { id: id, globalId: childGlobalId(parent, id), text: "", style: {} };
     runtimeDataOf(newElement).owner = parentData.owner;
-    parentData.childElements.push({ id: id, path: path, element: newElement });
-    return { element: newElement, path: path };
+    parentData.childElements.push({ id: id, element: newElement });
+    return newElement;
 }
 
-fn getOrCreateCanvas(parent: mut ui_elements.DivElement, id: int, parentPath: str): CanvasLookup {
+fn getOrCreateCanvas(parent: mut ui_elements.DivElement, id: int): mut ui_elements.CanvasElement {
     let parentData = runtimeDataOf(parent);
     for n in parentData.childElements {
         if n.id == id {
             assert(n.element is mut ui_elements.CanvasElement, "Canvas element expected but other node type encountered");
-            return { element: n.element, path: n.path };
+            return n.element;
         }
     }
-    let path = childIdPath(parentPath, id);
-    let newElement = ui_elements.CanvasElement({ id: id, globalId: childGlobalId(parent, id), style: {} });
+    let newElement = ui_elements.CanvasElement { id: id, globalId: childGlobalId(parent, id), style: {} };
     runtimeDataOf(newElement).owner = parentData.owner;
-    parentData.childElements.push({ id: id, path: path, element: newElement });
-    return { element: newElement, path: path };
+    parentData.childElements.push({ id: id, element: newElement });
+    return newElement;
 }
 
 // Reactive accessors over an element's layout/input feedback. These used to
@@ -1541,12 +1496,54 @@ fn runWatchJob(job: rx.WatchJob, owner: ComponentInstance | null) {
     }
 }
 
+// What a scheduled handler is (see QueuedHandler), and so how the FIRE phase
+// calls it (UIContext.fireQueued).
+export enum QueuedHandlerKind {
+    // A handler of the pointer, wheel, key, text or focus event being
+    // dispatched: skipped once a handler before it stopped that event.
+    Pointer,
+    Wheel,
+    Key,
+    TextInput,
+    Focus,
+    // A hover/hit enter or leave: gets a fresh event of its own, made when it
+    // fires from the pointer as it was when the transition was found.
+    PointerTransition,
+    // The framework's own default action for Tab (moveFocusByTab), unless a
+    // key handler called preventDefault().
+    TabFocus,
+}
+
 // One handler scheduled for the FIRE phase (see process()), with the
 // component whose element it was found on: it runs as that component's code
 // (runComponentCode). null for the framework's own default actions.
+//
+// Plain data, never a closure: `kind` says which of the fields below are set,
+// and the FIRE phase calls the callback on the event they name. A closure per
+// scheduled handler was a heap allocation per handler per event. An entry is
+// never written after it is queued, so a copy of it cannot go stale.
 export struct QueuedHandler {
     owner: ComponentInstance | null;
-    fire: () => void;
+    kind: QueuedHandlerKind;
+    pointerFn?: (e: PointerEvent) => none;
+    pointerEvent?: PointerEvent;
+    wheelFn?: (e: WheelEvent) => none;
+    wheelEvent?: WheelEvent;
+    keyFn?: (e: KeyboardEvent) => none;
+    keyEvent?: KeyboardEvent;
+    textFn?: (e: TextInputEvent) => none;
+    textEvent?: TextInputEvent;
+    focusFn?: (e: FocusEvent) => none;
+    focusEvent?: FocusEvent;
+    // Wheel: where along the dispatch path the handler sits, recorded as
+    // WheelEvent._consumedAt when it is the one that stops the event.
+    pathIndex: int = -1;
+    // PointerTransition: the pointer when the transition was found.
+    pointerPos: Vec2 | none = none;
+    pointerButtons: PointerButtons = PointerButtons.None;
+    // TabFocus: the tree focus moves through, and which way.
+    tabTree: ui_elements.Element | none = none;
+    tabBackwards: bool = false;
 }
 
 export ref struct ComponentInstance {
@@ -1612,11 +1609,11 @@ export ref struct ComponentInstance {
         // there: a component boundary must be a transparent pass-through by
         // default, not a Fit box that blocks an ancestor's Grow from reaching
         // a descendant that wants it.
-        let rootElement = ui_elements.DivElement({
+        let rootElement = ui_elements.DivElement {
             id: id,
             globalId: childGlobalId(parentElement, id),
             style: { width: ui_styling.SizeMode.Grow, height: ui_styling.SizeMode.Grow },
-        });
+        };
         let instance = ComponentInstance {
             id: id,
             rootElement: rootElement,
@@ -1742,14 +1739,6 @@ fn destroyComponent(component: ComponentInstance): void :: final {
 export struct RenderContext {
     currentComponent: ComponentInstance;
     currentParent: mut ui_elements.DivElement;
-    // currentParent's own full slash-separated id path from the component
-    // root (e.g. "0/3"), mirroring the idPath convention ui_layout.hz uses
-    // for the same tree. Carried down purely so a *newly created* child can
-    // compute and permanently store its own full path (see childIdPath() and
-    // getOrCreateDiv/Text/Canvas) -- element lookup itself is now keyed by
-    // the bare per-level id against currentParent's own child cache (see
-    // ComponentElementRuntimeData.childElements), never against this path.
-    idPath: str;
     // How many of currentParent.children have been (re-)declared so far in
     // this build pass -- see attachChild()/truncateChildrenToCursor(). Starts
     // at 0 for free every time a fresh RenderContext is pushed; nothing needs
@@ -2038,8 +2027,8 @@ export type ProvideFontCallback = (name: str, bytes: Bytes) => void;
 //
 // Exported only because UIContext holds a field of this type: a name used from
 // inside a struct body is resolved against the module's EXPORTED declarations,
-// so a module-private struct works as a free function's return type (DivLookup
-// above) but not as a member's. Same reason RenderContext, ChildElementEntry
+// so a module-private struct works as a free function's return type but not
+// as a member's. Same reason RenderContext, ChildElementEntry
 // and PendingPointerEvent are exported.
 export struct ProvidedFont {
     name: str;
@@ -2959,13 +2948,7 @@ export opaque ref struct UIContext {
             if !ui_contains(layer, target) {
                 let cb = runtimeDataOf(layer).onPointerDownOutside;
                 if cb {
-                    // Narrowed copy for the closure: an enclosing narrowing does not
-                    // reach into a closure that runs later (the FIRE phase).
-                    let fire = cb;
-                    eventQueue.push({ owner: runtimeDataOf(layer).owner, fire: (): void => {
-                        if event._stopped { return; }
-                        fire(event);
-                    } });
+                    eventQueue.push({ owner: runtimeDataOf(layer).owner, kind: QueuedHandlerKind.Pointer, pointerFn: cb, pointerEvent: event });
                 }
             }
             i = i + 1;
@@ -2984,13 +2967,7 @@ export opaque ref struct UIContext {
                 let cb = runtimeDataOf(layer).onFocusOutside;
                 if cb {
                     let event = FocusEvent { relatedTarget: newTarget };
-                    // Narrowed copy for the closure: an enclosing narrowing does not
-                    // reach into a closure that runs later (the FIRE phase).
-                    let fire = cb;
-                    eventQueue.push({ owner: runtimeDataOf(layer).owner, fire: (): void => {
-                        if event._stopped { return; }
-                        fire(event);
-                    } });
+                    eventQueue.push({ owner: runtimeDataOf(layer).owner, kind: QueuedHandlerKind.Focus, focusFn: cb, focusEvent: event });
                 }
             }
             i = i + 1;
@@ -3104,13 +3081,7 @@ export opaque ref struct UIContext {
             else if kind == FocusEventKind.Focus { cb = data.onFocusCapture; }
             else { cb = data.onFocusInCapture; }
             if cb {
-                // Narrowed copy for the closure: an enclosing narrowing does not
-                // reach into a closure that runs later (the FIRE phase).
-                let fire = cb;
-                eventQueue.push({ owner: data.owner, fire: (): void => {
-                    if event._stopped { return; }
-                    fire(event);
-                } });
+                eventQueue.push({ owner: data.owner, kind: QueuedHandlerKind.Focus, focusFn: cb, focusEvent: event });
             }
             i = i + 1;
         }
@@ -3130,13 +3101,7 @@ export opaque ref struct UIContext {
             else if kind == FocusEventKind.Focus { cb = data.onFocus; }
             else { cb = data.onFocusIn; }
             if cb {
-                // Narrowed copy for the closure: an enclosing narrowing does not
-                // reach into a closure that runs later (the FIRE phase).
-                let fire = cb;
-                eventQueue.push({ owner: data.owner, fire: (): void => {
-                    if event._stopped { return; }
-                    fire(event);
-                } });
+                eventQueue.push({ owner: data.owner, kind: QueuedHandlerKind.Focus, focusFn: cb, focusEvent: event });
             }
             if !bubbles {
                 return;
@@ -3289,15 +3254,7 @@ export opaque ref struct UIContext {
 
             let cb = hover ? data.onHoverEnter : data.onHoverLeave;
             if cb {
-                // Narrowed copy for the closure: an enclosing narrowing does not
-                // reach into a closure that runs later (the FIRE phase).
-                let fire = cb;
-                let pos = mousePos;
-                let b = buttons;
-                eventQueue.push({ owner: data.owner, fire: (): void => {
-                    let e = PointerEvent { pointerId: 1, pointerType: "mouse", pos: pos, button: PointerButton.None, buttons: b, pressure: 0.0, isPrimary: true, modifiers: this.currentModifiers() };
-                    fire(e);
-                } });
+                eventQueue.push({ owner: data.owner, kind: QueuedHandlerKind.PointerTransition, pointerFn: cb, pointerPos: mousePos, pointerButtons: buttons });
             }
             // Deliberately NOT resetting pointerDownHere here on hover-loss.
             // A click's eligibility is decided purely by "was this element in
@@ -3319,15 +3276,7 @@ export opaque ref struct UIContext {
 
             let cb = hit ? data.onHitEnter : data.onHitLeave;
             if cb {
-                // Narrowed copy for the closure: an enclosing narrowing does not
-                // reach into a closure that runs later (the FIRE phase).
-                let fire = cb;
-                let pos = mousePos;
-                let b = buttons;
-                eventQueue.push({ owner: data.owner, fire: (): void => {
-                    let e = PointerEvent { pointerId: 1, pointerType: "mouse", pos: pos, button: PointerButton.None, buttons: b, pressure: 0.0, isPrimary: true, modifiers: this.currentModifiers() };
-                    fire(e);
-                } });
+                eventQueue.push({ owner: data.owner, kind: QueuedHandlerKind.PointerTransition, pointerFn: cb, pointerPos: mousePos, pointerButtons: buttons });
             }
         }
 
@@ -3383,6 +3332,65 @@ export opaque ref struct UIContext {
         }
     }
 
+    // Runs one scheduled handler (see QueuedHandler). An entry missing the
+    // fields its kind needs is a scheduling bug, and panics.
+    fn fireQueued(queued: QueuedHandler): void :: final {
+        let kind = queued.kind;
+        if kind == QueuedHandlerKind.Pointer {
+            if let f = queued.pointerFn {
+                if let e = queued.pointerEvent {
+                    if !e._stopped { f(e); }
+                    return;
+                }
+            }
+        } else if kind == QueuedHandlerKind.Wheel {
+            if let f = queued.wheelFn {
+                if let e = queued.wheelEvent {
+                    if e._stopped { return; }
+                    f(e);
+                    if e._stopped && e._consumedAt < 0 { e._consumedAt = queued.pathIndex; }
+                    return;
+                }
+            }
+        } else if kind == QueuedHandlerKind.Key {
+            if let f = queued.keyFn {
+                if let e = queued.keyEvent {
+                    if !e._stopped { f(e); }
+                    return;
+                }
+            }
+        } else if kind == QueuedHandlerKind.TextInput {
+            if let f = queued.textFn {
+                if let e = queued.textEvent {
+                    if !e._stopped { f(e); }
+                    return;
+                }
+            }
+        } else if kind == QueuedHandlerKind.Focus {
+            if let f = queued.focusFn {
+                if let e = queued.focusEvent {
+                    if !e._stopped { f(e); }
+                    return;
+                }
+            }
+        } else if kind == QueuedHandlerKind.PointerTransition {
+            if let f = queued.pointerFn {
+                if let pos = queued.pointerPos {
+                    f(PointerEvent { pointerId: 1, pointerType: "mouse", pos: pos, button: PointerButton.None, buttons: queued.pointerButtons, pressure: 0.0, isPrimary: true, modifiers: this.currentModifiers() });
+                    return;
+                }
+            }
+        } else if kind == QueuedHandlerKind.TabFocus {
+            if let e = queued.keyEvent {
+                if let tree = queued.tabTree {
+                    if !e._defaultPrevented { this.moveFocusByTab(tree, queued.tabBackwards); }
+                    return;
+                }
+            }
+        }
+        sys.panic("ui_components: a queued handler lacks the fields its kind needs");
+    }
+
     // Schedules a pointer event along hitPath from root down to target onto
     // `eventQueue` -- the capture phase. Always scheduled before the
     // corresponding bubble-phase pass for the same event (see process()), so
@@ -3396,13 +3404,7 @@ export opaque ref struct UIContext {
             else if kind == PointerEventKind.Up { cb = data.onPointerUpCapture; }
             else if kind == PointerEventKind.Move { cb = data.onPointerMoveCapture; }
             if cb {
-                // Narrowed copy for the closure: an enclosing narrowing does not
-                // reach into a closure that runs later (the FIRE phase).
-                let fire = cb;
-                eventQueue.push({ owner: data.owner, fire: (): void => {
-                    if event._stopped { return; }
-                    fire(event);
-                } });
+                eventQueue.push({ owner: data.owner, kind: QueuedHandlerKind.Pointer, pointerFn: cb, pointerEvent: event });
             }
             i = i + 1;
         }
@@ -3425,15 +3427,7 @@ export opaque ref struct UIContext {
             let data = runtimeDataOf(hitPath[i]);
             let cb = data.onWheelCapture;
             if cb {
-                // Narrowed copy for the closure: an enclosing narrowing does not
-                // reach into a closure that runs later (the FIRE phase).
-                let fire = cb;
-                let index = i;
-                eventQueue.push({ owner: data.owner, fire: (): void => {
-                    if event._stopped { return; }
-                    fire(event);
-                    if event._stopped && event._consumedAt < 0 { event._consumedAt = index; }
-                } });
+                eventQueue.push({ owner: data.owner, kind: QueuedHandlerKind.Wheel, wheelFn: cb, wheelEvent: event, pathIndex: i });
             }
             i = i + 1;
         }
@@ -3447,15 +3441,7 @@ export opaque ref struct UIContext {
             let data = runtimeDataOf(hitPath[i]);
             let cb = data.onWheel;
             if cb {
-                // Narrowed copy for the closure: an enclosing narrowing does not
-                // reach into a closure that runs later (the FIRE phase).
-                let fire = cb;
-                let index = i;
-                eventQueue.push({ owner: data.owner, fire: (): void => {
-                    if event._stopped { return; }
-                    fire(event);
-                    if event._stopped && event._consumedAt < 0 { event._consumedAt = index; }
-                } });
+                eventQueue.push({ owner: data.owner, kind: QueuedHandlerKind.Wheel, wheelFn: cb, wheelEvent: event, pathIndex: i });
             }
             i = i - 1;
         }
@@ -3473,13 +3459,7 @@ export opaque ref struct UIContext {
             if kind == KeyEdgeKind.Pressed { cb = data.onKeyDownCapture; }
             else { cb = data.onKeyUpCapture; }
             if cb {
-                // Narrowed copy for the closure: an enclosing narrowing does not
-                // reach into a closure that runs later (the FIRE phase).
-                let fire = cb;
-                eventQueue.push({ owner: data.owner, fire: (): void => {
-                    if event._stopped { return; }
-                    fire(event);
-                } });
+                eventQueue.push({ owner: data.owner, kind: QueuedHandlerKind.Key, keyFn: cb, keyEvent: event });
             }
             i = i + 1;
         }
@@ -3493,13 +3473,7 @@ export opaque ref struct UIContext {
             if kind == KeyEdgeKind.Pressed { cb = data.onKeyDown; }
             else { cb = data.onKeyUp; }
             if cb {
-                // Narrowed copy for the closure: an enclosing narrowing does not
-                // reach into a closure that runs later (the FIRE phase).
-                let fire = cb;
-                eventQueue.push({ owner: data.owner, fire: (): void => {
-                    if event._stopped { return; }
-                    fire(event);
-                } });
+                eventQueue.push({ owner: data.owner, kind: QueuedHandlerKind.Key, keyFn: cb, keyEvent: event });
             }
             i = i - 1;
         }
@@ -3511,13 +3485,7 @@ export opaque ref struct UIContext {
             let data = runtimeDataOf(focusPath[i]);
             let cb = data.onTextInputCapture;
             if cb {
-                // Narrowed copy for the closure: an enclosing narrowing does not
-                // reach into a closure that runs later (the FIRE phase).
-                let fire = cb;
-                eventQueue.push({ owner: data.owner, fire: (): void => {
-                    if event._stopped { return; }
-                    fire(event);
-                } });
+                eventQueue.push({ owner: data.owner, kind: QueuedHandlerKind.TextInput, textFn: cb, textEvent: event });
             }
             i = i + 1;
         }
@@ -3529,13 +3497,7 @@ export opaque ref struct UIContext {
             let data = runtimeDataOf(focusPath[i]);
             let cb = data.onTextInput;
             if cb {
-                // Narrowed copy for the closure: an enclosing narrowing does not
-                // reach into a closure that runs later (the FIRE phase).
-                let fire = cb;
-                eventQueue.push({ owner: data.owner, fire: (): void => {
-                    if event._stopped { return; }
-                    fire(event);
-                } });
+                eventQueue.push({ owner: data.owner, kind: QueuedHandlerKind.TextInput, textFn: cb, textEvent: event });
             }
             i = i - 1;
         }
@@ -3556,13 +3518,7 @@ export opaque ref struct UIContext {
             else if kind == PointerEventKind.Up { cb = data.onPointerUp; }
             else if kind == PointerEventKind.Move { cb = data.onPointerMove; }
             if cb {
-                // Narrowed copy for the closure: an enclosing narrowing does not
-                // reach into a closure that runs later (the FIRE phase).
-                let fire = cb;
-                eventQueue.push({ owner: data.owner, fire: (): void => {
-                    if event._stopped { return; }
-                    fire(event);
-                } });
+                eventQueue.push({ owner: data.owner, kind: QueuedHandlerKind.Pointer, pointerFn: cb, pointerEvent: event });
             }
             i = i - 1;
         }
@@ -3589,13 +3545,7 @@ export opaque ref struct UIContext {
                 else if kind == ClickEventKind.DoubleClick { cb = data.onDoubleClickCapture; }
                 else { cb = data.onAuxClickCapture; }
                 if cb {
-                    // Narrowed copy for the closure: an enclosing narrowing does not
-                    // reach into a closure that runs later (the FIRE phase).
-                    let fire = cb;
-                    eventQueue.push({ owner: data.owner, fire: (): void => {
-                        if event._stopped { return; }
-                        fire(event);
-                    } });
+                    eventQueue.push({ owner: data.owner, kind: QueuedHandlerKind.Pointer, pointerFn: cb, pointerEvent: event });
                 }
             }
             i = i + 1;
@@ -3615,13 +3565,7 @@ export opaque ref struct UIContext {
                 else if kind == ClickEventKind.DoubleClick { cb = data.onDoubleClick; }
                 else { cb = data.onAuxClick; }
                 if cb {
-                    // Narrowed copy for the closure: an enclosing narrowing does not
-                    // reach into a closure that runs later (the FIRE phase).
-                    let fire = cb;
-                    eventQueue.push({ owner: data.owner, fire: (): void => {
-                        if event._stopped { return; }
-                        fire(event);
-                    } });
+                    eventQueue.push({ owner: data.owner, kind: QueuedHandlerKind.Pointer, pointerFn: cb, pointerEvent: event });
                 }
             }
             i = i - 1;
@@ -3638,13 +3582,7 @@ export opaque ref struct UIContext {
             let data = runtimeDataOf(hitPath[i]);
             let cb = data.onContextMenuCapture;
             if cb {
-                // Narrowed copy for the closure: an enclosing narrowing does not
-                // reach into a closure that runs later (the FIRE phase).
-                let fire = cb;
-                eventQueue.push({ owner: data.owner, fire: (): void => {
-                    if event._stopped { return; }
-                    fire(event);
-                } });
+                eventQueue.push({ owner: data.owner, kind: QueuedHandlerKind.Pointer, pointerFn: cb, pointerEvent: event });
             }
             i = i + 1;
         }
@@ -3656,13 +3594,7 @@ export opaque ref struct UIContext {
             let data = runtimeDataOf(hitPath[i]);
             let cb = data.onContextMenu;
             if cb {
-                // Narrowed copy for the closure: an enclosing narrowing does not
-                // reach into a closure that runs later (the FIRE phase).
-                let fire = cb;
-                eventQueue.push({ owner: data.owner, fire: (): void => {
-                    if event._stopped { return; }
-                    fire(event);
-                } });
+                eventQueue.push({ owner: data.owner, kind: QueuedHandlerKind.Pointer, pointerFn: cb, pointerEvent: event });
             }
             i = i - 1;
         }
@@ -4633,10 +4565,7 @@ export opaque ref struct UIContext {
                     // separately from stopPropagation.
                     if ke.kind == KeyEdgeKind.Pressed && ke.key == Key.Tab {
                         let backwards = hasModifier(ke.modifiers, KeyModifiers.Shift);
-                        eventQueue.push({ owner: null, fire: (): void => {
-                            if keyEvent._defaultPrevented { return; }
-                            this.moveFocusByTab(tree, backwards);
-                        } });
+                        eventQueue.push({ owner: null, kind: QueuedHandlerKind.TabFocus, keyEvent: keyEvent, tabTree: tree, tabBackwards: backwards });
                     }
                 }
                 if focusUsable {
@@ -4654,13 +4583,15 @@ export opaque ref struct UIContext {
         // actually run.
         for queued in eventQueue {
             if let owner = queued.owner {
-                runComponentCode(owner, "event handler", () => { queued.fire(); });
+                runComponentCode(owner, "event handler", () => { this.fireQueued(queued); });
             } else {
-                queued.fire();
+                this.fireQueued(queued);
             }
         }
-        // Handlers are done; drop them now rather than holding the closures
-        // (and whatever they captured) alive until next frame's clear().
+        // Handlers are done. clear() only resets the length: the entries'
+        // events stay referenced from the buffer until later entries
+        // overwrite them, which is harmless (they are small and handlers do
+        // not keep them).
         eventQueue.clear();
 
         // Who took this frame's pan or fling wheel? The first taker latches
@@ -5024,13 +4955,13 @@ export opaque ref struct UIContext {
                 // Same reasoning as createChild()'s root above: explicit
                 // Grow so the very top of the tree fills the window instead
                 // of shrink-wrapping to ComputedDivStyle's default (Fit).
-                let rootElement = ui_elements.DivElement({
+                let rootElement = ui_elements.DivElement {
                     id: id,
                     // The one true root -- no parent to extend a global id
                     // from, so its own local id is the whole global id.
                     globalId: f"{id}",
                     style: { width: ui_styling.SizeMode.Grow, height: ui_styling.SizeMode.Grow },
-                });
+                };
                 let root = ComponentInstance {
                     id: id,
                     rootElement: rootElement,
@@ -5050,11 +4981,6 @@ export opaque ref struct UIContext {
     fn getCurrentComponent() {
         assert(this.renderStack.length > 0);
         return this.renderStack[this.renderStack.length - 1].currentComponent;
-    }
-
-    fn getCurrentIdPath(): str {
-        assert(this.renderStack.length > 0);
-        return this.renderStack[this.renderStack.length - 1].idPath;
     }
 
     fn getCurrentParent() {
@@ -5084,7 +5010,6 @@ export opaque ref struct UIContext {
             this.pushRenderContext({
                 currentComponent: instance,
                 currentParent: instance.rootElement,
-                idPath: "",
             });
             attempt {
                 instance.currentTemplate = setupFn();
@@ -5108,7 +5033,7 @@ export opaque ref struct UIContext {
                 instance.newChildComponents.clear();
 
                 if instance.crashed && instance.crashInfo {
-                    let errEl = getOrCreateText(instance.rootElement, -1, "").element;
+                    let errEl = getOrCreateText(instance.rootElement, -1);
                     errEl.text := f"Component error: {instance.crashInfo.message}";
                     errEl.style := ui_styling.computeTextStyle({ textColor: Color(1, 0.2, 0.2, 1) }, none);
                     // A crashed component replaces its whole subtree with this
@@ -5123,7 +5048,6 @@ export opaque ref struct UIContext {
                 this.pushRenderContext({
                     currentComponent: instance,
                     currentParent: instance.rootElement,
-                    idPath: "",
                 });
 
                 assert(instance.currentTemplate);
@@ -5139,7 +5063,7 @@ export opaque ref struct UIContext {
                     }
                     // This pass is the one that shows the error.
                     crashComponent(instance, "template", e, false);
-                    let errEl = getOrCreateText(instance.rootElement, -1, "").element;
+                    let errEl = getOrCreateText(instance.rootElement, -1);
                     errEl.text := f"Component error: {e.message}";
                     errEl.style := ui_styling.computeTextStyle({ textColor: Color(1, 0.2, 0.2, 1) }, none);
                     // A crashed component replaces its whole subtree with this
@@ -5605,9 +5529,7 @@ export opaque ref struct UIContext {
 
     fn divImpl(props: DivProps, style: ui_styling.ComputedDivStyle, childrenFn: immediate () => void) {
         let parent = this.getCurrentParent();
-        let lookup = getOrCreateDiv(parent, props.id, this.getCurrentIdPath());
-        let element = lookup.element;
-        let idPath = lookup.path;
+        let element = getOrCreateDiv(parent, props.id);
 
         this.classifyDivStyleChange(element.style, style);
         element.style := style;
@@ -5620,7 +5542,6 @@ export opaque ref struct UIContext {
         this.pushRenderContext({
             currentComponent: this.getCurrentComponent(),
             currentParent: element,
-            idPath: idPath,
         });
 
         childrenFn();
@@ -5645,7 +5566,7 @@ export opaque ref struct UIContext {
 
     fn textImpl(props: TextProps, style: ui_styling.ComputedTextStyle) {
         let parent = this.getCurrentParent();
-        let element = getOrCreateText(parent, props.id, this.getCurrentIdPath()).element;
+        let element = getOrCreateText(parent, props.id);
 
         // The string itself is a layout input: it is what gets measured.
         if !this._layoutDirty && element.text != props.text {
@@ -5700,7 +5621,7 @@ export opaque ref struct UIContext {
 
     fn canvasImpl(props: CanvasProps, style: ui_styling.ComputedDivStyle, drawFn?: CanvasDrawFn) {
         let parent = this.getCurrentParent();
-        let element = getOrCreateCanvas(parent, props.id, this.getCurrentIdPath()).element;
+        let element = getOrCreateCanvas(parent, props.id);
 
         this.classifyDivStyleChange(element.style, style);
         element.style := style;

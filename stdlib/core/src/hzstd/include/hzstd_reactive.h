@@ -25,10 +25,18 @@
 // will spot. Hence the "_cell" suffix on every function/macro here: it is
 // there so the mismatch shows up as a compiler warning (incompatible
 // pointer types) instead of a segfault three calls deep in has_dependency.
+//
+// The value slot is part of the cell's own allocation, right behind the
+// header (one GC block per cell), and `value` points at it for the cell's
+// whole life: a write copies the new value into that slot and then notifies
+// (hzstd_reactive_cell_write), it never swaps the slot.
 
 void* hzstd_reactive_cell_read(hzstd_reactive_cell_t* cell);
-void hzstd_reactive_cell_write(hzstd_context_t ctx, hzstd_reactive_cell_t* cell, void* value);
-hzstd_reactive_cell_t* hzstd_reactive_cell_create(void* initial);
+// Notifies the cell's dependents that its slot was just written.
+void hzstd_reactive_cell_write(hzstd_context_t ctx, hzstd_reactive_cell_t* cell);
+// One allocation: the cell with its slot, holding a copy of the `size`
+// bytes at `initial`.
+hzstd_reactive_cell_t* hzstd_reactive_cell_create(const void* initial, size_t size);
 
 hzstd_computed_node_t* hzstd_computed_create(hzstd_computed_entry_t entry, void* thunk);
 void* hzstd_computed_read(hzstd_context_t ctx, hzstd_computed_node_t* c);
@@ -60,7 +68,6 @@ void hzstd_reactive_resume_tracking(hzstd_computed_node_t* prev);
 void hzstd_reactive_save_state(hzstd_reactive_state_t* state);
 void hzstd_reactive_restore_state(const hzstd_reactive_state_t* state);
 
-void* hzstd_slot_alloc(size_t size);
 // The slot a computed's wrapper should write its result into: the node's
 // existing cached slot when it is being re-run (same size every time), a
 // fresh one only on the first run or outside any computed.
@@ -82,7 +89,7 @@ void hzstd_slot_read(void* dst, void* slot, size_t size);
     value_T __tmp_value = value;                                                                                       \
     void* __slot = hzstd_reactive_cell_read(__tmp_reactive);                                                           \
     hzstd_slot_write(__slot, &__tmp_value, sizeof(__tmp_value));                                                       \
-    hzstd_reactive_cell_write(ctx, __tmp_reactive, __slot);                                                            \
+    hzstd_reactive_cell_write(ctx, __tmp_reactive);                                                                    \
     __tmp_reactive;                                                                                                    \
   })
 
@@ -90,9 +97,7 @@ void hzstd_slot_read(void* dst, void* slot, size_t size);
   ({                                                                                                                   \
     value_T __value = value;                                                                                          \
     reactive_T __result = { 0 };                                                                                       \
-    void* __slot = hzstd_slot_alloc(sizeof(value_T));                                                                  \
-    hzstd_slot_write(__slot, &__value, sizeof(value_T));                                                               \
-    __result = hzstd_reactive_cell_create(__slot);                                                                     \
+    __result = hzstd_reactive_cell_create(&__value, sizeof(value_T));                                                  \
     __result;                                                                                                          \
   })
 

@@ -94,7 +94,7 @@ fn recordingCallbacks(rec: mut Recorder): ui_layout.RenderCallbacks {
 // something to clip -- and so that any layout disturbance shows up as a
 // changed size in the assertions.
 fn clippedTree(overflowX: ui_styling.Overflow, overflowY: ui_styling.Overflow): ui_elements.Element {
-    let inner = ui_elements.DivElement({
+    let inner = ui_elements.DivElement {
         id: 1,
         globalId: "root/clipper/inner",
         style: {
@@ -102,9 +102,9 @@ fn clippedTree(overflowX: ui_styling.Overflow, overflowY: ui_styling.Overflow): 
             height: 400.0,
             backgroundColor: Color(1.0, 0.0, 0.0, 1.0),
         },
-    });
+    };
 
-    let clipper = ui_elements.DivElement({
+    let clipper = ui_elements.DivElement {
         id: 0,
         globalId: "root/clipper",
         children: [inner],
@@ -115,14 +115,14 @@ fn clippedTree(overflowX: ui_styling.Overflow, overflowY: ui_styling.Overflow): 
             overflowY: overflowY,
             backgroundColor: Color(0.0, 0.0, 1.0, 1.0),
         },
-    });
+    };
 
-    return ui_elements.DivElement({
+    return ui_elements.DivElement {
         id: 0,
         globalId: "root",
         children: [clipper],
         style: { width: 800.0, height: 600.0, backgroundColor: Color(0.0, 0.0, 0.0, 1.0) },
-    });
+    };
 }
 
 fn makeContext(): ui_layout.LayoutContext {
@@ -173,12 +173,12 @@ fn main(): int {
         xOnly.clipFor("0,0,400x400"), "0,-10000000,100,10000000");
 
     // --- nested clippers intersect --------------------------------------
-    let innermost = ui_elements.DivElement({
+    let innermost = ui_elements.DivElement {
         id: 0,
         globalId: "root/outer/inner/box",
         style: { width: 900.0, height: 900.0, backgroundColor: Color(1.0, 1.0, 0.0, 1.0) },
-    });
-    let innerClip = ui_elements.DivElement({
+    };
+    let innerClip = ui_elements.DivElement {
         id: 0,
         globalId: "root/outer/inner",
         children: [innermost],
@@ -189,8 +189,8 @@ fn main(): int {
             overflowY: ui_styling.Overflow.Hidden,
             backgroundColor: Color(0.0, 1.0, 0.0, 1.0),
         },
-    });
-    let outerClip = ui_elements.DivElement({
+    };
+    let outerClip = ui_elements.DivElement {
         id: 0,
         globalId: "root/outer",
         children: [innerClip],
@@ -201,13 +201,13 @@ fn main(): int {
             overflowY: ui_styling.Overflow.Hidden,
             backgroundColor: Color(0.0, 0.0, 1.0, 1.0),
         },
-    });
-    let nestedRoot = ui_elements.DivElement({
+    };
+    let nestedRoot = ui_elements.DivElement {
         id: 0,
         globalId: "root",
         children: [outerClip],
         style: { width: 800.0, height: 600.0, backgroundColor: Color(0.0, 0.0, 0.0, 1.0) },
-    });
+    };
 
     let nested = Recorder {};
     ctx.render(nestedRoot, recordingCallbacks(nested));

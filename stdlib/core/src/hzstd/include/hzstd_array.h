@@ -7,12 +7,21 @@
 #include "../hzstd_types.h"
 #include "hzstd_runtime.h"
 
+// The smallest element buffer an array gets: a literal with elements starts
+// with at least this many, and an array without a buffer jumps straight to it
+// on its first push (hzstd_dynamic_array_grow_capacity), doubling after that.
 #define HZSTD_DEFAULT_DYNAMIC_ARRAY_CAPACITY 4
 
+// An empty literal (`[]`, minInitialCapacity 0) allocates only the control
+// struct: most empty arrays (element children, watcher lists, ...) never get
+// an element, and the ones that do get the same 4-element buffer at their
+// first push that they used to get here.
 #define HZSTD_DYNAMIC_ARRAY_CREATE(allocator, elementType, minInitialCapacity, elementTypeName)                        \
   hzstd_dynamic_array_create(allocator,                                                                                \
                               sizeof(elementType),                                                                     \
-                              HZSTD_MAX(minInitialCapacity, HZSTD_DEFAULT_DYNAMIC_ARRAY_CAPACITY),                     \
+                              (minInitialCapacity) == 0                                                                \
+                                  ? 0                                                                                  \
+                                  : HZSTD_MAX(minInitialCapacity, HZSTD_DEFAULT_DYNAMIC_ARRAY_CAPACITY),               \
                               elementTypeName)
 
 // TODO: If something goes wrong during pushing, we crash. We should handle this
@@ -131,8 +140,8 @@ hzstd_dynamic_array_t *hzstd_dynamic_array_create(
 // caller supplies `da`) nor the elements (the caller supplies `buffer`).
 //
 // This exists for building a large number of small arrays at once. The
-// normal path costs two GC allocations per array (control struct + backing
-// buffer, the latter rounded up to HZSTD_DEFAULT_DYNAMIC_ARRAY_CAPACITY), so
+// normal path costs two GC allocations per non-empty array (control struct +
+// backing buffer, the latter rounded up to HZSTD_DEFAULT_DYNAMIC_ARRAY_CAPACITY), so
 // N tiny arrays means 2N small, individually-tracked, long-lived GC objects
 // -- the shape conservative mark-and-sweep handles worst. Carving all N out
 // of one control-struct block and one element block instead makes that two

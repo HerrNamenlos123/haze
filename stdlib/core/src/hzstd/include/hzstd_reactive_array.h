@@ -46,10 +46,8 @@ hzstd_reactive_array_create(hzstd_dynamic_array_t* data)
   hzstd_reactive_array_t* ra =
       (hzstd_reactive_array_t*)hzstd_heap_allocate(sizeof(hzstd_reactive_array_t), "hzstd_reactive_array_t");
   ra->data = data;
-  void* slot = hzstd_slot_alloc(sizeof(size_t));
   size_t zero = 0;
-  hzstd_slot_write(slot, &zero, sizeof(size_t));
-  ra->version = hzstd_reactive_cell_create(slot);
+  ra->version = hzstd_reactive_cell_create(&zero, sizeof(size_t));
   return ra;
 }
 
@@ -63,7 +61,7 @@ hzstd_reactive_array_mark_changed(hzstd_context_t ctx, hzstd_reactive_array_t* r
   // Access the slot directly to avoid registering a spurious dependency.
   size_t* counter = (size_t*)(ra->version->value);
   (*counter)++;
-  hzstd_reactive_cell_write(ctx, ra->version, ra->version->value);
+  hzstd_reactive_cell_write(ctx, ra->version);
 }
 
 // Register a read dependency on the version counter (for length / subscript reads).
@@ -118,13 +116,11 @@ hzstd_reactive_array_create_from_plain(hzstd_dynamic_array_t* plain,
   hzstd_dynamic_array_t* inner = hzstd_dynamic_array_create(
       hzstd_make_heap_allocator(),
       sizeof(hzstd_reactive_cell_t*),
-      plain->size > 0 ? plain->size : HZSTD_DEFAULT_DYNAMIC_ARRAY_CAPACITY,
+      plain->size,
       NULL);
   for (size_t i = 0; i < plain->size; i++) {
     uint8_t* elem_ptr = (uint8_t*)plain->buffer + i * elem_size;
-    void* slot = hzstd_slot_alloc(elem_size);
-    hzstd_slot_write(slot, elem_ptr, elem_size);
-    hzstd_reactive_cell_t* cell = hzstd_reactive_cell_create(slot);
+    hzstd_reactive_cell_t* cell = hzstd_reactive_cell_create(elem_ptr, elem_size);
     hzstd_dynamic_array_push(inner, &cell);
   }
   return hzstd_reactive_array_create(inner);

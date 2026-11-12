@@ -1,0 +1,257 @@
+import ui_components
+import ui_elements
+
+// Event dispatch must cost the same however many handlers sit on the path.
+//
+// Every handler found on the hit/focus path is scheduled for the FIRE phase
+// (see UIContext.process). That scheduling must be plain data: a heap closure
+// per scheduled handler made a pointer move over a deep tree allocate once
+// per handler, every frame the pointer moved.
+//
+// Two contexts get the same 16-level tree, the same scripted clock and the
+// same input, round for round: pointer moves, left and right clicks (click,
+// dblclick, auxclick, contextmenu), wheel, key presses and text input. One has
+// handlers on the innermost level only, the other on all 16 levels, capture
+// and bubble. The deep one fires 16 times as many handlers; after a warm-up
+// it must not allocate more for them. The collector's byte count moves in
+// batches (thread-local free lists), so identical windows differ by a few KB;
+// the bound is therefore less than one byte per extra handler on average,
+// which any allocation per handler (at least a 16-byte granule) exceeds
+// sixteenfold.
+//
+// It also checks every kind against stopPropagation(): a capture handler on
+// the outermost level that stops the event leaves every later handler of
+// that event unfired.
+
+ref struct TestArgs {}
+
+// Tree depth. Deep enough that the extra handlers dwarf the collector's
+// counting noise (see the bound below).
+const comptime LEVELS = 16;
+const comptime ROUNDS = 100;
+
+ref struct Input {
+    x: real = 100.0;
+    y: real = 100.0;
+    now: real = 1000.0;
+    leftHeld: bool = false;
+    rightHeld: bool = false;
+    wheelY: real = 0.0;
+    edges: []ui_components.PointerEdge = [];
+    keys: []ui_components.KeyEdge = [];
+    texts: []str = [];
+}
+
+ref struct Counter {
+    fired: int = 0;
+    // When set, the outermost level's capture handlers stop their event.
+    stopAtOuterCapture: bool = false;
+}
+
+// Cumulative bytes the collector has handed out.
+fn allocatedBytes(): int :: final {
+    do unsafe {
+        let result: int = 0;
+        __c__("{ extern size_t GC_get_total_bytes(void); result = (hzstd_int_t)GC_get_total_bytes(); }");
+        return result;
+    };
+}
+
+fn level(ctx: ui_components.UIContext, depth: int, everywhere: bool, c: Counter, refs: []ui_components.ElementRef<ui_elements.DivElement>): void :: final {
+    let children = (): void => {
+        if depth < LEVELS - 1 {
+            level(ctx, depth + 1, everywhere, c, refs);
+        }
+    };
+    if !everywhere && depth < LEVELS - 1 {
+        ctx.div({ id: depth + 1, elementRef: refs[depth] }, children);
+        return;
+    }
+    let outer = depth == 0;
+    ctx.div({
+        id: depth + 1,
+        elementRef: refs[depth],
+        focusable: depth == LEVELS - 1,
+        autofocus: depth == LEVELS - 1,
+        onPointerDownCapture: (e: ui_components.PointerEvent) => { c.fired = c.fired + 1; if outer && c.stopAtOuterCapture { e.stopPropagation(); } },
+        onPointerDown: (e: ui_components.PointerEvent) => { c.fired = c.fired + 1; },
+        onPointerUpCapture: (e: ui_components.PointerEvent) => { c.fired = c.fired + 1; if outer && c.stopAtOuterCapture { e.stopPropagation(); } },
+        onPointerUp: (e: ui_components.PointerEvent) => { c.fired = c.fired + 1; },
+        onPointerMoveCapture: (e: ui_components.PointerEvent) => { c.fired = c.fired + 1; if outer && c.stopAtOuterCapture { e.stopPropagation(); } },
+        onPointerMove: (e: ui_components.PointerEvent) => { c.fired = c.fired + 1; },
+        onClickCapture: (e: ui_components.PointerEvent) => { c.fired = c.fired + 1; if outer && c.stopAtOuterCapture { e.stopPropagation(); } },
+        onClick: (e: ui_components.PointerEvent) => { c.fired = c.fired + 1; },
+        onDoubleClickCapture: (e: ui_components.PointerEvent) => { c.fired = c.fired + 1; if outer && c.stopAtOuterCapture { e.stopPropagation(); } },
+        onDoubleClick: (e: ui_components.PointerEvent) => { c.fired = c.fired + 1; },
+        onAuxClickCapture: (e: ui_components.PointerEvent) => { c.fired = c.fired + 1; if outer && c.stopAtOuterCapture { e.stopPropagation(); } },
+        onAuxClick: (e: ui_components.PointerEvent) => { c.fired = c.fired + 1; },
+        onContextMenuCapture: (e: ui_components.PointerEvent) => { c.fired = c.fired + 1; if outer && c.stopAtOuterCapture { e.stopPropagation(); } },
+        onContextMenu: (e: ui_components.PointerEvent) => { c.fired = c.fired + 1; },
+        onWheelCapture: (e: ui_components.WheelEvent) => { c.fired = c.fired + 1; if outer && c.stopAtOuterCapture { e.stopPropagation(); } },
+        onWheel: (e: ui_components.WheelEvent) => { c.fired = c.fired + 1; },
+        onKeyDownCapture: (e: ui_components.KeyboardEvent) => { c.fired = c.fired + 1; if outer && c.stopAtOuterCapture { e.stopPropagation(); } },
+        onKeyDown: (e: ui_components.KeyboardEvent) => { c.fired = c.fired + 1; },
+        onKeyUpCapture: (e: ui_components.KeyboardEvent) => { c.fired = c.fired + 1; if outer && c.stopAtOuterCapture { e.stopPropagation(); } },
+        onKeyUp: (e: ui_components.KeyboardEvent) => { c.fired = c.fired + 1; },
+        onTextInputCapture: (e: ui_components.TextInputEvent) => { c.fired = c.fired + 1; if outer && c.stopAtOuterCapture { e.stopPropagation(); } },
+        onTextInput: (e: ui_components.TextInputEvent) => { c.fired = c.fired + 1; },
+    }, children);
+}
+
+ref struct Harness {
+    ui: ui_components.UIContext;
+    input: Input;
+    counter: Counter;
+}
+
+fn makeHarness(everywhere: bool): Harness {
+    let input = Input {};
+    let counter = Counter {};
+    let refs: []ui_components.ElementRef<ui_elements.DivElement> = [];
+    for (let i = 0; i < LEVELS; i++) {
+        refs.push(rx.shallowReactive<ui_components.ElementWrapper<ui_elements.DivElement> | null>(null));
+    }
+    let ui = ui_components.UIContext({
+        ui: (ctx: ui_components.UIContext) => {
+            ctx.defineComponent(0, {} as TestArgs, (instance: ui_components.InstanceData<TestArgs>) => {
+                return (): ui_components.DivProps => {
+                    level(ctx, 0, everywhere, counter, refs);
+                    return { id: 0 };
+                };
+            });
+        },
+        mousePos: (): Vec2 => { return Vec2(input.x, input.y); },
+        clock: (): real => { return input.now; },
+        pointerButtons: ui_components.PointerHeldCallbacks {
+            leftHeld: (): bool => { return input.leftHeld; },
+            middleHeld: (): bool => { return false; },
+            rightHeld: (): bool => { return input.rightHeld; },
+            edgesThisFrame: (): []ui_components.PointerEdge => {
+                let out: []ui_components.PointerEdge = [];
+                for e in input.edges { out.push(e); }
+                input.edges.clear();
+                return out;
+            },
+        },
+        inputExtras: ui_components.InputExtrasCallbacks {
+            wheelDelta: (): Vec2 => {
+                let d = Vec2(0.0, input.wheelY);
+                input.wheelY = 0.0;
+                return d;
+            },
+            modifiers: (): KeyModifiers => { return KeyModifiers.None; },
+        },
+        keyboard: ui_components.KeyboardCallbacks {
+            keyEdgesThisFrame: (): []ui_components.KeyEdge => {
+                let out: []ui_components.KeyEdge = [];
+                for k in input.keys { out.push(k); }
+                input.keys.clear();
+                return out;
+            },
+            textInputThisFrame: (): []str => {
+                let out: []str = [];
+                for t in input.texts { out.push(t); }
+                input.texts.clear();
+                return out;
+            },
+        },
+    });
+    // Frame 1 builds the tree; then every level gets a box by hand (no
+    // layout engine here), nested so that (100, 100) hits every level.
+    ui.process();
+    for (let i = 0; i < LEVELS; i++) {
+        let w = rx.get(refs[i]);
+        assert(w);
+        let inset = (i * 5) as real;
+        ui_components.applyRenderFeedback(w._element, Vec2(inset, inset), Vec2(200.0 - 2.0 * inset, 200.0 - 2.0 * inset));
+    }
+    return { ui: ui, input: input, counter: counter };
+}
+
+fn frame(h: Harness) {
+    h.input.now = h.input.now + 0.016;
+    h.ui.process();
+}
+
+// One round of every kind of input, each in its own frame.
+fn round(h: Harness, i: int) {
+    h.input.x = 100.0 + ((i % 2) as real);
+    frame(h);
+    h.input.leftHeld = true;
+    h.input.edges.push({ button: ui_components.PointerButton.Left, kind: ui_components.PointerEdgeKind.Pressed, pos: Vec2(h.input.x, h.input.y) });
+    frame(h);
+    h.input.leftHeld = false;
+    h.input.edges.push({ button: ui_components.PointerButton.Left, kind: ui_components.PointerEdgeKind.Released, pos: Vec2(h.input.x, h.input.y) });
+    frame(h);
+    h.input.rightHeld = true;
+    h.input.edges.push({ button: ui_components.PointerButton.Right, kind: ui_components.PointerEdgeKind.Pressed, pos: Vec2(h.input.x, h.input.y) });
+    frame(h);
+    h.input.rightHeld = false;
+    h.input.edges.push({ button: ui_components.PointerButton.Right, kind: ui_components.PointerEdgeKind.Released, pos: Vec2(h.input.x, h.input.y) });
+    frame(h);
+    h.input.wheelY = 1.0;
+    frame(h);
+    h.input.keys.push(ui_components.KeyEdge { key: ui_components.Key.A, kind: ui_components.KeyEdgeKind.Pressed, repeat: false, modifiers: KeyModifiers.None });
+    h.input.texts.push("a");
+    frame(h);
+    h.input.keys.push(ui_components.KeyEdge { key: ui_components.Key.A, kind: ui_components.KeyEdgeKind.Released, repeat: false, modifiers: KeyModifiers.None });
+    frame(h);
+}
+
+fn main(): int {
+    let failures = 0;
+
+    let shallow = makeHarness(false);
+    let deep = makeHarness(true);
+
+    // Warm-up: every persistent buffer (paths, queues, hover state) reaches
+    // its working size.
+    for (let i = 0; i < 20; i++) {
+        round(shallow, i);
+        round(deep, i);
+    }
+
+    let firedShallow0 = shallow.counter.fired;
+    let firedDeep0 = deep.counter.fired;
+    let b0 = allocatedBytes();
+    for (let i = 0; i < ROUNDS; i++) { round(shallow, i); }
+    let shallowBytes = allocatedBytes() - b0;
+    let b1 = allocatedBytes();
+    for (let i = 0; i < ROUNDS; i++) { round(deep, i); }
+    let deepBytes = allocatedBytes() - b1;
+    let firedShallow = shallow.counter.fired - firedShallow0;
+    let firedDeep = deep.counter.fired - firedDeep0;
+
+    if firedShallow == 0 || firedDeep != LEVELS * firedShallow {
+        failures++;
+        fmt.println(f"FAIL: handlers fired: shallow {firedShallow}, deep {firedDeep} (expected {LEVELS}x)");
+    }
+    let extraHandlers = firedDeep - firedShallow;
+    if deepBytes - shallowBytes >= extraHandlers {
+        failures++;
+        fmt.println(f"FAIL: {LEVELS} handler levels allocate {deepBytes} bytes, 1 level {shallowBytes}: {deepBytes - shallowBytes} more for {extraHandlers} more handlers (bound: under 1 byte each)");
+    }
+
+    // stopPropagation in the outermost capture handler, for every kind:
+    // exactly one handler (that one) fires per event.
+    deep.counter.stopAtOuterCapture = true;
+    let firedBefore = deep.counter.fired;
+    round(deep, 1);
+    let firedStopped = deep.counter.fired - firedBefore;
+    deep.counter.stopAtOuterCapture = false;
+    let firedOpenBefore = deep.counter.fired;
+    round(deep, 1);
+    let firedOpen = deep.counter.fired - firedOpenBefore;
+    // Unstopped, each event reaches a capture and a bubble handler per level.
+    if firedOpen % (2 * LEVELS) != 0 || firedStopped * 2 * LEVELS != firedOpen {
+        failures++;
+        fmt.println(f"FAIL: stopPropagation at the outer capture: {firedStopped} handlers fired, open round fired {firedOpen} (expected 1 per event)");
+    }
+
+    if failures > 0 {
+        fmt.println(f"\n{failures} FAILURES");
+        return 1;
+    }
+    fmt.println(f"ALL DISPATCH ALLOCATION CHECKS PASS ({firedShallow} / {firedDeep} handlers, {deepBytes} bytes per {ROUNDS} rounds)");
+    return 0;
+}

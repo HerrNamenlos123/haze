@@ -60,6 +60,8 @@ fn main(): int {
     cases_immediate.register(suite);
     cases_primitive_constructors.register(suite);
     cases_array_methods.register(suite);
+    cases_array_capacity.register(suite);
+    cases_reactive_cell_storage.register(suite);
     cases_profiling.register(suite);
     cases_profiling_stacks.register(suite);
     cases_value_equality.register(suite);

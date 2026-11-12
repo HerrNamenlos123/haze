@@ -41,13 +41,24 @@ if !codicon_metadata {
         let meta: []IconMeta = [];
         meta.reserve(lines.length);
 
+        // Every line is "slug,icon,code". Sliced at its two commas (views of
+        // the embedded text) rather than split, which built one array per
+        // line: 1266 allocations at the first icon.
         for line in lines {
-            let parts = line.split(",");
-            assert(parts.length == 3);
+            let first = -1;
+            let second = -1;
+            let commas = 0;
+            for (let i = 0; i < line.length; i++) {
+                if line[i] as int == 44 { // ','
+                    commas++;
+                    if first < 0 { first = i; } else if second < 0 { second = i; }
+                }
+            }
+            assert(commas == 2);
             meta.push({
-                slug: parts[0],
-                icon: parts[1],
-                code: parts[2],
+                slug: line.slice(0, first),
+                icon: line.slice(first + 1, second),
+                code: line.slice(second + 1),
             });
         }
         return meta;

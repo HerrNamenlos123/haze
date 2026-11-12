@@ -3,6 +3,7 @@
 #include "../include/hzstd_memory.h"
 #include "../hzstd_types.h"
 
+#include <stddef.h>
 #include <string.h>
 
 // The evaluation state -- these two and the two counters below -- is per
@@ -165,11 +166,17 @@ void* hzstd_computed_get(hzstd_context_t ctx, hzstd_computed_node_t* comp)
   return comp->cached;
 }
 
-hzstd_reactive_cell_t* hzstd_reactive_cell_create(void* initial)
-{
-  hzstd_reactive_cell_t* cell = hzstd_heap_allocate(sizeof(*cell), "hzstd_reactive_cell_t");
+// Where a cell's value slot starts inside the cell's block: right behind the
+// header, aligned for any value type.
+#define HZSTD_REACTIVE_CELL_SLOT_OFFSET                                                                                \
+  ((sizeof(hzstd_reactive_cell_t) + _Alignof(max_align_t) - 1) / _Alignof(max_align_t) * _Alignof(max_align_t))
 
-  cell->value = initial;
+hzstd_reactive_cell_t* hzstd_reactive_cell_create(const void* initial, size_t size)
+{
+  hzstd_reactive_cell_t* cell = hzstd_heap_allocate(HZSTD_REACTIVE_CELL_SLOT_OFFSET + size, "hzstd_reactive_cell_t");
+
+  cell->value = (char*)cell + HZSTD_REACTIVE_CELL_SLOT_OFFSET;
+  memcpy(cell->value, initial, size);
   cell->base.dependents = NULL;
 
   return cell;
@@ -239,9 +246,8 @@ void* hzstd_reactive_cell_read(hzstd_reactive_cell_t* cell)
   return cell->value;
 }
 
-void hzstd_reactive_cell_write(hzstd_context_t ctx, hzstd_reactive_cell_t* cell, void* value)
+void hzstd_reactive_cell_write(hzstd_context_t ctx, hzstd_reactive_cell_t* cell)
 {
-  cell->value = value;
   g_write_depth++;
   mark_dirty(&cell->base);
   g_write_depth--;
@@ -301,8 +307,6 @@ void hzstd_reactive_restore_state(const hzstd_reactive_state_t* state)
   g_write_depth = state->write_depth;
   g_delivering_effects = state->delivering;
 }
-
-void* hzstd_slot_alloc(size_t size) { return hzstd_heap_allocate(size, NULL); }
 
 void hzstd_slot_write(void* slot, void* src, size_t size) { memcpy(slot, src, size); }
 

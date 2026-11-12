@@ -201,12 +201,13 @@ hzstd_dynamic_array_result_t hzstd_dynamic_array_shrink_to_fit(hzstd_dynamic_arr
   return hzstd_dynamic_array_realloc_buffer(da, da->size, 1);
 }
 
-/* internal grow policy: double capacity or set to 1 */
+/* internal grow policy for push/insert: an array without a buffer starts at
+ * HZSTD_DEFAULT_DYNAMIC_ARRAY_CAPACITY, then the capacity doubles */
 static inline size_t hzstd_dynamic_array_grow_capacity(const hzstd_dynamic_array_t *da, size_t min_needed)
 {
   size_t cap = da->capacity;
   if (cap == 0) {
-    cap = 1;
+    cap = HZSTD_DEFAULT_DYNAMIC_ARRAY_CAPACITY;
   }
   while (cap < min_needed) {
     size_t next = cap * 2;

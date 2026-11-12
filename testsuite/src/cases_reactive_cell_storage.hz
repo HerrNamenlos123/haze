@@ -1,0 +1,130 @@
+// REGRESSION TEST -- a reactive cell and its value are one allocation.
+//
+// rx.reactive / rx.shallowReactive used to allocate the cell header and its
+// value slot separately: two GC objects per cell, three cells per UI element.
+// The slot is now part of the cell's own block (hzstd_reactive_cell_create)
+// and never moves. The case checks with GC_base that the value of every kind
+// of cell (scalar, struct, a deep array's version and element cells) lives in
+// the cell's block, max-aligned, and that reads, writes and dependency
+// tracking behave as before for every kind of value, also across a
+// collection.
+
+namespace cases_reactive_cell_storage {
+
+    export fn register(s: mut testsuite.Suite) {
+
+        s.run(
+            "reactive cells: the value slot lives in the cell's own block, reads/writes/tracking unchanged",
+            """
+__c__("extern void* GC_base(void*);");
+
+struct Pair {
+    x: int;
+    y: int;
+}
+
+struct Big {
+    label: str;
+    items: []int;
+    at: Vec2;
+    count: int;
+}
+
+enum Mode { Off, On, Auto }
+
+// The value slot of a reactive cell lives in the cell's own GC block.
+fn inBool(r: rx.Reactive<bool>): bool {
+    do unsafe {
+        let result = false;
+        __c__("{ hzstd_reactive_cell_t* c = (hzstd_reactive_cell_t*)r; result = GC_base(c->value) == (void*)c; }");
+        return result;
+    };
+}
+fn inInt(r: rx.Reactive<int>): bool {
+    do unsafe {
+        let result = false;
+        __c__("{ hzstd_reactive_cell_t* c = (hzstd_reactive_cell_t*)r; result = GC_base(c->value) == (void*)c; }");
+        return result;
+    };
+}
+fn inBig(r: rx.ShallowReactive<Big>): bool {
+    do unsafe {
+        let result = false;
+        __c__("{ hzstd_reactive_cell_t* c = (hzstd_reactive_cell_t*)r; result = GC_base(c->value) == (void*)c; }");
+        return result;
+    };
+}
+// A deep reactive array: its version cell and every element cell.
+fn inArray(r: rx.Reactive<[]int>): bool {
+    do unsafe {
+        let result = false;
+        __c__("{ hzstd_reactive_array_t* ra = (hzstd_reactive_array_t*)r; result = GC_base(ra->version->value) == (void*)ra->version; for (size_t i = 0; i < ra->data->size; i++) { hzstd_reactive_cell_t* c = ((hzstd_reactive_cell_t**)ra->data->buffer)[i]; result = result && GC_base(c->value) == (void*)c; } }");
+        return result;
+    };
+}
+// The value is aligned for any type.
+fn aligned(r: rx.Reactive<int>): bool {
+    do unsafe {
+        let result = false;
+        __c__("{ hzstd_reactive_cell_t* c = (hzstd_reactive_cell_t*)r; result = ((uintptr_t)c->value % _Alignof(max_align_t)) == 0; }");
+        return result;
+    };
+}
+
+fn main(): int {
+    let flag = rx.reactive<bool>(true);
+    let n = rx.reactive<int>(41);
+    let mode = rx.reactive<Mode>(Mode.On);
+    let maybe = rx.reactive<int | none>(none);
+    let big = rx.shallowReactive<Big>({ label: "a", items: [1, 2], at: Vec2(1, 2), count: 3 });
+    let pair = rx.reactive<Pair>({ x: 1, y: 2 });
+    let arr = rx.reactive<[]int>([5, 6]);
+
+    assert(inBool(flag), "bool cell holds its value inline");
+    assert(inInt(n), "int cell holds its value inline");
+    assert(aligned(n), "inline value is max-aligned");
+    assert(inBig(big), "struct cell holds its value inline");
+    arr.push(7);
+    assert(inArray(arr), "array version and element cells hold their values inline");
+
+    // Reads, writes and tracking behave as before, for every kind of value.
+    let runs: ref Box<int> = { value: 0 };
+    let sum = rx.computed(() => {
+        runs.value = runs.value + 1;
+        let extra = 0;
+        if let m = rx.get(maybe) { extra = m; }
+        return (rx.get(flag) ? rx.get(n) : 0) + extra + (rx.get(mode) == Mode.Auto ? 100 : 0) + rx.get(big).count + rx.get(pair.x) + arr.length;
+    });
+    assert(rx.get(sum) == 41 + 3 + 1 + 3, f"initial sum {rx.get(sum)}");
+    n := 1;
+    assert(rx.get(sum) == 1 + 3 + 1 + 3, f"after int write {rx.get(sum)}");
+    flag := false;
+    assert(rx.get(sum) == 0 + 3 + 1 + 3, f"after bool write {rx.get(sum)}");
+    maybe := 10;
+    mode := Mode.Auto;
+    assert(rx.get(sum) == 10 + 100 + 3 + 1 + 3, f"after union/enum writes {rx.get(sum)}");
+    big := Big { label: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", items: [9, 9, 9], at: Vec2(3, 4), count: 30 };
+    assert(rx.get(sum) == 10 + 100 + 30 + 1 + 3, f"after struct write {rx.get(sum)}");
+    assert(rx.get(big).label.length == 40 && rx.get(big).items.length == 3 && rx.get(big).at.y == 4.0, "struct read back");
+    pair.x := 5;
+    arr.push(8);
+    assert(rx.get(sum) == 10 + 100 + 30 + 5 + 4, f"after deep field and array writes {rx.get(sum)}");
+    assert(arr[3] == 8 && arr[0] == 5, "array elements read back");
+    let before = runs.value;
+    rx.get(sum);
+    assert(runs.value == before, "no write, no recompute");
+
+    // Values stay alive through a collection while only the cell holds them.
+    for (let i = 0; i < 3; i++) {
+        do unsafe { __c__("{ extern void GC_gcollect(void); GC_gcollect(); }"); };
+    }
+    assert(rx.get(big).label == "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" && rx.get(big).items[2] == 9, "struct value survives GC");
+
+    fmt.println("reactive cell storage: ok");
+    return 0;
+}
+""",
+            "reactive cell storage: ok",
+        );
+    }
+}
