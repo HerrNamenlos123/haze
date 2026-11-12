@@ -1,12 +1,14 @@
 import ui_components
 import ui_elements
 
-// Event dispatch must cost the same however many handlers sit on the path.
+// Event dispatch allocates nothing: not per handler, not per event.
 //
 // Every handler found on the hit/focus path is scheduled for the FIRE phase
 // (see UIContext.process). That scheduling must be plain data: a heap closure
 // per scheduled handler made a pointer move over a deep tree allocate once
-// per handler, every frame the pointer moved.
+// per handler, every frame the pointer moved. And the events themselves are
+// values whose stop/prevent flags live in slots the UIContext reuses (see
+// EventSlot): a ref struct per event was one allocation per event.
 //
 // Two contexts get the same 16-level tree, the same scripted clock and the
 // same input, round for round: pointer moves, left and right clicks (click,
@@ -18,6 +20,9 @@ import ui_elements
 // the bound is therefore less than one byte per extra handler on average,
 // which any allocation per handler (at least a 16-byte granule) exceeds
 // sixteenfold.
+//
+// With the harness's own buffers reused (as a real host's are), a round of
+// all that input then allocates 0 bytes in either context.
 //
 // It also checks every kind against stopPropagation(): a capture handler on
 // the outermost level that stops the event leaves every later handler of
@@ -40,6 +45,11 @@ ref struct Input {
     edges: []ui_components.PointerEdge = [];
     keys: []ui_components.KeyEdge = [];
     texts: []str = [];
+    // What the host hands over each frame: reused, so the zero-allocation
+    // check measures the framework and not this harness.
+    frameEdges: []ui_components.PointerEdge = [];
+    frameKeys: []ui_components.KeyEdge = [];
+    frameTexts: []str = [];
 }
 
 ref struct Counter {
@@ -102,6 +112,9 @@ ref struct Harness {
     ui: ui_components.UIContext;
     input: Input;
     counter: Counter;
+    // KeyEdge is a ref struct: made once, handed over every round.
+    keyDown: ui_components.KeyEdge;
+    keyUp: ui_components.KeyEdge;
 }
 
 fn makeHarness(everywhere: bool): Harness {
@@ -127,10 +140,10 @@ fn makeHarness(everywhere: bool): Harness {
             middleHeld: (): bool => { return false; },
             rightHeld: (): bool => { return input.rightHeld; },
             edgesThisFrame: (): []ui_components.PointerEdge => {
-                let out: []ui_components.PointerEdge = [];
-                for e in input.edges { out.push(e); }
+                input.frameEdges.clear();
+                for e in input.edges { input.frameEdges.push(e); }
                 input.edges.clear();
-                return out;
+                return input.frameEdges;
             },
         },
         inputExtras: ui_components.InputExtrasCallbacks {
@@ -143,16 +156,16 @@ fn makeHarness(everywhere: bool): Harness {
         },
         keyboard: ui_components.KeyboardCallbacks {
             keyEdgesThisFrame: (): []ui_components.KeyEdge => {
-                let out: []ui_components.KeyEdge = [];
-                for k in input.keys { out.push(k); }
+                input.frameKeys.clear();
+                for k in input.keys { input.frameKeys.push(k); }
                 input.keys.clear();
-                return out;
+                return input.frameKeys;
             },
             textInputThisFrame: (): []str => {
-                let out: []str = [];
-                for t in input.texts { out.push(t); }
+                input.frameTexts.clear();
+                for t in input.texts { input.frameTexts.push(t); }
                 input.texts.clear();
-                return out;
+                return input.frameTexts;
             },
         },
     });
@@ -165,7 +178,13 @@ fn makeHarness(everywhere: bool): Harness {
         let inset = (i * 5) as real;
         ui_components.applyRenderFeedback(w._element, Vec2(inset, inset), Vec2(200.0 - 2.0 * inset, 200.0 - 2.0 * inset));
     }
-    return { ui: ui, input: input, counter: counter };
+    return {
+        ui: ui,
+        input: input,
+        counter: counter,
+        keyDown: ui_components.KeyEdge { key: ui_components.Key.A, kind: ui_components.KeyEdgeKind.Pressed, repeat: false, modifiers: KeyModifiers.None },
+        keyUp: ui_components.KeyEdge { key: ui_components.Key.A, kind: ui_components.KeyEdgeKind.Released, repeat: false, modifiers: KeyModifiers.None },
+    };
 }
 
 fn frame(h: Harness) {
@@ -191,10 +210,10 @@ fn round(h: Harness, i: int) {
     frame(h);
     h.input.wheelY = 1.0;
     frame(h);
-    h.input.keys.push(ui_components.KeyEdge { key: ui_components.Key.A, kind: ui_components.KeyEdgeKind.Pressed, repeat: false, modifiers: KeyModifiers.None });
+    h.input.keys.push(h.keyDown);
     h.input.texts.push("a");
     frame(h);
-    h.input.keys.push(ui_components.KeyEdge { key: ui_components.Key.A, kind: ui_components.KeyEdgeKind.Released, repeat: false, modifiers: KeyModifiers.None });
+    h.input.keys.push(h.keyUp);
     frame(h);
 }
 
@@ -225,6 +244,10 @@ fn main(): int {
     if firedShallow == 0 || firedDeep != LEVELS * firedShallow {
         failures++;
         fmt.println(f"FAIL: handlers fired: shallow {firedShallow}, deep {firedDeep} (expected {LEVELS}x)");
+    }
+    if shallowBytes != 0 || deepBytes != 0 {
+        failures++;
+        fmt.println(f"FAIL: {ROUNDS} rounds of input allocate {shallowBytes} bytes with 1 handler level, {deepBytes} with {LEVELS} (must be 0)");
     }
     let extraHandlers = firedDeep - firedShallow;
     if deepBytes - shallowBytes >= extraHandlers {

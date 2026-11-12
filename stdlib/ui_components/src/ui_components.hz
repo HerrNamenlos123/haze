@@ -157,6 +157,94 @@ const comptime FLING_MAX_REST_SECONDS = 0.05;
 // e, for the fling's decay -- core's math has pow but no exp.
 const comptime EULER = 2.718281828459045;
 
+// The part of a dispatched event that its handlers change: stopped, default
+// prevented, and for a wheel which handler took it. Events are values -- every
+// handler gets its own copy of the data -- and all copies of one event share
+// this state through their EventHandle, so stopPropagation() in one handler is
+// seen by every later one. The slots live in the UIContext (EventFlags) and
+// are reused every frame, so dispatching an event allocates nothing.
+export struct EventSlot {
+    generation: int = 0;
+    stopped: bool = false;
+    defaultPrevented: bool = false;
+    // WheelEvent: where along the dispatch path the handler that stopped it
+    // sits -- see UIContext._scroll.latch. -1 while nobody has.
+    consumedAt: int = -1;
+}
+
+// Every event slot of one UIContext. The first `used` are this frame's events:
+// process() starts each frame at 0 and hands them out again
+// (UIContext.newEventHandle), bumping each one's generation -- all but `kept`,
+// the slot of the one event the framework holds past its frame (the primary
+// finger's pointerdown, see UIContext.keepTouchDownEvent). -1: none.
+export ref struct EventFlags {
+    slots: mut []EventSlot = [];
+    used: int = 0;
+    kept: int = -1;
+}
+
+// An event's link to its slot. `generation` tells this frame's event apart from
+// an older one that held the same slot: once it no longer matches, the event's
+// dispatch is over. Writing through such a handle does nothing (as calling
+// stopPropagation() after dispatch does in the DOM); reading through it
+// panics, since what that event's flags ended up as is no longer known.
+//
+// A handle without flags belongs to an event the dispatcher did not make (a
+// test's, a hover transition's): its writes do nothing, its reads say false
+// and -1.
+export struct EventHandle {
+    flags: EventFlags | null = null;
+    slot: int = -1;
+    generation: int = 0;
+
+    fn live(f: EventFlags): bool :: final {
+        return f.slots[this.slot].generation == this.generation;
+    }
+
+    fn stop(): void :: final {
+        if let f = this.flags {
+            if this.live(f) { f.slots[this.slot].stopped = true; }
+        }
+    }
+
+    fn preventDefault(): void :: final {
+        if let f = this.flags {
+            if this.live(f) { f.slots[this.slot].defaultPrevented = true; }
+        }
+    }
+
+    // The first stopper along the path is the one recorded.
+    fn markConsumedAt(index: int): void :: final {
+        if let f = this.flags {
+            if this.live(f) && f.slots[this.slot].consumedAt < 0 { f.slots[this.slot].consumedAt = index; }
+        }
+    }
+
+    fn stopped(): bool :: final {
+        if let f = this.flags {
+            assert(this.live(f), "ui_components: an event's flags were read after its dispatch");
+            return f.slots[this.slot].stopped;
+        }
+        return false;
+    }
+
+    fn defaultPrevented(): bool :: final {
+        if let f = this.flags {
+            assert(this.live(f), "ui_components: an event's flags were read after its dispatch");
+            return f.slots[this.slot].defaultPrevented;
+        }
+        return false;
+    }
+
+    fn consumedAt(): int :: final {
+        if let f = this.flags {
+            assert(this.live(f), "ui_components: an event's flags were read after its dispatch");
+            return f.slots[this.slot].consumedAt;
+        }
+        return -1;
+    }
+}
+
 // Platform-independent pointer event, modelled after the HTML PointerEvent API.
 // Covers mouse, touch, and stylus in one type. stopPropagation() halts both
 // the remaining capture and bubble phases -- see dispatchCapturing()/
@@ -169,11 +257,10 @@ const comptime EULER = 2.718281828459045;
 // off the canvas it started on stays with that canvas. The mouse is not; see
 // UIContext.leftMouseHeld for how a mouse drag follows the pointer instead.
 //
-// A ref struct, like WheelEvent and KeyboardEvent: every handler along the
-// path is handed the SAME event, which is the only way stopPropagation() in
-// one of them can be seen by the rest. As a value it was copied into each
-// scheduled handler, and stopping it stopped nothing.
-export ref struct PointerEvent {
+// A value, like every event here: each handler along the path gets its own
+// copy, and stopPropagation() reaches the rest of the path through the
+// copies' shared EventHandle (see EventSlot).
+export struct PointerEvent {
     pointerId: int;
     pointerType: str;
     pos: Vec2;
@@ -197,10 +284,10 @@ export ref struct PointerEvent {
     // distance thresholds that decide what counts as "one sequence".
     detail: int = 0;
 
-    _stopped: bool = false;
+    _handle: EventHandle = {};
 
     fn stopPropagation() {
-        this._stopped = true;
+        this._handle.stop();
     }
 
     // Should a control that acts on the PRESS -- a menu row, a tab, a
@@ -246,18 +333,16 @@ export enum WheelDeltaMode { Notch, Pixel }
 // later wheel of that pan to itself (the browser's scroll latching, so a
 // list that reaches its end does not start dragging the page behind it), and
 // a fling ends the moment nothing consumes it any more.
-export ref struct WheelEvent {
+export struct WheelEvent {
     pos: Vec2;
     delta: Vec2;
     modifiers: KeyModifiers;
     deltaMode: WheelDeltaMode = WheelDeltaMode.Notch;
-    _stopped: bool = false;
-    // Where along the dispatch path the handler that stopped this event sits
-    // -- see UIContext._scroll.latch. -1 while nobody has.
-    _consumedAt: int = -1;
+    // Stopped, and which handler along the path stopped it (EventSlot).
+    _handle: EventHandle = {};
 
     fn stopPropagation() {
-        this._stopped = true;
+        this._handle.stop();
     }
 
     // The delta in logical pixels, whatever deltaMode it came in: a notch
@@ -338,15 +423,14 @@ export enum KeyEdgeKind { Pressed, Released }
 // TextInputEvent below, same division of labor as the DOM's keydown vs.
 // input/beforeinput. Use this for shortcuts (modifiers + key, e.g. ctrl+L)
 // and non-character keys (F5, Escape, arrows, ...).
-export ref struct KeyboardEvent {
+export struct KeyboardEvent {
     key: Key;
     repeat: bool;
     modifiers: KeyModifiers;
-    _stopped: bool = false;
-    _defaultPrevented: bool = false;
+    _handle: EventHandle = {};
 
     fn stopPropagation() {
-        this._stopped = true;
+        this._handle.stop();
     }
 
     // The DOM's preventDefault(), and a genuinely different thing from
@@ -356,11 +440,11 @@ export ref struct KeyboardEvent {
     // a text editor that inserts an indent on Tab must call this, or the key
     // would both indent and navigate away.
     fn preventDefault() {
-        this._defaultPrevented = true;
+        this._handle.preventDefault();
     }
 
     fn defaultPrevented(): bool {
-        return this._defaultPrevented;
+        return this._handle.defaultPrevented();
     }
 }
 
@@ -371,12 +455,12 @@ export ref struct KeyboardEvent {
 // KeyboardEvent -- trying to reconstruct typed text from raw key events
 // yourself would have to reinvent shift/caps-lock/layout/IME handling that
 // the platform layer already did once, correctly.
-export ref struct TextInputEvent {
+export struct TextInputEvent {
     text: str;
-    _stopped: bool = false;
+    _handle: EventHandle = {};
 
     fn stopPropagation() {
-        this._stopped = true;
+        this._handle.stop();
     }
 }
 
@@ -391,12 +475,12 @@ export ref struct TextInputEvent {
 // the old element even when focus merely moved to a sibling INSIDE that
 // ancestor, so "did focus actually leave me?" is answered by asking whether
 // relatedTarget is still inside you -- see ui_contains/ElementWrapper.contains.
-export ref struct FocusEvent {
+export struct FocusEvent {
     relatedTarget: ui_elements.Element | none = none;
-    _stopped: bool = false;
+    _handle: EventHandle = {};
 
     fn stopPropagation() {
-        this._stopped = true;
+        this._handle.stop();
     }
 }
 
@@ -1535,8 +1619,8 @@ export struct QueuedHandler {
     textEvent?: TextInputEvent;
     focusFn?: (e: FocusEvent) => none;
     focusEvent?: FocusEvent;
-    // Wheel: where along the dispatch path the handler sits, recorded as
-    // WheelEvent._consumedAt when it is the one that stops the event.
+    // Wheel: where along the dispatch path the handler sits, recorded as the
+    // event's EventSlot.consumedAt when it is the one that stops the event.
     pathIndex: int = -1;
     // PointerTransition: the pointer when the transition was found.
     pointerPos: Vec2 | none = none;
@@ -2232,7 +2316,8 @@ export opaque ref struct UIContext {
     // own capture: a pan cancels the pointer (releasing that capture) and a
     // fling outlives the finger, yet both keep scrolling along this path.
     _touchPath: []ui_elements.Element = [];
-    // The primary finger's pointerdown, kept until its gesture resolves. The
+    // The primary finger's pointerdown, kept until its gesture resolves
+    // (keepTouchDownEvent, the only writer: it also keeps the event's slot). The
     // dismissal a mouse press queues at once is queued with THIS event at the
     // tap or long press instead, so a handler that stopped the pointerdown
     // (a popup's own trigger) still keeps its layer open.
@@ -2251,6 +2336,8 @@ export opaque ref struct UIContext {
     // arrays plus a closure in process(); now it allocates nothing.
     _pendingEvents: []PendingPointerEvent = [];
     _eventQueue: []QueuedHandler = [];
+    // The stop/prevent state of this frame's events -- see EventSlot.
+    _eventFlags: EventFlags = {};
     _finalHitPath: []ui_elements.Element = [];
     _eventHitPath: []ui_elements.Element = [];
     _focusPath: []ui_elements.Element = [];
@@ -2966,7 +3053,7 @@ export opaque ref struct UIContext {
             if !ui_contains(layer, newTarget) {
                 let cb = runtimeDataOf(layer).onFocusOutside;
                 if cb {
-                    let event = FocusEvent { relatedTarget: newTarget };
+                    let event = FocusEvent { relatedTarget: newTarget, _handle: this.newEventHandle() };
                     eventQueue.push({ owner: runtimeDataOf(layer).owner, kind: QueuedHandlerKind.Focus, focusFn: cb, focusEvent: event });
                 }
             }
@@ -3040,22 +3127,22 @@ export opaque ref struct UIContext {
         // rest alone. Queue order IS fire order -- see FIRE PHASE in process().
         if oldTarget is not none {
             // relatedTarget of a blur/focusout is the element GAINING focus.
-            let blurEvent = FocusEvent { relatedTarget: newTarget };
+            let blurEvent = FocusEvent { relatedTarget: newTarget, _handle: this.newEventHandle() };
             this.dispatchFocusCapturing(oldPath, blurEvent, FocusEventKind.Blur, eventQueue);
             this.dispatchFocusBubbling(oldPath, blurEvent, FocusEventKind.Blur, false, eventQueue);
 
-            let focusOutEvent = FocusEvent { relatedTarget: newTarget };
+            let focusOutEvent = FocusEvent { relatedTarget: newTarget, _handle: this.newEventHandle() };
             this.dispatchFocusCapturing(oldPath, focusOutEvent, FocusEventKind.FocusOut, eventQueue);
             this.dispatchFocusBubbling(oldPath, focusOutEvent, FocusEventKind.FocusOut, true, eventQueue);
         }
 
         if newTarget is not none {
             // ...and of a focus/focusin, the element that LOST it.
-            let focusEvent = FocusEvent { relatedTarget: oldTarget };
+            let focusEvent = FocusEvent { relatedTarget: oldTarget, _handle: this.newEventHandle() };
             this.dispatchFocusCapturing(newPath, focusEvent, FocusEventKind.Focus, eventQueue);
             this.dispatchFocusBubbling(newPath, focusEvent, FocusEventKind.Focus, false, eventQueue);
 
-            let focusInEvent = FocusEvent { relatedTarget: oldTarget };
+            let focusInEvent = FocusEvent { relatedTarget: oldTarget, _handle: this.newEventHandle() };
             this.dispatchFocusCapturing(newPath, focusInEvent, FocusEventKind.FocusIn, eventQueue);
             this.dispatchFocusBubbling(newPath, focusInEvent, FocusEventKind.FocusIn, true, eventQueue);
 
@@ -3332,6 +3419,37 @@ export opaque ref struct UIContext {
         }
     }
 
+    // The primary finger's pointerdown is dispatched again when its gesture
+    // resolves (pressFromGesture), frames later, and must still say whether
+    // a handler stopped it: its slot is kept out of the frame's recycling
+    // until the next one replaces it or `none` releases it.
+    fn keepTouchDownEvent(event: PointerEvent | none): void :: final {
+        this._touchDownEvent = event;
+        this._eventFlags.kept = -1;
+        if let e = event {
+            if e._handle.flags {
+                this._eventFlags.kept = e._handle.slot;
+            }
+        }
+    }
+
+    // A slot for an event this frame dispatches -- see EventSlot. The table
+    // grows to the most events a frame has had and is reused after that.
+    fn newEventHandle(): EventHandle :: final {
+        let f = this._eventFlags;
+        if f.used == f.kept {
+            f.used = f.used + 1;
+        }
+        if f.used == f.slots.length {
+            f.slots.push({});
+        }
+        let i = f.used;
+        f.used = i + 1;
+        let generation = f.slots[i].generation + 1;
+        f.slots[i] = { generation: generation };
+        return { flags: f, slot: i, generation: generation };
+    }
+
     // Runs one scheduled handler (see QueuedHandler). An entry missing the
     // fields its kind needs is a scheduling bug, and panics.
     fn fireQueued(queued: QueuedHandler): void :: final {
@@ -3339,37 +3457,37 @@ export opaque ref struct UIContext {
         if kind == QueuedHandlerKind.Pointer {
             if let f = queued.pointerFn {
                 if let e = queued.pointerEvent {
-                    if !e._stopped { f(e); }
+                    if !e._handle.stopped() { f(e); }
                     return;
                 }
             }
         } else if kind == QueuedHandlerKind.Wheel {
             if let f = queued.wheelFn {
                 if let e = queued.wheelEvent {
-                    if e._stopped { return; }
+                    if e._handle.stopped() { return; }
                     f(e);
-                    if e._stopped && e._consumedAt < 0 { e._consumedAt = queued.pathIndex; }
+                    if e._handle.stopped() { e._handle.markConsumedAt(queued.pathIndex); }
                     return;
                 }
             }
         } else if kind == QueuedHandlerKind.Key {
             if let f = queued.keyFn {
                 if let e = queued.keyEvent {
-                    if !e._stopped { f(e); }
+                    if !e._handle.stopped() { f(e); }
                     return;
                 }
             }
         } else if kind == QueuedHandlerKind.TextInput {
             if let f = queued.textFn {
                 if let e = queued.textEvent {
-                    if !e._stopped { f(e); }
+                    if !e._handle.stopped() { f(e); }
                     return;
                 }
             }
         } else if kind == QueuedHandlerKind.Focus {
             if let f = queued.focusFn {
                 if let e = queued.focusEvent {
-                    if !e._stopped { f(e); }
+                    if !e._handle.stopped() { f(e); }
                     return;
                 }
             }
@@ -3383,7 +3501,7 @@ export opaque ref struct UIContext {
         } else if kind == QueuedHandlerKind.TabFocus {
             if let e = queued.keyEvent {
                 if let tree = queued.tabTree {
-                    if !e._defaultPrevented { this.moveFocusByTab(tree, queued.tabBackwards); }
+                    if !e._handle.defaultPrevented() { this.moveFocusByTab(tree, queued.tabBackwards); }
                     return;
                 }
             }
@@ -3415,7 +3533,7 @@ export opaque ref struct UIContext {
     // button/pressure), so it has no `kind` to switch on and just reads
     // onWheelCapture/onWheel unconditionally.
     //
-    // Both also note which element stopped the event (WheelEvent._consumedAt),
+    // Both also note which element stopped the event (EventSlot.consumedAt),
     // which is how a touch pan latches onto its scroller. `depth`, when not -1,
     // cuts the path off below that index -- the capture phase runs down to it
     // and the bubble phase visits it alone -- which is how every later wheel
@@ -3507,8 +3625,8 @@ export opaque ref struct UIContext {
     // root onto `eventQueue` -- the bubble phase. Not invoked here -- see
     // process()'s FIRE PHASE. stopPropagation(), called from a handler
     // during that later fire phase, still stops the rest of this same
-    // chain: every scheduled closure below re-checks event._stopped right
-    // before running, and skips if it's set.
+    // chain: fireQueued checks the event's stopped flag right before running
+    // each scheduled handler, and skips it if set.
     fn dispatchBubbling(hitPath: []ui_elements.Element, event: PointerEvent, kind: PointerEventKind, eventQueue: []QueuedHandler): void :: final {
         let i = hitPath.length - 1;
         while i >= 0 {
@@ -3648,7 +3766,7 @@ export opaque ref struct UIContext {
             stoppedFling: stoppedFling,
         };
         this._scroll = ScrollGesture { pos: pos };
-        this._touchDownEvent = downEvent;
+        this.keepTouchDownEvent(downEvent);
         // A copy: hitPath is this frame's reusable buffer.
         let path = this._touchPath;
         path.clear();
@@ -3713,6 +3831,7 @@ export opaque ref struct UIContext {
         }
         this._pointerDownTargets.clear();
         let event = PointerEvent {
+            _handle: this.newEventHandle(),
             pointerId: this._touch.pointerId,
             pointerType: "touch",
             pos: this._touch.lastPos,
@@ -3797,6 +3916,7 @@ export opaque ref struct UIContext {
         this._scroll = ScrollGesture { pos: pos, lastSampleTime: now, lastMoveTime: now };
 
         let cancel = PointerEvent {
+            _handle: this.newEventHandle(),
             pointerId: this._touch.pointerId,
             pointerType: "touch",
             pos: pos,
@@ -3896,6 +4016,7 @@ export opaque ref struct UIContext {
             return none;
         }
         let wheel = WheelEvent {
+            _handle: this.newEventHandle(),
             pos: this._scroll.pos,
             delta: Vec2(dx, dy),
             deltaMode: WheelDeltaMode.Pixel,
@@ -4169,6 +4290,9 @@ export opaque ref struct UIContext {
         // first, then fire it all only once the walk is fully done.
         let eventQueue = this._eventQueue;
         eventQueue.clear();
+        // Every event of the previous frame is dispatched; their slots are
+        // free again (newEventHandle).
+        this._eventFlags.used = 0;
 
         // The wheel a touch pan or fling delivers this frame, if any -- read
         // back after the FIRE phase to see who consumed it.
@@ -4279,6 +4403,7 @@ export opaque ref struct UIContext {
                     else if pe.kind == PointerEventKind.Move && pe.buttons != PointerButtons.None { pressure = 0.5; }
                 }
                 let event = PointerEvent {
+                    _handle: this.newEventHandle(),
                     pointerId: pe.pointerId,
                     pointerType: pe.pointerType,
                     pos: pe.pos,
@@ -4364,6 +4489,7 @@ export opaque ref struct UIContext {
                     // swallow the menu (and vice versa).
                     if pe.isPrimary && pe.button == PointerButton.Right {
                         let contextEvent = PointerEvent {
+                            _handle: this.newEventHandle(),
                             pointerId: pe.pointerId, pointerType: pe.pointerType, pos: pe.pos,
                             button: pe.button, buttons: pe.buttons,
                             pressure: pressure, isPrimary: pe.isPrimary,
@@ -4397,7 +4523,7 @@ export opaque ref struct UIContext {
                             if !pe.cancelled {
                                 this.endPan(pe.pos, now);
                             }
-                            this._touchDownEvent = none;
+                            this.keepTouchDownEvent(none);
                             continue;
                         }
                         tap = state == TouchGestureState.Pending && !pe.cancelled
@@ -4447,6 +4573,7 @@ export opaque ref struct UIContext {
                         // not lift, the platform took it away.
                         if !pe.cancelled && clickAllowed {
                             let clickEvent = PointerEvent {
+                                _handle: this.newEventHandle(),
                                 pointerId: pe.pointerId, pointerType: pe.pointerType, pos: pe.pos,
                                 button: pe.button, buttons: pe.buttons,
                                 pressure: 0.0, isPrimary: pe.isPrimary,
@@ -4466,6 +4593,7 @@ export opaque ref struct UIContext {
                             // not stop the other.
                             if primary && pe.detail == 2 {
                                 let doubleClickEvent = PointerEvent {
+                                    _handle: this.newEventHandle(),
                                     pointerId: pe.pointerId, pointerType: pe.pointerType, pos: pe.pos,
                                     button: pe.button, buttons: pe.buttons,
                                     pressure: 0.0, isPrimary: pe.isPrimary,
@@ -4482,7 +4610,7 @@ export opaque ref struct UIContext {
                         this.releasePointer(pe.pointerId);
                     }
                     if gestureTouch {
-                        this._touchDownEvent = none;
+                        this.keepTouchDownEvent(none);
                     }
                 }
                 else if pe.kind == PointerEventKind.Move {
@@ -4513,6 +4641,7 @@ export opaque ref struct UIContext {
             if wheelDelta.x != 0.0 || wheelDelta.y != 0.0 {
                 this._scroll.flinging = false;
                 let wheelEvent = WheelEvent {
+                    _handle: this.newEventHandle(),
                     pos: this.mousePos,
                     delta: wheelDelta,
                     modifiers: this.currentModifiers(),
@@ -4548,6 +4677,7 @@ export opaque ref struct UIContext {
 
                 for ke in keyEdges {
                     let keyEvent = KeyboardEvent {
+                        _handle: this.newEventHandle(),
                         key: ke.key,
                         repeat: ke.repeat,
                         modifiers: ke.modifiers,
@@ -4570,7 +4700,7 @@ export opaque ref struct UIContext {
                 }
                 if focusUsable {
                     for chunk in textChunks {
-                        let textEvent = TextInputEvent { text: chunk };
+                        let textEvent = TextInputEvent { text: chunk, _handle: this.newEventHandle() };
                         this.dispatchTextInputCapturing(focusPath, textEvent, eventQueue);
                         this.dispatchTextInputBubbling(focusPath, textEvent, eventQueue);
                     }
@@ -4598,9 +4728,9 @@ export opaque ref struct UIContext {
         // the gesture (see WheelEvent); a fling nobody takes any more is over
         // -- the scroller it was moving reached its end.
         if gestureWheel {
-            if gestureWheel._consumedAt >= 0 {
+            if gestureWheel._handle.consumedAt() >= 0 {
                 if this._scroll.latch < 0 {
-                    this._scroll.latch = gestureWheel._consumedAt;
+                    this._scroll.latch = gestureWheel._handle.consumedAt();
                 }
             }
             else {
