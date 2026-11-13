@@ -22,7 +22,10 @@ export ref struct DivElement {
     // resolveFloating() (when another element's explicit anchorTo() targets
     // this one).
     globalId: str;
-    children: []Element = [];
+    // Created with the first child: most divs have none, and an empty array
+    // is an allocation of its own. Mutable elements: whoever builds the tree
+    // finds a child here again to update it (ui_components.getOrCreateDiv).
+    children?: []mut Element;
     style: ui_styling.ComputedDivStyle = {};
     _runtimeData?: TypeErasedBox;
 }

@@ -55,8 +55,10 @@ fn totalRuns(): int {
 
 fn collectTexts(el: ui_elements.Element, out: []str) :: final {
     if el is ui_elements.DivElement {
-        for c in el.children {
-            collectTexts(c, out);
+        if let children = el.children {
+            for c in children {
+                collectTexts(c, out);
+            }
         }
     } else if el is ui_elements.TextElement {
         if el.text.length > 0 {

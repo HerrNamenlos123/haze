@@ -943,9 +943,13 @@ export opaque ref struct LayoutContext {
             // the FFI call use the exact same values.
             let childForceGrowWidth = crossAxisForcesWidthGrow(style.direction, style.crossAlign);
             let childForceGrowHeight = crossAxisForcesHeightGrow(style.direction, style.crossAlign);
-            let spaceBetween = style.packing == ui_styling.Packing.SpaceBetween && element.children.length > 1;
+            let childCount = 0;
+            if let declared = element.children {
+                childCount = declared.length;
+            }
+            let spaceBetween = style.packing == ui_styling.Packing.SpaceBetween && childCount > 1;
             let mainAxisIsWidth = style.direction == ui_styling.Direction.Row;
-            let lastIndex = element.children.length - 1;
+            let lastIndex = childCount - 1;
 
             // `let stackref`, not a heap value: what the children need is nine
             // values, and when they were a closure's captures its environment
@@ -1259,8 +1263,10 @@ fn applyBoundingBoxesRecursive(element: ui_elements.Element, callback: BoundingB
             }
         }
 
-        for child in element.children {
-            applyBoundingBoxesRecursive(child, callback);
+        if let children = element.children {
+            for child in children {
+                applyBoundingBoxesRecursive(child, callback);
+            }
         }
     }
 }
@@ -1299,8 +1305,10 @@ fn renderOutlinesRecursive(
     }
     if element is ui_elements.DivElement {
         drawOutline(element.globalId, element.style, pointerOf(element), callbacks, clips);
-        for child in element.children {
-            renderOutlinesRecursive(child, callbacks, clips);
+        if let children = element.children {
+            for child in children {
+                renderOutlinesRecursive(child, callbacks, clips);
+            }
         }
     }
     else if element is ui_elements.CanvasElement {
@@ -1503,8 +1511,10 @@ fn collectClipsRecursive(
             entries.push({ elementPtr: pointerOf(element), clip: current });
         }
 
-        for child in element.children {
-            collectClipsRecursive(child, current, entries);
+        if let children = element.children {
+            for child in children {
+                collectClipsRecursive(child, current, entries);
+            }
         }
     }
     else if element is ui_elements.TextElement {
@@ -1673,13 +1683,15 @@ struct DivChildren {
     mainAxisIsWidth: bool;
 
     fn declare() {
-        let i = 0;
-        for child in this.element.children {
-            this.layout.processTreeElement(this.traversal, child, this.forceGrowWidth, this.forceGrowHeight);
-            if this.spaceBetween && i < this.lastIndex {
-                defineSpacer(this.elementId, ID_OFFSET_FIRST_SPACER + i, this.mainAxisIsWidth);
+        if let children = this.element.children {
+            let i = 0;
+            for child in children {
+                this.layout.processTreeElement(this.traversal, child, this.forceGrowWidth, this.forceGrowHeight);
+                if this.spaceBetween && i < this.lastIndex {
+                    defineSpacer(this.elementId, ID_OFFSET_FIRST_SPACER + i, this.mainAxisIsWidth);
+                }
+                i = i + 1;
             }
-            i = i + 1;
         }
     }
 }

@@ -311,10 +311,10 @@ export opaque ref struct Runtime {
     }
 
     fn renderCanvasElement(element: ui_elements.CanvasElement, frame: mut renderer.gfx.Frame, screenRenderer: mut renderer.gfx.Renderer) {
-        let data = ui_components.runtimeDataOf(element);
-        let feedback = data.renderFeedback;
-        assert(feedback);
-        let size = feedback.size;
+        let data = ui_components.canvasRuntimeOf(element);
+        let box = data.box;
+        assert(box);
+        let size = box.size;
 
         let fbSize = Vec2i(
             (size.x * this.dpiScale) as i32,
@@ -340,7 +340,7 @@ export opaque ref struct Runtime {
             // touches it this frame.
             renderer.gfx.Renderer(frame, handle.canvas).commit(true);
 
-            this.drawCanvasAndComposite(element, handle, true, feedback, size, frame, screenRenderer);
+            this.drawCanvasAndComposite(element, handle, true, box, size, frame, screenRenderer);
         } else {
             let handle = data.handle.get<ui_components.CanvasHandle>();
             let resized = handle.canvas.size.framebufferSize.x != fbSize.x || handle.canvas.size.framebufferSize.y != fbSize.y;
@@ -349,7 +349,7 @@ export opaque ref struct Runtime {
                 // A freshly resized texture has undefined contents too.
                 renderer.gfx.Renderer(frame, handle.canvas).commit(true);
             }
-            this.drawCanvasAndComposite(element, handle, resized, feedback, size, frame, screenRenderer);
+            this.drawCanvasAndComposite(element, handle, resized, box, size, frame, screenRenderer);
         }
     }
 
@@ -363,7 +363,7 @@ export opaque ref struct Runtime {
     // on it. When neither happened -- an idle canvas -- nothing is committed
     // at all and last frame's texture is composited again. `contentLost`: the
     // canvas was just created or resized, so its texture was just cleared.
-    fn drawCanvasAndComposite(element: ui_elements.CanvasElement, handle: ui_components.CanvasHandle, contentLost: bool, feedback: ui_components.RenderFeedback, size: Vec2, frame: mut renderer.gfx.Frame, screenRenderer: mut renderer.gfx.Renderer) {
+    fn drawCanvasAndComposite(element: ui_elements.CanvasElement, handle: ui_components.CanvasHandle, contentLost: bool, box: ui_components.LayoutBox, size: Vec2, frame: mut renderer.gfx.Frame, screenRenderer: mut renderer.gfx.Renderer) {
         let canvasRenderer = handle.context;
         // Drawn into outside any frame, so pointed at this one only now --
         // before the drawFn, which may itself draw into other canvases
@@ -377,7 +377,7 @@ export opaque ref struct Runtime {
 
         screenRenderer.drawTexture({
             texture: handle.canvas.asTexture(),
-            pos: feedback.position,
+            pos: box.position,
             size: size,
         });
     }

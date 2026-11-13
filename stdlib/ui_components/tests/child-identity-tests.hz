@@ -1,0 +1,191 @@
+import ui_components
+import ui_elements
+import ui_styling
+
+// Which element a declaration gets. A child is found among its parent's
+// children of the last pass by its id, wherever it moved; one that a pass
+// did not declare is gone, and declaring it again makes a new element, as a
+// component that was not declared is destroyed and made anew.
+//
+//   - Reordered children, and children behind an insertion at the front, are
+//     the same elements: what their runtime data holds (the layout box here)
+//     survives.
+//   - A child that left and came back is a new element: no box until layout
+//     reports one, not focused, and its ref points at the new element, the
+//     one in the tree.
+//
+// Before this, every child ever declared stayed in a per-parent cache for the
+// parent's whole life and came back with its old state: the box it had, and
+// focus, without any focus event.
+//
+// The boxes are given by hand (applyRenderFeedback); no layout engine is
+// wired up.
+
+ref struct TestArgs {}
+
+ref struct State {
+    failures: int = 0;
+    checks: int = 0;
+
+    mut fn checkStr(name: str, actual: str, expected: str) {
+        this.checks = this.checks + 1;
+        if actual != expected {
+            this.failures = this.failures + 1;
+            fmt.println(f"FAIL: {name}\n  expected: {expected}\n  actual:   {actual}");
+        }
+    }
+
+    mut fn checkBool(name: str, actual: bool, expected: bool) {
+        this.checks = this.checks + 1;
+        if actual != expected {
+            this.failures = this.failures + 1;
+            fmt.println(f"FAIL: {name} (expected {expected}, got {actual})");
+        }
+    }
+}
+
+fn newRef(): ui_components.ElementRef<ui_elements.DivElement> {
+    return rx.shallowReactive<ui_components.ElementWrapper<ui_elements.DivElement> | null>(null);
+}
+
+// The width of the box an element's runtime data holds, or -1 without one.
+fn widthOf(r: ui_components.ElementRef<ui_elements.DivElement>): int {
+    let w = rx.get(r);
+    if let wrapper = w {
+        if let size = ui_components.ui_size(wrapper._element) {
+            return size.x as int;
+        }
+        return -1;
+    }
+    return -2;
+}
+
+// The declaration ids of the root's children, in order.
+fn idsOf(r: ui_components.ElementRef<ui_elements.DivElement>): str {
+    let out = "";
+    let w = rx.get(r);
+    if let wrapper = w {
+        if let children = wrapper.raw.children {
+            for child in children {
+                let element: ui_elements.Element = child;
+                if element is ui_elements.DivElement {
+                    out = out + f"{element.id};";
+                }
+            }
+        }
+    }
+    return out;
+}
+
+fn main(): int {
+    let state = State {};
+
+    // 0: A B C   1: C A B   2: X C A B   3: X C A   4: X C A B
+    let scene = rx.reactive<int>(0);
+    let showFocusable = rx.reactive<bool>(true);
+
+    let rootRef = newRef();
+    let aRef = newRef();
+    let bRef = newRef();
+    let cRef = newRef();
+    let fRef = newRef();
+
+    let ui = ui_components.UIContext({
+        ui: (ctx: ui_components.UIContext) => {
+            ctx.defineComponent(0, {} as TestArgs, (instance: ui_components.InstanceData<TestArgs>) => {
+                return (): ui_components.DivProps => {
+                    let s = rx.get(scene);
+                    let a = () => { ctx.div({ id: 1, elementRef: aRef }, () => {}); };
+                    let b = () => { ctx.div({ id: 2, elementRef: bRef }, () => {}); };
+                    let c = () => { ctx.div({ id: 3, elementRef: cRef }, () => {}); };
+                    let x = () => { ctx.div({ id: 9 }, () => {}); };
+                    if s == 0 { a(); b(); c(); }
+                    else if s == 1 { c(); a(); b(); }
+                    else if s == 2 { x(); c(); a(); b(); }
+                    else if s == 3 { x(); c(); a(); }
+                    else { x(); c(); a(); b(); }
+                    if rx.get(showFocusable) {
+                        ctx.div({ id: 20, elementRef: fRef, focusable: true }, () => {});
+                    }
+                    return { id: 0, elementRef: rootRef };
+                };
+            });
+        },
+        mousePos: (): Vec2 => { return Vec2(500.0, 500.0); },
+        clock: (): real => { return 1000.0; },
+    });
+
+    ui.process();
+    let a0 = rx.get(aRef);
+    let b0 = rx.get(bRef);
+    let c0 = rx.get(cRef);
+    assert(a0);
+    assert(b0);
+    assert(c0);
+    // Each child's own box, told apart by its width.
+    ui_components.applyRenderFeedback(a0._element, Vec2(0.0, 0.0), Vec2(10.0, 5.0));
+    ui_components.applyRenderFeedback(b0._element, Vec2(0.0, 5.0), Vec2(20.0, 5.0));
+    ui_components.applyRenderFeedback(c0._element, Vec2(0.0, 10.0), Vec2(30.0, 5.0));
+    state.checkStr("declared in order", idsOf(rootRef), "1;2;3;20;");
+
+    scene := 1;
+    ui.process();
+    state.checkStr("reordered", idsOf(rootRef), "3;1;2;20;");
+    state.checkBool("reordered: A keeps its box", widthOf(aRef) == 10, true);
+    state.checkBool("reordered: B keeps its box", widthOf(bRef) == 20, true);
+    state.checkBool("reordered: C keeps its box", widthOf(cRef) == 30, true);
+
+    scene := 2;
+    ui.process();
+    state.checkStr("an insertion at the front", idsOf(rootRef), "9;3;1;2;20;");
+    state.checkBool("behind an insertion: A keeps its box", widthOf(aRef) == 10, true);
+    state.checkBool("behind an insertion: B keeps its box", widthOf(bRef) == 20, true);
+    state.checkBool("behind an insertion: C keeps its box", widthOf(cRef) == 30, true);
+
+    scene := 3;
+    ui.process();
+    state.checkStr("B left", idsOf(rootRef), "9;3;1;20;");
+
+    scene := 4;
+    ui.process();
+    state.checkStr("B came back", idsOf(rootRef), "9;3;1;2;20;");
+    state.checkBool("B came back as a new element, without the old box", widthOf(bRef) == -1, true);
+    state.checkBool("A stayed and kept its box", widthOf(aRef) == 10, true);
+
+    // B's ref is the element in the tree: a box given to the tree's child
+    // with id 2 is what the ref reads.
+    let root = rx.get(rootRef);
+    assert(root);
+    if let children = root.raw.children {
+        for child in children {
+            let element: ui_elements.Element = child;
+            if element is ui_elements.DivElement {
+                if element.id == 2 {
+                    ui_components.applyRenderFeedback(element, Vec2(0.0, 30.0), Vec2(77.0, 5.0));
+                }
+            }
+        }
+    }
+    state.checkBool("B's ref follows the new element", widthOf(bRef) == 77, true);
+
+    // Focus does not come back with a child that left the tree.
+    let f0 = rx.get(fRef);
+    assert(f0);
+    ui_components.ui_focus(f0._element);
+    ui.process();
+    state.checkBool("the focusable child is focused", ui_components.ui_focused(f0._element), true);
+    showFocusable := false;
+    ui.process();
+    showFocusable := true;
+    ui.process();
+    let f1 = rx.get(fRef);
+    assert(f1);
+    state.checkBool("it came back new, and not focused", ui_components.ui_focused(f1._element), false);
+
+    if state.failures > 0 {
+        fmt.println(f"{state.failures} of {state.checks} checks FAILED");
+        return 1;
+    }
+    fmt.println(f"all {state.checks} checks passed");
+    return 0;
+}

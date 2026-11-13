@@ -76,9 +76,11 @@ fn findComponentRoot(element: ui_elements.Element, id: int): ui_elements.DivElem
         if element.id == id {
             return element;
         }
-        for child in element.children {
-            if let found = findComponentRoot(child, id) {
-                return found;
+        if let children = element.children {
+            for child in children {
+                if let found = findComponentRoot(child, id) {
+                    return found;
+                }
             }
         }
     }
@@ -90,12 +92,14 @@ fn findComponentRoot(element: ui_elements.Element, id: int): ui_elements.DivElem
 fn showsCrash(tree: mut ui_elements.DivElement | none, id: int): bool {
     if let root = tree {
         if let component = findComponentRoot(root, id) {
-            if component.children.length != 1 {
-                return false;
-            }
-            let only = component.children[0];
-            if only is ui_elements.TextElement {
-                return rx.get(only.text).startsWith("Component error: ");
+            if let children = component.children {
+                if children.length != 1 {
+                    return false;
+                }
+                let only: ui_elements.Element = children[0];
+                if only is ui_elements.TextElement {
+                    return rx.get(only.text).startsWith("Component error: ");
+                }
             }
         }
     }
@@ -106,10 +110,12 @@ fn showsCrash(tree: mut ui_elements.DivElement | none, id: int): bool {
 fn healthyText(tree: mut ui_elements.DivElement | none): str {
     if let root = tree {
         if let component = findComponentRoot(root, -10) {
-            if component.children.length > 0 {
-                let first = component.children[0];
-                if first is ui_elements.TextElement {
-                    return rx.get(first.text);
+            if let children = component.children {
+                if children.length > 0 {
+                    let first: ui_elements.Element = children[0];
+                    if first is ui_elements.TextElement {
+                        return rx.get(first.text);
+                    }
                 }
             }
         }

@@ -1,0 +1,328 @@
+import ui_components
+import ui_elements
+import ui_styling
+
+// An element's runtime data is split by concept, and each concept that costs
+// memory is created by its first use (see ui_components.DivRuntime). These
+// cases pin what that must not change:
+//
+//   - Handlers live in a list, made by the first one. A handler handed on one
+//     template run and not on the next is gone (and fires no more); handed
+//     again, it fires again; a different closure for the same kind replaces
+//     the old one.
+//   - Hover and hit enter/leave handlers fire on exactly their transitions.
+//   - The reactive cells behind ui_hover, ui_active and ui_size are made by
+//     their first reader. A reader that arrives late still reads the current
+//     state, and is woken by the next change and by nothing else.
+//   - A titlebar's holes come from the handlers an element has (and from
+//     focusable): one that loses its last click handler stops being a hole.
+//
+// The boxes are given by hand (applyRenderFeedback); no layout engine is
+// wired up.
+
+ref struct TestArgs {}
+
+ref struct State {
+    mouseX: real = 500.0;
+    mouseY: real = 500.0;
+    now: real = 1000.0;
+    leftHeld: bool = false;
+    edges: []ui_components.PointerEdge = [];
+    log: str = "";
+    regions: int = -1;
+    holes: int = -1;
+    failures: int = 0;
+    checks: int = 0;
+
+    mut fn checkStr(name: str, actual: str, expected: str) {
+        this.checks = this.checks + 1;
+        if actual != expected {
+            this.failures = this.failures + 1;
+            fmt.println(f"FAIL: {name}\n  expected: {expected}\n  actual:   {actual}");
+        }
+    }
+
+    mut fn checkBool(name: str, actual: bool, expected: bool) {
+        this.checks = this.checks + 1;
+        if actual != expected {
+            this.failures = this.failures + 1;
+            fmt.println(f"FAIL: {name} (expected {expected}, got {actual})");
+        }
+    }
+
+    mut fn checkInt(name: str, actual: int, expected: int) {
+        this.checks = this.checks + 1;
+        if actual != expected {
+            this.failures = this.failures + 1;
+            fmt.println(f"FAIL: {name} (expected {expected}, got {actual})");
+        }
+    }
+}
+
+fn newRef(): ui_components.ElementRef<ui_elements.DivElement> {
+    return rx.shallowReactive<ui_components.ElementWrapper<ui_elements.DivElement> | null>(null);
+}
+
+fn main(): int {
+    let state = State {};
+
+    // Which handlers the button is handed: 0 none, 1 the first click
+    // handler, 2 the second; 3 down, up and the first click handler; 4 down
+    // and up only.
+    let armed = rx.reactive<int>(1);
+    // Whether the label is focusable (a titlebar hole without any handler).
+    let labelFocusable = rx.reactive<bool>(false);
+
+    let barRef = newRef();
+    let buttonRef = newRef();
+    let labelRef = newRef();
+    let hoverRef = newRef();
+    let innerRef = newRef();
+
+    let ui = ui_components.UIContext({
+        ui: (ctx: ui_components.UIContext) => {
+            ctx.defineComponent(0, {} as TestArgs, (instance: ui_components.InstanceData<TestArgs>) => {
+                let first = (e: ui_components.PointerEvent) => { state.log = state.log + "first;"; };
+                let second = (e: ui_components.PointerEvent) => { state.log = state.log + "second;"; };
+                let down = (e: ui_components.PointerEvent) => { state.log = state.log + "down;"; };
+                let up = (e: ui_components.PointerEvent) => { state.log = state.log + "up;"; };
+                return (): ui_components.DivProps => {
+                    let which = rx.get(armed);
+                    let onClick = none as ((e: ui_components.PointerEvent) => none) | none;
+                    let onDown = none as ((e: ui_components.PointerEvent) => none) | none;
+                    let onUp = none as ((e: ui_components.PointerEvent) => none) | none;
+                    if which == 1 || which == 3 { onClick = first; }
+                    else if which == 2 { onClick = second; }
+                    if which >= 3 { onDown = down; onUp = up; }
+                    ctx.div({ id: 1, elementRef: barRef, style: { osTitlebar: ui_styling.OSTitlebar.Drag } }, () => {
+                        ctx.div({ id: 2, elementRef: buttonRef, onClick: onClick, onPointerDown: onDown, onPointerUp: onUp }, () => {});
+                        ctx.div({ id: 3, elementRef: labelRef, focusable: rx.get(labelFocusable) }, () => {});
+                    });
+                    ctx.div({
+                        id: 4,
+                        elementRef: hoverRef,
+                        onHoverEnter: (e: ui_components.PointerEvent) => { state.log = state.log + "outer-hover-enter;"; },
+                        onHoverLeave: (e: ui_components.PointerEvent) => { state.log = state.log + "outer-hover-leave;"; },
+                        onHitEnter: (e: ui_components.PointerEvent) => { state.log = state.log + "outer-hit-enter;"; },
+                        onHitLeave: (e: ui_components.PointerEvent) => { state.log = state.log + "outer-hit-leave;"; },
+                    }, () => {
+                        ctx.div({
+                            id: 5,
+                            elementRef: innerRef,
+                            onHitEnter: (e: ui_components.PointerEvent) => { state.log = state.log + "inner-hit-enter;"; },
+                            onHitLeave: (e: ui_components.PointerEvent) => { state.log = state.log + "inner-hit-leave;"; },
+                        }, () => {});
+                    });
+                    return { id: 0 };
+                };
+            });
+        },
+        mousePos: (): Vec2 => { return Vec2(state.mouseX, state.mouseY); },
+        clock: (): real => { return state.now; },
+        pointerButtons: ui_components.PointerHeldCallbacks {
+            leftHeld: (): bool => { return state.leftHeld; },
+            middleHeld: (): bool => { return false; },
+            rightHeld: (): bool => { return false; },
+            edgesThisFrame: (): []ui_components.PointerEdge => {
+                let out: []ui_components.PointerEdge = [];
+                for e in state.edges { out.push(e); }
+                state.edges.clear();
+                return out;
+            },
+        },
+        window: ui_components.WindowCallbacks {
+            requestClose: () => {},
+            minimize: () => {},
+            maximize: () => {},
+            restore: () => {},
+            isMaximized: (): bool => { return false; },
+            hasNativeTitlebar: (): bool => { return false; },
+            setRegions: (regions: []ui_components.WindowRegion) => {
+                state.regions = regions.length;
+                let holes = 0;
+                for r in regions {
+                    if !r.draggable { holes++; }
+                }
+                state.holes = holes;
+            },
+        },
+    });
+
+    ui.process();
+    let bar = rx.get(barRef);
+    let button = rx.get(buttonRef);
+    let label = rx.get(labelRef);
+    let hover = rx.get(hoverRef);
+    let inner = rx.get(innerRef);
+    assert(bar);
+    assert(button);
+    assert(label);
+    assert(hover);
+    assert(inner);
+    let barEl = bar._element;
+    let buttonEl = button._element;
+    let labelEl = label._element;
+    let hoverEl = hover._element;
+    let innerEl = inner._element;
+
+    // The titlebar strip with a button and a label in it, and below it an
+    // element with a child.
+    let layout = (): none => {
+        ui_components.applyRenderFeedback(barEl, Vec2(0.0, 0.0), Vec2(300.0, 30.0));
+        ui_components.applyRenderFeedback(buttonEl, Vec2(10.0, 5.0), Vec2(40.0, 20.0));
+        ui_components.applyRenderFeedback(labelEl, Vec2(60.0, 5.0), Vec2(40.0, 20.0));
+        ui_components.applyRenderFeedback(hoverEl, Vec2(0.0, 100.0), Vec2(200.0, 100.0));
+        ui_components.applyRenderFeedback(innerEl, Vec2(20.0, 120.0), Vec2(50.0, 50.0));
+    };
+    let frame = (): none => {
+        state.now = state.now + 1.0;
+        ui.process();
+        layout();
+        ui.syncWindowRegions(barEl);
+    };
+    let moveTo = (x: real, y: real): none => {
+        state.mouseX = x;
+        state.mouseY = y;
+        frame();
+    };
+    let click = (x: real, y: real): none => {
+        state.mouseX = x;
+        state.mouseY = y;
+        state.leftHeld = true;
+        state.edges.push({ button: ui_components.PointerButton.Left, kind: ui_components.PointerEdgeKind.Pressed, pos: Vec2(x, y) });
+        frame();
+        state.leftHeld = false;
+        state.edges.push({ button: ui_components.PointerButton.Left, kind: ui_components.PointerEdgeKind.Released, pos: Vec2(x, y) });
+        frame();
+    };
+    layout();
+    ui_components.ui_requestUpdate();
+    frame();
+
+    // --- Handlers that come, go and change -------------------------------
+    state.log = "";
+    click(30.0, 15.0);
+    state.checkStr("the first handler fires", state.log, "first;");
+
+    armed := 0;
+    frame();
+    state.log = "";
+    click(30.0, 15.0);
+    state.checkStr("a handler no longer handed fires no more", state.log, "");
+
+    armed := 1;
+    frame();
+    state.log = "";
+    click(30.0, 15.0);
+    state.checkStr("handed again, it fires again", state.log, "first;");
+
+    armed := 2;
+    frame();
+    state.log = "";
+    click(30.0, 15.0);
+    state.checkStr("a different closure replaces the old one", state.log, "second;");
+
+    // Kinds on both sides of the click handler come and go around it: each
+    // handler must stay with its own kind.
+    armed := 3;
+    frame();
+    state.log = "";
+    click(30.0, 15.0);
+    state.checkStr("down and up join the click handler", state.log, "down;up;first;");
+
+    armed := 1;
+    frame();
+    state.log = "";
+    click(30.0, 15.0);
+    state.checkStr("down and up leave, the click handler stays", state.log, "first;");
+
+    armed := 4;
+    frame();
+    state.log = "";
+    click(30.0, 15.0);
+    state.checkStr("the click handler leaves, down and up come", state.log, "down;up;");
+
+    armed := 2;
+    frame();
+    state.log = "";
+    click(30.0, 15.0);
+    state.checkStr("all change at once", state.log, "second;");
+
+    // --- Titlebar holes follow the handlers ------------------------------
+    ui_components.ui_requestUpdate();
+    frame();
+    state.checkInt("titlebar: the strip and the button", state.regions, 2);
+    state.checkInt("titlebar: the button is a hole", state.holes, 1);
+
+    armed := 0;
+    frame();
+    state.checkInt("titlebar: a button without a handler is no hole", state.holes, 0);
+
+    labelFocusable := true;
+    frame();
+    state.checkInt("titlebar: a focusable element is a hole", state.holes, 1);
+
+    // --- Hover and hit transitions ----------------------------------------
+    state.log = "";
+    moveTo(150.0, 150.0);
+    state.checkStr("onto the outer element", state.log, "outer-hover-enter;outer-hit-enter;");
+
+    state.log = "";
+    moveTo(40.0, 140.0);
+    // The walk visits a child before its parent, so the child's transition is
+    // queued first.
+    state.checkStr("onto its child", state.log, "inner-hit-enter;outer-hit-leave;");
+
+    state.log = "";
+    moveTo(41.0, 141.0);
+    state.checkStr("moving within the child", state.log, "");
+
+    // --- A late reader reads the current state ----------------------------
+    let hovered = rx.computed<bool>(() => {
+        return ui_components.ui_hover(hoverEl);
+    });
+    state.checkBool("late ui_hover reader: hovered already", rx.get(hovered), true);
+    frame();
+    state.checkBool("late ui_hover reader: not woken by a frame", rx.isDirty(hovered), false);
+
+    state.log = "";
+    moveTo(500.0, 500.0);
+    state.checkStr("off both", state.log, "inner-hit-leave;outer-hover-leave;");
+    state.checkBool("late ui_hover reader: woken by the change", rx.isDirty(hovered), true);
+    state.checkBool("late ui_hover reader: reads it", rx.get(hovered), false);
+
+    let width = rx.computed<real>(() => {
+        let size = ui_components.ui_size(innerEl);
+        if let s = size { return s.x; }
+        return -1.0;
+    });
+    state.checkBool("late ui_size reader: the current box", rx.get(width) == 50.0, true);
+    ui_components.applyRenderFeedback(innerEl, Vec2(20.0, 120.0), Vec2(50.0, 50.0));
+    state.checkBool("late ui_size reader: the same box wakes nothing", rx.isDirty(width), false);
+    ui_components.applyRenderFeedback(innerEl, Vec2(20.0, 120.0), Vec2(60.0, 50.0));
+    state.checkBool("late ui_size reader: a new box wakes it", rx.isDirty(width), true);
+    state.checkBool("late ui_size reader: reads it", rx.get(width) == 60.0, true);
+    layout();
+
+    let active = rx.computed<bool>(() => {
+        return ui_components.ui_active(buttonEl);
+    });
+    state.checkBool("late ui_active reader: not pressed", rx.get(active), false);
+    state.mouseX = 30.0;
+    state.mouseY = 15.0;
+    state.leftHeld = true;
+    state.edges.push({ button: ui_components.PointerButton.Left, kind: ui_components.PointerEdgeKind.Pressed, pos: Vec2(30.0, 15.0) });
+    frame();
+    state.checkBool("late ui_active reader: pressed", rx.get(active), true);
+    state.leftHeld = false;
+    state.edges.push({ button: ui_components.PointerButton.Left, kind: ui_components.PointerEdgeKind.Released, pos: Vec2(30.0, 15.0) });
+    frame();
+    state.checkBool("late ui_active reader: released", rx.get(active), false);
+
+    if state.failures > 0 {
+        fmt.println(f"{state.failures} of {state.checks} checks FAILED");
+        return 1;
+    }
+    fmt.println(f"all {state.checks} checks passed");
+    return 0;
+}

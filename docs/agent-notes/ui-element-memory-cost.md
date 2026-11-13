@@ -1,33 +1,31 @@
 # Memory cost of one mounted element
 
-What one div, text or component costs in ui_components, where the bytes go, and how to measure it.
+What one div, text, canvas or component costs in ui_components, where the bytes go, and how to measure it.
 
-Verified 2026-11-12 against 1ed4446f (working tree; the uncommitted ui_components.hz edits of that day do not touch these structs).
+Verified 2026-11-13 against b670dfa5 plus that day's uncommitted element-memory change (per-kind runtime data, handler mask and list, optional arrays, no child cache).
 
-## Measured (bytes the GC hands out per element, mount frame, N = 2000)
+## Measured (stdlib/ui_components/tests/element-memory-tests.hz, which pins these)
 
-| Element | allocations | GC bytes |
-|---|---|---|
-| plain `div` | 9 | 2084 |
-| `div` with one handler | 9 | 2084 (a handler costs no extra: its slot exists anyway) |
-| `text` | 8 | 1604 |
-| trivial component (template returns `{ id: 0 }`) | 27 | 3043 |
-| `div` + one `text` child | 19 | 3796 |
+Exact allocations and requested bytes for one more element of a kind, mount and the next running frame, with a box reported and the pointer elsewhere. GC: plus the collector's rounding (one byte, then 16-byte granules).
 
-A second frame with nothing changed allocates 0 bytes.
+| Element | allocations | bytes | GC bytes | before (b670dfa5) |
+|---|---|---|---|---|
+| plain `div` | 4 | 827 | 880 | 11 / 1929 / 2064 |
+| `div` with one handler | 6 | 899 | 976 | same as a plain div |
+| `text` | 4 | 331 | 384 | 10 / 1457 / 1584 |
+| `canvas` (no drawFn) | 4 | 891 | 944 | 10 / 1873 / 2000 |
+| trivial component (template returns `{ id: 0 }`) | 18 | 1436 | 1680 | 28 / 2658 / 3024 |
+| `div` with one `text` child (the parent's cost of holding a child) | 10 | 1272 | 1408 | 12 / 1424 / 1584 |
 
-## Where it goes (plain div)
+Idle frames, frames that run with nothing changed, and a template re-run declaring the same elements with the same handlers allocate 0 (same test).
 
-- `ComponentElementRuntimeData` (ui_components.hz, `export ref struct ComponentElementRuntimeData`): 1080 B, made for EVERY element (getOrCreateDiv/Text/Canvas call `runtimeDataOf(newElement)` to set `owner`), texts included, which take no handlers.
-  - 40 optional handler slots x 24 B = 960 B. An optional closure is fn ptr + env ptr + tag, 24 B.
-  - Canvas-only fields on every element: `handle`, `drawFn` (optional TypeErasedBox, 40 B each), `drawEffect`, `redrawVersion`, `postEffect` (16 B each), `msaaSamples`.
-- `DivElement`: 648 B, of which 576 B is the inline `ui_styling.ComputedDivStyle` (32 fields; `real` is 8 B, `Color` 32 B, `positionValues` 64 B), stored in full even when every field is the default. `_runtimeData` is an optional TypeErasedBox: 40 B inline plus a 16 B `Box` object.
-- Two `[]` fields per div (`DivElement.children`, runtime `childElements`): each `[]` default allocates a 48 B array header (64 B GC) even when empty. `childElements` indexes the same children as `children`.
-  - An empty `[]` is its own object and always allocates; an empty array without its own allocation is semantically impossible, so this never changes (user decision 2026-11-13). Empty-array allocations are removed by design at the field instead: an optional array, created on its first push.
-- Three reactive cells per element (`renderFeedbackVersion`, `inputFeedbackVersion`, `focusVersion`): 17 B each, 32 B GC.
-- `globalId` string (`f"{parent.globalId}/{id}"`): one 16 B unscanned block.
-- In the parent: one `Element` (16 B) and one `ChildElementEntry` slot, plus array growth.
-- A component adds `ComponentInstance` (312 B; `prevProps` and `instanceDataForCapturing` are 40 B optional TypeErasedBoxes), a computed node, 5 array headers, closure envs, dep edges.
+## Where it goes
+
+- The element: `DivElement` 656 B, of which 576 B is the inline `ui_styling.ComputedDivStyle` (32 fields, stored in full even when every field is the default); `TextElement` 224 B; `CanvasElement` 640 B. `globalId` (`f"{parent.globalId}/{id}"`) is one small unscanned block.
+- Runtime data, one type per kind in `_runtimeData` (ui_components.hz `DivRuntime`, `TextRuntime`, `CanvasRuntime`): 160 / 96 / 240 B, plus the 8 B `Box` of the `TypeErasedBox`. Owner, layout box (`LayoutBox`, a value) and the hover/hit/press flags are inline; the reactive cells behind `ui_size`/`ui_position`, `ui_hover`/`ui_hit`/`ui_active` and `ui_focused`/`ui_focusVisible` are made by their first reader, so an element nobody reads reactively has none. Optional fields are 16 B each (a `?:` reference or array is pointer plus tag).
+- Handlers: `DivRuntime.handlerMask` (8 B, one bit per kind) plus `DivRuntime.handlers`, an array of `AnyHandler` in kind order (24 B each), made by `applyDivProps` with exactly the room the first handlers need: 48 B header plus 24 B per handler. A div without handlers has no array (see ui-event-dispatch for the lookup).
+- Arrays made by their first element: `DivElement.children`, `ComponentInstance.childComponents` / `newChildComponents` / `watchers`. There is no per-parent child cache any more (it was 48 B plus 24 B per child, never pruned): see [[ui-child-identity]]. An empty `[]` is its own object and always allocates (user decision 2026-11-13), so a field that is usually empty is optional instead.
+- A component adds `ComponentInstance` (336 B), its props-version cell, a computed node (104 B), closure envs, the `InstanceData` and props boxes, and two dependency edges.
 
 ## GC rounding
 
@@ -35,6 +33,7 @@ A second frame with nothing changed allocates 0 bytes.
 
 ## How to measure
 
-- Allocation tally: a top-level `__c__` callback installed with `hzstd_push_memory_instrumentation(cb, NULL)` (hzstd_memory.h) receives every heap/arena allocation with its size and static `dataType` string (e.g. `struct mut ref ui_elements_..._DivElement`); sum per type around one `ui.process()`, run with `scripts/run-stdlib-test.sh <file> ui_components ui_elements`. Round with `GC_size` to get GC bytes.
-- Retained heap via `GC_get_memory_use()` after `GC_gcollect()` is block-granular and gave negative per-element deltas: not usable at this scale.
+- element-memory-tests.hz counts every allocation with a `__c__` callback installed by `hzstd_push_memory_instrumentation(cb, NULL)` (hzstd_memory.h), which receives each heap/arena allocation with its size and static `dataType` string. `EM_DEBUG=1` prints every counted allocation with its type. Run with `scripts/run-stdlib-test.sh stdlib/ui_components/tests/element-memory-tests.hz ui_components ui_elements`.
+- Trap: process() walks the tree for hover before the template pass, and the gate skips a frame with nothing to do, so what the walk gives a new element happens one RUNNING frame later; a measurement window needs a forced frame (`ui_requestUpdate()`) after the one that mounts. A ref-struct props literal (`{} as TestArgs` with `ref struct TestArgs {}`) is itself one allocation per declaration per template run.
+- `GC_get_total_bytes` moves in thread-local batches (a few KB between identical windows): fine for "0 over 100 rounds", useless for per-element bytes. Retained heap via `GC_get_memory_use()` after `GC_gcollect()` is block-granular: not usable at this scale either.
 - Struct layouts: `clang -fsyntax-only -w -DHAZE_PLATFORM_LINUX -Xclang -fdump-record-layouts-simple` on `__haze__/ui_components/build/ui_components-linux-x64.c`, include dirs taken from the `.d` file next to it plus `stdlib/core/src/hzstd{,/include}`, `stdlib/fontstash/src{,/ffi/public}`, `~/.haze/global/haze-bdwgc/include`. Sizes and offsets are printed in bits; match offsets to the field list of the `struct` definition in the same .c file.

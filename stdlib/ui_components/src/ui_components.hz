@@ -748,8 +748,8 @@ export struct CanvasProps {
     postEffect?: rx.Reactive<str>;
 }
 
-// The concrete renderer handle stored, type-erased, inside this layer's own
-// per-element runtime data (see ComponentElementRuntimeData below). Neither
+// The concrete renderer handle stored, type-erased, inside a canvas's
+// runtime data (see CanvasRuntime.handle below). Neither
 // ui_elements nor ui_layout ever read this -- only this module (here and in
 // ui_runtime's renderCanvas glue) does, via
 // TypeErasedBox.get<CanvasHandle>()/set<CanvasHandle>(). Both sides must
@@ -811,14 +811,16 @@ fn collectCanvasesRecursive(element: ui_elements.Element, out: mut []ui_elements
         return;
     }
     if element is ui_elements.DivElement {
-        for child in element.children {
-            collectCanvasesRecursive(child, out);
+        if let children = element.children {
+            for child in children {
+                collectCanvasesRecursive(child, out);
+            }
         }
     }
 }
 
 export fn drawCanvasIfNeeded(element: ui_elements.CanvasElement, canvasRenderer: mut renderer.gfx.Renderer, contentLost: bool): bool {
-    let data = runtimeDataOf(element);
+    let data = canvasRuntimeOf(element);
     if !data.drawFn {
         return false;
     }
@@ -860,41 +862,18 @@ export fn drawCanvasIfNeeded(element: ui_elements.CanvasElement, canvasRenderer:
     return true;
 }
 
-// Render/input feedback and an element's GPU canvas handle/drawFn used to
-// live as dedicated fields on the element itself (ui_elements.*Element).
-// They don't anymore -- ui_elements only knows about an opaque
-// `_runtimeData` slot, and this ref struct is what *this* module (the only
-// thing that creates elements) stores there. position()/size()/hover()
-// below read it back out; ui_elements and ui_layout never see this type.
-export ref struct RenderFeedback {
+// Where layout put an element: the box the layout pass `pass` reported for it
+// (see applyRenderFeedback and UIContext.beginRenderFeedback). A value,
+// always written whole.
+export struct LayoutBox {
     position: Vec2;
     size: Vec2;
-    // The layout pass that reported it -- see beginRenderFeedback.
     pass: int = 0;
 }
 
-export ref struct InputFeedback {
-    // Bounds-based: mouse is within this element, possibly also within a
-    // child. Matches HTML/CSS :hover.
-    hover: bool;
-    // Strict: mouse is within this element and not also within any child --
-    // i.e. this is genuinely the topmost thing under the cursor. No HTML/CSS
-    // equivalent.
-    hit: bool;
-    pointerDownHere: bool;  // tracks whether a pointerdown landed on this element (for click)
-}
-
-// One entry in a parent element's own child-element cache -- see
-// ComponentElementRuntimeData.childElements below. Keyed by the child's bare
-// per-level id (unique only among its siblings, not globally).
-export struct ChildElementEntry {
-    id: int;
-    element: mut ui_elements.Element;
-}
-
 // A pending programmatic focus change, parked on an element's runtime data
-// until the next process() applies it -- see
-// ComponentElementRuntimeData.focusRequested and UIContext.applyPendingFocus.
+// until the next process() applies it -- see DivRuntime.focusRequested and
+// UIContext.applyPendingFocus.
 // `Blur` is distinct from `None` on purpose: "this element asked to be
 // blurred" and "this element has no pending request" have to be told apart,
 // otherwise a blur() would be indistinguishable from never having been called.
@@ -912,58 +891,120 @@ export struct FocusRequestTarget {
     element: ui_elements.Element | none = none;
 }
 
-export ref struct ComponentElementRuntimeData {
-    renderFeedback?: RenderFeedback;
-    renderFeedbackVersion: rx.Reactive<bool>;
-    inputFeedback?: InputFeedback;
-    inputFeedbackVersion: rx.Reactive<bool>;
-    handle?: TypeErasedBox;
-    drawFn?: TypeErasedBox;
-    // When a canvas's drawFn runs -- see drawCanvasIfNeeded. The effect and
-    // its version cell only exist on a canvas that has a drawFn.
-    drawEffect?: rx.Computed<int>;
-    redrawVersion?: rx.Reactive<int>;
-    redrawRequested: bool = false;
-    msaaSamples: int = 4;
-    postEffect?: rx.Reactive<str>;
+// Every handler a DivProps can carry, one per `on...` field, named after it.
+export enum HandlerKind {
+    PointerDown, PointerUp, PointerMove, Click, DoubleClick, AuxClick, ContextMenu, Wheel,
+    PointerDownCapture, PointerUpCapture, PointerMoveCapture, ClickCapture,
+    DoubleClickCapture, AuxClickCapture, ContextMenuCapture, WheelCapture,
+    HoverEnter, HoverLeave, HitEnter, HitLeave,
+    Focus, Blur, FocusIn, FocusOut, FocusCapture, BlurCapture, FocusInCapture, FocusOutCapture,
+    PointerDownOutside, FocusOutside,
+    KeyDown, KeyUp, TextInput, KeyDownCapture, KeyUpCapture, TextInputCapture,
+}
 
+export type PointerHandler = (e: PointerEvent) => none :: final;
+export type WheelHandler = (e: WheelEvent) => none :: final;
+export type FocusHandler = (e: FocusEvent) => none :: final;
+export type KeyHandler = (e: KeyboardEvent) => none :: final;
+export type TextInputHandler = (e: TextInputEvent) => none :: final;
+export type AnyHandler = PointerHandler | WheelHandler | FocusHandler | KeyHandler | TextInputHandler;
+
+// Where `kind`'s handler sits in DivRuntime.handlers, or -1 when the element
+// has none: the number of kinds before it whose bit is set in `mask` (see
+// DivRuntime.handlerMask). Haze has no integer bit operators (`&` is
+// reference-of), so this is C, like hasButton.
+fn handlerRank(mask: int, kind: HandlerKind): int :: final {
+    do unsafe {
+        let result: int = uninitialized;
+        __c__("{ unsigned long long m = (unsigned long long)mask; unsigned long long b = 1ULL << (int)kind; result = (m & b) ? (hzstd_int_t)__builtin_popcountll(m & (b - 1)) : -1; }");
+        return result;
+    };
+}
+
+// Where a handler of `kind` goes in DivRuntime.handlers: the number of kinds
+// before it whose bit is set, whether its own is or not.
+fn handlerInsertRank(mask: int, kind: HandlerKind): int :: final {
+    do unsafe {
+        let result: int = uninitialized;
+        __c__("{ unsigned long long b = 1ULL << (int)kind; result = (hzstd_int_t)__builtin_popcountll((unsigned long long)mask & (b - 1)); }");
+        return result;
+    };
+}
+
+// `mask` with `kind`'s bit set or cleared.
+fn withHandlerBit(mask: int, kind: HandlerKind, present: bool): int :: final {
+    do unsafe {
+        let result: int = uninitialized;
+        __c__("{ unsigned long long b = 1ULL << (int)kind; result = (hzstd_int_t)(present ? ((unsigned long long)mask | b) : ((unsigned long long)mask & ~b)); }");
+        return result;
+    };
+}
+
+// How many bits are set in `mask`: the length DivRuntime.handlers must have.
+fn handlerMaskCount(mask: int): int :: final {
+    do unsafe {
+        let result: int = uninitialized;
+        __c__("result = (hzstd_int_t)__builtin_popcountll((unsigned long long)mask);");
+        return result;
+    };
+}
+
+// The rank (see handlerRank) of the highest kind set in `mask` but not in
+// `keep`, or -1 when there is none.
+fn highestDroppedRank(mask: int, keep: int): int :: final {
+    do unsafe {
+        let result: int = uninitialized;
+        __c__("{ unsigned long long m = (unsigned long long)mask; unsigned long long d = m & ~(unsigned long long)keep; if (d == 0) { result = -1; } else { unsigned long long b = 1ULL << (63 - __builtin_clzll(d)); result = (hzstd_int_t)__builtin_popcountll(m & (b - 1)); } }");
+        return result;
+    };
+}
+
+// `mask` without the highest kind it has that `keep` has not.
+fn withoutHighestDropped(mask: int, keep: int): int :: final {
+    do unsafe {
+        let result: int = uninitialized;
+        __c__("{ unsigned long long m = (unsigned long long)mask; unsigned long long d = m & ~(unsigned long long)keep; result = (hzstd_int_t)(d == 0 ? m : (m & ~(1ULL << (63 - __builtin_clzll(d))))); }");
+        return result;
+    };
+}
+
+// What this module keeps per element, in the element's `_runtimeData` slot;
+// ui_elements and ui_layout never see it. One type per element kind, so an
+// element carries only what its kind can use, and inside it every concept
+// that needs memory of its own is created by its first use:
+//
+//   - The component that owns it, its layout box and its hover/hit/press
+//     flags: every element has them, inline. The flags are kept exact on
+//     every element (see UIContext.updateHoverState), so whatever reads them
+//     first reads the current state.
+//   - The reactive cells a template depends on to re-run when one of those
+//     changes -- `layoutVersion` (ui_size, ui_position), `inputVersion`
+//     (ui_hover, ui_hit, ui_active), DivRuntime.focusVersion (ui_focused,
+//     ui_focusVisible): created by the first reader. Every writer bumps a
+//     cell only when it exists; until then nobody can depend on it.
+//   - A div's handlers: created by the first handler it is handed.
+//
+// The fields every kind has carry the same names in all three types, so one
+// generic helper body (applyBox, setInputState, ...) serves each kind.
+export ref struct DivRuntime {
     // The component this element belongs to: the one whose root it is, or
     // whose template declared it (slot content included -- it is declared
     // while the slot's host renders). A panic in one of its handlers or in
     // its draw function crashes that component; see runComponentCode. Set
     // once, when the element is created, and never changes.
     owner: ComponentInstance | null = null;
-
-    // This element's own direct children, created via div()/text()/canvas()
-    // while this element was `currentParent` -- see getOrCreateDiv/Text/
-    // Canvas below. Living here (per-parent) rather than as one flat array
-    // on the whole ComponentInstance (the old design) means each lookup only
-    // scans however many direct children this element actually has, not
-    // every element anywhere in the component.
-    childElements: []ChildElementEntry = [];
-
-    onPointerDown?: (e: PointerEvent) => none;
-    onPointerUp?: (e: PointerEvent) => none;
-    onPointerMove?: (e: PointerEvent) => none;
-    onClick?: (e: PointerEvent) => none;
-    onDoubleClick?: (e: PointerEvent) => none;
-    onAuxClick?: (e: PointerEvent) => none;
-    onContextMenu?: (e: PointerEvent) => none;
-    onWheel?: (e: WheelEvent) => none;
-
-    onPointerDownCapture?: (e: PointerEvent) => none;
-    onPointerUpCapture?: (e: PointerEvent) => none;
-    onPointerMoveCapture?: (e: PointerEvent) => none;
-    onClickCapture?: (e: PointerEvent) => none;
-    onDoubleClickCapture?: (e: PointerEvent) => none;
-    onAuxClickCapture?: (e: PointerEvent) => none;
-    onContextMenuCapture?: (e: PointerEvent) => none;
-    onWheelCapture?: (e: WheelEvent) => none;
-
-    onHoverEnter?: (e: PointerEvent) => none;
-    onHoverLeave?: (e: PointerEvent) => none;
-    onHitEnter?: (e: PointerEvent) => none;
-    onHitLeave?: (e: PointerEvent) => none;
+    box?: LayoutBox;
+    layoutVersion?: rx.Reactive<bool>;
+    // Bounds-based: the pointer is within this element, possibly also within
+    // a child. Matches HTML/CSS :hover.
+    hover: bool = false;
+    // Strict: the pointer is within this element and not also within any
+    // child -- this is genuinely the topmost thing under it. No HTML/CSS
+    // equivalent.
+    hit: bool = false;
+    // Whether the current press landed on this element (for click).
+    pointerDownHere: bool = false;
+    inputVersion?: rx.Reactive<bool>;
 
     // Focus: see DivProps.focusable. `focused` is plain per-element state
     // (not a UIContext-held pointer to "the" focused element) so that
@@ -973,8 +1014,15 @@ export ref struct ComponentElementRuntimeData {
     // for identity, which Haze has no safe operator for.
     focusable: bool = false;
     focused: bool = false;
-    focusVersion: rx.Reactive<bool>;
-
+    // CSS :focus-visible. True while this element is focused AND the focus did
+    // not arrive from a pointer press -- keyboard navigation, or a
+    // programmatic focus(). It is what a focus RING should be drawn from:
+    // showing one on every click is the thing everyone turns off, and showing
+    // none on tab makes the UI unusable from the keyboard.
+    //
+    // Reported through the same focusVersion as `focused`, so a style that
+    // reads it re-evaluates on exactly the same events.
+    focusVisible: bool = false;
     // Programmatic focus (ElementWrapper.focus()/blur(), see also
     // UIContext.applyPendingFocus): a *request*, not the focus state itself.
     // Focusing has to blur whatever else was focused, which needs the tree
@@ -987,16 +1035,7 @@ export ref struct ComponentElementRuntimeData {
     // Deliberately not reactive: nothing renders off "a focus was requested",
     // only off `focused` above, which applyFocusChange already bumps.
     focusRequested: FocusRequest = FocusRequest.None;
-    // CSS :focus-visible. True while this element is focused AND the focus did
-    // not arrive from a pointer press -- keyboard navigation, or a
-    // programmatic focus(). It is what a focus RING should be drawn from:
-    // showing one on every click is the thing everyone turns off, and showing
-    // none on tab makes the UI unusable from the keyboard.
-    //
-    // Reported through the same focusVersion reactive as `focused`, so a style
-    // that reads it re-evaluates on exactly the same events.
-    focusVisible: bool = false;
-
+    focusVersion?: rx.Reactive<bool>;
     // Whether DivProps.autofocus has already had its one and only chance to
     // fire for this element. Set on the first build regardless of whether
     // autofocus was actually set, so that toggling `autofocus` on later
@@ -1004,36 +1043,178 @@ export ref struct ComponentElementRuntimeData {
     // matching the DOM, where the attribute only matters at insertion time.
     autofocusApplied: bool = false;
 
-    onFocus?: (e: FocusEvent) => none;
-    onBlur?: (e: FocusEvent) => none;
-    onFocusIn?: (e: FocusEvent) => none;
-    onFocusOut?: (e: FocusEvent) => none;
-    onFocusCapture?: (e: FocusEvent) => none;
-    onBlurCapture?: (e: FocusEvent) => none;
-    onFocusInCapture?: (e: FocusEvent) => none;
-    onFocusOutCapture?: (e: FocusEvent) => none;
-    onPointerDownOutside?: (e: PointerEvent) => none;
-    onFocusOutside?: (e: FocusEvent) => none;
+    // The handlers this element was handed: one bit per HandlerKind present
+    // in `handlerMask`, and the handlers themselves in `handlers`, in kind
+    // order, so the handler of a kind is at handlerRank(handlerMask, kind).
+    // A lookup is one bit test and one index, whatever the number of
+    // handlers; an absent kind is the bit test alone. `handlers` always has
+    // exactly as many entries as `handlerMask` has bits; each entry has the
+    // type of its kind's DivProps field (applyDivProps stores it from exactly
+    // that field). Created by the first handler (see applyDivProps) and kept
+    // once it exists: a handler that comes and goes then costs nothing more.
+    handlerMask: int = 0;
+    handlers?: mut []AnyHandler;
 
-    onKeyDown?: (e: KeyboardEvent) => none;
-    onKeyUp?: (e: KeyboardEvent) => none;
-    onTextInput?: (e: TextInputEvent) => none;
-    onKeyDownCapture?: (e: KeyboardEvent) => none;
-    onKeyUpCapture?: (e: KeyboardEvent) => none;
-    onTextInputCapture?: (e: TextInputEvent) => none;
+    // This div is a component's root element. A component's root is found
+    // through its component (makeCurrentComponentAvailable), never by id
+    // among its parent's children, so getOrCreateDiv/Text/Canvas pass over it.
+    componentRoot: bool = false;
+    // Whether this element's elementRef was pointed at it since it was
+    // created (see bindElementRef): a ref still holding an element that left
+    // the tree, with the same id, must move to the new one.
+    refPublished: bool = false;
+
+    fn hasHandler(kind: HandlerKind): bool {
+        return handlerRank(this.handlerMask, kind) >= 0;
+    }
+
+    // One typed getter per handler type: one bit test, and for a present kind
+    // one index. A kind's handler always has its kind's type, so the
+    // narrowing below fails only if the list and the mask disagree.
+    fn pointerHandler(kind: HandlerKind): PointerHandler | none {
+        let rank = handlerRank(this.handlerMask, kind);
+        if rank < 0 {
+            return none;
+        }
+        if let list = this.handlers {
+            let found = list[rank];
+            if found is PointerHandler {
+                return found;
+            }
+        }
+        sys.panic("ui_components: a div's handler list disagrees with its handler mask");
+    }
+
+    fn wheelHandler(kind: HandlerKind): WheelHandler | none {
+        let rank = handlerRank(this.handlerMask, kind);
+        if rank < 0 {
+            return none;
+        }
+        if let list = this.handlers {
+            let found = list[rank];
+            if found is WheelHandler {
+                return found;
+            }
+        }
+        sys.panic("ui_components: a div's handler list disagrees with its handler mask");
+    }
+
+    fn focusHandler(kind: HandlerKind): FocusHandler | none {
+        let rank = handlerRank(this.handlerMask, kind);
+        if rank < 0 {
+            return none;
+        }
+        if let list = this.handlers {
+            let found = list[rank];
+            if found is FocusHandler {
+                return found;
+            }
+        }
+        sys.panic("ui_components: a div's handler list disagrees with its handler mask");
+    }
+
+    fn keyHandler(kind: HandlerKind): KeyHandler | none {
+        let rank = handlerRank(this.handlerMask, kind);
+        if rank < 0 {
+            return none;
+        }
+        if let list = this.handlers {
+            let found = list[rank];
+            if found is KeyHandler {
+                return found;
+            }
+        }
+        sys.panic("ui_components: a div's handler list disagrees with its handler mask");
+    }
+
+    fn textInputHandler(kind: HandlerKind): TextInputHandler | none {
+        let rank = handlerRank(this.handlerMask, kind);
+        if rank < 0 {
+            return none;
+        }
+        if let list = this.handlers {
+            let found = list[rank];
+            if found is TextInputHandler {
+                return found;
+            }
+        }
+        sys.panic("ui_components: a div's handler list disagrees with its handler mask");
+    }
+
+    // Stores `handler` as this element's handler of `kind`: in place when it
+    // already has one (handing the same kinds again, every template run,
+    // allocates nothing), inserted at its rank otherwise.
+    fn storeHandler(kind: HandlerKind, handler: AnyHandler): void {
+        let rank = handlerRank(this.handlerMask, kind);
+        if rank >= 0 {
+            if let list = this.handlers {
+                list[rank] = handler;
+                return;
+            }
+            sys.panic("ui_components: a div's handler list disagrees with its handler mask");
+        }
+        let at = handlerInsertRank(this.handlerMask, kind);
+        if let list = this.handlers {
+            list.insert(at, handler);
+        } else {
+            this.handlers = [handler];
+        }
+        this.handlerMask = withHandlerBit(this.handlerMask, kind, true);
+    }
+
+    // Removes every handler whose kind is not in `keep`, highest kind first,
+    // so the ranks of the ones still to go do not move.
+    fn dropHandlersNotIn(keep: int): void {
+        if let list = this.handlers {
+            while true {
+                let rank = highestDroppedRank(this.handlerMask, keep);
+                if rank < 0 {
+                    break;
+                }
+                list.remove(rank);
+                this.handlerMask = withoutHighestDropped(this.handlerMask, keep);
+            }
+            assert(list.length == handlerMaskCount(this.handlerMask), "the handler list and its mask disagree");
+        }
+    }
 }
 
-fn newRuntimeData(): ComponentElementRuntimeData {
-    return ComponentElementRuntimeData {
-        renderFeedbackVersion: rx.reactive<bool>(false),
-        inputFeedbackVersion: rx.reactive<bool>(false),
-        focusVersion: rx.reactive<bool>(false),
-    };
+export ref struct TextRuntime {
+    // See DivRuntime for all of these.
+    owner: ComponentInstance | null = null;
+    box?: LayoutBox;
+    layoutVersion?: rx.Reactive<bool>;
+    hover: bool = false;
+    hit: bool = false;
+    pointerDownHere: bool = false;
+    refPublished: bool = false;
+    inputVersion?: rx.Reactive<bool>;
 }
 
-// Lazily attaches a ComponentElementRuntimeData to `element` if it doesn't
-// have one yet, and returns it. The one and only place that knows
-// `_runtimeData`'s concrete type.
+export ref struct CanvasRuntime {
+    // See DivRuntime for these.
+    owner: ComponentInstance | null = null;
+    box?: LayoutBox;
+    layoutVersion?: rx.Reactive<bool>;
+    hover: bool = false;
+    hit: bool = false;
+    pointerDownHere: bool = false;
+    refPublished: bool = false;
+    inputVersion?: rx.Reactive<bool>;
+
+    // The GPU canvas (a CanvasHandle), made by ui_runtime when the canvas is
+    // first rendered.
+    handle?: TypeErasedBox;
+    drawFn?: TypeErasedBox;
+    // When a canvas's drawFn runs -- see drawCanvasIfNeeded. The effect and
+    // its version cell only exist on a canvas that has a drawFn.
+    drawEffect?: rx.Computed<int>;
+    redrawVersion?: rx.Reactive<int>;
+    redrawRequested: bool = false;
+    msaaSamples: int = 4;
+    postEffect?: rx.Reactive<str>;
+}
+
 fn makeButtons(left: bool, middle: bool, right: bool): PointerButtons {
     let b: PointerButtons = PointerButtons.None;
     if left { b = b | PointerButtons.Left; }
@@ -1042,31 +1223,241 @@ fn makeButtons(left: bool, middle: bool, right: bool): PointerButtons {
     return b;
 }
 
-export fn runtimeDataOf(element: ui_elements.Element): ComponentElementRuntimeData {
+// An element's runtime data, attached by the first call. The only places
+// that know `_runtimeData`'s concrete type per kind.
+fn divRuntimeOf(element: ui_elements.DivElement): DivRuntime {
+    if element._runtimeData {
+        return element._runtimeData.get<DivRuntime>();
+    }
+    let data = TypeErasedBox<DivRuntime>(DivRuntime {});
+    element._runtimeData = data;
+    return data.get<DivRuntime>();
+}
+
+fn textRuntimeOf(element: ui_elements.TextElement): TextRuntime {
+    if element._runtimeData {
+        return element._runtimeData.get<TextRuntime>();
+    }
+    let data = TypeErasedBox<TextRuntime>(TextRuntime {});
+    element._runtimeData = data;
+    return data.get<TextRuntime>();
+}
+
+export fn canvasRuntimeOf(element: ui_elements.CanvasElement): CanvasRuntime {
+    if element._runtimeData {
+        return element._runtimeData.get<CanvasRuntime>();
+    }
+    let data = TypeErasedBox<CanvasRuntime>(CanvasRuntime {});
+    element._runtimeData = data;
+    return data.get<CanvasRuntime>();
+}
+
+// ── What every kind has, written once ────────────────────────────────────
+//
+// Each generic helper below runs on any of the three runtime types (they
+// share these field names); each dispatcher after it picks the type for an
+// element.
+
+// Writes a cell that exists; one that does not yet has no dependents.
+fn bumpVersion(version: rx.Reactive<bool> | none): void :: final {
+    if let v = version {
+        v := !v;
+    }
+}
+
+fn layoutVersionOf<R>(data: R): rx.Reactive<bool> {
+    if let version = data.layoutVersion {
+        return version;
+    }
+    let version = rx.reactive<bool>(false);
+    data.layoutVersion = version;
+    return version;
+}
+
+fn inputVersionOf<R>(data: R): rx.Reactive<bool> {
+    if let version = data.inputVersion {
+        return version;
+    }
+    let version = rx.reactive<bool>(false);
+    data.inputVersion = version;
+    return version;
+}
+
+fn focusVersionOf(data: DivRuntime): rx.Reactive<bool> {
+    if let version = data.focusVersion {
+        return version;
+    }
+    let version = rx.reactive<bool>(false);
+    data.focusVersion = version;
+    return version;
+}
+
+// The box layout pass `pass` reported. Bumps the layout version only when
+// the box is new or moved: a layout pass reports every box every frame.
+fn applyBox<R>(data: R, pos: Vec2, size: Vec2, pass: int): void {
+    let changed = true;
+    if let old = data.box {
+        changed = old.position.x != pos.x || old.position.y != pos.y || old.size.x != size.x || old.size.y != size.y;
+    }
+    data.box = LayoutBox { position: pos, size: size, pass: pass };
+    if changed {
+        bumpVersion(data.layoutVersion);
+    }
+}
+
+// The hover/hit/press flags, as one value.
+struct InputFlags {
+    hover: bool = false;
+    hit: bool = false;
+    pointerDownHere: bool = false;
+}
+
+fn trackedInput<R>(data: R): InputFlags {
+    rx.get(inputVersionOf(data));
+    return { hover: data.hover, hit: data.hit, pointerDownHere: data.pointerDownHere };
+}
+
+fn trackedBox<R>(data: R): LayoutBox | none {
+    rx.get(layoutVersionOf(data));
+    return data.box;
+}
+
+// Which of the two flags setInputState changed.
+struct InputChange {
+    hover: bool = false;
+    hit: bool = false;
+}
+
+fn setInputState<R>(data: R, hover: bool, hit: bool): InputChange {
+    let change = InputChange { hover: data.hover != hover, hit: data.hit != hit };
+    if change.hover || change.hit {
+        data.hover = hover;
+        data.hit = hit;
+        bumpVersion(data.inputVersion);
+    }
+    return change;
+}
+
+// pointerDownHere feeds ui_active(), so a change to it is reactive.
+fn setPointerDownHere<R>(data: R, value: bool): void {
+    if data.pointerDownHere != value {
+        data.pointerDownHere = value;
+        bumpVersion(data.inputVersion);
+    }
+}
+
+fn ownerOf(element: ui_elements.Element): ComponentInstance | null :: final {
+    if element is ui_elements.DivElement { return divRuntimeOf(element).owner; }
+    else if element is ui_elements.TextElement { return textRuntimeOf(element).owner; }
+    else { return canvasRuntimeOf(element).owner; }
+}
+
+fn setOwner(element: ui_elements.Element, owner: ComponentInstance | null): void :: final {
+    if element is ui_elements.DivElement { divRuntimeOf(element).owner = owner; }
+    else if element is ui_elements.TextElement { textRuntimeOf(element).owner = owner; }
+    else { canvasRuntimeOf(element).owner = owner; }
+}
+
+fn boxOf(element: ui_elements.Element): LayoutBox | none :: final {
+    if element is ui_elements.DivElement { return divRuntimeOf(element).box; }
+    else if element is ui_elements.TextElement { return textRuntimeOf(element).box; }
+    else { return canvasRuntimeOf(element).box; }
+}
+
+fn trackedBoxOf(element: ui_elements.Element): LayoutBox | none :: final {
+    if element is ui_elements.DivElement { return trackedBox(divRuntimeOf(element)); }
+    else if element is ui_elements.TextElement { return trackedBox(textRuntimeOf(element)); }
+    else { return trackedBox(canvasRuntimeOf(element)); }
+}
+
+fn trackedInputOf(element: ui_elements.Element): InputFlags :: final {
+    if element is ui_elements.DivElement { return trackedInput(divRuntimeOf(element)); }
+    else if element is ui_elements.TextElement { return trackedInput(textRuntimeOf(element)); }
+    else { return trackedInput(canvasRuntimeOf(element)); }
+}
+
+fn pointerDownHereOf(element: ui_elements.Element): bool :: final {
+    if element is ui_elements.DivElement { return divRuntimeOf(element).pointerDownHere; }
+    else if element is ui_elements.TextElement { return textRuntimeOf(element).pointerDownHere; }
+    else { return canvasRuntimeOf(element).pointerDownHere; }
+}
+
+fn setPointerDownHereOf(element: ui_elements.Element, value: bool): void :: final {
+    if element is ui_elements.DivElement { setPointerDownHere(divRuntimeOf(element), value); }
+    else if element is ui_elements.TextElement { setPointerDownHere(textRuntimeOf(element), value); }
+    else { setPointerDownHere(canvasRuntimeOf(element), value); }
+}
+
+// Only a div takes focus or handlers; these answer for any element.
+fn isFocusable(element: ui_elements.Element): bool :: final {
+    if element is ui_elements.DivElement { return divRuntimeOf(element).focusable; }
+    return false;
+}
+
+fn isFocused(element: ui_elements.Element): bool :: final {
+    if element is ui_elements.DivElement { return divRuntimeOf(element).focused; }
+    return false;
+}
+
+fn hasHandlerOf(element: ui_elements.Element, kind: HandlerKind): bool :: final {
+    if element is ui_elements.DivElement { return divRuntimeOf(element).hasHandler(kind); }
+    return false;
+}
+
+// `element`'s runtime data when it is a div with a handler of `kind`: the
+// dispatchers ask this of every element on a path, so an element without that
+// handler costs one bit test, and the event is copied only for a handler that
+// is there.
+fn divWithHandler(element: ui_elements.Element, kind: HandlerKind): DivRuntime | none :: final {
     if element is ui_elements.DivElement {
-        if element._runtimeData {
-            return element._runtimeData.get<ComponentElementRuntimeData>();
+        let data = divRuntimeOf(element);
+        if handlerRank(data.handlerMask, kind) >= 0 {
+            return data;
         }
-        let data = TypeErasedBox<ComponentElementRuntimeData>(newRuntimeData());
-        element._runtimeData = data;
-        return data.get<ComponentElementRuntimeData>();
     }
-    else if element is ui_elements.TextElement {
-        if element._runtimeData {
-            return element._runtimeData.get<ComponentElementRuntimeData>();
-        }
-        let data = TypeErasedBox<ComponentElementRuntimeData>(newRuntimeData());
-        element._runtimeData = data;
-        return data.get<ComponentElementRuntimeData>();
-    }
-    else {
-        if element._runtimeData {
-            return element._runtimeData.get<ComponentElementRuntimeData>();
-        }
-        let data = TypeErasedBox<ComponentElementRuntimeData>(newRuntimeData());
-        element._runtimeData = data;
-        return data.get<ComponentElementRuntimeData>();
-    }
+    return none;
+}
+
+// How many handlers `props` sets.
+fn handlerCount(props: DivProps): int :: final {
+    let n = 0;
+    if props.onPointerDown is not none { n = n + 1; }
+    if props.onPointerUp is not none { n = n + 1; }
+    if props.onPointerMove is not none { n = n + 1; }
+    if props.onClick is not none { n = n + 1; }
+    if props.onDoubleClick is not none { n = n + 1; }
+    if props.onAuxClick is not none { n = n + 1; }
+    if props.onContextMenu is not none { n = n + 1; }
+    if props.onWheel is not none { n = n + 1; }
+    if props.onPointerDownCapture is not none { n = n + 1; }
+    if props.onPointerUpCapture is not none { n = n + 1; }
+    if props.onPointerMoveCapture is not none { n = n + 1; }
+    if props.onClickCapture is not none { n = n + 1; }
+    if props.onDoubleClickCapture is not none { n = n + 1; }
+    if props.onAuxClickCapture is not none { n = n + 1; }
+    if props.onContextMenuCapture is not none { n = n + 1; }
+    if props.onWheelCapture is not none { n = n + 1; }
+    if props.onHoverEnter is not none { n = n + 1; }
+    if props.onHoverLeave is not none { n = n + 1; }
+    if props.onHitEnter is not none { n = n + 1; }
+    if props.onHitLeave is not none { n = n + 1; }
+    if props.onFocus is not none { n = n + 1; }
+    if props.onBlur is not none { n = n + 1; }
+    if props.onFocusIn is not none { n = n + 1; }
+    if props.onFocusOut is not none { n = n + 1; }
+    if props.onFocusCapture is not none { n = n + 1; }
+    if props.onBlurCapture is not none { n = n + 1; }
+    if props.onFocusInCapture is not none { n = n + 1; }
+    if props.onFocusOutCapture is not none { n = n + 1; }
+    if props.onPointerDownOutside is not none { n = n + 1; }
+    if props.onFocusOutside is not none { n = n + 1; }
+    if props.onKeyDown is not none { n = n + 1; }
+    if props.onKeyUp is not none { n = n + 1; }
+    if props.onTextInput is not none { n = n + 1; }
+    if props.onKeyDownCapture is not none { n = n + 1; }
+    if props.onKeyUpCapture is not none { n = n + 1; }
+    if props.onTextInputCapture is not none { n = n + 1; }
+    return n;
 }
 
 // A new element's own globally-unique id across the whole tree: its
@@ -1084,10 +1475,10 @@ fn childGlobalId(parent: ui_elements.DivElement, id: int): str {
 
 // An element's own declaration id, across the union. Used to tell whether a
 // child slot is being filled with the SAME element as last frame: ids are
-// unique within one parent (getOrCreate* keys its cache on them, and asserts
-// when an id is reused for a different kind), so equal ids at the same index
-// means the same element, and differing ids mean the children were reordered
-// or replaced. Compared instead of the elements themselves because `==` on a
+// unique among one parent's children (getOrCreate* finds a child by it, and
+// asserts when an id is reused for a different kind), so equal ids at the
+// same index means the same element, and differing ids mean the children
+// were reordered or replaced. Compared instead of the elements themselves because `==` on a
 // ref struct compares CONTENTS recursively -- which would be both wrong
 // (two distinct elements can hold equal data) and far too expensive to do per
 // child per frame.
@@ -1101,48 +1492,73 @@ fn elementDeclarationId(element: ui_elements.Element): int {
     return element.id;
 }
 
-// Finds `id`'s existing child of `parent`, or creates and caches a new one --
-// see ComponentElementRuntimeData.childElements for why this is a per-parent
-// cache keyed by plain id instead of one flat component-wide cache.
-fn getOrCreateDiv(parent: mut ui_elements.DivElement, id: int): mut ui_elements.DivElement {
-    let parentData = runtimeDataOf(parent);
-    for n in parentData.childElements {
-        if n.id == id {
-            assert(n.element is mut ui_elements.DivElement, "Div expected but other node type encountered");
-            return n.element;
+// Whether `element` is a component's root (see DivRuntime.componentRoot).
+fn isComponentRoot(element: ui_elements.Element): bool :: final {
+    if element is ui_elements.DivElement {
+        return divRuntimeOf(element).componentRoot;
+    }
+    return false;
+}
+
+// Where, from `start` on, `children` holds the child declared with `id` that
+// is (`root`) or is not a component's root; -1 when there is none.
+fn findDeclaredChild(children: []mut ui_elements.Element, start: int, id: int, root: bool): int :: final {
+    for (let i = start; i < children.length; i++) {
+        let child = children[i];
+        if elementDeclarationId(child) == id && isComponentRoot(child) == root {
+            return i;
+        }
+    }
+    return -1;
+}
+
+// The child `id` of `parent` this pass declares at `cursor` (the parent's
+// RenderContext.childIndex): the element of that id among the children the
+// parent had, wherever it is from `cursor` on -- in the same place when
+// nothing moved, which is the first one looked at -- or a new element when
+// there is none. A child that a pass did not declare was trimmed off at the
+// end of that pass (truncateChildrenToCursor), so declaring it again makes it
+// anew, with fresh runtime data; attachChild then puts the element in place.
+// Children before `cursor` are this pass's own, already declared.
+fn getOrCreateDiv(parent: mut ui_elements.DivElement, cursor: int, id: int): mut ui_elements.DivElement {
+    if let children = parent.children {
+        let at = findDeclaredChild(children, cursor, id, false);
+        if at >= 0 {
+            let found = children[at];
+            assert(found is mut ui_elements.DivElement, "Div expected but other node type encountered");
+            return found;
         }
     }
     let newElement = ui_elements.DivElement { id: id, globalId: childGlobalId(parent, id), style: {} };
-    runtimeDataOf(newElement).owner = parentData.owner;
-    parentData.childElements.push({ id: id, element: newElement });
+    divRuntimeOf(newElement).owner = divRuntimeOf(parent).owner;
     return newElement;
 }
 
-fn getOrCreateText(parent: ui_elements.DivElement, id: int): mut ui_elements.TextElement {
-    let parentData = runtimeDataOf(parent);
-    for n in parentData.childElements {
-        if n.id == id {
-            assert(n.element is mut ui_elements.TextElement, "Text element expected but other node type encountered");
-            return n.element;
+fn getOrCreateText(parent: mut ui_elements.DivElement, cursor: int, id: int): mut ui_elements.TextElement {
+    if let children = parent.children {
+        let at = findDeclaredChild(children, cursor, id, false);
+        if at >= 0 {
+            let found = children[at];
+            assert(found is mut ui_elements.TextElement, "Text element expected but other node type encountered");
+            return found;
         }
     }
     let newElement = ui_elements.TextElement { id: id, globalId: childGlobalId(parent, id), text: "", style: {} };
-    runtimeDataOf(newElement).owner = parentData.owner;
-    parentData.childElements.push({ id: id, element: newElement });
+    textRuntimeOf(newElement).owner = divRuntimeOf(parent).owner;
     return newElement;
 }
 
-fn getOrCreateCanvas(parent: mut ui_elements.DivElement, id: int): mut ui_elements.CanvasElement {
-    let parentData = runtimeDataOf(parent);
-    for n in parentData.childElements {
-        if n.id == id {
-            assert(n.element is mut ui_elements.CanvasElement, "Canvas element expected but other node type encountered");
-            return n.element;
+fn getOrCreateCanvas(parent: mut ui_elements.DivElement, cursor: int, id: int): mut ui_elements.CanvasElement {
+    if let children = parent.children {
+        let at = findDeclaredChild(children, cursor, id, false);
+        if at >= 0 {
+            let found = children[at];
+            assert(found is mut ui_elements.CanvasElement, "Canvas element expected but other node type encountered");
+            return found;
         }
     }
     let newElement = ui_elements.CanvasElement { id: id, globalId: childGlobalId(parent, id), style: {} };
-    runtimeDataOf(newElement).owner = parentData.owner;
-    parentData.childElements.push({ id: id, element: newElement });
+    canvasRuntimeOf(newElement).owner = divRuntimeOf(parent).owner;
     return newElement;
 }
 
@@ -1162,33 +1578,33 @@ fn getOrCreateCanvas(parent: mut ui_elements.DivElement, id: int): mut ui_elemen
 // answer and the one callers already handle, since it is what any element
 // that has not been laid out yet returns.
 export fn ui_position(element: ui_elements.Element): Vec2 | none {
-    let data = runtimeDataOf(element);
-    rx.get(data.renderFeedbackVersion);
+    let box = trackedBoxOf(element);
     if ui_elements.isDisplayNone(element) {
         return none;
     }
-    return data.renderFeedback ? data.renderFeedback.position : none;
+    if let b = box {
+        return b.position;
+    }
+    return none;
 }
 
 export fn ui_size(element: ui_elements.Element): Vec2 | none {
-    let data = runtimeDataOf(element);
-    rx.get(data.renderFeedbackVersion);
+    let box = trackedBoxOf(element);
     if ui_elements.isDisplayNone(element) {
         return none;
     }
-    return data.renderFeedback ? data.renderFeedback.size : none;
+    if let b = box {
+        return b.size;
+    }
+    return none;
 }
 
 export fn ui_hover(element: ui_elements.Element): bool {
-    let data = runtimeDataOf(element);
-    rx.get(data.inputFeedbackVersion);
-    return data.inputFeedback ? data.inputFeedback.hover : false;
+    return trackedInputOf(element).hover;
 }
 
 export fn ui_hit(element: ui_elements.Element): bool {
-    let data = runtimeDataOf(element);
-    rx.get(data.inputFeedbackVersion);
-    return data.inputFeedback ? data.inputFeedback.hit : false;
+    return trackedInputOf(element).hit;
 }
 
 // Mirrors CSS :active -- true while the pointer is both held down *and*
@@ -1202,10 +1618,8 @@ export fn ui_hit(element: ui_elements.Element): bool {
 // since pointerDownHere (see process()'s Down/Up handling) already only
 // stays true on elements the press actually started on.
 export fn ui_active(element: ui_elements.Element): bool {
-    let data = runtimeDataOf(element);
-    rx.get(data.inputFeedbackVersion);
-    if !data.inputFeedback { return false; }
-    return data.inputFeedback.hover && data.inputFeedback.pointerDownHere;
+    let flags = trackedInputOf(element);
+    return flags.hover && flags.pointerDownHere;
 }
 
 // Mirrors CSS :focus -- true for the one element (if any) currently focused.
@@ -1242,18 +1656,26 @@ export fn ui_contains(element: ui_elements.Element, other: ui_elements.Element |
     return target.startsWith(self + "/");
 }
 
+// Only a div can take focus (DivProps.focusable); a text or a canvas never
+// is focused, so there is nothing for a reader to depend on.
 export fn ui_focused(element: ui_elements.Element): bool {
-    let data = runtimeDataOf(element);
-    rx.get(data.focusVersion);
-    return data.focused;
+    if element is ui_elements.DivElement {
+        let data = divRuntimeOf(element);
+        rx.get(focusVersionOf(data));
+        return data.focused;
+    }
+    return false;
 }
 
-// CSS :focus-visible -- see ComponentElementRuntimeData.focusVisible. Focused,
-// and focused by something other than a pointer press.
+// CSS :focus-visible -- see DivRuntime.focusVisible. Focused, and focused by
+// something other than a pointer press.
 export fn ui_focusVisible(element: ui_elements.Element): bool {
-    let data = runtimeDataOf(element);
-    rx.get(data.focusVersion);
-    return data.focused && data.focusVisible;
+    if element is ui_elements.DivElement {
+        let data = divRuntimeOf(element);
+        rx.get(focusVersionOf(data));
+        return data.focused && data.focusVisible;
+    }
+    return false;
 }
 
 // Forces the next frame to actually run, even when nothing reactive changed
@@ -1289,7 +1711,7 @@ fn ui_updateRequested(): bool {
 
 // Programmatic counterpart to clicking a focusable element -- the equivalent
 // of the DOM's HTMLElement.focus(). Takes effect on the next process(), not
-// here (see ComponentElementRuntimeData.focusRequested for why), so
+// here (see DivRuntime.focusRequested for why), so
 // ui_focused() keeps reporting the old value until then; onFocus/onBlur fire
 // from that frame's normal FIRE PHASE, in the same order and with the same
 // timing a click-driven focus change would produce.
@@ -1299,11 +1721,12 @@ fn ui_updateRequested(): bool {
 // silently creating a focus target keyboard events could reach but no click
 // ever could.
 export fn ui_focus(element: ui_elements.Element): void {
-    let data = runtimeDataOf(element);
-    if !data.focusable {
+    if !isFocusable(element) {
         return;
     }
-    data.focusRequested = FocusRequest.Focus;
+    if element is ui_elements.DivElement {
+        divRuntimeOf(element).focusRequested = FocusRequest.Focus;
+    }
     // focusRequested is a plain field, invisible to the reactive graph, and
     // it is applied by the NEXT process() (see applyPendingFocus) -- so that
     // frame has to be made to happen, or a focus() from a click handler
@@ -1313,69 +1736,45 @@ export fn ui_focus(element: ui_elements.Element): void {
 
 // Programmatic blur -- the DOM's HTMLElement.blur(). Only blurs if this
 // element is actually the focused one by the time the request is applied,
-// so a stale blur() can never knock out whatever got focused after it.
+// so a stale blur() can never knock out whatever got focused after it. Only
+// a div can have focus, so blurring anything else has nothing to do.
 export fn ui_blur(element: ui_elements.Element): void {
-    let data = runtimeDataOf(element);
-    data.focusRequested = FocusRequest.Blur;
-    ui_requestUpdate();
-}
-
-// Sets pointerDownHere and bumps inputFeedbackVersion, but only when the
-// value actually changes -- pointerDownHere feeds ui_active() above, so a
-// change here must be reactive (unlike before ui_active() existed, when
-// pointerDownHere was write-only state nothing needed to react to).
-fn setPointerDownHere(data: ComponentElementRuntimeData, value: bool): void :: final {
-    if !data.inputFeedback { return; }
-    if data.inputFeedback.pointerDownHere != value {
-        data.inputFeedback.pointerDownHere = value;
-        data.inputFeedbackVersion := !data.inputFeedbackVersion;
+    if element is ui_elements.DivElement {
+        divRuntimeOf(element).focusRequested = FocusRequest.Blur;
+        ui_requestUpdate();
     }
 }
 
 // Meant to be plugged in as a layout engine's "bounding box" callback (e.g.
 // ui_layout.RenderCallbacks.onBoundingBox, wired up by ui_runtime). Bumps
-// the reactive render-feedback version only when the box actually changed,
-// same as the old per-field dirty-checking that used to live in hzui's
-// applyBoundingBoxTrampoline.
+// the element's layout version only when the box actually changed (see
+// applyBox).
 // `pass` is the layout pass the box comes from: what
 // UIContext.beginRenderFeedback returned before it. A host that never calls
 // that leaves it 0, and every box it reports stays current.
 export fn applyRenderFeedback(element: ui_elements.Element, pos: Vec2, size: Vec2, pass: int = 0): void {
-    let data = runtimeDataOf(element);
-    if let feedback = data.renderFeedback {
-        feedback.pass = pass;
-    }
-    if !data.renderFeedback {
-        data.renderFeedback = { position: pos, size: size, pass: pass };
-        data.renderFeedbackVersion := !data.renderFeedbackVersion;
-        return;
-    }
-    if data.renderFeedback.position.x != pos.x || data.renderFeedback.position.y != pos.y ||
-       data.renderFeedback.size.x != size.x || data.renderFeedback.size.y != size.y {
-        data.renderFeedback.position = pos;
-        data.renderFeedback.size = size;
-        data.renderFeedbackVersion := !data.renderFeedbackVersion;
-    }
+    if element is ui_elements.DivElement { applyBox(divRuntimeOf(element), pos, size, pass); }
+    else if element is ui_elements.TextElement { applyBox(textRuntimeOf(element), pos, size, pass); }
+    else { applyBox(canvasRuntimeOf(element), pos, size, pass); }
 }
 
 // The element's box from layout pass `pass` (the context's latest), for
 // deciding what the pointer is over: none while it is hidden, before it was
 // ever laid out, and when that pass did not report it -- that box is where
 // the element WAS (see UIContext.beginRenderFeedback).
-fn currentRenderFeedback(element: ui_elements.Element, pass: int): RenderFeedback | none :: final {
+fn currentRenderFeedback(element: ui_elements.Element, pass: int): LayoutBox | none :: final {
     if ui_elements.isDisplayNone(element) {
         return none;
     }
-    let data = runtimeDataOf(element);
-    if let feedback = data.renderFeedback {
-        if feedback.pass == pass {
-            return feedback;
+    if let box = boxOf(element) {
+        if box.pass == pass {
+            return box;
         }
     }
     return none;
 }
 
-fn boxContains(box: RenderFeedback, point: Vec2): bool :: final {
+fn boxContains(box: LayoutBox, point: Vec2): bool :: final {
     return point.x >= box.position.x && point.x < box.position.x + box.size.x
         && point.y >= box.position.y && point.y < box.position.y + box.size.y;
 }
@@ -1384,7 +1783,7 @@ fn boxContains(box: RenderFeedback, point: Vec2): bool :: final {
 // an element clips is drawn nowhere outside its box, so it is neither hit nor
 // hovered there. Only a clipping axis counts, as in ui_layout's
 // collectClipsRecursive, which decides what is drawn.
-fn clipsAwayPoint(element: ui_elements.Element, box: RenderFeedback, point: Vec2): bool :: final {
+fn clipsAwayPoint(element: ui_elements.Element, box: LayoutBox, point: Vec2): bool :: final {
     if element is ui_elements.DivElement {
         let style = element.style;
         let outsideX = point.x < box.position.x || point.x >= box.position.x + box.size.x;
@@ -1429,17 +1828,16 @@ fn osTitlebarOf(element: ui_elements.Element): ui_styling.OSTitlebar | none :: f
 // `focusable` counts: an element that can take focus by being clicked is
 // click-driven by definition, even with no handler of its own yet.
 fn isPointerInteractive(element: ui_elements.Element): bool :: final {
-    let data = runtimeDataOf(element);
-    if data.focusable { return true; }
-    if data.onPointerDown { return true; }
-    if data.onPointerUp { return true; }
-    if data.onClick { return true; }
-    if data.onDoubleClick { return true; }
-    if data.onAuxClick { return true; }
-    if data.onContextMenu { return true; }
-    if data.onWheel { return true; }
-    if data.onPointerDownCapture { return true; }
-    if data.onClickCapture { return true; }
+    if element is ui_elements.DivElement {
+        let data = divRuntimeOf(element);
+        if data.focusable { return true; }
+        if data.handlerMask == 0 { return false; }
+        return data.hasHandler(HandlerKind.PointerDown) || data.hasHandler(HandlerKind.PointerUp)
+            || data.hasHandler(HandlerKind.Click) || data.hasHandler(HandlerKind.DoubleClick)
+            || data.hasHandler(HandlerKind.AuxClick) || data.hasHandler(HandlerKind.ContextMenu)
+            || data.hasHandler(HandlerKind.Wheel) || data.hasHandler(HandlerKind.PointerDownCapture)
+            || data.hasHandler(HandlerKind.ClickCapture);
+    }
     return false;
 }
 
@@ -1489,8 +1887,10 @@ fn collectWindowRegions(element: ui_elements.Element, out: []WindowRegion, inTit
     }
 
     if element is ui_elements.DivElement {
-        for child in element.children {
-            collectWindowRegions(child, out, childInTitlebar, pass);
+        if let children = element.children {
+            for child in children {
+                collectWindowRegions(child, out, childInTitlebar, pass);
+            }
         }
     }
 }
@@ -1648,8 +2048,13 @@ export ref struct ComponentInstance {
         component: ComponentInstance;
     }
 
-    childComponents: []ComponentCache = [];
-    newChildComponents: []ComponentCache = [];
+    // The child components the last template pass declared, and the buffer
+    // the next pass registers its own into (swapped after every pass, see
+    // defineComponentImpl). Both are created by the first child component:
+    // most components have none, and an empty array is an allocation of its
+    // own.
+    childComponents?: []ComponentCache;
+    newChildComponents?: []ComponentCache;
 
     rootElement: mut ui_elements.DivElement;
 
@@ -1659,7 +2064,8 @@ export ref struct ComponentInstance {
     onFrame?: () => none;
     // Every watcher this component's setup created (UIContext.watch); all
     // stopped when the component is destroyed, like Vue's effect scope.
-    watchers: []rx.WatchHandle = [];
+    // Created by the first watcher.
+    watchers?: []rx.WatchHandle;
 
     mounted: bool = false;
     // See crashComponent. A crashed component's own code never runs again.
@@ -1671,9 +2077,11 @@ export ref struct ComponentInstance {
     destroyed: bool = false;
 
     fn findChild(id: int): ComponentInstance | null {
-        for n in this.childComponents {
-            if n.id == id {
-                return n.component;
+        if let list = this.childComponents {
+            for n in list {
+                if n.id == id {
+                    return n.component;
+                }
             }
         }
         return null;
@@ -1703,7 +2111,9 @@ export ref struct ComponentInstance {
             rootElement: rootElement,
             propsVersion: rx.reactive<int>(0),
         };
-        runtimeDataOf(rootElement).owner = instance;
+        let rootData = divRuntimeOf(rootElement);
+        rootData.owner = instance;
+        rootData.componentRoot = true;
         return instance;
     }
 }
@@ -1746,24 +2156,20 @@ fn crashComponent(component: ComponentInstance, what: str, e: sys.PanicInfo, rer
     }
     component.crashed = true;
     component.crashInfo = e;
-    for watcher in component.watchers {
-        watcher.stop();
-    }
-    component.watchers.clear();
+    stopWatchers(component);
     component.onFrame = none;
     component.onMounted = none;
     // A template pass the panic cut short may already have registered
     // children of its own, new ones among them.
-    for child in component.newChildComponents {
-        if !component.findChild(child.id) {
-            destroyComponent(child.component);
+    if let registered = component.newChildComponents {
+        for child in registered {
+            if !component.findChild(child.id) {
+                destroyComponent(child.component);
+            }
         }
+        registered.clear();
     }
-    for child in component.childComponents {
-        destroyComponent(child.component);
-    }
-    component.childComponents.clear();
-    component.newChildComponents.clear();
+    destroyChildComponents(component);
     if rerender {
         bumpPropsVersion(component);
     }
@@ -1781,20 +2187,37 @@ fn bumpPropsVersion(component: ComponentInstance) {
     });
 }
 
+// Stops and forgets every watcher the component's setup created.
+fn stopWatchers(component: ComponentInstance): void :: final {
+    if let watchers = component.watchers {
+        for watcher in watchers {
+            watcher.stop();
+        }
+        watchers.clear();
+    }
+}
+
+// Destroys the child components the last template pass declared, and
+// forgets them.
+fn destroyChildComponents(component: ComponentInstance): void :: final {
+    if let children = component.childComponents {
+        for child in children {
+            destroyComponent(child.component);
+        }
+        children.clear();
+    }
+}
+
 fn destroyComponent(component: ComponentInstance): void :: final {
 
-    for child in component.childComponents {
-        destroyComponent(child.component);
+    destroyChildComponents(component);
+    if let registered = component.newChildComponents {
+        registered.clear();
     }
-    component.childComponents.clear();
-    component.newChildComponents.clear();
 
     // Before the unmount hook, like Vue stops a component's effect scope
     // before onUnmounted: nothing the hook does can trigger them again.
-    for watcher in component.watchers {
-        watcher.stop();
-    }
-    component.watchers.clear();
+    stopWatchers(component);
 
     // Same reason, and the same lifetime: a hook parked on the context's
     // per-frame list would otherwise keep running (and keep polling the
@@ -2112,8 +2535,8 @@ export type ProvideFontCallback = (name: str, bytes: Bytes) => void;
 // Exported only because UIContext holds a field of this type: a name used from
 // inside a struct body is resolved against the module's EXPORTED declarations,
 // so a module-private struct works as a free function's return type but not
-// as a member's. Same reason RenderContext, ChildElementEntry
-// and PendingPointerEvent are exported.
+// as a member's. Same reason RenderContext and PendingPointerEvent are
+// exported.
 export struct ProvidedFont {
     name: str;
     bytes: Bytes;
@@ -2293,14 +2716,13 @@ export opaque ref struct UIContext {
     _lastPressPos: Vec2 = {};
     _lastPressButton: PointerButton = PointerButton.None;
 
-    // Runtime-data of every element marked pointerDownHere=true by the most
-    // recent "down", so "up" can fully consume (reset) that flag even for
+    // Every element marked pointerDownHere=true by the most recent "down", so "up" can fully consume (reset) that flag even for
     // elements no longer under the pointer at release time -- without this,
     // an element the pointer was dragged away from and never returned to
     // would keep a stale pointerDownHere=true forever, ready to wrongly
     // participate in click eligibility on some *later*, unrelated up-event
     // that happens to hit it. See process()'s Down/Up handling.
-    _pointerDownTargets: []ComponentElementRuntimeData = [];
+    _pointerDownTargets: []ui_elements.Element = [];
 
     // Pen and touch pointers currently down, each with the path its events
     // go to until it lifts -- see PointerCapture. Entries are recycled
@@ -2756,13 +3178,15 @@ export opaque ref struct UIContext {
                     return false;
                 }
             }
-            let i = element.children.length - 1;
-            while i >= 0 {
-                if this.collectHitPath(element.children[i], mousePos, out) {
-                    if hit { out.insert(0, element); }
-                    return true;
+            if let children = element.children {
+                let i = children.length - 1;
+                while i >= 0 {
+                    if this.collectHitPath(children[i], mousePos, out) {
+                        if hit { out.insert(0, element); }
+                        return true;
+                    }
+                    i = i - 1;
                 }
-                i = i - 1;
             }
         }
         if !hit {
@@ -2827,10 +3251,10 @@ export opaque ref struct UIContext {
 
     // Returns ordered path [root, ..., focused-element], mirroring
     // buildHitPath's shape but keyed on the persistent focused flag (see
-    // ComponentElementRuntimeData.focused) instead of mouse position -- a
+    // DivRuntime.focused) instead of mouse position -- a
     // full-tree walk each frame rather than tracking a stored "focus
     // target" handle, since Haze has no safe way to compare two element/
-    // ref struct handles for identity (see runtimeDataOf's callers elsewhere in
+    // ref struct handles for identity (see divRuntimeOf's callers elsewhere in
     // this file, which all key persistent per-element state off the element
     // reached during a traversal, never off a remembered handle compared
     // later). Empty when nothing is focused, or when whatever *was* focused
@@ -2853,17 +3277,16 @@ export opaque ref struct UIContext {
     // back up so the path reads root-first.
     fn collectFocusPath(element: ui_elements.Element, out: []ui_elements.Element): bool :: final {
         if element is ui_elements.DivElement {
-            let i = 0;
-            while i < element.children.length {
-                if this.collectFocusPath(element.children[i], out) {
-                    out.insert(0, element);
-                    return true;
+            if let children = element.children {
+                for child in children {
+                    if this.collectFocusPath(child, out) {
+                        out.insert(0, element);
+                        return true;
+                    }
                 }
-                i = i + 1;
             }
         }
-        let data = runtimeDataOf(element);
-        if data.focused {
+        if isFocused(element) {
             out.push(element);
             return true;
         }
@@ -2928,14 +3351,14 @@ export opaque ref struct UIContext {
         if hidden || ui_elements.isDisplayNone(element) {
             return;
         }
-        if runtimeDataOf(element).focusable {
+        if isFocusable(element) {
             out.push(element);
         }
         if element is ui_elements.DivElement {
-            let i = 0;
-            while i < element.children.length {
-                this.collectTabbable(element.children[i], out, false);
-                i = i + 1;
+            if let children = element.children {
+                for child in children {
+                    this.collectTabbable(child, out, false);
+                }
             }
         }
     }
@@ -2967,7 +3390,7 @@ export opaque ref struct UIContext {
         let current = -1;
         let i = 0;
         while i < tabbable.length {
-            if runtimeDataOf(tabbable[i]).focused {
+            if isFocused(tabbable[i]) {
                 current = i;
                 break;
             }
@@ -3002,15 +3425,15 @@ export opaque ref struct UIContext {
         if hidden || ui_elements.isDisplayNone(element) {
             return;
         }
-        let data = runtimeDataOf(element);
-        if data.onPointerDownOutside is not none || data.onFocusOutside is not none {
-            out.push(element);
-        }
         if element is ui_elements.DivElement {
-            let i = 0;
-            while i < element.children.length {
-                this.collectDismissLayers(element.children[i], out, false);
-                i = i + 1;
+            let data = divRuntimeOf(element);
+            if data.hasHandler(HandlerKind.PointerDownOutside) || data.hasHandler(HandlerKind.FocusOutside) {
+                out.push(element);
+            }
+            if let children = element.children {
+                for child in children {
+                    this.collectDismissLayers(child, out, false);
+                }
             }
         }
     }
@@ -3032,10 +3455,13 @@ export opaque ref struct UIContext {
         let i = 0;
         while i < layers.length {
             let layer = layers[i];
-            if !ui_contains(layer, target) {
-                let cb = runtimeDataOf(layer).onPointerDownOutside;
-                if cb {
-                    eventQueue.push({ owner: runtimeDataOf(layer).owner, kind: QueuedHandlerKind.Pointer, pointerFn: cb, pointerEvent: event });
+            // A layer is always a div: only a div takes handlers.
+            if layer is ui_elements.DivElement {
+                if !ui_contains(layer, target) {
+                    let data = divRuntimeOf(layer);
+                    if let cb = data.pointerHandler(HandlerKind.PointerDownOutside) {
+                        eventQueue.push({ owner: data.owner, kind: QueuedHandlerKind.Pointer, pointerFn: cb, pointerEvent: event });
+                    }
                 }
             }
             i = i + 1;
@@ -3050,11 +3476,13 @@ export opaque ref struct UIContext {
         let i = 0;
         while i < layers.length {
             let layer = layers[i];
-            if !ui_contains(layer, newTarget) {
-                let cb = runtimeDataOf(layer).onFocusOutside;
-                if cb {
-                    let event = FocusEvent { relatedTarget: newTarget, _handle: this.newEventHandle() };
-                    eventQueue.push({ owner: runtimeDataOf(layer).owner, kind: QueuedHandlerKind.Focus, focusFn: cb, focusEvent: event });
+            if layer is ui_elements.DivElement {
+                if !ui_contains(layer, newTarget) {
+                    let data = divRuntimeOf(layer);
+                    if let cb = data.focusHandler(HandlerKind.FocusOutside) {
+                        let event = FocusEvent { relatedTarget: newTarget, _handle: this.newEventHandle() };
+                        eventQueue.push({ owner: data.owner, kind: QueuedHandlerKind.Focus, focusFn: cb, focusEvent: event });
+                    }
                 }
             }
             i = i + 1;
@@ -3072,7 +3500,7 @@ export opaque ref struct UIContext {
     //     twice would queue the dismissal ahead of the trigger's own handler.
     fn applyFocusChange(tree: ui_elements.Element, newTarget: ui_elements.Element | none, eventQueue: []QueuedHandler, pointerDriven: bool): void :: final {
         if newTarget is not none {
-            if runtimeDataOf(newTarget).focused {
+            if isFocused(newTarget) {
                 return;
             }
         }
@@ -3092,19 +3520,22 @@ export opaque ref struct UIContext {
         // element and only it. Both bumps happen before any callback runs,
         // which is what lets a handler read ui_focused() and see the state
         // after the transfer, exactly as the DOM does.
+        // Only a div can be focused (DivProps.focusable is a div's).
         if oldTarget is not none {
-            let oldData = runtimeDataOf(oldTarget);
+            assert(oldTarget is ui_elements.DivElement, "only a div can be focused");
+            let oldData = divRuntimeOf(oldTarget);
             oldData.focused = false;
             oldData.focusVisible = false;
-            oldData.focusVersion := !oldData.focusVersion;
+            bumpVersion(oldData.focusVersion);
         }
         let newPath = this._newFocusPath;
         newPath.clear();
         if newTarget is not none {
-            let newData = runtimeDataOf(newTarget);
+            assert(newTarget is ui_elements.DivElement, "only a div can be focused");
+            let newData = divRuntimeOf(newTarget);
             newData.focused = true;
             newData.focusVisible = !pointerDriven;
-            newData.focusVersion := !newData.focusVersion;
+            bumpVersion(newData.focusVersion);
             this.buildFocusPathInto(newPath, tree);
         }
 
@@ -3114,8 +3545,7 @@ export opaque ref struct UIContext {
         // host at the end of the frame; see KeyboardCallbacks.setTextInputActive.
         this._wantsTextInput = false;
         for el in newPath {
-            let d = runtimeDataOf(el);
-            if d.onTextInput is not none || d.onTextInputCapture is not none {
+            if hasHandlerOf(el, HandlerKind.TextInput) || hasHandlerOf(el, HandlerKind.TextInputCapture) {
                 this._wantsTextInput = true;
                 break;
             }
@@ -3160,15 +3590,17 @@ export opaque ref struct UIContext {
     // capture listener on the target itself fires too.
     fn dispatchFocusCapturing(path: []ui_elements.Element, event: FocusEvent, kind: FocusEventKind, eventQueue: []QueuedHandler): void :: final {
         let i = 0;
+        let hk = HandlerKind.FocusInCapture;
+        if kind == FocusEventKind.Blur { hk = HandlerKind.BlurCapture; }
+        else if kind == FocusEventKind.FocusOut { hk = HandlerKind.FocusOutCapture; }
+        else if kind == FocusEventKind.Focus { hk = HandlerKind.FocusCapture; }
         while i < path.length {
-            let data = runtimeDataOf(path[i]);
-            let cb = none as ((e: FocusEvent) => none) | none;
-            if kind == FocusEventKind.Blur { cb = data.onBlurCapture; }
-            else if kind == FocusEventKind.FocusOut { cb = data.onFocusOutCapture; }
-            else if kind == FocusEventKind.Focus { cb = data.onFocusCapture; }
-            else { cb = data.onFocusInCapture; }
-            if cb {
-                eventQueue.push({ owner: data.owner, kind: QueuedHandlerKind.Focus, focusFn: cb, focusEvent: event });
+            let el = path[i];
+            if el is ui_elements.DivElement {
+                let data = divRuntimeOf(el);
+                if let cb = data.focusHandler(hk) {
+                    eventQueue.push({ owner: data.owner, kind: QueuedHandlerKind.Focus, focusFn: cb, focusEvent: event });
+                }
             }
             i = i + 1;
         }
@@ -3179,16 +3611,18 @@ export opaque ref struct UIContext {
     // reach no ancestor at all. That single flag is the entire difference
     // between the pairs in HTML.
     fn dispatchFocusBubbling(path: []ui_elements.Element, event: FocusEvent, kind: FocusEventKind, bubbles: bool, eventQueue: []QueuedHandler): void :: final {
+        let hk = HandlerKind.FocusIn;
+        if kind == FocusEventKind.Blur { hk = HandlerKind.Blur; }
+        else if kind == FocusEventKind.FocusOut { hk = HandlerKind.FocusOut; }
+        else if kind == FocusEventKind.Focus { hk = HandlerKind.Focus; }
         let i = path.length - 1;
         while i >= 0 {
-            let data = runtimeDataOf(path[i]);
-            let cb = none as ((e: FocusEvent) => none) | none;
-            if kind == FocusEventKind.Blur { cb = data.onBlur; }
-            else if kind == FocusEventKind.FocusOut { cb = data.onFocusOut; }
-            else if kind == FocusEventKind.Focus { cb = data.onFocus; }
-            else { cb = data.onFocusIn; }
-            if cb {
-                eventQueue.push({ owner: data.owner, kind: QueuedHandlerKind.Focus, focusFn: cb, focusEvent: event });
+            let el = path[i];
+            if el is ui_elements.DivElement {
+                let data = divRuntimeOf(el);
+                if let cb = data.focusHandler(hk) {
+                    eventQueue.push({ owner: data.owner, kind: QueuedHandlerKind.Focus, focusFn: cb, focusEvent: event });
+                }
             }
             if !bubbles {
                 return;
@@ -3207,19 +3641,20 @@ export opaque ref struct UIContext {
     // flag set to spuriously re-fire on the next frame -- last writer in tree
     // order would win a frame late, which is worse than simply dropping it.
     fn takeFocusRequest(element: ui_elements.Element, found: mut stackref FocusRequestTarget): void :: final {
-        let data = runtimeDataOf(element);
-        if data.focusRequested != FocusRequest.None {
-            if found.kind == FocusRequest.None {
-                found.kind = data.focusRequested;
-                found.element = element;
-            }
-            data.focusRequested = FocusRequest.None;
-        }
+        // Only a div takes focus, so only a div holds a request.
         if element is ui_elements.DivElement {
-            let i = 0;
-            while i < element.children.length {
-                this.takeFocusRequest(element.children[i], found);
-                i = i + 1;
+            let data = divRuntimeOf(element);
+            if data.focusRequested != FocusRequest.None {
+                if found.kind == FocusRequest.None {
+                    found.kind = data.focusRequested;
+                    found.element = element;
+                }
+                data.focusRequested = FocusRequest.None;
+            }
+            if let children = element.children {
+                for child in children {
+                    this.takeFocusRequest(child, found);
+                }
             }
         }
     }
@@ -3244,7 +3679,7 @@ export opaque ref struct UIContext {
             // else happens to be focused right now.
             let el = found.element;
             if el is not none {
-                if runtimeDataOf(el).focused {
+                if isFocused(el) {
                     this.applyFocusChange(tree, none, eventQueue, false);
                 }
             }
@@ -3315,9 +3750,11 @@ export opaque ref struct UIContext {
         // all been visited.
         let childHover = false;
         if element is ui_elements.DivElement {
-            for child in element.children {
-                if this.updateHoverState(child, mousePos, buttons, eventQueue, topmost, pointerPresent, childrenHidden) {
-                    childHover = true;
+            if let children = element.children {
+                for child in children {
+                    if this.updateHoverState(child, mousePos, buttons, eventQueue, topmost, pointerPresent, childrenHidden) {
+                        childHover = true;
+                    }
                 }
             }
         }
@@ -3325,21 +3762,24 @@ export opaque ref struct UIContext {
         let hover = selfHit || childHover;
         let hit = selfHit && !childHover;
 
-        let data = runtimeDataOf(element);
-        if !data.inputFeedback {
-            data.inputFeedback = { hover: false, hit: false, pointerDownHere: false };
-            data.inputFeedbackVersion := !data.inputFeedbackVersion;
+        // Only a div has handlers for the transitions; every element keeps
+        // its flags exact.
+        if element is ui_elements.TextElement {
+            setInputState(textRuntimeOf(element), hover, hit);
+            return hover;
         }
-        assert(data.inputFeedback);
+        if element is ui_elements.CanvasElement {
+            setInputState(canvasRuntimeOf(element), hover, hit);
+            return hover;
+        }
+        let data = divRuntimeOf(element);
+        let change = setInputState(data, hover, hit);
+        if !data.handlers {
+            return hover;
+        }
 
-        let prevHover = data.inputFeedback.hover;
-        let prevHit = data.inputFeedback.hit;
-
-        if prevHover != hover {
-            data.inputFeedback.hover = hover;
-            data.inputFeedbackVersion := !data.inputFeedbackVersion;
-
-            let cb = hover ? data.onHoverEnter : data.onHoverLeave;
+        if change.hover {
+            let cb = data.pointerHandler(hover ? HandlerKind.HoverEnter : HandlerKind.HoverLeave);
             if cb {
                 eventQueue.push({ owner: data.owner, kind: QueuedHandlerKind.PointerTransition, pointerFn: cb, pointerPos: mousePos, pointerButtons: buttons });
             }
@@ -3357,11 +3797,8 @@ export opaque ref struct UIContext {
             // firing on the element the user actually released on.
         }
 
-        if prevHit != hit {
-            data.inputFeedback.hit = hit;
-            data.inputFeedbackVersion := !data.inputFeedbackVersion;
-
-            let cb = hit ? data.onHitEnter : data.onHitLeave;
+        if change.hit {
+            let cb = data.pointerHandler(hit ? HandlerKind.HitEnter : HandlerKind.HitLeave);
             if cb {
                 eventQueue.push({ owner: data.owner, kind: QueuedHandlerKind.PointerTransition, pointerFn: cb, pointerPos: mousePos, pointerButtons: buttons });
             }
@@ -3514,15 +3951,15 @@ export opaque ref struct UIContext {
     // corresponding bubble-phase pass for the same event (see process()), so
     // it always runs first regardless of what a bubble handler later does.
     fn dispatchCapturing(hitPath: []ui_elements.Element, event: PointerEvent, kind: PointerEventKind, eventQueue: []QueuedHandler): void :: final {
+        let hk = HandlerKind.PointerMoveCapture;
+        if kind == PointerEventKind.Down { hk = HandlerKind.PointerDownCapture; }
+        else if kind == PointerEventKind.Up { hk = HandlerKind.PointerUpCapture; }
         let i = 0;
         while i < hitPath.length {
-            let data = runtimeDataOf(hitPath[i]);
-            let cb = none as ((e: PointerEvent) => none) | none;
-            if kind == PointerEventKind.Down { cb = data.onPointerDownCapture; }
-            else if kind == PointerEventKind.Up { cb = data.onPointerUpCapture; }
-            else if kind == PointerEventKind.Move { cb = data.onPointerMoveCapture; }
-            if cb {
-                eventQueue.push({ owner: data.owner, kind: QueuedHandlerKind.Pointer, pointerFn: cb, pointerEvent: event });
+            if let data = divWithHandler(hitPath[i], hk) {
+                if let cb = data.pointerHandler(hk) {
+                    eventQueue.push({ owner: data.owner, kind: QueuedHandlerKind.Pointer, pointerFn: cb, pointerEvent: event });
+                }
             }
             i = i + 1;
         }
@@ -3542,10 +3979,10 @@ export opaque ref struct UIContext {
         let end = depth >= 0 && depth < hitPath.length ? depth + 1 : hitPath.length;
         let i = 0;
         while i < end {
-            let data = runtimeDataOf(hitPath[i]);
-            let cb = data.onWheelCapture;
-            if cb {
-                eventQueue.push({ owner: data.owner, kind: QueuedHandlerKind.Wheel, wheelFn: cb, wheelEvent: event, pathIndex: i });
+            if let data = divWithHandler(hitPath[i], HandlerKind.WheelCapture) {
+                if let cb = data.wheelHandler(HandlerKind.WheelCapture) {
+                    eventQueue.push({ owner: data.owner, kind: QueuedHandlerKind.Wheel, wheelFn: cb, wheelEvent: event, pathIndex: i });
+                }
             }
             i = i + 1;
         }
@@ -3556,10 +3993,10 @@ export opaque ref struct UIContext {
         let i = latched ? depth : hitPath.length - 1;
         let lowest = latched ? depth : 0;
         while i >= lowest {
-            let data = runtimeDataOf(hitPath[i]);
-            let cb = data.onWheel;
-            if cb {
-                eventQueue.push({ owner: data.owner, kind: QueuedHandlerKind.Wheel, wheelFn: cb, wheelEvent: event, pathIndex: i });
+            if let data = divWithHandler(hitPath[i], HandlerKind.Wheel) {
+                if let cb = data.wheelHandler(HandlerKind.Wheel) {
+                    eventQueue.push({ owner: data.owner, kind: QueuedHandlerKind.Wheel, wheelFn: cb, wheelEvent: event, pathIndex: i });
+                }
             }
             i = i - 1;
         }
@@ -3570,28 +4007,26 @@ export opaque ref struct UIContext {
     // plays the same role `hitPath` plays for pointer events, just found by
     // focus instead of hit-testing.
     fn dispatchKeyCapturing(focusPath: []ui_elements.Element, event: KeyboardEvent, kind: KeyEdgeKind, eventQueue: []QueuedHandler): void :: final {
+        let hk = kind == KeyEdgeKind.Pressed ? HandlerKind.KeyDownCapture : HandlerKind.KeyUpCapture;
         let i = 0;
         while i < focusPath.length {
-            let data = runtimeDataOf(focusPath[i]);
-            let cb = none as ((e: KeyboardEvent) => none) | none;
-            if kind == KeyEdgeKind.Pressed { cb = data.onKeyDownCapture; }
-            else { cb = data.onKeyUpCapture; }
-            if cb {
-                eventQueue.push({ owner: data.owner, kind: QueuedHandlerKind.Key, keyFn: cb, keyEvent: event });
+            if let data = divWithHandler(focusPath[i], hk) {
+                if let cb = data.keyHandler(hk) {
+                    eventQueue.push({ owner: data.owner, kind: QueuedHandlerKind.Key, keyFn: cb, keyEvent: event });
+                }
             }
             i = i + 1;
         }
     }
 
     fn dispatchKeyBubbling(focusPath: []ui_elements.Element, event: KeyboardEvent, kind: KeyEdgeKind, eventQueue: []QueuedHandler): void :: final {
+        let hk = kind == KeyEdgeKind.Pressed ? HandlerKind.KeyDown : HandlerKind.KeyUp;
         let i = focusPath.length - 1;
         while i >= 0 {
-            let data = runtimeDataOf(focusPath[i]);
-            let cb = none as ((e: KeyboardEvent) => none) | none;
-            if kind == KeyEdgeKind.Pressed { cb = data.onKeyDown; }
-            else { cb = data.onKeyUp; }
-            if cb {
-                eventQueue.push({ owner: data.owner, kind: QueuedHandlerKind.Key, keyFn: cb, keyEvent: event });
+            if let data = divWithHandler(focusPath[i], hk) {
+                if let cb = data.keyHandler(hk) {
+                    eventQueue.push({ owner: data.owner, kind: QueuedHandlerKind.Key, keyFn: cb, keyEvent: event });
+                }
             }
             i = i - 1;
         }
@@ -3600,10 +4035,10 @@ export opaque ref struct UIContext {
     fn dispatchTextInputCapturing(focusPath: []ui_elements.Element, event: TextInputEvent, eventQueue: []QueuedHandler): void :: final {
         let i = 0;
         while i < focusPath.length {
-            let data = runtimeDataOf(focusPath[i]);
-            let cb = data.onTextInputCapture;
-            if cb {
-                eventQueue.push({ owner: data.owner, kind: QueuedHandlerKind.TextInput, textFn: cb, textEvent: event });
+            if let data = divWithHandler(focusPath[i], HandlerKind.TextInputCapture) {
+                if let cb = data.textInputHandler(HandlerKind.TextInputCapture) {
+                    eventQueue.push({ owner: data.owner, kind: QueuedHandlerKind.TextInput, textFn: cb, textEvent: event });
+                }
             }
             i = i + 1;
         }
@@ -3612,10 +4047,10 @@ export opaque ref struct UIContext {
     fn dispatchTextInputBubbling(focusPath: []ui_elements.Element, event: TextInputEvent, eventQueue: []QueuedHandler): void :: final {
         let i = focusPath.length - 1;
         while i >= 0 {
-            let data = runtimeDataOf(focusPath[i]);
-            let cb = data.onTextInput;
-            if cb {
-                eventQueue.push({ owner: data.owner, kind: QueuedHandlerKind.TextInput, textFn: cb, textEvent: event });
+            if let data = divWithHandler(focusPath[i], HandlerKind.TextInput) {
+                if let cb = data.textInputHandler(HandlerKind.TextInput) {
+                    eventQueue.push({ owner: data.owner, kind: QueuedHandlerKind.TextInput, textFn: cb, textEvent: event });
+                }
             }
             i = i - 1;
         }
@@ -3628,15 +4063,15 @@ export opaque ref struct UIContext {
     // chain: fireQueued checks the event's stopped flag right before running
     // each scheduled handler, and skips it if set.
     fn dispatchBubbling(hitPath: []ui_elements.Element, event: PointerEvent, kind: PointerEventKind, eventQueue: []QueuedHandler): void :: final {
+        let hk = HandlerKind.PointerMove;
+        if kind == PointerEventKind.Down { hk = HandlerKind.PointerDown; }
+        else if kind == PointerEventKind.Up { hk = HandlerKind.PointerUp; }
         let i = hitPath.length - 1;
         while i >= 0 {
-            let data = runtimeDataOf(hitPath[i]);
-            let cb = none as ((e: PointerEvent) => none) | none;
-            if kind == PointerEventKind.Down { cb = data.onPointerDown; }
-            else if kind == PointerEventKind.Up { cb = data.onPointerUp; }
-            else if kind == PointerEventKind.Move { cb = data.onPointerMove; }
-            if cb {
-                eventQueue.push({ owner: data.owner, kind: QueuedHandlerKind.Pointer, pointerFn: cb, pointerEvent: event });
+            if let data = divWithHandler(hitPath[i], hk) {
+                if let cb = data.pointerHandler(hk) {
+                    eventQueue.push({ owner: data.owner, kind: QueuedHandlerKind.Pointer, pointerFn: cb, pointerEvent: event });
+                }
             }
             i = i - 1;
         }
@@ -3654,16 +4089,16 @@ export opaque ref struct UIContext {
     // thing: which handler they read. Which of them a given release produces
     // is decided in process(), from the button and the click count.
     fn dispatchClickCapturing(hitPath: []ui_elements.Element, clickEligible: []bool, event: PointerEvent, kind: ClickEventKind, eventQueue: []QueuedHandler): void :: final {
+        let hk = HandlerKind.AuxClickCapture;
+        if kind == ClickEventKind.Click { hk = HandlerKind.ClickCapture; }
+        else if kind == ClickEventKind.DoubleClick { hk = HandlerKind.DoubleClickCapture; }
         let i = 0;
         while i < hitPath.length {
             if clickEligible[i] {
-                let data = runtimeDataOf(hitPath[i]);
-                let cb = none as ((e: PointerEvent) => none) | none;
-                if kind == ClickEventKind.Click { cb = data.onClickCapture; }
-                else if kind == ClickEventKind.DoubleClick { cb = data.onDoubleClickCapture; }
-                else { cb = data.onAuxClickCapture; }
-                if cb {
-                    eventQueue.push({ owner: data.owner, kind: QueuedHandlerKind.Pointer, pointerFn: cb, pointerEvent: event });
+                if let data = divWithHandler(hitPath[i], hk) {
+                    if let cb = data.pointerHandler(hk) {
+                        eventQueue.push({ owner: data.owner, kind: QueuedHandlerKind.Pointer, pointerFn: cb, pointerEvent: event });
+                    }
                 }
             }
             i = i + 1;
@@ -3674,16 +4109,16 @@ export opaque ref struct UIContext {
     // elements marked eligible in clickEligible (see dispatchClickCapturing
     // above for where that comes from and why one function covers all three).
     fn dispatchClickBubbling(hitPath: []ui_elements.Element, clickEligible: []bool, event: PointerEvent, kind: ClickEventKind, eventQueue: []QueuedHandler): void :: final {
+        let hk = HandlerKind.AuxClick;
+        if kind == ClickEventKind.Click { hk = HandlerKind.Click; }
+        else if kind == ClickEventKind.DoubleClick { hk = HandlerKind.DoubleClick; }
         let i = hitPath.length - 1;
         while i >= 0 {
             if clickEligible[i] {
-                let data = runtimeDataOf(hitPath[i]);
-                let cb = none as ((e: PointerEvent) => none) | none;
-                if kind == ClickEventKind.Click { cb = data.onClick; }
-                else if kind == ClickEventKind.DoubleClick { cb = data.onDoubleClick; }
-                else { cb = data.onAuxClick; }
-                if cb {
-                    eventQueue.push({ owner: data.owner, kind: QueuedHandlerKind.Pointer, pointerFn: cb, pointerEvent: event });
+                if let data = divWithHandler(hitPath[i], hk) {
+                    if let cb = data.pointerHandler(hk) {
+                        eventQueue.push({ owner: data.owner, kind: QueuedHandlerKind.Pointer, pointerFn: cb, pointerEvent: event });
+                    }
                 }
             }
             i = i - 1;
@@ -3697,10 +4132,10 @@ export opaque ref struct UIContext {
     fn dispatchContextMenuCapturing(hitPath: []ui_elements.Element, event: PointerEvent, eventQueue: []QueuedHandler): void :: final {
         let i = 0;
         while i < hitPath.length {
-            let data = runtimeDataOf(hitPath[i]);
-            let cb = data.onContextMenuCapture;
-            if cb {
-                eventQueue.push({ owner: data.owner, kind: QueuedHandlerKind.Pointer, pointerFn: cb, pointerEvent: event });
+            if let data = divWithHandler(hitPath[i], HandlerKind.ContextMenuCapture) {
+                if let cb = data.pointerHandler(HandlerKind.ContextMenuCapture) {
+                    eventQueue.push({ owner: data.owner, kind: QueuedHandlerKind.Pointer, pointerFn: cb, pointerEvent: event });
+                }
             }
             i = i + 1;
         }
@@ -3709,10 +4144,10 @@ export opaque ref struct UIContext {
     fn dispatchContextMenuBubbling(hitPath: []ui_elements.Element, event: PointerEvent, eventQueue: []QueuedHandler): void :: final {
         let i = hitPath.length - 1;
         while i >= 0 {
-            let data = runtimeDataOf(hitPath[i]);
-            let cb = data.onContextMenu;
-            if cb {
-                eventQueue.push({ owner: data.owner, kind: QueuedHandlerKind.Pointer, pointerFn: cb, pointerEvent: event });
+            if let data = divWithHandler(hitPath[i], HandlerKind.ContextMenu) {
+                if let cb = data.pointerHandler(HandlerKind.ContextMenu) {
+                    eventQueue.push({ owner: data.owner, kind: QueuedHandlerKind.Pointer, pointerFn: cb, pointerEvent: event });
+                }
             }
             i = i - 1;
         }
@@ -3781,7 +4216,7 @@ export opaque ref struct UIContext {
     fn focusFromPress(tree: ui_elements.Element, path: []ui_elements.Element, eventQueue: []QueuedHandler): void :: final {
         let newFocusTarget = none as ui_elements.Element | none;
         for (let fi = path.length - 1; fi >= 0; fi--) {
-            if runtimeDataOf(path[fi]).focusable {
+            if isFocusable(path[fi]) {
                 newFocusTarget = path[fi];
                 break;
             }
@@ -3827,7 +4262,7 @@ export opaque ref struct UIContext {
         // more -- and a pressed button should stop looking pressed now, not
         // when the finger lifts.
         for d in this._pointerDownTargets {
-            setPointerDownHere(d, false);
+            setPointerDownHereOf(d, false);
         }
         this._pointerDownTargets.clear();
         let event = PointerEvent {
@@ -3929,7 +4364,7 @@ export opaque ref struct UIContext {
         this.dispatchCapturing(targetPath, cancel, PointerEventKind.Up, eventQueue);
         this.dispatchBubbling(targetPath, cancel, PointerEventKind.Up, eventQueue);
         for d in this._pointerDownTargets {
-            setPointerDownHere(d, false);
+            setPointerDownHereOf(d, false);
         }
         this._pointerDownTargets.clear();
         this.releasePointer(this._touch.pointerId);
@@ -4456,18 +4891,13 @@ export opaque ref struct UIContext {
                         // however that could happen), don't let their
                         // pointerDownHere leak into this new cycle's eligibility.
                         for d in this._pointerDownTargets {
-                            setPointerDownHere(d, false);
+                            setPointerDownHereOf(d, false);
                         }
                         this._pointerDownTargets.clear();
 
                         for el in hitPath {
-                            let d = runtimeDataOf(el);
-                            if !d.inputFeedback {
-                                d.inputFeedback = { hover: false, hit: false, pointerDownHere: false };
-                            }
-                            assert(d.inputFeedback);
-                            setPointerDownHere(d, true);
-                            this._pointerDownTargets.push(d);
+                            setPointerDownHereOf(el, true);
+                            this._pointerDownTargets.push(el);
                         }
 
                         // Focus: click-to-focus the nearest focusable ancestor
@@ -4547,8 +4977,7 @@ export opaque ref struct UIContext {
                         let clickEligible = this._clickEligible;
                         clickEligible.clear();
                         for el in hitPath {
-                            let d = runtimeDataOf(el);
-                            clickEligible.push(d.inputFeedback ? d.inputFeedback.pointerDownHere : false);
+                            clickEligible.push(pointerDownHereOf(el));
                         }
 
                         // Consume pointerDownHere for *every* Down target, not
@@ -4557,7 +4986,7 @@ export opaque ref struct UIContext {
                         // would keep a stale true, ready to wrongly fire on some
                         // later, unrelated click that happens to hit it.
                         for d in this._pointerDownTargets {
-                            setPointerDownHere(d, false);
+                            setPointerDownHereOf(d, false);
                         }
                         this._pointerDownTargets.clear();
 
@@ -4873,7 +5302,7 @@ export opaque ref struct UIContext {
     // canvas would stay stale until something unrelated happened.
     fn anyCanvasNeedsDraw(): bool {
         for element in this._canvases {
-            let data = runtimeDataOf(element);
+            let data = canvasRuntimeOf(element);
             if data.redrawRequested {
                 return true;
             }
@@ -4991,23 +5420,42 @@ export opaque ref struct UIContext {
     // root wrapper the same way. Anything left over from a previous, longer
     // list is trimmed by truncateChildrenToCursor() below, once the caller's
     // own children are done.
-    fn attachChild(element: ui_elements.Element): void {
+    fn attachChild(element: mut ui_elements.Element): void {
         assert(this.renderStack.length > 0);
         let top = this.renderStack.length - 1;
         let parent = this.renderStack[top].currentParent;
         let childIndex = this.renderStack[top].childIndex;
-        if childIndex < parent.children.length {
-            // Same slot, different element: the children were reordered or one
-            // was swapped for another. The tree's shape changed, so the layout
-            // has to be re-solved -- no amount of repainting covers it.
-            if !this._layoutDirty && elementDeclarationId(parent.children[childIndex]) != elementDeclarationId(element) {
+        if let children = parent.children {
+            if childIndex < children.length {
+                let current = children[childIndex];
+                let id = elementDeclarationId(element);
+                if elementDeclarationId(current) != id {
+                    // Same slot, different element: the children were
+                    // reordered, or one was inserted or replaced. The tree's
+                    // shape changed, so the layout has to be re-solved -- no
+                    // amount of repainting covers it.
+                    this._layoutDirty = true;
+                    // The child the slot held stays in the list, where a later
+                    // declaration of this pass can still find it: in the
+                    // place `element` comes from, or at the end. What no
+                    // declaration claims is trimmed after the pass.
+                    let origin = findDeclaredChild(children, childIndex + 1, id, isComponentRoot(element));
+                    if origin >= 0 {
+                        children[origin] = current;
+                    } else {
+                        children.push(current);
+                    }
+                }
+                children[childIndex] = element;
+            } else {
+                // The tree grew a node it did not have last frame.
                 this._layoutDirty = true;
+                children.push(element);
             }
-            parent.children[childIndex] = element;
         } else {
-            // The tree grew a node it did not have last frame.
+            // The first child this element ever had.
             this._layoutDirty = true;
-            parent.children.push(element);
+            parent.children = [element];
         }
         this.renderStack[top].childIndex = childIndex + 1;
     }
@@ -5016,14 +5464,20 @@ export opaque ref struct UIContext {
     // being (re-)declared for this build pass, drops whatever's left past
     // `cursor` -- i.e. children a previous, longer render left behind that
     // didn't get re-declared this time (e.g. a conditional that's now
-    // false). A no-op, no-allocation call when nothing was actually removed.
+    // false). They are gone: declared again, they are made anew (see
+    // getOrCreateDiv). A no-op, no-allocation call when nothing was actually
+    // removed.
     fn truncateChildrenToCursor(parent: mut ui_elements.DivElement, cursor: int): void {
-        // Losing a node is a shape change, same as gaining one (attachChild).
-        if parent.children.length > cursor {
-            this._layoutDirty = true;
-        }
-        while parent.children.length > cursor {
-            parent.children.pop();
+        if let children = parent.children {
+            // Losing a node is a shape change, same as gaining one
+            // (attachChild). The array itself stays, emptied or not: it is
+            // the same element's, and it will most likely get children again.
+            if children.length > cursor {
+                this._layoutDirty = true;
+            }
+            while children.length > cursor {
+                children.pop();
+            }
         }
     }
 
@@ -5034,11 +5488,15 @@ export opaque ref struct UIContext {
     // overwrite-then-trim shape as attachChild()/truncateChildrenToCursor(),
     // so a component stuck crashed across many frames in a row doesn't
     // reallocate or accumulate children each time either.
-    fn setSingleChild(parent: mut ui_elements.DivElement, child: ui_elements.Element): void {
-        if parent.children.length > 0 {
-            parent.children[0] = child;
+    fn setSingleChild(parent: mut ui_elements.DivElement, child: mut ui_elements.Element): void {
+        if let children = parent.children {
+            if children.length > 0 {
+                children[0] = child;
+            } else {
+                children.push(child);
+            }
         } else {
-            parent.children.push(child);
+            parent.children = [child];
         }
         this.truncateChildrenToCursor(parent, 1);
     }
@@ -5053,13 +5511,15 @@ export opaque ref struct UIContext {
             // when called from both defineComponent and defineComponentImpl for the same id).
             let child = null as ComponentInstance | null;
             let alreadyRegistered = false;
-            for n in parent.newChildComponents {
-                if n.id == id {
-                    // ids are unique within a render cycle, so the first match
-                    // is the only match.
-                    child = n.component;
-                    alreadyRegistered = true;
-                    break;
+            if let registered = parent.newChildComponents {
+                for n in registered {
+                    if n.id == id {
+                        // ids are unique within a render cycle, so the first
+                        // match is the only match.
+                        child = n.component;
+                        alreadyRegistered = true;
+                        break;
+                    }
                 }
             }
 
@@ -5073,10 +5533,11 @@ export opaque ref struct UIContext {
             assert(child);
 
             if !alreadyRegistered {
-                parent.newChildComponents.push({
-                    id: id,
-                    component: child,
-                });
+                if let registered = parent.newChildComponents {
+                    registered.push({ id: id, component: child });
+                } else {
+                    parent.newChildComponents = [{ id: id, component: child }];
+                }
             }
 
             instance = child;
@@ -5097,7 +5558,9 @@ export opaque ref struct UIContext {
                     rootElement: rootElement,
                     propsVersion: rx.reactive<int>(0),
                 };
-                runtimeDataOf(rootElement).owner = root;
+                let rootData = divRuntimeOf(rootElement);
+                rootData.owner = root;
+                rootData.componentRoot = true;
                 this.rootComponent = root;
             }
             assert(this.rootComponent);
@@ -5116,6 +5579,13 @@ export opaque ref struct UIContext {
     fn getCurrentParent() {
         assert(this.renderStack.length > 0);
         return this.renderStack[this.renderStack.length - 1].currentParent;
+    }
+
+    // Where the next child of the current parent goes -- see
+    // RenderContext.childIndex.
+    fn currentChildIndex(): int {
+        assert(this.renderStack.length > 0);
+        return this.renderStack[this.renderStack.length - 1].childIndex;
     }
 
     fn defineComponentImpl(
@@ -5160,10 +5630,12 @@ export opaque ref struct UIContext {
             instance.templateComputed = rx.computed(() => {
                 rx.get(instance.propsVersion);
 
-                instance.newChildComponents.clear();
+                if let registered = instance.newChildComponents {
+                    registered.clear();
+                }
 
                 if instance.crashed && instance.crashInfo {
-                    let errEl = getOrCreateText(instance.rootElement, -1);
+                    let errEl = getOrCreateText(instance.rootElement, 0, -1);
                     errEl.text := f"Component error: {instance.crashInfo.message}";
                     errEl.style := ui_styling.computeTextStyle({ textColor: Color(1, 0.2, 0.2, 1) }, none);
                     // A crashed component replaces its whole subtree with this
@@ -5193,7 +5665,7 @@ export opaque ref struct UIContext {
                     }
                     // This pass is the one that shows the error.
                     crashComponent(instance, "template", e, false);
-                    let errEl = getOrCreateText(instance.rootElement, -1);
+                    let errEl = getOrCreateText(instance.rootElement, 0, -1);
                     errEl.text := f"Component error: {e.message}";
                     errEl.style := ui_styling.computeTextStyle({ textColor: Color(1, 0.2, 0.2, 1) }, none);
                     // A crashed component replaces its whole subtree with this
@@ -5238,21 +5710,11 @@ export opaque ref struct UIContext {
                 instance.childComponents = instance.newChildComponents;
                 instance.newChildComponents = oldChildren;
 
-                for old in oldChildren {
-
-                    let stillExists = false;
-
-                    for new in instance.childComponents {
-                        if new.id == old.id {
-                            stillExists = true;
-                            break;
+                if let old = oldChildren {
+                    for previous in old {
+                        if !instance.findChild(previous.id) {
+                            destroyComponent(previous.component);
                         }
-                    }
-
-                    if !stillExists {
-                        destroyComponent(
-                            old.component
-                        );
                     }
                 }
 
@@ -5546,7 +6008,11 @@ export opaque ref struct UIContext {
         });
 
         if let component = owner {
-            component.watchers.push(handle);
+            if let watchers = component.watchers {
+                watchers.push(handle);
+            } else {
+                component.watchers = [handle];
+            }
         }
         return handle;
     }
@@ -5590,28 +6056,66 @@ export opaque ref struct UIContext {
             props.anchor := TypeErasedBox<ui_elements.DivElement>(element);
         }
 
-        // Store event callbacks into runtime data so the event system can read them.
-        let data = runtimeDataOf(element);
-        data.onPointerDown = props.onPointerDown;
-        data.onPointerUp = props.onPointerUp;
-        data.onPointerMove = props.onPointerMove;
-        data.onClick = props.onClick;
-        data.onDoubleClick = props.onDoubleClick;
-        data.onAuxClick = props.onAuxClick;
-        data.onContextMenu = props.onContextMenu;
-        data.onWheel = props.onWheel;
-        data.onPointerDownCapture = props.onPointerDownCapture;
-        data.onPointerUpCapture = props.onPointerUpCapture;
-        data.onPointerMoveCapture = props.onPointerMoveCapture;
-        data.onClickCapture = props.onClickCapture;
-        data.onDoubleClickCapture = props.onDoubleClickCapture;
-        data.onAuxClickCapture = props.onAuxClickCapture;
-        data.onContextMenuCapture = props.onContextMenuCapture;
-        data.onWheelCapture = props.onWheelCapture;
-        data.onHoverEnter = props.onHoverEnter;
-        data.onHoverLeave = props.onHoverLeave;
-        data.onHitEnter = props.onHitEnter;
-        data.onHitLeave = props.onHitLeave;
+        // Event callbacks, where the event system finds them. The list is
+        // made with exactly the room the first handlers need; afterwards each
+        // template run overwrites its entries in place.
+        let data = divRuntimeOf(element);
+        let setsHandlers = true;
+        if !data.handlers {
+            let count = handlerCount(props);
+            setsHandlers = count > 0;
+            if setsHandlers {
+                let list: mut []AnyHandler = [];
+                list.reserve(count);
+                data.handlers = list;
+            }
+        }
+        // A div that never had a handler and is handed none has nothing to
+        // store or remove. Otherwise each handed handler is stored at its
+        // kind, and only when the set of kinds changed are the ones no longer
+        // handed removed.
+        if setsHandlers {
+            let handed = 0;
+            if let h = props.onPointerDown { handed = withHandlerBit(handed, HandlerKind.PointerDown, true); data.storeHandler(HandlerKind.PointerDown, h); }
+            if let h = props.onPointerUp { handed = withHandlerBit(handed, HandlerKind.PointerUp, true); data.storeHandler(HandlerKind.PointerUp, h); }
+            if let h = props.onPointerMove { handed = withHandlerBit(handed, HandlerKind.PointerMove, true); data.storeHandler(HandlerKind.PointerMove, h); }
+            if let h = props.onClick { handed = withHandlerBit(handed, HandlerKind.Click, true); data.storeHandler(HandlerKind.Click, h); }
+            if let h = props.onDoubleClick { handed = withHandlerBit(handed, HandlerKind.DoubleClick, true); data.storeHandler(HandlerKind.DoubleClick, h); }
+            if let h = props.onAuxClick { handed = withHandlerBit(handed, HandlerKind.AuxClick, true); data.storeHandler(HandlerKind.AuxClick, h); }
+            if let h = props.onContextMenu { handed = withHandlerBit(handed, HandlerKind.ContextMenu, true); data.storeHandler(HandlerKind.ContextMenu, h); }
+            if let h = props.onWheel { handed = withHandlerBit(handed, HandlerKind.Wheel, true); data.storeHandler(HandlerKind.Wheel, h); }
+            if let h = props.onPointerDownCapture { handed = withHandlerBit(handed, HandlerKind.PointerDownCapture, true); data.storeHandler(HandlerKind.PointerDownCapture, h); }
+            if let h = props.onPointerUpCapture { handed = withHandlerBit(handed, HandlerKind.PointerUpCapture, true); data.storeHandler(HandlerKind.PointerUpCapture, h); }
+            if let h = props.onPointerMoveCapture { handed = withHandlerBit(handed, HandlerKind.PointerMoveCapture, true); data.storeHandler(HandlerKind.PointerMoveCapture, h); }
+            if let h = props.onClickCapture { handed = withHandlerBit(handed, HandlerKind.ClickCapture, true); data.storeHandler(HandlerKind.ClickCapture, h); }
+            if let h = props.onDoubleClickCapture { handed = withHandlerBit(handed, HandlerKind.DoubleClickCapture, true); data.storeHandler(HandlerKind.DoubleClickCapture, h); }
+            if let h = props.onAuxClickCapture { handed = withHandlerBit(handed, HandlerKind.AuxClickCapture, true); data.storeHandler(HandlerKind.AuxClickCapture, h); }
+            if let h = props.onContextMenuCapture { handed = withHandlerBit(handed, HandlerKind.ContextMenuCapture, true); data.storeHandler(HandlerKind.ContextMenuCapture, h); }
+            if let h = props.onWheelCapture { handed = withHandlerBit(handed, HandlerKind.WheelCapture, true); data.storeHandler(HandlerKind.WheelCapture, h); }
+            if let h = props.onHoverEnter { handed = withHandlerBit(handed, HandlerKind.HoverEnter, true); data.storeHandler(HandlerKind.HoverEnter, h); }
+            if let h = props.onHoverLeave { handed = withHandlerBit(handed, HandlerKind.HoverLeave, true); data.storeHandler(HandlerKind.HoverLeave, h); }
+            if let h = props.onHitEnter { handed = withHandlerBit(handed, HandlerKind.HitEnter, true); data.storeHandler(HandlerKind.HitEnter, h); }
+            if let h = props.onHitLeave { handed = withHandlerBit(handed, HandlerKind.HitLeave, true); data.storeHandler(HandlerKind.HitLeave, h); }
+            if let h = props.onFocus { handed = withHandlerBit(handed, HandlerKind.Focus, true); data.storeHandler(HandlerKind.Focus, h); }
+            if let h = props.onBlur { handed = withHandlerBit(handed, HandlerKind.Blur, true); data.storeHandler(HandlerKind.Blur, h); }
+            if let h = props.onFocusIn { handed = withHandlerBit(handed, HandlerKind.FocusIn, true); data.storeHandler(HandlerKind.FocusIn, h); }
+            if let h = props.onFocusOut { handed = withHandlerBit(handed, HandlerKind.FocusOut, true); data.storeHandler(HandlerKind.FocusOut, h); }
+            if let h = props.onFocusCapture { handed = withHandlerBit(handed, HandlerKind.FocusCapture, true); data.storeHandler(HandlerKind.FocusCapture, h); }
+            if let h = props.onBlurCapture { handed = withHandlerBit(handed, HandlerKind.BlurCapture, true); data.storeHandler(HandlerKind.BlurCapture, h); }
+            if let h = props.onFocusInCapture { handed = withHandlerBit(handed, HandlerKind.FocusInCapture, true); data.storeHandler(HandlerKind.FocusInCapture, h); }
+            if let h = props.onFocusOutCapture { handed = withHandlerBit(handed, HandlerKind.FocusOutCapture, true); data.storeHandler(HandlerKind.FocusOutCapture, h); }
+            if let h = props.onPointerDownOutside { handed = withHandlerBit(handed, HandlerKind.PointerDownOutside, true); data.storeHandler(HandlerKind.PointerDownOutside, h); }
+            if let h = props.onFocusOutside { handed = withHandlerBit(handed, HandlerKind.FocusOutside, true); data.storeHandler(HandlerKind.FocusOutside, h); }
+            if let h = props.onKeyDown { handed = withHandlerBit(handed, HandlerKind.KeyDown, true); data.storeHandler(HandlerKind.KeyDown, h); }
+            if let h = props.onKeyUp { handed = withHandlerBit(handed, HandlerKind.KeyUp, true); data.storeHandler(HandlerKind.KeyUp, h); }
+            if let h = props.onTextInput { handed = withHandlerBit(handed, HandlerKind.TextInput, true); data.storeHandler(HandlerKind.TextInput, h); }
+            if let h = props.onKeyDownCapture { handed = withHandlerBit(handed, HandlerKind.KeyDownCapture, true); data.storeHandler(HandlerKind.KeyDownCapture, h); }
+            if let h = props.onKeyUpCapture { handed = withHandlerBit(handed, HandlerKind.KeyUpCapture, true); data.storeHandler(HandlerKind.KeyUpCapture, h); }
+            if let h = props.onTextInputCapture { handed = withHandlerBit(handed, HandlerKind.TextInputCapture, true); data.storeHandler(HandlerKind.TextInputCapture, h); }
+            if handed != data.handlerMask {
+                data.dropHandlersNotIn(handed);
+            }
+        }
         data.focusable = props.focusable is not none ? props.focusable : false;
         // autofocus: request focus the first time this element is built, and
         // never again -- re-requesting every frame would make it impossible to
@@ -5627,39 +6131,27 @@ export opaque ref struct UIContext {
                 ui_requestUpdate();
             }
         }
-        data.onFocus = props.onFocus;
-        data.onBlur = props.onBlur;
-        data.onFocusIn = props.onFocusIn;
-        data.onFocusOut = props.onFocusOut;
-        data.onFocusCapture = props.onFocusCapture;
-        data.onBlurCapture = props.onBlurCapture;
-        data.onFocusInCapture = props.onFocusInCapture;
-        data.onFocusOutCapture = props.onFocusOutCapture;
-        data.onPointerDownOutside = props.onPointerDownOutside;
-        data.onFocusOutside = props.onFocusOutside;
-        data.onKeyDown = props.onKeyDown;
-        data.onKeyUp = props.onKeyUp;
-        data.onTextInput = props.onTextInput;
-        data.onKeyDownCapture = props.onKeyDownCapture;
-        data.onKeyUpCapture = props.onKeyUpCapture;
-        data.onTextInputCapture = props.onTextInputCapture;
     }
 
     // The other half of divImpl that a component root needs verbatim: publish
     // the element into `props.elementRef`, if the caller asked for one. Runs
     // after the children are built, so that a ref is only ever handed out for
     // a fully declared element.
+    // An element made anew (it left the tree and came back) has the id of
+    // the one the ref may still hold, hence `refPublished`.
     fn bindElementRef(props: DivProps, element: ui_elements.DivElement) {
         if props.elementRef is not none {
-            if props.elementRef is null || props.elementRef.raw.id != element.id {
+            let data = divRuntimeOf(element);
+            if !data.refPublished || props.elementRef is null || props.elementRef.raw.id != element.id {
                 props.elementRef := ElementWrapper<ui_elements.DivElement> { raw: element, _element: element };
+                data.refPublished = true;
             }
         }
     }
 
     fn divImpl(props: DivProps, style: ui_styling.ComputedDivStyle, childrenFn: immediate () => void) {
         let parent = this.getCurrentParent();
-        let element = getOrCreateDiv(parent, props.id);
+        let element = getOrCreateDiv(parent, this.currentChildIndex(), props.id);
 
         this.classifyDivStyleChange(element.style, style);
         element.style := style;
@@ -5696,7 +6188,7 @@ export opaque ref struct UIContext {
 
     fn textImpl(props: TextProps, style: ui_styling.ComputedTextStyle) {
         let parent = this.getCurrentParent();
-        let element = getOrCreateText(parent, props.id);
+        let element = getOrCreateText(parent, this.currentChildIndex(), props.id);
 
         // The string itself is a layout input: it is what gets measured.
         if !this._layoutDirty && element.text != props.text {
@@ -5710,8 +6202,10 @@ export opaque ref struct UIContext {
         this.attachChild(element);
 
         if props.elementRef is not none {
-            if props.elementRef is null || props.elementRef.raw.id != element.id {
+            let data = textRuntimeOf(element);
+            if !data.refPublished || props.elementRef is null || props.elementRef.raw.id != element.id {
                 props.elementRef := ElementWrapper<ui_elements.TextElement> { raw: element, _element: element };
+                data.refPublished = true;
             }
         }
 
@@ -5751,7 +6245,7 @@ export opaque ref struct UIContext {
 
     fn canvasImpl(props: CanvasProps, style: ui_styling.ComputedDivStyle, drawFn?: CanvasDrawFn) {
         let parent = this.getCurrentParent();
-        let element = getOrCreateCanvas(parent, props.id);
+        let element = getOrCreateCanvas(parent, this.currentChildIndex(), props.id);
 
         this.classifyDivStyleChange(element.style, style);
         element.style := style;
@@ -5759,7 +6253,7 @@ export opaque ref struct UIContext {
         // attach into current parent
         this.attachChild(element);
 
-        let data = runtimeDataOf(element);
+        let data = canvasRuntimeOf(element);
         if drawFn is not none {
             if !data.drawFn {
                 data.drawFn = TypeErasedBox<CanvasDrawFn>(drawFn);
@@ -5783,8 +6277,9 @@ export opaque ref struct UIContext {
         }
 
         if props.elementRef is not none {
-            if props.elementRef is null || props.elementRef.raw.id != element.id {
+            if !data.refPublished || props.elementRef is null || props.elementRef.raw.id != element.id {
                 props.elementRef := CanvasWrapper { raw: element, _element: element };
+                data.refPublished = true;
             }
         }
 
@@ -5905,7 +6400,7 @@ export ref struct CanvasWrapper {
     // none until the canvas has been laid out once: its GPU surface is
     // created in its first rendered frame, when its size is first known.
     fn getContext(): mut renderer.gfx.Renderer | none {
-        let data = runtimeDataOf(this._element);
+        let data = canvasRuntimeOf(this.raw);
         if !data.handle {
             return none;
         }
@@ -5919,7 +6414,7 @@ export ref struct CanvasWrapper {
     // renderer that needs a few more frames to settle. Reactive inputs need
     // no call; reading them in the drawFn is enough (see drawCanvasIfNeeded).
     fn invalidate(): void {
-        runtimeDataOf(this._element).redrawRequested = true;
+        canvasRuntimeOf(this.raw).redrawRequested = true;
         // Nothing else to do here: needsUpdate() and frameNeedsPaint() both
         // ask every live canvas whether it is owed a draw (see
         // UIContext.anyCanvasNeedsDraw), which is what makes the frame that

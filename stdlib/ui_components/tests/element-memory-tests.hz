@@ -1,0 +1,254 @@
+import ui_components
+import ui_elements
+
+// What one mounted element costs, pinned to the exact allocation count and
+// byte total, per kind: a plain div, a div with one handler, a text, a canvas,
+// a trivial component, and a div with one text child (what a parent pays for
+// holding a child). A change that makes an element bigger has to change a
+// number here on purpose.
+//
+// Every allocation is counted by the runtime's own instrumentation hook (see
+// hzstd_push_memory_instrumentation), not by the collector's byte counter,
+// which moves in batches: these counts are exact and the same on every run.
+// `bytes` is what was asked for; `gc` adds what the collector rounds each
+// small object up to (one extra byte, since GC_all_interior_pointers is on,
+// then whole 16-byte granules), which is close to what it really costs.
+//
+// One element's cost is measured as a difference, so that nothing else in a
+// frame counts: a component declares K elements of one kind; its template
+// runs again with the same K (the base), then with K + 1 (the grow). Both
+// windows are the frame that runs the template and one more that runs anyway
+// (ui_requestUpdate), each with a box reported for every child as a layout
+// pass would, and the pointer away from all of them. The second frame is
+// there because process() walks the tree for hover before the template pass:
+// what that walk gives a new element happens one running frame later. K + 1
+// stays inside the capacity the K children already grew their arrays to.
+//
+// It also checks that nothing allocates in steady state: an idle frame (the
+// gate skips it), a frame that runs with nothing changed, and a template
+// re-run that declares the same elements with the same handlers.
+
+// A value, so handing it to defineComponent allocates nothing: a ref struct
+// literal would be one allocation per declaration per template run.
+struct TestArgs {
+    unused: int = 0;
+}
+
+enum Kind { Div, DivWithHandler, Text, Canvas, Component, DivWithText }
+
+const comptime K = 5;
+
+// EM_DEBUG=1 in the environment prints every counted allocation with its type.
+__c__("#include <stdio.h>\n#include <stdlib.h>");
+__c__("static hzstd_memory_instrumentation_state_t __em_prev;");
+__c__("static long long __em_allocs = 0, __em_bytes = 0, __em_gc = 0;");
+__c__("static void __em_tally(hz_profiler_instrument_allocation_type type, size_t size, const char* dataType, int skip, void* data) { (void)dataType; (void)skip; (void)data; if (type == hz_profiler_instrument_allocation_type_arena_suballoc) return; if (getenv(\"EM_DEBUG\")) fprintf(stderr, \"  alloc %zu %s\\n\", size, dataType ? dataType : \"?\"); __em_allocs++; __em_bytes += (long long)size; __em_gc += (long long)(((size + 1) + 15) & ~(size_t)15); }");
+
+struct Cost {
+    allocs: int = 0;
+    bytes: int = 0;
+    gc: int = 0;
+}
+
+fn debugListing(): bool :: final {
+    do unsafe {
+        let on = false;
+        __c__("on = getenv(\"EM_DEBUG\") != NULL;");
+        return on;
+    };
+}
+
+fn tallyStart(): void :: final {
+    do unsafe {
+        __c__("{ __em_allocs = 0; __em_bytes = 0; __em_gc = 0; __em_prev = hzstd_push_memory_instrumentation(__em_tally, NULL); }");
+    };
+}
+
+fn tallyStop(): Cost :: final {
+    do unsafe {
+        let a: int = 0;
+        let b: int = 0;
+        let g: int = 0;
+        __c__("{ hzstd_pop_memory_instrumentation(__em_prev); a = (hzstd_int_t)__em_allocs; b = (hzstd_int_t)__em_bytes; g = (hzstd_int_t)__em_gc; }");
+        return Cost { allocs: a, bytes: b, gc: g };
+    };
+}
+
+ref struct State {
+    kind: Kind;
+    count: rx.Reactive<int>;
+    bump: rx.Reactive<int>;
+    rootRef: ui_components.ElementRef<ui_elements.DivElement>;
+    // Made once, so a template run hands the same handler again.
+    handler?: (e: ui_components.PointerEvent) => none;
+    clicks: int = 0;
+}
+
+fn declare(ctx: ui_components.UIContext, s: State, id: int): void :: final {
+    if s.kind == Kind.Div {
+        ctx.div({ id: id }, () => {});
+    } else if s.kind == Kind.DivWithHandler {
+        ctx.div({ id: id, onClick: s.handler }, () => {});
+    } else if s.kind == Kind.Text {
+        ctx.text({ id: id, text: "x" });
+    } else if s.kind == Kind.Canvas {
+        ctx.canvas({ id: id });
+    } else if s.kind == Kind.DivWithText {
+        ctx.div({ id: id }, () => {
+            ctx.text({ id: 1, text: "x" });
+        });
+    } else {
+        ctx.defineComponent(id, {} as TestArgs, (instance: ui_components.InstanceData<TestArgs>) => {
+            return (): ui_components.DivProps => {
+                return { id: 0 };
+            };
+        });
+    }
+}
+
+ref struct Harness {
+    ui: ui_components.UIContext;
+    s: State;
+}
+
+fn makeHarness(kind: Kind): Harness {
+    let s = State {
+        kind: kind,
+        count: rx.reactive<int>(K),
+        bump: rx.reactive<int>(0),
+        rootRef: rx.shallowReactive<ui_components.ElementWrapper<ui_elements.DivElement> | null>(null),
+    };
+    s.handler = (e: ui_components.PointerEvent) => { s.clicks = s.clicks + 1; };
+    let ui = ui_components.UIContext({
+        ui: (ctx: ui_components.UIContext) => {
+            ctx.defineComponent(0, {} as TestArgs, (instance: ui_components.InstanceData<TestArgs>) => {
+                return (): ui_components.DivProps => {
+                    rx.get(s.bump);
+                    let n = rx.get(s.count);
+                    for (let i = 0; i < n; i++) {
+                        declare(ctx, s, i + 1);
+                    }
+                    return { id: 0, elementRef: s.rootRef };
+                };
+            });
+        },
+        // Away from every box below.
+        mousePos: (): Vec2 => { return Vec2(500.0, 500.0); },
+        clock: (): real => { return 1000.0; },
+    });
+    return { ui: ui, s: s };
+}
+
+// A frame (skipped by the gate when nothing changed), then the boxes a
+// layout pass would report for it.
+fn frame(h: Harness): void :: final {
+    h.ui.process();
+    let w = rx.get(h.s.rootRef);
+    assert(w);
+    ui_components.applyRenderFeedback(w._element, Vec2(0.0, 0.0), Vec2(100.0, 100.0));
+    if let children = w.raw.children {
+        let i = 0;
+        for child in children {
+            ui_components.applyRenderFeedback(child, Vec2(0.0, (i * 10) as real), Vec2(10.0, 10.0));
+            i++;
+        }
+    }
+}
+
+// A frame that runs although nothing changed.
+fn forcedFrame(h: Harness): void :: final {
+    ui_components.ui_requestUpdate();
+    frame(h);
+}
+
+struct Measured {
+    idle: Cost = {};
+    forced: Cost = {};
+    rerun: Cost = {};
+    element: Cost = {};
+}
+
+fn measure(kind: Kind): Measured {
+    let h = makeHarness(kind);
+    frame(h);
+    for (let i = 0; i < 3; i++) { forcedFrame(h); }
+
+    tallyStart();
+    frame(h);
+    frame(h);
+    let idle = tallyStop();
+
+    tallyStart();
+    forcedFrame(h);
+    forcedFrame(h);
+    let forced = tallyStop();
+
+    // The template runs again, declaring the same K elements.
+    tallyStart();
+    h.s.bump := 1;
+    frame(h);
+    forcedFrame(h);
+    let rerun = tallyStop();
+
+    // ... and once more, declaring one more.
+    tallyStart();
+    h.s.count := K + 1;
+    frame(h);
+    forcedFrame(h);
+    let grow = tallyStop();
+
+    let w = rx.get(h.s.rootRef);
+    assert(w);
+    let children = w.raw.children;
+    assert(children);
+    assert(children.length == K + 1);
+
+    return {
+        idle: idle,
+        forced: forced,
+        rerun: rerun,
+        element: { allocs: grow.allocs - rerun.allocs, bytes: grow.bytes - rerun.bytes, gc: grow.gc - rerun.gc },
+    };
+}
+
+// The failures it found.
+fn check(name: str, m: Measured, allocs: int, bytes: int): int {
+    let failures = 0;
+    if debugListing() {
+        fmt.println(f"-- {name} above");
+    }
+    fmt.println(f"{name}: {m.element.allocs} allocations, {m.element.bytes} bytes ({m.element.gc} with GC rounding)");
+    if m.element.allocs != allocs || m.element.bytes != bytes {
+        failures++;
+        fmt.println(f"FAIL: {name} costs {m.element.allocs} allocations, {m.element.bytes} bytes (pinned: {allocs}, {bytes})");
+    }
+    if m.idle.allocs != 0 {
+        failures++;
+        fmt.println(f"FAIL: {name}: two idle frames allocate {m.idle.allocs} times, {m.idle.bytes} bytes (must be 0)");
+    }
+    if m.forced.allocs != 0 {
+        failures++;
+        fmt.println(f"FAIL: {name}: two frames that change nothing allocate {m.forced.allocs} times, {m.forced.bytes} bytes (must be 0)");
+    }
+    if m.rerun.allocs != 0 {
+        failures++;
+        fmt.println(f"FAIL: {name}: a template re-run declaring the same elements allocates {m.rerun.allocs} times, {m.rerun.bytes} bytes (must be 0)");
+    }
+    return failures;
+}
+
+fn main(): int {
+    let failures = 0;
+    let plainDiv = measure(Kind.Div);
+    let handler = measure(Kind.DivWithHandler);
+    failures += check("plain div", plainDiv, 4, 827);
+    failures += check("div with one handler", handler, 6, 899);
+    failures += check("text", measure(Kind.Text), 4, 331);
+    failures += check("canvas", measure(Kind.Canvas), 4, 891);
+    failures += check("trivial component", measure(Kind.Component), 18, 1436);
+    failures += check("div with one text child", measure(Kind.DivWithText), 10, 1272);
+    if failures == 0 {
+        fmt.println("element-memory-tests: all passed");
+    }
+    return failures;
+}

@@ -91,4 +91,5 @@ and against which commit it was verified; re-check a note against the code befor
 - [ui event dispatch](ui-event-dispatch.md) - queued handlers as data, value events with shared flag slots, kept touch-down slot; stale flag reads panic
 - [Binary building blocks](binary-building-blocks.md) - ByteBuffer binary writes, BinaryReader, RawMemory, crc32c, traverse hooks and plainness
 - [Arenas, scanned and unscanned memory](arenas-scanned-unscanned.md) - two chunk chains, ChunkPolicy, measure/sizedFor, ccstr labels, unscanned = bytes only
-- [Element memory cost](ui-element-memory-cost.md) - 2.1 KB per div, 1.6 KB per text, 3 KB per component: where it goes, GC +1 byte rounding, how to measure
+- [Element memory cost](ui-element-memory-cost.md) - 0.8 KB per div, 0.4 KB per text, 1.7 KB per component, pinned by element-memory-tests; per-kind runtime data, concepts made by first use; how to measure
+- [Child identity](ui-child-identity.md) - children found by id from the cursor; an undeclared child is gone and comes back new; refPublished; canvas GPU leak
