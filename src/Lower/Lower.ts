@@ -3030,12 +3030,48 @@ hzstd_slot_read(&__tmp_result, __slot, sizeof(__tmp_result));`,
       // And since it is a conversion mapping, only the overlapping ones need to be mapped.
       // Therefore, only the members that appear in BOTH unions are mapped, the others are ignored.
 
+      // A member of an untagged union is kept as spelled, so one side may
+      // name a member through an alias the other side spells out (`PH`
+      // against `(e: int) => none`): the same member, matched with aliases
+      // resolved. Failing that, a member matches the same type with another
+      // mutability (`mut ref A` against `ref A`, which the semantic check only
+      // allows as mut-to-plain): both are the same C type.
+      const sameMember = (
+        a: (typeof loweredSourceUnion.members)[number],
+        b: (typeof loweredTargetUnion.members)[number]
+      ) => {
+        if (typeof a === "object" || typeof b === "object") {
+          return a === b;
+        }
+        return Lowered.resolveAlias(lr, a) === Lowered.resolveAlias(lr, b);
+      };
+      const sameMemberButMutability = (
+        a: (typeof loweredSourceUnion.members)[number],
+        b: (typeof loweredTargetUnion.members)[number]
+      ) => {
+        if (typeof a === "object" || typeof b === "object") {
+          return false;
+        }
+        const ua = lr.typeUseNodes.get(Lowered.resolveAlias(lr, a));
+        const ub = lr.typeUseNodes.get(Lowered.resolveAlias(lr, b));
+        return ua.type === ub.type && ua.pointer === ub.pointer && ua.stackref === ub.stackref;
+      };
+      const targetOf = (source: (typeof loweredSourceUnion.members)[number]) => {
+        const exact = loweredTargetUnion.members.findIndex((m) =>
+          sameMember(source, m)
+        );
+        if (exact !== -1) {
+          return exact;
+        }
+        return loweredTargetUnion.members.findIndex((m) =>
+          sameMemberButMutability(source, m)
+        );
+      };
+
       if (mapping) {
         // Verify existing entry
         loweredSourceUnion.members.forEach((source, sourceIndex) => {
-          const targetIndex = loweredTargetUnion.members.findIndex(
-            (m) => m === source
-          );
+          const targetIndex = targetOf(source);
           if (targetIndex !== -1) {
             assert(mapping!.mapping.get(sourceIndex) === targetIndex);
           }
@@ -3050,9 +3086,7 @@ hzstd_slot_read(&__tmp_result, __slot, sizeof(__tmp_result));`,
 
         // Fill new entry
         loweredSourceUnion.members.forEach((source, sourceIndex) => {
-          const targetIndex = loweredTargetUnion.members.findIndex(
-            (m) => m === source
-          );
+          const targetIndex = targetOf(source);
           if (targetIndex !== -1) {
             mapping!.mapping.set(sourceIndex, targetIndex);
           }

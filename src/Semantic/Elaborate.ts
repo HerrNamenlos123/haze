@@ -11486,6 +11486,15 @@ export class SemanticElaborator {
       assignment.operation === EAssignmentOperation.Assign &&
       lhsType.variant === Semantic.ENode.StructDatatype
     ) {
+      // The scan below sees only overloads something already elaborated, so
+      // `x := y` depended on elaboration order: a struct's `operator:=` from
+      // another module was missing ("no matching assignment operator") until
+      // an unrelated use elaborated it.
+      this.ensureOperatorOverloadsElaborated(
+        targetExpr.type,
+        "__operator_assign",
+        assignment.sourceloc
+      );
       // Try to find a matching overload
       let exactMatchId: Semantic.SymbolId | undefined;
       let convertedValueExprId: Semantic.ExprId = valueExprId;

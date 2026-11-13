@@ -112,6 +112,14 @@ class CodeGenerator {
   private out = {
     includes: new OutputWriter(),
     cDecls: new OutputWriter(),
+    // `typedef struct X X;` for every struct-backed type, ahead of every
+    // other typedef. C needs no order among these, and everything after them
+    // may name any struct through them: a pointer typedef only needs its
+    // referee declared, not defined. Emitting each in the dependency order of
+    // `type_declarations` instead put a pointer typedef first whenever the
+    // pointer was reached while its own struct was still being sorted (a
+    // struct holding an optional array of a union that contains the struct).
+    type_forward_declarations: new OutputWriter(),
     type_declarations: new OutputWriter(),
     type_definitions: new OutputWriter(),
     // Closure env structs: after every type definition (their fields are
@@ -799,6 +807,10 @@ class CodeGenerator {
     writer.write("\n\n// C Injection section\n");
     writer.write(this.out.cDecls);
 
+    writer.write("\n\n// Type forward declaration section\n");
+    writer.write(this.out.type_forward_declarations);
+    writer.writeLine();
+
     writer.write("\n\n// Type declaration section\n");
     writer.write(this.out.type_declarations);
     writer.writeLine();
@@ -882,7 +894,7 @@ class CodeGenerator {
           // All primitives are handled in hzstd
         } else if (symbol.variant === Lowered.ENode.StructDatatype) {
           if (!symbol.noemit) {
-            this.out.type_declarations.writeLine(
+            this.out.type_forward_declarations.writeLine(
               `typedef struct ${this.mangleTypeDef(symbol)} ${this.mangleTypeDef(symbol)};`
             );
             this.out.type_definitions
@@ -913,7 +925,7 @@ class CodeGenerator {
               )};`
             );
           } else {
-            this.out.type_declarations.writeLine(
+            this.out.type_forward_declarations.writeLine(
               `typedef struct ${this.mangleTypeDef(symbol)} ${this.mangleTypeDef(symbol)};`
             );
             this.out.type_definitions
@@ -943,7 +955,7 @@ class CodeGenerator {
             this.out.type_definitions.popIndent().writeLine("};");
           }
         } else if (symbol.variant === Lowered.ENode.FixedArrayDatatype) {
-          this.out.type_declarations.writeLine(
+          this.out.type_forward_declarations.writeLine(
             `typedef struct ${this.mangleTypeDef(symbol)} ${this.mangleTypeDef(symbol)};`
           );
           this.out.type_definitions
@@ -961,7 +973,7 @@ class CodeGenerator {
           // this.out.type_definitions.writeLine(`hzstd_dynamic_array_t data;`);
           // this.out.type_definitions.popIndent().writeLine(`};`);
         } else if (symbol.variant === Lowered.ENode.SliceDatatype) {
-          this.out.type_declarations.writeLine(
+          this.out.type_forward_declarations.writeLine(
             `typedef struct ${this.mangleTypeDef(symbol)} ${this.mangleTypeDef(symbol)};`
           );
           this.out.type_definitions
@@ -987,7 +999,7 @@ class CodeGenerator {
             )})(${parameters.join(", ")});`
           );
         } else if (symbol.variant === Lowered.ENode.CallableDatatype) {
-          this.out.type_declarations.writeLine(
+          this.out.type_forward_declarations.writeLine(
             `typedef struct ${this.mangleTypeDef(symbol)} ${this.mangleTypeDef(symbol)};`
           );
           this.out.type_definitions

@@ -62,6 +62,9 @@ fn main(): int {
     cases_array_methods.register(suite);
     cases_array_capacity.register(suite);
     cases_reactive_cell_storage.register(suite);
+    cases_recursive_optional_array.register(suite);
+    cases_union_alias_widening.register(suite);
+    cases_union_mutability_widening.register(suite);
     cases_profiling.register(suite);
     cases_profiling_stacks.register(suite);
     cases_value_equality.register(suite);

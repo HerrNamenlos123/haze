@@ -2265,11 +2265,36 @@ export namespace Conversion {
       membersTo.addVariants(toUnionMembers);
       membersTo.constrainFromConstraints(constraints, sourceExprId);
 
-      if (
-        [...membersFrom.possibleVariants].every((v) =>
-          membersTo.possibleVariants.has(v)
-        )
-      ) {
+      // Compared with aliases resolved: an untagged union keeps its members
+      // as spelled, so `PH | none` and `((e: int) => none) | none` name the
+      // same member two ways.
+      const toResolved = new Set(
+        [...membersTo.possibleVariants].map((v) => sr.e.resolveAlias(v))
+      );
+      // A member also matches the same type with its `mut` (or `const`)
+      // dropped, as a single value converts (see "Mutability conversions"):
+      // `mut A | mut B` is an `A | B`.
+      const toUses = [...toResolved].map((t) => sr.typeUseNodes.get(t));
+      const memberConverts = (v: Semantic.TypeUseId) => {
+        const resolved = sr.e.resolveAlias(v);
+        if (toResolved.has(resolved)) {
+          return true;
+        }
+        const from = sr.typeUseNodes.get(resolved);
+        if (
+          from.mutability !== EDatatypeMutability.Mut &&
+          from.mutability !== EDatatypeMutability.Const
+        ) {
+          return false;
+        }
+        return toUses.some(
+          (to) =>
+            to.type === from.type &&
+            to.storage === from.storage &&
+            to.mutability === EDatatypeMutability.Default
+        );
+      };
+      if ([...membersFrom.possibleVariants].every(memberConverts)) {
         return {
           kind: "union-to-union",
         };

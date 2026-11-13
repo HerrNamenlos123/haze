@@ -1,0 +1,63 @@
+// REGRESSION TEST -- C type declaration order: a struct holding an optional
+// array of a union that contains the struct itself.
+//
+// The generated C typedef'd the pointer to the struct (`typedef Node* pNode;`)
+// before the struct's own forward declaration (`typedef struct Node Node;`):
+// both were emitted in one dependency order, and the pointer was reached
+// through the struct's own member (Node -> []Item? -> Item -> Node pointer)
+// while the struct was still being sorted. clang then failed on an unknown
+// type name. A non-optional `[]Item` member never hit it, because a plain
+// dynamic array member is not walked as a dependency. Forward declarations
+// now have a section of their own, ahead of every other typedef.
+//
+// The shape is ui_elements.DivElement's: `children?: []Element` with
+// `Element = DivElement | TextElement | CanvasElement`.
+
+namespace cases_recursive_optional_array {
+
+    export fn register(s: mut testsuite.Suite) {
+
+        s.run(
+            "codegen: a struct can hold an optional array of a union that contains it",
+            """
+export ref struct Node {
+    id: int;
+    kids?: []Item;
+}
+
+export ref struct Leaf {
+    id: int;
+}
+
+export type Item = Node | Leaf;
+
+fn count(item: Item): int :: final {
+    if item is Node {
+        let n = 1;
+        if let kids = item.kids {
+            for k in kids {
+                n = n + count(k);
+            }
+        }
+        return n;
+    }
+    return 1;
+}
+
+fn main(): int {
+    let root = Node { id: 1 };
+    let inner = Node { id: 3 };
+    inner.kids = [Leaf { id: 4 }];
+    root.kids = [Leaf { id: 2 }];
+    if let kids = root.kids {
+        kids.push(inner);
+        kids.push(Node { id: 5 });
+    }
+    fmt.println(f"nodes: {count(root)}");
+    return 0;
+}
+""",
+            "nodes: 5",
+        );
+    }
+}

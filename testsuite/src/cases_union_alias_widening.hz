@@ -1,0 +1,62 @@
+// REGRESSION TEST -- union-to-union conversion sees through type aliases.
+//
+// A field declared with an alias (`b?: PH`) holds the alias's resolved type,
+// `((e: int) => none) | none`, while a parameter's union keeps the alias
+// names (`PH | WH | none`). The union-to-union check compared the members of
+// an untagged union without resolving aliases, so passing the field there was
+// rejected with "No suitable conversion" although every member is in the
+// target. Tagged unions already resolved theirs. Hit by
+// ui_components.DivRuntime.setHandler, whose parameter is a union of the
+// handler aliases and whose arguments are DivProps fields.
+
+namespace cases_union_alias_widening {
+
+    export fn register(s: mut testsuite.Suite) {
+
+        s.run(
+            "union-to-union: a member spelled through an alias matches the same type spelled out",
+            """
+type PH = (e: int) => none;
+type WH = (e: str) => none;
+type Small = int | str;
+
+ref struct Counter {
+    got: int = 0;
+}
+
+ref struct Props {
+    a?: (e: int) => none;
+    b?: PH;
+    n?: int;
+}
+
+fn take(h: PH | WH | none): int {
+    if h is none { return 0; }
+    if h is PH {
+        h(5);
+        return 1;
+    }
+    return 2;
+}
+
+fn takeSmall(v: Small | bool | none): int {
+    if v is int { return v; }
+    return -1;
+}
+
+fn main(): int {
+    let c = Counter {};
+    let p = Props { a: (e: int) => { c.got = c.got + e; }, b: (e: int) => { c.got = c.got + e * 10; }, n: 7 };
+    let r1 = take(p.b);
+    let r2 = take(p.a);
+    let none1: PH | none = none;
+    let r3 = take(none1);
+    let r4 = takeSmall(p.n);
+    fmt.println(f"{r1} {r2} {r3} {r4} {c.got}");
+    return 0;
+}
+""",
+            "1 1 0 7 55",
+        );
+    }
+}

@@ -1,0 +1,65 @@
+// REGRESSION TEST -- union-to-union conversion drops `mut` from members.
+//
+// A single `mut ref A` converts to `ref A` (and into a union holding `A`),
+// but a union of mutable references did not convert to the same union of
+// plain ones: `mut A | mut B` to `A | B` was "No suitable conversion",
+// because the union-to-union check compared members exactly. So an element
+// of `[]mut Item` could not be handed to a function taking `Item`. Hit by
+// ui_elements.DivElement.children (`[]mut Element`), whose readers take
+// `ui_elements.Element`. The lowered member mapping matched members exactly
+// too; `mut ref A` and `ref A` are two pointer types of one struct.
+
+namespace cases_union_mutability_widening {
+
+    export fn register(s: mut testsuite.Suite) {
+
+        s.run(
+            "union-to-union: a union of mutable references converts to the same union of plain ones",
+            """
+ref struct A {
+    x: int = 0;
+}
+
+ref struct B {
+    y: int = 0;
+}
+
+type Item = A | B;
+
+fn read(item: Item): int {
+    if item is A {
+        return item.x;
+    }
+    if item is B {
+        return item.y * 10;
+    }
+    return -1;
+}
+
+fn readOptional(item: Item | none): int {
+    if let i = item {
+        return read(i);
+    }
+    return 0;
+}
+
+fn main(): int {
+    let a: mut A = A { x: 3 };
+    let b: mut B = B { y: 4 };
+    let list: []mut Item = [];
+    list.push(a);
+    list.push(b);
+    let total = 0;
+    for item in list {
+        total = total + read(item);
+    }
+    let first: mut Item = list[0];
+    a.x = 5;
+    fmt.println(f"{total} {read(first)} {readOptional(list[1])}");
+    return 0;
+}
+""",
+            "43 5 40",
+        );
+    }
+}
