@@ -7,7 +7,7 @@ The scheduler, the libuv integration and the wiring into hzstd are separate work
 the contract hzstd builds on.
 
 Design source: Axiom S4 (C216, C218, C220, C227, C287, C383). Implementation notes:
-`R&D/Async Runtime.md`.
+`docs/async-runtime.md`.
 
 Targets: x86-64 and AArch64, each on Linux and Windows. Everything else (macOS, 32-bit,
 ARM64EC, x32) stops the build with `#error`.
@@ -233,7 +233,7 @@ The library is done and tested on its own; nothing in hzstd uses it yet. In orde
      scans only the altstack; its own FIXME).
 6. **ASan:** threads with their own `sigaltstack` must uninstall it (`SS_DISABLE`) before
    exiting, or ASan's thread teardown aborts (`hzstd_platform_linux.c`, `altstack_buf`).
-7. **Scheduler, libuv, per-task runtime state:** the next design step (`R&D/Async Runtime.md`,
+7. **Scheduler, libuv, per-task runtime state:** the next design step (`docs/async-runtime.md`,
    Axiom S3/S4). That covers recovery frames, the stackref table, reactive state and panic state.
    Pick stack sizes: 8 MiB usable and a 64 KiB guard are proposed. Pool stacks, and
    `fiber_stack_trim` them in `hzstd_release_idle_memory`.

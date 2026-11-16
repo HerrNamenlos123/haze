@@ -4,6 +4,8 @@
 
 Verified 2026-11-04 against d35a505e. (error-code sites, intrinsics and tests checked; per-bullet runtime behaviour taken from the build notes)
 
+Design superseded 2026-11-16 (Axiom C401, C402, C468 to C477, C509, C567 to C569): extern C functions defined in Haze take the context first, `Context.init` goes, runtime data is hidden and read via `sys.threadId()` / `sys.contextPtr()`. Target design and API: `docs/async-runtime.md`, sections 2 and 3. This note describes the code until that rework lands; never build new code on `Context.init`.
+
 - `context` is an implicit variable in every Haze fn, `=>` lambda and `->` literal, and none in `extern C` fns (H7219, `src/Semantic/Elaborate.ts`). Value type `Context` (alias of opaque `hzstd_context_t`); reads copy, `context = c` and member writes go through. `let stackref r = context` is H7221. Haze has no `&` operator (`&x` is H1000; address-of is the `addressOf()` library fn).
 - Any bare-name declaration named `context` is H7222 (locals, globals, params of fns with a body, lambda params, loop vars, free fns, types, namespaces, generics, imports). Fields and methods are fine.
 - `Context()` calls the extern C `ffi.hzstd_context_default` (`stdlib/core/src/context.hz`). `context.clone(b)` / `Context.init(v, b)` become `ContextScopeExpr` (Elaborate `tryContextIntrinsicCall`), lowered to a stack `hzstd_context_t __hz_ctxN`, zero allocations. `clone` copies the current context after evaluating the body expression; `init` takes any value.

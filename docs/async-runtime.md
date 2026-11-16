@@ -1,124 +1,247 @@
-# Haze Async Runtime: Implementation Notes
+# Haze Async Runtime: Contract and Implementation Notes
 
 > **Every design decision lives in Axiom** (S3 "Multithreading & Thread Safety", S4 "Async & Stack
-> Switching": https://axiom.fzachs.at/s/t5awr3gdxzr52jys). This document only holds what Axiom
-> deliberately leaves out: API shapes, implementation plans, verified facts about the code and
-> libraries, and open implementation questions. Claim IDs (C123) point into Axiom. If this document
-> and Axiom disagree, Axiom wins and this document is wrong.
+> Switching": https://axiom.fzachs.at/s/t5awr3gdxzr52jys). This document holds what Axiom
+> deliberately leaves out: the API contract (names and shapes), implementation plans, verified facts
+> about the code and libraries, and open implementation questions. Claim IDs (C123) point into
+> Axiom. If this document and Axiom disagree, Axiom wins and this document is wrong.
 
-Status (2026-10-20): the design is complete in Axiom except vsync (section 11). The stack switching
-library is in `stdlib/core/src/fiber/`, and the hidden context is implemented (section 3). Nothing
-else is implemented.
+Status (2026-11-16): the S3/S4 design is complete in Axiom; its open claims (deep clone C339, hot
+reload C422, modifiers on primitives C454, arena reuse C499, user access to cross-thread calls C516,
+frame presentation C544, exit details C548, readonly C554, initializer calls C570, deadlines C578)
+do not block the event loop, threading and context work. Section 2 is the API contract. The stack
+switching library is in `stdlib/core/src/fiber/` (built and tested, not wired into hzstd). The
+hidden context exists in an earlier form that section 3 replaces. Nothing else is implemented.
 
 Tags used below:
+* **[Contract]**: decided API names and shapes. Implement exactly this.
 * **[Fact]**: verified in the code or a library's source on the date given. Re-verify before relying on it.
 * **[Plan]**: how we intend to implement a decision. Changeable without touching Axiom.
-* **[Open]**: an implementation question nobody has answered yet.
+* **[Open]**: an implementation question nobody has answered yet. Ask before deciding it.
 
 ---
 
 ## 1. The design in one page (pointers into Axiom)
 
-* **Safety:** a hard race condition is concurrent access that can corrupt memory or crash (C141);
-  safe Haze code makes them impossible (C142); logical races and deadlocks from bad program design
-  are not prevented (C143, C164).
-* **Sharing between threads:** one GC heap for all threads (C144). Data crosses threads as values,
-  `const` data or atomic data (C147, C336, C337, C338; deep clone is an open question, C339). A
-  thread is spawned from a lambda whose captures are checked (C148), fully analyzable including
-  captured lambdas (C276). Raw pointers and type-erased boxes never cross (C274, C275); stack
-  references never reach another thread, not even inside `const` data (C264, C277). Type properties
-  (crossable, capturable by task or thread, atomic) are queryable at compile time (C278). No channel
-  concept (C149).
-* **Atomic types:** an atomic type synchronizes every access itself (C165). A struct is shareable only
-  if declared atomic, every member atomic, `const` or `unsafe` (C170, C172), which needs private
-  members (C174). Every container has a thread-safe form usable exactly like the plain one (C187 to
+Read the claims themselves; this list only says where to look.
+
+* **Safety:** a hard race can corrupt memory or crash (C141); safe Haze code makes them impossible
+  (C142); logical races and deadlocks from bad program design are not prevented (C143, C164, C427).
+  No mistake goes unnoticed: it fails to compile or panics (C419, C162).
+* **Sharing between threads:** one GC heap for all threads (C144). Data crosses only as values,
+  `const` data or atomic data, checked deeply through everything it reaches (C147, C336, C337,
+  C464 to C467). Every path is checked: thread lambdas (C148, C276), futures and thread results
+  (C467). Running on another thread may reject code, never change what it means (C449). Raw
+  pointers and plain type-erased boxes never cross (C274, C275); stack references never reach
+  another thread (C264, C277, C280). Type properties are queryable at compile time (C278). Threads
+  exchange data through atomic data they capture (C149).
+* **Closures:** captures are copies or shared pointers by kind (C456); a closure never writes a
+  copied capture (C458), so its environment is never written after creation (C460), is shared
+  across threads and never cloned (C461 to C463). C458 must stay true and tested: the crossing rule
+  rests on it.
+* **const and mut** describe the data a reference points to; Haze has no bindings (C453).
+* **Atomic types:** an atomic type synchronizes every access itself (C165). A struct is shareable
+  only if declared atomic, every member atomic, `const` or `unsafe` (C170, C172), which needs private
+  members (C173, C174). Every container has a thread-safe form usable like the plain one (C187 to
   C193); arrays can be declared atomic directly (C189).
-* **Locks:** held only for the duration of a callback (C178), released by panic recovery (C340),
-  lockable across several operations of the same value (C180, C182), reentrant per task (C184).
-  Waiting for a lock suspends the task, not the thread (C151).
-* **Globals and context:** a global exists once per thread by default (C196), once per process only
-  when declared and then atomic or `const` (C198, C199), or once per task (C200 to C202); a new task
-  copies its parent's per-task values (C285). Every Haze function receives a hidden context as its
-  first argument, holding the current task (C209), because platform TLS costs too much (C207, C208).
-  FFI rules: C211, C212, C214.
-* **Tasks:** stackful and cooperative (C216, C218), no locks needed between tasks of one thread (C217),
-  one scheduler and event loop per thread (C219), a task never leaves its thread (C220, C341), a new
-  task starts only when its spawner suspends (C384), every event is its own task (C378), the reactive
-  tracking state belongs to the running task (C377). Task code may rely on cooperative ordering that
-  breaks on threads; the crossing rule catches most of it (C385, C386).
-* **Stack references:** checked at runtime (C56), usable from any task on their thread (C261), tagged
-  with their owning thread (C280).
-* **Lifecycle:** a failure ends only its task and prints its trace at once (C225 to C227); waiting on a
-  failed task returns an error status (C228); tasks are detached (C233); thread and process end
-  (C235 to C237); background tasks do not keep their thread alive (C304); watchers run as their own
-  task (C299); `sleep` suspends only the task (C301, C302).
-* **Responsiveness:** applications stay responsive (C239); a computing task holds up its thread
-  (C240); stall warning above 10 ms of task CPU time (C242), opt-out per spawned thread (C290 to C292);
-  explicit yields (C243); long work is the programmer's responsibility (C244); deadline-first
-  scheduling (C246); no call may block its thread, the stdlib reworks blocking calls (C379 to C381).
-* **Overflow:** guard pages only (C287); recovery is best effort, avoiding overflow is the
-  programmer's job (C382, C383).
-* **Waiting for values:** futures (C255, C256), spawning returns a future (C257), one `Future<T>` for
-  tasks and threads (C387), atomic containers can be waited on until closed (C260).
-* **Performance:** programs get fast by avoiding the GC (C349, C350, C342, C344).
-* **Profiler:** thread states and per-task flame graphs (C270, C272).
+* **Locks:** held only for a callback (C178); reentrant per task (C184); waiting suspends the task,
+  not the thread (C151); a task may suspend while holding one (C526); released by panic recovery and
+  by a kill (C340, C525), and then poisoned: every later attempt to take it panics (C559, C560).
+* **Context:** runtime data (task, thread, task storage) vs settings (allocator, logger, two user
+  boxes) (C468 to C477, C568, C569); see section 3.
+* **Threads start blank:** blank context with the stdlib defaults (C479), globals at their initial
+  values (C518); settings are carried over one by one from their original objects (C480 to C483,
+  C511); loggers need not be atomic (C484 to C486); user boxes (C487, C488); allocators and arenas
+  (C489 to C499).
+* **Globals:** once per thread by default (C196), once per process only when declared and then atomic
+  or `const` (C198, C199), once per task (C200 to C202). A new task copies its parent's per-task
+  values (C285). Starting a task or suspending inside a global initializer panics (C571).
+* **FFI:** C501 to C510, C527, C532 to C535. C never calls into Haze from a thread Haze does not
+  manage (C505 to C507); a `cptr` exists only for talking to C (C508 to C510).
+* **Tasks:** stackful and cooperative (C216, C218), no locks between tasks of one thread (C217), one
+  scheduler and event loop per thread (C219), a task never leaves its thread (C220, C341, C442), a
+  new task starts only when its spawner suspends (C384), every event is its own task (C378) with the
+  settings of the code that registered its handler (C531), reactive tracking state belongs to the
+  task (C377), no microtasks (C445 to C448). Every task's stack is a GC root (C536).
+* **Futures:** C255 to C257, C387, C443, C444, C522 to C524, C561, C565, C572. A thread's future
+  completes when its lambda returns (C572).
+* **Lifecycle:** everything pending keeps its thread alive unless it is background work (C434,
+  C435, C549); a thread ends when nothing is pending (C236); its background tasks are then killed
+  and only their cleanup runs (C437, C438); the process ends on exit or when every thread ended
+  (C237). Exit codes: C521, C575, C576.
+* **Failures:** an uncaught failure prints its stack trace, runs the cleanup of every thread and
+  ends the process (C227); panics are caught only where code asks for it (C519, C520). Cleanup:
+  C545 to C548, C557, C558. Ctrl+C and signals: C439 to C441, C549, C573, C577. Hardware faults:
+  C428, C556.
+* **Suspension-free regions:** C537 to C539, C557.
+* **Responsiveness:** no call may block its thread (C379 to C381, C527); stall warning (C242,
+  C290 to C292); explicit yields (C243); long work is the programmer's job (C244); deadlines (C246,
+  C578).
+* **Overflow:** guard pages only (C287); recovery is best effort (C382, C383).
+* **Hot reload with tasks:** C540, C541, C562 to C564 (the rest of hot reload is open, C422).
+* **Profiler:** C270, C272, C555.
 * **Out of scope:** WASM (C283), condition variables (C296), a deep `locked` modifier (C298).
-  **Cancellation is not planned** (user, 2026-10-20, not in Axiom): a loop is stopped with a flag and
-  an early return; a task suspended on something that may never resume is released by that resource
-  (a socket's close resumes all its waiters). Aborting I/O is the resource's own business.
+  **Cancellation is not planned** (user, 2026-10-20, kept out of Axiom on purpose): a loop is stopped
+  with a flag and an early return; a task suspended on something that may never resume is released
+  by that resource (a socket's close resumes all its waiters).
 
 ---
 
-## 2. API shapes [decided by the user, 2026-10-20; contract material, not Axiom]
+## 2. API contract [Contract, decided by the user 2026-10-20 and 2026-11-16]
 
-* `task.spawn(() => { ... }, options?)` returns a `Future<T>`.
-  * The only option: `keepAlive: bool = true`. With `false` the task is best-effort background work:
-    it does not keep the process alive, and the process ends once everything else is done (C304).
-* `thread.spawn(() => { ... }, options?)` returns a `Future<T>`.
-  * The only option: enables the stall warning for the new thread's event loop, default `true`. The
-    stall warning names this option (C290, C292). The main thread is never spawned, so it always
-    warns (C291).
-* No other options for now.
-* `Future<T>`: roughly mirrors Java's future API, unless use in code shows a need for something
-  different. One type for tasks and threads (C387). Joining a future suspends only the joining task
-  (C256); a failed task yields an error status (C228).
-* `time.sleep(...)` is a suspension (C301). `sys.yield()` yields (C243).
-* Locks: a mutex is locked only as a region, `mutex.lock(() => { ... })` (C178).
-* Atomic containers: the plain container's operations, each atomic (C192), plus `x.lock(() => { ... })`
-  to hold the lock across several of them (C180, C182). Waiting for an element and closing (C260); the
-  user's example program used `popFrontOrWait()` and `close()`.
-* Keywords: per-task globals were `async let` in discussion (user preference, 2026-10-17); the
-  per-process keyword is undecided.
+Everything here is decided unless marked [Open]. Names are final; signatures may gain parameters
+only where noted.
+
+**Tasks and threads**
+* The `task` and `thread` namespaces hold only spawning. Every other tool lives in `sys`, because
+  tasks and threads mostly use the same synchronization tools (user, 2026-11-16, a gut decision
+  before any code: expect changes).
+* `task.spawn(() => { ... }, { background: false })` returns a `Future<T>` of the lambda's result
+  (C250, C257). The only option: `background: true` marks the task as background work, which does not
+  keep its thread alive (C304, C435).
+* `thread.spawn(() => { ... }, { stallWarning: true, stackSize })` returns a `Future<T>` that
+  completes when the lambda returns (C572). Options: `stallWarning` (default `true`; the warning names
+  this option, C290 to C292) and `stackSize` (overrides the default stack size). The new thread starts
+  blank (C479, C518). Logging to the parent (C514) is not part of the first implementation.
+* `Future<T>`: one type for tasks and threads (C387), roughly Java's API unless real use shows a need
+  for something else: `join()` suspends only the joining task (C256) and returns a result whose error
+  case covers a killed task and a function that never ran (C438, C561); it must be impossible to
+  ignore that case silently (C419). `isDone()`. A future made by code: `Future<T>()`, completed with
+  `complete(v)` from any thread (C443); a second `complete` panics (C444).
+* `sys.yield()` yields (C243).
+* `sys.yieldAfter(seconds)` yields only once the task has run longer than `seconds` since its last
+  switch, and otherwise returns at once on the same stack, cheap enough to call on every iteration of
+  a tight loop (C588, C590). The name is a proposal [Open].
+* The time the current task has run since its last switch is queryable (C589); name [Open].
+
+**Sleeping**
+* `time.sleep(seconds)` suspends only the calling task (C301). The current implementation blocks the
+  OS thread (`ffi.os_sleep_ns`, `stdlib/core/src/time.hz`) and is rewritten.
+* Haze has no way to sleep the OS thread. The blocking primitive in hzstd (`os_sleep_ns`,
+  `hzstd_platform.h`) is renamed so its name says it blocks the whole OS thread, and it is never
+  reachable as an ordinary sleep.
+
+**Locks and containers**
+* `mutex.lock(() => { ... })`: the only way to hold a lock (C178); reentrant per task (C184);
+  poisoned after a kill or a panic inside the region (C560).
+* Atomic containers: the plain container's operations, each atomic (C192), plus
+  `x.lock(() => { ... })` to hold the lock across several of them (C180, C182). Containers are never
+  closed: a waiter waits until an element arrives or the pending waiters are released, which can
+  happen any number of times (C260). `popFrontOrWait()` (from the user's example program) and a
+  release call, name [Open]; a released waiter returns without an element.
+* Declarations: `atomic` structs and arrays (C170, C189), `unsafe` members (C172), `private` members
+  (C174), atomic primitives (C599). Readonly members are wanted (C552) but how is open (C554).
+* Crossable types: a type, closure types included, can be declared crossable and then fails to
+  compile unless it passes the crossing rule (C591 to C594); this is how APIs that store closures and
+  run them on another thread (pools, job queues) are typed. The keyword is [Open] (C595). A future
+  crosses only if its value can (C600).
+* Unsafe crossable: a wrapper around a C handle that is thread safe by itself (wgpu objects) is
+  declared crossable unsafely; its author promises the thread safety (C171). Section 11.2 relies
+  on it.
+
+**Globals**
+* `let` / `const` at module level: once per thread (C196).
+* `tasklocal let` / `tasklocal const`: once per task (C202).
+* `global let` / `global const`: once per process; must be atomic or `const` (C198, C199).
+  (`async` and `static` were rejected as keywords: too overloaded and misleading.)
+
+**Context** (section 3)
+* `context`: the current context, a plain struct of settings; assigning it changes it for the caller
+  too (C473, C567).
+* `Context()`: the only constructor in Haze; a context with the stdlib defaults (C398, C479).
+* `context.clone(() => { ... })`: runs the closure with a copy, so changes stay inside it (C396, C397).
+* `sys.threadId()`, `sys.contextPtr()` (C477, C509). `Context.init` is removed.
+
+**Failures, cleanup and ending**
+* `sys.exit(n)`: graceful exit with status `n`; panics unless `0 <= n <= 255` (C521, C574, C576).
+  A graceful exit stops each task at its next suspension or yield; threads are never interrupted
+  from outside (C585 to C587).
+* `sys.abort()`: ends at once, cleanup left to the OS (C547, C574).
+* Uncaught failure: stack trace, cleanup of every thread, exit status 255 (C227, C521).
+* `sys.noSuspend(() => { ... })`: suspending inside panics (C538). Used by computeds (C539),
+  cleanup (C557) and global initializers (C571).
+* **[Open]** The cleanup registration API (C546). The user rejects a closure-per-handler API,
+  because registering one usually needs a heap allocation for the closure's environment. It must be
+  redesigned with close to zero heap allocations per handler. Do not implement a public cleanup API
+  before this is decided; the runtime's own internal cleanup (locks, poisoning) does not wait for it.
+
+**Allocation** (C489 to C499, C579 to C584)
+* An allocation is static (keeps its size) or growing (replaced by a larger one as it grows). With an
+  arena as the context's allocator, only static allocations go into the arena; growing ones, such as
+  a dynamic array's buffer, stay with the GC, so only the array's control struct lives in the arena.
+* A container built from fixed-size chunks that never move (the planned segmented array) grows
+  entirely inside its arena and keeps its allocator in its control struct; shared between threads,
+  it must keep an atomic arena.
+
+**Const and mut** (C453, C596, C597, C601 to C603): const data never changes and is deep; a `mut`
+reference can change its data; a reference without a modifier cannot, but other code may. Data
+becomes const only by being created const or copied: no conversion from changeable to const
+without a copy may exist.
+
+**Resources and cleanup** [Open, designed after the threading work]
+* The runtime's own cleanup (releasing and poisoning locks of a killed or panicking task) is part of
+  this work. A public cleanup API is not.
+* The user's resource model (2026-10-23, a draft, not fully designed; how cleanup is guaranteed is
+  open): a resource is an ordinary `nocopy` value that holds the native thing plus its cleanup. It
+  can be passed around and stored. Binding consumes it: `using x = r` binds it to a scope, or it is
+  bound into an owner resource (owners include components, UI elements, the app, a frame, a task, a
+  thread). Nothing reaches the native handle without binding; binding yields a wrapper object
+  (conveniences, optional locking, panics after release), never the raw handle. Overwriting a field
+  that holds a wrapper never leaks: the resource is released by its scope or owner. Binding into an
+  owner that is not bound itself panics. Release order is newest first; a panic in a release is
+  contained. Registrations such as watchers and exit handlers are resources too.
+* Wanted: close to zero heap allocations per cleanup (user preference).
+
+**Signals**
+* `sys.onSignal(Signal.Interrupt, () => { ... })`: registered per thread, runs as a background task
+  at the front of that thread's ready tasks (C441, C549). The OS signal is received once by a hidden
+  thread (C577). Until any thread registers a Ctrl+C handler, Ctrl+C ends the process gracefully;
+  once one does, only the registered threads get it (C573).
+
+**Not public in the first implementation:** asking another thread to run a function (C513, C565;
+used internally; user access open, C516), deadlines (C246, C578), logging to the parent thread
+(C514).
 
 ---
 
-## 3. The context struct and per-task globals [Built: the context; Open: per-task globals]
+## 3. The context [Contract for the design; Fact for today's code]
 
-Decided in Axiom: every Haze function receives the context as its first argument, before `this`
-(C209); calls into C carry none, and Haze code called from C must be handed one explicitly (C211,
-C212); finding the current context without it being passed is possible only from C (C214). How it
-works: C390-C406 (stack-allocated, a value type over a pointer that never leaves the call stack,
-no references, `context.clone` as a checkpoint, `Context()` as the only constructor, C gets and
-hands back contexts by value through `Context.init`, closures run under their caller's context,
-every task has its own context cloned from its creator).
+**Design (Axiom C209, C390 to C406, C468 to C477, C500 to C510, C567 to C569):**
+* Every Haze function receives the context as its first C parameter (C209). It lives on the stack
+  (C390); the type system treats it as a value while the generated code passes a pointer (C392); no
+  reference to it can be formed (C393).
+* In C the context struct holds **runtime data** (current task, its thread, the task's storage;
+  C469) and the **settings** (allocator, logger, two optional user boxes, empty by default; C470,
+  C569). The settings layout is the same in every program (C568).
+* In Haze `context` is only the settings: a plain struct without methods, assignable as a whole
+  (C473). Assigning, cloning or inheriting carries only settings, never identity (C474). Runtime
+  data is never stored, only derived (C475, C476), and read through `sys.threadId()` and similar
+  global functions (C477).
+* A new task on the same thread starts with a clone of its creator's context (C406); an event's task
+  with the settings of the code that registered its handler (C531); a new thread with a blank context
+  (C479).
+* **extern C:** every extern C function defined in Haze takes the context as its first parameter,
+  and C must pass it (C401), so its body can call any Haze code (C402). A Haze function is never
+  handed to C directly; the binding author's wrapper passes the context (C501, C503). C can create a
+  default context through hzstd (C504); doing so on a thread Haze does not manage panics (C505).
+  `sys.contextPtr()` hands the raw context to C as a `cptr` (C509). No thread-local lookup per call
+  (C502).
 
-**[Fact]** Built (2026-10-20): `Context` / `hzstd_context_t` with one hidden field `dummy`
-(placeholder for per-task state), the `context` name, `context.clone`, `Context.init`,
-`Context()`, `extern C (...) -> R` function types, and every C <-> Haze path in the stdlib
-(reactive core, Clay, SDL, wgpu requests, single_instance) carrying the context. The calling
-convention and the rules for C: DEVELOPMENT.md, "The hidden context". Each path passes the context
-along the path it is actually called on; once tasks exist, every event becomes a task with a
-context cloned from its creator (C378, C405, C406).
+**[Fact] Today (main, 2026-11-16), to be changed:**
+* `Context` / `hzstd_context_t` has one hidden field `dummy`; `context.clone`, `Context.init`,
+  `Context()` and `extern C (...) -> R` function types exist (DEVELOPMENT.md, "The hidden context").
+* extern C functions get no context; C enters Haze through `Context.init(ctx, () => { ... })`
+  inside an extern C body. Both are replaced by C401/C402; `Context.init` goes.
+* `context` lowers to `*__hz_ctx`, an lvalue over the caller's struct (`src/Lower/Lower.ts` ~1608),
+  which matches C567.
 
-**[Open]** Per-task globals in the context. User direction (2026-10-20):
-* Per-task globals live in the context struct, a fixed C type usable everywhere; task memory is
-  reached through cast pointers.
-* Likely shape: a `void*` data pointer in the context (today's `dummy`), plus a **process-unique
-  identity per task global variable** stored elsewhere (for example a process-wide table of
-  variables), so a task global is reachable even if the call stack passed into and back out of a
-  module that did not know about that variable.
+**[Open] Per-task globals in the context.** User direction (2026-10-20):
+* Per-task globals live behind the context's runtime data, a fixed C type usable everywhere; task
+  memory is reached through cast pointers.
+* Likely shape: a data pointer in the runtime data (today's `dummy`), plus a **process-unique
+  identity per task global** stored elsewhere (for example a process-wide table), so a task global
+  is reachable even if the call stack passed through a module that did not know about it.
 * Calls across modules, a module-wide context, at which offsets values actually live.
-* What `Context.init` must do beyond a plain copy once task state exists.
 
 Earlier layout idea, still compatible: the context points to the current task's block (per-task
 globals and runtime state), which points to its thread's block (per-thread globals, the stackref
@@ -127,12 +250,7 @@ never changes and a switch needs no fixup.
 
 **[Fact]** (clang -O2, 2026-10-17), why platform TLS is not used (C207): a Linux executable pays
 nothing per access; Windows x64 pays a 3-instruction block lookup per function; macOS and Linux
-modules loaded with dlopen (hot reload) pay a call per variable. The last one contradicts the
-"roughly 3 instructions" assumed for per-thread function pointers in `CLAUDE_MODULE_HOTRELOAD_NOTES.md`.
-
-A C thread-local holding the current context may exist as a fallback for C APIs without a userdata
-pointer, reachable only from C (C214). C callbacks on foreign threads are the C author's
-responsibility.
+modules loaded with dlopen (hot reload) pay a call per variable.
 
 ---
 
@@ -275,11 +393,12 @@ int32_t main(int argc, const char *argv[]) {
 ```
 
 * `main` is a task like any other. Returning from it does not end the process by itself (C237).
-* A thread ends when nothing that keeps it alive could wake it again (C236); tasks spawned with
-  `keepAlive: false` and their timers do not count (C304). The process ends on `exit` or when all
-  threads have ended (C237).
-* `thread.spawn(fn)` creates a GC-registered thread, initializes its scheduler and runs `fn` as its
-  first task.
+* A thread ends when nothing on it is pending any more (C236, C434); background tasks, their timers
+  and signal handlers do not count (C435, C549); the remaining background tasks are then killed and
+  only their cleanup runs (C437). The process ends on exit or when all threads have ended (C237).
+* `thread.spawn(fn)` creates a GC-registered thread with a blank context (C479), initializes its
+  scheduler and runs `fn` as its first task; the thread's future completes when `fn` returns
+  (C572).
 
 ### 5.4 Blocking calls
 
@@ -290,10 +409,11 @@ hidden helper thread whose completion readies the waiting task. This replaces th
 
 ---
 
-## 6. The stack switching library [In progress]
+## 6. The stack switching library [Fact: built and tested, not wired into hzstd]
 
-Being built in `stdlib/core/src/fiber/` from a separate brief (2026-10-20). The code there is the
-authority on its API; what follows is the brief's intent.
+In `stdlib/core/src/fiber/` (commits c77b164a, a23e0f60, 5f4070ee; see
+`docs/agent-notes/fiber-stack-switching-library.md`). The code there is the authority on its API;
+what follows is the brief's intent.
 
 * Standalone single-header C library with an implementation macro, no dependency on Haze, hzstd,
   libuv or the GC. hzstd includes it next to libuv.
@@ -324,7 +444,7 @@ authority on its API; what follows is the brief's intent.
 * A per-thread pool instead of an mmap per task; capped and trimmed, because munmap is expensive in
   multithreaded processes.
 * **[Open]** default sizes. Proposed: reserve 8 MiB (like Linux's main thread, so "works on a thread"
-  means "works in a task"), 64 KiB guard, overridable per spawn. Pages commit on first touch; a
+  means "works in a task"), 64 KiB guard. Overridable per spawn (decided, section 2). Pages commit on first touch; a
   typical I/O task touches 2-3 pages.
 * Linux: `MAP_STACK` and `MADV_NOHUGEPAGE` (with THP "always", every touched stack could become a
   2 MiB page). Windows: a no-access bottom plus a `PAGE_GUARD` growth page, like a native thread.
@@ -334,6 +454,7 @@ authority on its API; what follows is the brief's intent.
 
 **Per-task runtime state** (everything in section 4 that follows the call stack):
 * recovery frames: per task;
+* cleanup registrations and lock ownership (for poisoning, C560): per task;
 * reactive tracking state: per task (C377), including `__rx_activeWatcher`;
 * panic info, JSON allocator, profiler flags and stack bounds: per task or per switch;
 * **stackref generations** (C261, C280): **one table per thread**, not per task. Slots come from a free
@@ -403,8 +524,8 @@ Guard pages only (C287); no checks are ever added to functions. Recovery is best
 1. A guard hit raises SIGSEGV on the per-OS-thread altstack, whichever task ran. The handler checks the
    fault address against the current task's guard and reports "stack overflow" rather than "segfault".
 2. The panic worker builds the trace as today; cap it and fold repeated frames.
-3. longjmp to the innermost recovery frame of that task; with none, the task's entry trampoline
-   catches it and the task fails (C227).
+3. longjmp to the innermost recovery frame of that task; with none, the failure is uncaught: stack
+   trace, cleanup of every thread, exit status 255 (C227, C521).
 4. Linux: the guard stays `PROT_NONE`. Windows: with the TIB swapped, the existing `_resetstkoflw`
    path re-arms the task stack's guard.
 
@@ -452,7 +573,8 @@ work is ready; `sys.yield()` is `if (s->yield_requested) slow_yield();`, cheap e
 
 ## 11. Vsync and GPU presentation [Fact + Proposed, not decided]
 
-Researched 2026-10-18. Not decided by the user and not in Axiom; deadlines (C246) need it.
+Researched 2026-10-18. Not decided; Axiom records it as open (C544), and deadlines (C246, C578)
+need it. User direction 2026-11-16: probably a background thread.
 
 ### 11.1 How wgpu waits for vsync [Fact]
 
@@ -520,13 +642,13 @@ Verified 2026-10-18 in the wgpu-core/wgpu-hal sources of 27.0.3/27.0.4 (Haze's w
 
 ## 12. Open implementation questions
 
+* The cleanup registration API, with close to zero heap allocations per handler (section 2).
 * Per-task globals in the context and across modules (section 3).
-* Vsync (section 11).
+* Vsync and frame presentation (section 11, C544).
 * Default stack and guard sizes, pool caps (section 7).
-* The exact `Future<T>` API, starting from Java's (section 2).
-* The per-process and per-task global keywords (section 2).
-* Whether long CPU work gets a ready-made worker pool in the stdlib, or programs spawn their own
-  threads (C244 makes it the programmer's responsibility either way).
+* The exact `Future<T>` API beyond section 2.
+* The new name of hzstd's blocking `os_sleep_ns`, of `sys.yieldAfter`, the run-time query and the
+  waiter release (section 2); the crossable keyword (C595).
 
 ---
 
@@ -541,10 +663,12 @@ Kept short so nobody rediscovers them. The reasons live in Axiom.
 * Returning from `main` ends the process (Go semantics): replaced by C235 to C237.
 * Stack checks in function prologues to make overflow recovery safe: rejected (C287, native
   performance); overflow recovery is best effort (C383).
-* Re-raising a task's failure at `join`: replaced by an error status (C228).
+* A failure ends only its task, and waiting on it returns an error status (old C228): replaced by
+  an uncaught failure ending the process after cleanup (C227).
 * `TaskLocal<T>` keys with `local.with(v, fn)`: replaced by per-task globals (C200 to C202).
-* "Suspending inside computed, effect or render code panics": replaced by per-task tracking state
-  (C377).
+* Suspending inside computed or effect code: per-task tracking state makes it work (C377);
+  computeds still forbid it through a suspension-free region, because it goes against their use
+  (C537 to C539).
 * Stall warning starvation rule and compute-pool exemption: replaced by always warning plus the
   thread spawn option (C242, C290).
 * Cancellation through futures, timeouts and in-flight I/O draining: not planned (section 1).
@@ -552,3 +676,7 @@ Kept short so nobody rediscovers them. The reasons live in Axiom.
   data (C149) and the `atomic` modifier and atomic structs (C165 to C193).
 * Per-task generation tables for stack references: replaced by one table per thread with free-list
   slots and the thread tag (C261, C280).
+* `Context.init` and a C thread-local holding the current context: replaced by extern C functions
+  taking the context (C401, C402) and hzstd's default context (C504).
+* `keepAlive` spawn option and the keywords `async let` / `static let`: replaced by `background`,
+  `tasklocal` and `global` (section 2).

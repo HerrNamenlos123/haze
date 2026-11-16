@@ -42,7 +42,7 @@ and against which commit it was verified; re-check a note against the code befor
 - [Shape page ownership](haze-notes-shape-page-ownership.md) - shape lives on the page of its bbox middle
 - [haze-notes UI](haze-notes-ui-architecture.md) - theme, components, flat FileTree, flat vault index, caches, background walk, tree scroll restore
 - [Headless UI testing](headless-ui-testing-technique.md) - real Clay layout without GPU
-- [Hidden context](hidden-context-implemented.md) - context keyword, clone/init, extern C ABI, error codes
+- [Hidden context](hidden-context-implemented.md) - context keyword, clone/init, extern C ABI, error codes; as built, design superseded (see docs/async-runtime.md)
 - [Hit geometry](hit-geometry-rules.md) - clipping and per-pass boxes for hit testing
 - [hzstd scratch C strings](hzstd-scratch-cstr.md) - HZSTD_SCRATCH_CSTR, errno views, spawn blocks
 - [hzui id spaces](hzui-component-id-spaces.md) - negative component ids, loop keys

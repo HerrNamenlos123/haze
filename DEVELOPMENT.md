@@ -298,6 +298,13 @@ Tests: `testsuite/src/cases_union_member_access.hz`.
 
 ## The hidden context (calling convention)
 
+> **Being replaced.** This section describes the code as built. The design in Axiom changed on
+> 2026-11-16: every extern C function defined in Haze takes the context as its first parameter
+> (C401, C402), `Context.init` goes, the context is split into hidden runtime data and settings
+> (C468 to C477, C568, C569), and `sys.threadId()` / `sys.contextPtr()` read the runtime data (C477,
+> C509). The target design and API: `docs/async-runtime.md`, sections 2 and 3. Implement new work
+> against those, not against the rules below.
+
 Every Haze function receives its caller's context as its first C parameter
 (Axiom C209, C390-C406). Haze names it `context`, a value of type `Context`
 (`stdlib/core/src/context.hz`); in C it is `hzstd_context_t`
