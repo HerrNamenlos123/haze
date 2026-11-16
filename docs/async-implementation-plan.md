@@ -10,10 +10,13 @@ switching library (`stdlib/core/src/fiber/`) and the old form of the hidden cont
 
 ## Rules for whoever implements this
 
+* `Context.init`, the per-thread C state and the old C-to-Haze entries are replaced in one go: no
+  compatibility shim, no parallel path left standing.
 * Every claim ID cited here must be read in Axiom before its stage starts. When a claim, the
   contract and the code disagree, Axiom wins; report the disagreement.
-* Anything marked [Open] in the contract (names, the cleanup API, the crossable keyword, default
-  stack sizes) is decided by the user. Ask; never pick one silently.
+* Every public API documents its intended use in its doc string (contract section 2).
+* Anything marked [Open] in the contract (the cleanup API, per-task globals across modules) is
+  decided by the user. Ask; never pick one silently.
 * Trace the existing code yourself before changing it: names, comments and agent notes are
   hypotheses until the code confirms them. `docs/agent-notes/` holds traps that matter here (fiber
   library, recovery frames, hzstd scratch C strings, render gate, never freeze, zero allocation per
@@ -31,6 +34,20 @@ switching library (`stdlib/core/src/fiber/`) and the old form of the hidden cont
 Test entry points: compiler cases in `testsuite/src/cases_*.hz` via `scripts/run-tests.sh`; stdlib
 path tests via `scripts/run-stdlib-path-tests.sh`; the fiber library's own tests in
 `stdlib/core/src/fiber/tests/`.
+
+## How the work runs (user, 2026-11-17)
+
+* On Linux (most suites, the fiber library's AArch64 runs under qemu); Windows is verified at the
+  end of every stage. On the Windows laptop, Bitdefender
+  quarantines Haze-built executables unless the user has set an exception for the repo folder.
+* Stages 0 and 1 run first, in order, by one agent. Then two lanes in parallel, each in its own git
+  worktree: A, the runtime (stages 2, 3, 4); B, the compiler side of stage 5 (crossing check,
+  atomic and crossable types, global storage classes). Then together: the runtime part of stage 5,
+  and stage 6. One overseer reviews, merges and brings the user's decisions back to the lanes.
+* Review points with the user: after stage 0, after stage 1, after stage 3, and at the end; each with
+  results the user can try.
+* Stage 0 fixes existing bugs from the user's issue ledger (captures, const); the user's go for
+  this plan covers them.
 
 ## Stage 0: compiler prerequisites
 
@@ -100,9 +117,9 @@ C519 to C541, C565, C586 to C590.
   BDWGC (`src/ProjectCompiler/ProjectCompiler.ts` ~1130); one scheduler and loop per thread; `main`
   is a task.
 * `task.spawn` with `background`, `Future<T>` (`join`, `isDone`, `Future<T>()`, `complete`),
-  `sys.yield`, `sys.yieldAfter`, the run-time query. The `task` and `thread` namespaces hold only
+  `sys.yield`, `sys.yieldAfter`, `sys.timeSinceTaskSwitch`. The `task` and `thread` namespaces hold only
   spawning; every other tool lives in `sys` (contract section 2).
-* `time.sleep` suspends; hzstd's blocking `os_sleep_ns` is renamed (name [Open]).
+* `time.sleep` suspends; hzstd's blocking `os_sleep_ns` becomes `hzstd_os_thread_block_ns`.
 * GC integration (section 8), stack overflow per task (section 9), stall warning (section 10).
 * Keep-alive and thread end: C434 to C438, C549; uncaught failures C227; exit and abort C521,
   C574, C576, C586.
@@ -112,8 +129,8 @@ Done, each as a test: a new task starts only when its spawner suspends (C384); r
 cleanup running (C435, C437); joining a killed task or a function that never ran gives the error
 result (C438, C561); thousands of suspended tasks under GC stress lose nothing (C536); a stack
 overflow in a task is recovered (C383); the stall warning fires above 10 ms and not below (C242);
-`sys.yieldAfter` in a tight loop costs close to nothing (measure it; the budget is not set yet,
-ask the user).
+`sys.yieldAfter` in a tight loop costs one load and one compare per call, no clock read (measure
+it against the same loop without the call).
 
 ## Stage 4: locks, poisoning and suspension-free regions
 
@@ -135,17 +152,19 @@ C584, C591 to C604.
   C518); its future completes when the lambda returns (C572).
 * The crossing rule, checked deeply on every path: thread lambdas and what they capture, values
   through futures and thread results (C464 to C467, C600).
-* `atomic` structs, arrays and primitives; `unsafe` members; crossable declarations (keyword [Open]),
-  including the unsafe form for wrappers of thread-safe C handles such as wgpu objects.
+* `atomic` structs, arrays and primitives; `unsafe` members; crossable declarations (`crossthread`),
+  including the unsafe form (`unsafe crossthread`) for wrappers of thread-safe C handles such as wgpu objects.
 * Global storage classes: per thread by default, `tasklocal`, `global`; no platform TLS cost per
-  access (C207, C208).
+  access (C207, C208). Where per-task and per-process globals live across modules is open (contract
+  section 3, hot reload's modules make it tricky): write a short design note at the start of this
+  stage and get the user's decision before building it.
 * Cross-thread wake-ups for futures (contract section 5.1, inbox plus `uv_async_t`).
 * Allocation: static vs growing allocations with arenas (C579 to C584).
 
 Done: a compile-fail test for every crossing path and every kind of data that must not cross; a
 stack reference used on another thread panics (C280); a multi-thread stress test (several threads
-sharing atomic containers and futures) passes repeatedly. ThreadSanitizer is worth trying on Linux,
-but unverified: task switches need TSan's fiber annotations and BDWGC stops threads with signals.
+sharing atomic containers and futures) passes repeatedly, also under ASan and UBSan.
+ThreadSanitizer is not possible: `fiber.h` refuses to build under it (~308).
 
 ## Stage 6: standard library and the application loop
 

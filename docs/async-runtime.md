@@ -6,7 +6,8 @@
 > about the code and libraries, and open implementation questions. Claim IDs (C123) point into
 > Axiom. If this document and Axiom disagree, Axiom wins and this document is wrong.
 
-Status (2026-11-16): the S3/S4 design is complete in Axiom; its open claims (deep clone C339, hot
+Status (2026-11-17): the S3/S4 design is complete in Axiom for this work; everything still open
+is marked [Open] here. Its open claims (deep clone C339, hot
 reload C422, modifiers on primitives C454, arena reuse C499, user access to cross-thread calls C516,
 frame presentation C544, exit details C548, readonly C554, initializer calls C570, deadlines C578)
 do not block the event loop, threading and context work. Section 2 is the API contract. The stack
@@ -35,13 +36,13 @@ Read the claims themselves; this list only says where to look.
   pointers and plain type-erased boxes never cross (C274, C275); stack references never reach
   another thread (C264, C277, C280). Type properties are queryable at compile time (C278). Threads
   exchange data through atomic data they capture (C149).
-* **Closures:** captures are copies or shared pointers by kind (C456); a closure never writes a
+* **Closures:** captures are copies, or references to the same object, by kind (C456); a closure never writes a
   copied capture (C458), so its environment is never written after creation (C460), is shared
   across threads and never cloned (C461 to C463). C458 must stay true and tested: the crossing rule
   rests on it.
 * **const and mut** describe the data a reference points to; Haze has no bindings (C453).
-* **Atomic types:** an atomic type synchronizes every access itself (C165). A struct is shareable
-  only if declared atomic, every member atomic, `const` or `unsafe` (C170, C172), which needs private
+* **Atomic types:** an atomic type synchronizes every access itself (C165). A mutable struct is
+  shareable only if declared atomic, every member atomic, `const` or `unsafe` (C170, C172), which needs private
   members (C173, C174). Every container has a thread-safe form usable like the plain one (C187 to
   C193); arrays can be declared atomic directly (C189).
 * **Locks:** held only for a callback (C178); reentrant per task (C184); waiting suspends the task,
@@ -89,6 +90,10 @@ Read the claims themselves; this list only says where to look.
 
 ## 2. API contract [Contract, decided by the user 2026-10-20 and 2026-11-16]
 
+Every public function and type here documents its intended use in its doc string, not only what it
+does (user, 2026-11-17). Example: `sys.yieldAfter` says it is meant to be called on every iteration
+of a loop and is cheap enough for that.
+
 Everything here is decided unless marked [Open]. Names are final; signatures may gain parameters
 only where noted.
 
@@ -106,38 +111,46 @@ only where noted.
 * `Future<T>`: one type for tasks and threads (C387), roughly Java's API unless real use shows a need
   for something else: `join()` suspends only the joining task (C256) and returns a result whose error
   case covers a killed task and a function that never ran (C438, C561); it must be impossible to
-  ignore that case silently (C419). `isDone()`. A future made by code: `Future<T>()`, completed with
+  ignore that case silently (C419): `join()` returns `Result<T, TaskError>`, `TaskError` being
+  `Killed` or `NeverRan`. `isDone()`. A future made by code: `Future<T>()`, completed with
   `complete(v)` from any thread (C443); a second `complete` panics (C444).
 * `sys.yield()` yields (C243).
-* `sys.yieldAfter(seconds)` yields only once the task has run longer than `seconds` since its last
-  switch, and otherwise returns at once on the same stack, cheap enough to call on every iteration of
-  a tight loop (C588, C590). The name is a proposal [Open].
-* The time the current task has run since its last switch is queryable (C589); name [Open].
+* `sys.yieldAfter(seconds: real)` yields only once the task has run longer than `seconds` since
+  its last switch, and otherwise returns at once on the same stack (C588, C590). It must be cheap
+  enough to call on every iteration of a tight loop: one memory load and one compare per call, no
+  clock read, no function call. [Plan] The stall-warning watchdog (section 10), which ticks every
+  5 ms, keeps a coarse "running since" stamp per thread; `yieldAfter` compares against it inline,
+  so its precision is 5 ms.
+* `sys.timeSinceTaskSwitch(): real`: seconds the current task has run since its last switch (C589).
+  (The user is not fully happy with the name; something like "uninterrupted run time" was wanted,
+  nothing better found yet.)
 
 **Sleeping**
 * `time.sleep(seconds)` suspends only the calling task (C301). The current implementation blocks the
   OS thread (`ffi.os_sleep_ns`, `stdlib/core/src/time.hz`) and is rewritten.
 * Haze has no way to sleep the OS thread. The blocking primitive in hzstd (`os_sleep_ns`,
-  `hzstd_platform.h`) is renamed so its name says it blocks the whole OS thread, and it is never
+  `hzstd_platform.h`) is renamed to `hzstd_os_thread_block_ns`, stays C-only and is never
   reachable as an ordinary sleep.
 
 **Locks and containers**
-* `mutex.lock(() => { ... })`: the only way to hold a lock (C178); reentrant per task (C184);
+* `sys.Mutex`; `mutex.lock(() => { ... })`: the only way to hold a lock (C178); reentrant per task (C184);
   poisoned after a kill or a panic inside the region (C560).
 * Atomic containers: the plain container's operations, each atomic (C192), plus
   `x.lock(() => { ... })` to hold the lock across several of them (C180, C182). Containers are never
   closed: a waiter waits until an element arrives or the pending waiters are released, which can
-  happen any number of times (C260). `popFrontOrWait()` (from the user's example program) and a
-  release call, name [Open]; a released waiter returns without an element.
+  happen any number of times (C260). `popFrontOrWait()` returns the element or nothing (an
+  optional, so a released waiter cannot ignore that it got none, C419);
+  `container.releaseWaiters()` releases every pending waiter.
 * Declarations: `atomic` structs and arrays (C170, C189), `unsafe` members (C172), `private` members
   (C174), atomic primitives (C599). Readonly members are wanted (C552) but how is open (C554).
 * Crossable types: a type, closure types included, can be declared crossable and then fails to
   compile unless it passes the crossing rule (C591 to C594); this is how APIs that store closures and
-  run them on another thread (pools, job queues) are typed. The keyword is [Open] (C595). A future
-  crosses only if its value can (C600).
-* Unsafe crossable: a wrapper around a C handle that is thread safe by itself (wgpu objects) is
-  declared crossable unsafely; its author promises the thread safety (C171). Section 11.2 relies
-  on it.
+  run them on another thread (pools, job queues) are typed. The keyword is `crossthread` (user,
+  2026-11-17, may still change; a bare `crossable` was rejected as ambiguous, it must name
+  threads). A future crosses only if its value can (C600).
+* Unsafe form: `unsafe crossthread`. A wrapper around a C handle that is thread safe by itself (wgpu
+  objects) is declared crossable unsafely; its author promises the thread safety (C171). Section
+  11.2 relies on it.
 
 **Globals**
 * `let` / `const` at module level: once per thread (C196).
@@ -158,6 +171,8 @@ only where noted.
   from outside (C585 to C587).
 * `sys.abort()`: ends at once, cleanup left to the OS (C547, C574).
 * Uncaught failure: stack trace, cleanup of every thread, exit status 255 (C227, C521).
+* Once a graceful exit has started, its status is final: a later uncaught panic (for example on a
+  lock poisoned by a killed task) is printed but changes nothing.
 * `sys.noSuspend(() => { ... })`: suspending inside panics (C538). Used by computeds (C539),
   cleanup (C557) and global initializers (C571).
 * **[Open]** The cleanup registration API (C546). The user rejects a closure-per-handler API,
@@ -197,6 +212,14 @@ without a copy may exist.
   at the front of that thread's ready tasks (C441, C549). The OS signal is received once by a hidden
   thread (C577). Until any thread registers a Ctrl+C handler, Ctrl+C ends the process gracefully;
   once one does, only the registered threads get it (C573).
+* Only signals a program can register are routed through the hidden thread (Ctrl+C, SIGTERM and
+  the like): those are blocked in every Haze thread. The runtime's own signals stay with their
+  threads and are never blocked or rerouted: the GC's stop-the-world signals, the stall watchdog's
+  signal, SIGSEGV and SIGFPE for panics, and libuv's SIGCHLD.
+
+**Windows** (accepted, user 2026-11-17): while a window is dragged or resized, Windows runs its own
+message loop and the whole main thread, every task on it included, stalls. That is how SDL and
+Windows work; fixing it would mean rewriting SDL's Win32 integration. Expected behaviour.
 
 **Not public in the first implementation:** asking another thread to run a function (C513, C565;
 used internally; user access open, C516), deadlines (C246, C578), logging to the parent thread
@@ -235,7 +258,17 @@ used internally; user access open, C516), deadlines (C246, C578), logging to the
 * `context` lowers to `*__hz_ctx`, an lvalue over the caller's struct (`src/Lower/Lower.ts` ~1608),
   which matches C567.
 
-**[Open] Per-task globals in the context.** User direction (2026-10-20):
+**[Open] Task-local storage.** Task-local storage is an hzstd mechanism: the runtime's own per-task
+state (reactive tracking and the rest of section 7) lives in it, and the `tasklocal` globals of
+Haze code are only one user of it (user, 2026-11-17). The open problem: a program consists of many
+libraries and modules, compiled with slightly different compilers, each with task-local variables
+the others do not know about; a call that goes into a library and back out must still reach its
+own task-local variables, although they do not exist in the library the context passed through.
+The user's idea: indices plus per-thread tables; believed possible, not solved yet. How a new task
+initializes each slot (C285 copies the parent's values; runtime state such as the active reactive
+watcher must not be inherited) belongs to the same design.
+
+User direction (2026-10-20):
 * Per-task globals live behind the context's runtime data, a fixed C type usable everywhere; task
   memory is reached through cast pointers.
 * Likely shape: a data pointer in the runtime data (today's `dummy`), plus a **process-unique
@@ -443,9 +476,15 @@ what follows is the brief's intent.
   point into them). No stack copying, no growable stacks.
 * A per-thread pool instead of an mmap per task; capped and trimmed, because munmap is expensive in
   multithreaded processes.
-* **[Open]** default sizes. Proposed: reserve 8 MiB (like Linux's main thread, so "works on a thread"
-  means "works in a task"), 64 KiB guard. Overridable per spawn (decided, section 2). Pages commit on first touch; a
-  typical I/O task touches 2-3 pages.
+* Default sizes (decided 2026-11-17): reserve 8 MiB (like Linux's main thread, so "works on a
+  thread" means "works in a task"), 64 KiB guard. Overridable per spawn (section 2). Pages commit on
+  first touch; a typical I/O task touches 2-3 pages.
+* **Keep open (user, 2026-11-17, not for now, not in Axiom yet):** stacks built on virtual memory
+  with a large reserved range (possibly well beyond 8 MiB) and only a small, configurable part
+  committed up front; running into the committed end faults in more, up to the reserved end, where
+  it panics with a stack overflow. That makes thousands of mostly idle tasks cheap. A spawn option
+  would commit the whole stack up front instead (faster, no faults, more memory). Nothing built now
+  may rule this out.
 * Linux: `MAP_STACK` and `MADV_NOHUGEPAGE` (with THP "always", every touched stack could become a
   2 MiB page). Windows: a no-access bottom plus a `PAGE_GUARD` growth page, like a native thread.
 * Compile generated C with `-fstack-clash-protection`, so no frame can jump over the guard.
@@ -566,8 +605,10 @@ warning: a task ran 14 ms without yielding (thread: main), so nothing else on th
            <stack trace>
 ```
 
-**Cheap yield**: the watchdog sets `s->yield_requested` once a task has run a quantum while other
-work is ready; `sys.yield()` is `if (s->yield_requested) slow_yield();`, cheap enough for hot loops.
+**Yielding**: `sys.yield()` always goes back to the event loop (C243); when nothing else is ready
+the loop may resume the same task at once. `sys.yieldAfter` is a separate mechanism: the watchdog's
+per-thread "running since" stamp lets it skip the switch entirely until the duration has passed
+(section 2).
 
 ---
 
@@ -645,10 +686,8 @@ Verified 2026-10-18 in the wgpu-core/wgpu-hal sources of 27.0.3/27.0.4 (Haze's w
 * The cleanup registration API, with close to zero heap allocations per handler (section 2).
 * Per-task globals in the context and across modules (section 3).
 * Vsync and frame presentation (section 11, C544).
-* Default stack and guard sizes, pool caps (section 7).
+* Stack pool caps (section 7).
 * The exact `Future<T>` API beyond section 2.
-* The new name of hzstd's blocking `os_sleep_ns`, of `sys.yieldAfter`, the run-time query and the
-  waiter release (section 2); the crossable keyword (C595).
 
 ---
 
