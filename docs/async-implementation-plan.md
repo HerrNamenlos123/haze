@@ -15,8 +15,12 @@ switching library (`stdlib/core/src/fiber/`) and the old form of the hidden cont
 * Every claim ID cited here must be read in Axiom before its stage starts. When a claim, the
   contract and the code disagree, Axiom wins; report the disagreement.
 * Every public API documents its intended use in its doc string (contract section 2).
-* Anything marked [Open] in the contract (the cleanup API, per-task globals across modules) is
-  decided by the user. Ask; never pick one silently.
+* Implementation questions, including those marked [Open] in the contract, are decided by the
+  implementer, the right way and not the quick way, and every such decision is written into
+  `docs/async-decisions.md` (what, why, alternatives) for the user to review afterwards (user,
+  2026-11-17: "rather complain afterwards than design into the void"). Only a question that
+  would change a claim in Axiom is not decided alone: build around it as far as possible and list
+  it there as blocked. Not built at all: the public cleanup and resource API.
 * Trace the existing code yourself before changing it: names, comments and agent notes are
   hypotheses until the code confirms them. `docs/agent-notes/` holds traps that matter here (fiber
   library, recovery frames, hzstd scratch C strings, render gate, never freeze, zero allocation per
@@ -28,8 +32,7 @@ switching library (`stdlib/core/src/fiber/`) and the old form of the hidden cont
 * Ignore `stdlib/single_instance`: it runs Haze code on its own OS thread, which the design forbids
   (C506). It is rewritten once threads and tasks exist; do not migrate or fix it in any stage.
 * No fallbacks, no casts to escape the type system; invariants are asserted and fail loud.
-* Linux and Windows both pass every stage. Tests stay fast: the default suite well under a minute;
-  stress runs are separate scripts.
+* Tests stay fast: the default suite well under a minute; stress runs are separate scripts.
 
 Test entry points: compiler cases in `testsuite/src/cases_*.hz` via `scripts/run-tests.sh`; stdlib
 path tests via `scripts/run-stdlib-path-tests.sh`; the fiber library's own tests in
@@ -37,15 +40,21 @@ path tests via `scripts/run-stdlib-path-tests.sh`; the fiber library's own tests
 
 ## How the work runs (user, 2026-11-17)
 
-* On Linux (most suites, the fiber library's AArch64 runs under qemu); Windows is verified at the
-  end of every stage. On the Windows laptop, Bitdefender
-  quarantines Haze-built executables unless the user has set an exception for the repo folder.
-* Stages 0 and 1 run first, in order, by one agent. Then two lanes in parallel, each in its own git
-  worktree: A, the runtime (stages 2, 3, 4); B, the compiler side of stage 5 (crossing check,
-  atomic and crossable types, global storage classes). Then together: the runtime part of stage 5,
-  and stage 6. One overseer reviews, merges and brings the user's decisions back to the lanes.
-* Review points with the user: after stage 0, after stage 1, after stage 3, and at the end; each with
-  results the user can try.
+* On a branch (`async-runtime`), on Linux. Windows is verified later, once the core works; on the
+  Windows laptop, Bitdefender quarantines Haze-built executables unless the user has set an
+  exception for the repo folder.
+* **Scope: the core first.** The compiler, hzstd and stdlib/core must work, with a few newly
+  written demo programs (in `examples/async/`, each built and run by a script) that show tasks,
+  threads, futures, locks and a work queue spreading work over all cores. Existing apps and
+  libraries outside stdlib/core (wgpu, SDL, ui_*, haze-notes, quick-todo, ...) do not have to
+  compile on the branch yet; the user decides how to migrate them, wgpu first, once the core
+  exists. Keep a list of what no longer compiles in `docs/async-decisions.md`.
+* Order: stages 0 and 1 in order; the task-local storage design (contract section 3) right after
+  stage 1, before anything that needs per-task state; then stages 2 to 5, and the parts of stage 6
+  that stdlib/core needs. Parallel lanes in separate worktrees are allowed once stage 1 is merged
+  (A: runtime stages 2 to 4; B: the compiler side of stage 5).
+* Commit each stage on the branch only when its tests are green; never leave a half-done stage as
+  the branch head. Stopping between stages is always fine; stopping inside one is not.
 * Stage 0 fixes existing bugs from the user's issue ledger (captures, const); the user's go for
   this plan covers them.
 
@@ -80,14 +89,18 @@ Contract section 3. Claims C209, C390 to C406, C468 to C477, C500 to C510, C567 
   `Context.init` is removed; hzstd offers creating a default context from C (C504), which panics on
   a thread Haze does not manage (C505).
 * `sys.threadId()`, `sys.contextPtr()` (C477, C509).
-* Migrate every C to Haze entry in the stdlib (listed in
-  `docs/agent-notes/hidden-context-implemented.md`: the reactive thunks, the ui_layout `hzui_*`
-  entries, SDL dispatch, wgpu userdata; not single_instance, see the rules above).
+* The settings are stubs for now (user: mostly stubs, take what can be had): the existing
+  `Allocator` (stdlib/core/src/memory.hz), a minimal logger type and the two optional user boxes,
+  each with a stdlib default. Routing every allocation and every log line through the context
+  (C490, C581) is not part of this plan.
+* Migrate the C to Haze entries in stdlib/core (the reactive thunks). The others listed in
+  `docs/agent-notes/hidden-context-implemented.md` (ui_layout, SDL, wgpu, single_instance) wait for
+  the user's migration decision.
 
 Done: `Context.init` appears nowhere in the repo; the context test cases
 (`testsuite/src/cases_context*.hz`, `cases_extern_c_function_types.hz`) express the new rules,
-including C567 (assignment reaches the caller) and C397 (`context.clone` scopes a change); all
-stdlib path tests pass; DEVELOPMENT.md "The hidden context" and the agent note describe the new
+including C567 (assignment reaches the caller) and C397 (`context.clone` scopes a change); the
+compiler suite passes; DEVELOPMENT.md "The hidden context" and the agent note describe the new
 code.
 
 ## Stage 2: state that follows the call stack moves onto the task
@@ -155,9 +168,8 @@ C584, C591 to C604.
 * `atomic` structs, arrays and primitives; `unsafe` members; crossable declarations (`crossthread`),
   including the unsafe form (`unsafe crossthread`) for wrappers of thread-safe C handles such as wgpu objects.
 * Global storage classes: per thread by default, `tasklocal`, `global`; no platform TLS cost per
-  access (C207, C208). Where per-task and per-process globals live across modules is open (contract
-  section 3, hot reload's modules make it tricky): write a short design note at the start of this
-  stage and get the user's decision before building it.
+  access (C207, C208). Task-local storage itself is designed and built right after stage 1
+  (contract section 3).
 * Cross-thread wake-ups for futures (contract section 5.1, inbox plus `uv_async_t`).
 * Allocation: static vs growing allocations with arenas (C579 to C584).
 
@@ -180,8 +192,9 @@ Claims C260, C299, C378, C380, C381, C439 to C441, C506, C507, C527, C531, C549,
   `stdlib/core/src/hzstd/src/hzstd_platform_linux.c` ~905, with its comment); `sys.onSignal`, per thread; Ctrl+C ends the
   process gracefully until a handler is registered (C573).
 
-Done: haze-notes and quick-todo run on Linux and Windows with no frame that allocates when idle and
-no freeze (agent notes "never freeze" and "zero allocation per frame"); a test per signal rule.
+Done: the demo programs run on Linux; a test per signal rule (Ctrl+C with and without handlers,
+from a program with extra C threads). Migrating haze-notes, quick-todo and the GPU libraries comes
+after the user's decision.
 
 ## Not in this plan
 

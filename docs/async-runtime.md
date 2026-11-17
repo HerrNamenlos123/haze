@@ -135,7 +135,9 @@ only where noted.
 **Locks and containers**
 * `sys.Mutex`; `mutex.lock(() => { ... })`: the only way to hold a lock (C178); reentrant per task (C184);
   poisoned after a kill or a panic inside the region (C560).
-* Atomic containers: the plain container's operations, each atomic (C192), plus
+* Atomic containers: the plain container's operations, each atomic (C192); nothing ever hands out
+  a reference into the storage, an element update such as `arr[i].x += 1` is one atomic
+  operation, and iterating makes each element access atomic on its own (user, 2026-11-17); plus
   `x.lock(() => { ... })` to hold the lock across several of them (C180, C182). Containers are never
   closed: a waiter waits until an element arrives or the pending waiters are released, which can
   happen any number of times (C260). `popFrontOrWait()` returns the element or nothing (an
@@ -213,7 +215,12 @@ without a copy may exist.
   thread (C577). Until any thread registers a Ctrl+C handler, Ctrl+C ends the process gracefully;
   once one does, only the registered threads get it (C573).
 * Only signals a program can register are routed through the hidden thread (Ctrl+C, SIGTERM and
-  the like): those are blocked in every Haze thread. The runtime's own signals stay with their
+  the like). They must be blocked in every thread of the process, not only in Haze threads: the
+  mask is set in the generated `main` before `hzstd_initialize`, so every thread created later (GC
+  markers, libuv's pool, SDL's and other C libraries' threads) inherits it; otherwise the OS hands
+  Ctrl+C to an unblocked thread and the default action ends the process without cleanup. SDL
+  installs its own SIGINT/SIGTERM handlers unless `SDL_HINT_NO_SIGNAL_HANDLERS` is set (general
+  knowledge, verify in SDL's source); they must be switched off. The runtime's own signals stay with their
   threads and are never blocked or rerouted: the GC's stop-the-world signals, the stall watchdog's
   signal, SIGSEGV and SIGFPE for panics, and libuv's SIGCHLD.
 
@@ -266,7 +273,13 @@ the others do not know about; a call that goes into a library and back out must 
 own task-local variables, although they do not exist in the library the context passed through.
 The user's idea: indices plus per-thread tables; believed possible, not solved yet. How a new task
 initializes each slot (C285 copies the parent's values; runtime state such as the active reactive
-watcher must not be inherited) belongs to the same design.
+watcher must not be inherited) belongs to the same design. The implementer designs and builds it
+right after stage 1 and reports the design afterwards (user, 2026-11-17).
+
+**Per-thread globals** start from their initial values on every new thread (C518). Initializers
+are C constant expressions today (`src/Semantic/Elaborate.ts` ~14829), so a new thread copies a
+constant image: no initializer code runs and no access is checked. Revisit when C570 allows
+initializers to call functions.
 
 User direction (2026-10-20):
 * Per-task globals live behind the context's runtime data, a fixed C type usable everywhere; task
@@ -406,7 +419,8 @@ message (spawn this, this task is ready because the future it joined was complet
 
 Every event is its own task (C378). The windowing library insists on its own blocking wait, so the
 main thread must wait for window events and task wake-ups at once. User direction (2026-10-20): the
-windowing library is adapted until it complies; otherwise a background helper thread.
+windowing library is adapted until it complies; otherwise a background helper thread. [Open]:
+which one, decided by the implementer after prototyping both (on Linux first).
 
 The helper variant (Electron's embed-thread pattern): a helper waits on the loop's backend (Linux:
 poll the `uv_backend_fd` epoll fd; Windows: `GetQueuedCompletionStatus` on the loop's IOCP, then
@@ -684,7 +698,8 @@ Verified 2026-10-18 in the wgpu-core/wgpu-hal sources of 27.0.3/27.0.4 (Haze's w
 ## 12. Open implementation questions
 
 * The cleanup registration API, with close to zero heap allocations per handler (section 2).
-* Per-task globals in the context and across modules (section 3).
+* Task-local storage across libraries and modules (section 3); designed by the implementer.
+* The main thread's combined wait (section 5.2).
 * Vsync and frame presentation (section 11, C544).
 * Stack pool caps (section 7).
 * The exact `Future<T>` API beyond section 2.
