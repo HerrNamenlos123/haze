@@ -2383,9 +2383,19 @@ ref struct Parser {
             this.accept(TK.Semi);
             return;
         }
+        // `tasklocal` / `global` sit between the modifiers and `let` / `const`.
+        let storage = "thread";
+        if this.at(TK.Tasklocal) || this.at(TK.Global) {
+            if this.at(TK.Tasklocal) { storage = "task"; } else { storage = "process"; }
+            this.advance();
+            if !this.at(TK.Let) && !this.at(TK.Const) {
+                this.errorAt(this.cur(), f"expected 'let' or 'const' after '{storage}' storage keyword, found {tokenName(this.kind())}");
+                return;
+            }
+        }
         if this.at(TK.Let) || this.at(TK.Const) {
             this.declElement();
-            this.globalVariable(declStart, isExport, mods);
+            this.globalVariable(declStart, isExport, mods, storage);
             return;
         }
 
@@ -2685,7 +2695,7 @@ ref struct Parser {
     }
 
     // globalVariableDef
-    mut fn globalVariable(start: Token, isExport: bool, mods: Modifiers): void :: final {
+    mut fn globalVariable(start: Token, isExport: bool, mods: Modifiers, storage: str): void :: final {
         let mutability = this.variableMutability();
         let isStackref = this.accept(TK.Stackref);
         let isComptime = this.accept(TK.Comptime);
@@ -2696,6 +2706,7 @@ ref struct Parser {
         this.w.keyBool("comptime", isComptime);
         this.w.keyBool("pub", mods.isPub);
         this.w.keyInt("extern", mods.externLang);
+        this.w.keyString("storage", storage);
         this.w.keyInt("mutability", mutability);
         this.w.keyString("name", this.text(nameTok));
         if this.accept(TK.Colon) {
@@ -2819,6 +2830,7 @@ ref struct Parser {
         this.w.keyString("name", name);
         this.w.keyBool("noemit", mods.isNoemit);
         this.w.keyBool("static", mods.isStatic);
+        this.w.keyBool("private", mods.isPrivate);
         let ellipsis = this.paramList(false);
         this.expect(TK.RParen);
         this.w.keyBool("ellipsis", ellipsis);
@@ -3020,14 +3032,17 @@ ref struct Parser {
             return;
         }
 
-        // Methods: [static] [mut|const|ref|stackref] fn name(...)
+        // Methods: [private] [static] [mut|const|ref|stackref] fn name(...)
         let mods = Modifiers {};
+        mods.isPrivate = this.accept(TK.Private);
         mods.isStatic = this.accept(TK.Static);
 
         // Method modifiers in any order before `fn`:
         //   EDatatypeMutability: Default=1 Mut=2 Const=3; null when unspecified.
         //   EStorageClass: Ref=2 Stackref=3; null when unspecified (`ref fn` / `stackref fn`).
-        while this.at(TK.Mut) || this.at(TK.Const) || this.at(TK.Ref) || this.at(TK.Stackref) {
+        // Only when `fn` follows them: `const x: int` is a data member, whose
+        // `const` is its mutability, not a method modifier.
+        while this.methodModifierBeforeFn() {
             let k = this.kind();
             this.advance();
             if k == TK.Mut { mods.methodMutability = 2; }
@@ -3050,7 +3065,7 @@ ref struct Parser {
             return;
         }
 
-        // Otherwise a data member: [let|const] name?: T (= expr)? ;
+        // Otherwise a data member: [private] [let|const] name?: T (= expr)? ;
         // The span starts at the `[[...]]` annotation when there is one, since
         // it is part of the same structContent rule.
         let start = declStart;
@@ -3085,6 +3100,7 @@ ref struct Parser {
         this.memberSeparator();
 
         this.w.keyBool("optional", isOptional);
+        this.w.keyBool("private", mods.isPrivate);
         this.w.keyInt("mutability", mutability);
         this.writeAnnotations(annotationsAt);
         this.locHere(start);
@@ -3131,6 +3147,7 @@ ref struct Parser {
             if this.accept(TK.Equals) { this.expr(); }
             else { this.w.nullValue(); }
             this.w.keyBool("optional", isOptional);
+            this.w.keyBool("private", false);
             // EVariableMutability.Default
             this.w.keyInt("mutability", 3);
             this.w.key("annotations");
@@ -3146,6 +3163,23 @@ ref struct Parser {
         this.w.endArray();
         this.locHere(start);
         this.w.end();
+    }
+
+    // At a method modifier (`mut`, `const`, `ref`, `stackref`) that belongs to
+    // a method: the run of modifiers from here ends at `fn`.
+    fn methodModifierBeforeFn(): bool {
+        let i = this.pos;
+        let limit = this.toks.length;
+        while i < limit {
+            let k = this.toks[i].kind;
+            if k == TK.Fn { return i > this.pos; }
+            if k == TK.Mut || k == TK.Const || k == TK.Ref || k == TK.Stackref {
+                i++;
+                continue;
+            }
+            return false;
+        }
+        return false;
     }
 
     // Look past modifiers to see whether a struct/enum keyword follows.
@@ -3238,6 +3272,7 @@ export struct Modifiers {
     refByDefault: bool = false;
     isNocopy: bool = false;
     isStatic: bool = false;
+    isPrivate: bool = false;
     methodMutability: int = 0;   // 0 = unspecified, else EDatatypeMutability
     methodReceiverStorage: int = 0;   // 0 = unspecified, else EStorageClass (Ref=2, Stackref=3)
 }

@@ -37,7 +37,7 @@ struct Inner {
 }
 
 struct Cache {
-    list: []str = [];
+    list: mut []str = [];
     n: int = 0;
     inner: Inner = {};
 }
@@ -76,7 +76,7 @@ fn main(): int {
     let count = rx.computed((): int => list.length);
     // Reads `n` through `cache.data` every time, so a reload -- which is the
     // only other thing that could write to it -- shows up here.
-    let reads: ref Box<int> = { value: 0 };
+    let reads: mut ref Box<int> = { value: 0 };
     let n = rx.computed((): int => {
         reads.value = reads.value + 1;
         return cache.data.n;
@@ -155,7 +155,7 @@ untouched: true
             """
 struct Inner {
     k: int = 0;
-    tags: []str = [];
+    tags: mut []str = [];
 }
 
 enum Mode { A, B }
@@ -163,7 +163,7 @@ enum Mode { A, B }
 struct State {
     name: str = "";
     count: int = 0;
-    items: []int = [];
+    items: mut []int = [];
     inner: Inner = {};
     maybe: str | none = none;
     mode: Mode = Mode.A;
@@ -181,7 +181,7 @@ fn main(): int {
     let maybe = state.maybe;
     let mode = state.mode;
 
-    let nameRuns: ref Box<int> = { value: 0 };
+    let nameRuns: mut ref Box<int> = { value: 0 };
     let nameNow = rx.computed((): str => {
         nameRuns.value = nameRuns.value + 1;
         return name;

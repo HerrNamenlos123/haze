@@ -33,7 +33,7 @@ export namespace array {
     // different type needs no annotation: `nums.map((v: int) => f"n{v}")` is
     // a []str.
     export fn map<T, U>(items: []T, f: immediate (value: T) => U): []U {
-        let result: []U = [];
+        let result: mut []U = [];
         result.reserve(items.length);
         for item in items {
             result.push(f(item));
@@ -43,7 +43,7 @@ export namespace array {
 
     // The elements the predicate accepts, in order.
     export fn filter<T>(items: []T, predicate: immediate (value: T) => bool): []T {
-        let result: []T = [];
+        let result: mut []T = [];
         for item in items {
             if predicate(item) {
                 result.push(item);
@@ -59,17 +59,17 @@ export namespace array {
     //
     // A bottom-up merge sort, O(n log n) comparisons, with one scratch array
     // of n elements.
-    export fn sort<T>(items: []T, compare: immediate (a: T, b: T) => int) {
+    export fn sort<T>(items: mut []T, compare: immediate (a: T, b: T) => int) {
         let count = items.length;
         if count < 2 {
             return;
         }
-        let source: []T = [];
+        let source: mut []T = [];
         source.reserve(count);
         for item in items {
             source.push(item);
         }
-        let target: []T = [];
+        let target: mut []T = [];
         target.reserve(count);
         let width = 1;
         while width < count {
@@ -122,26 +122,25 @@ export namespace array {
     // lets one generic function stand in for the per-element-type function the
     // compiler used to synthesize.
     //
-    // The array is taken as `[]T` rather than `mut []T` on purpose -- `mut`
-    // here would reject `let xs: []int = []; xs.push(1)`, which the compiler
-    // built-in has always accepted.
+    // The array is `mut []T`: pushing changes its data, which only a `mut`
+    // reference can (Axiom C601, C602). `let xs: mut []int = []; xs.push(1)`.
     //
     // The element is `NoInfer<T>` so that T comes from the array alone. With a
     // plain `T` there, pushing a value that merely converts to the element type
     // (a union variant, an integer literal) would deduce the argument's own
     // type and then fail to match the array.
-    export fn push<T>(items: []T, element: NoInfer<T>) {
+    export fn push<T>(items: mut []T, element: NoInfer<T>) {
         __c__(f"HZSTD_ARRAY_PUSH(items, {T.mangledName}, element);");
     }
 
     // Grow the backing buffer so that `capacity` elements fit without
     // reallocating. Never shrinks, never changes length.
-    export fn reserve<T>(items: []T, capacity: int) {
+    export fn reserve<T>(items: mut []T, capacity: int) {
         __c__("hzstd_dynamic_array_reserve(items, capacity);");
     }
 
     // Drop every element. Keeps the buffer, so refilling does not reallocate.
-    export fn clear<T>(items: []T) {
+    export fn clear<T>(items: mut []T) {
         __c__("hzstd_dynamic_array_clear(items);");
     }
 }

@@ -64,7 +64,7 @@ fn main(): int {
 
     // A loop's `while let` binding as the value, and a computed that sees
     // every write.
-    let runs: ref Box<int> = { value: 0 };
+    let runs: mut ref Box<int> = { value: 0 };
     let c = rx.computed(() => {
         runs.value = runs.value + 1;
         return rx.get(h.p);

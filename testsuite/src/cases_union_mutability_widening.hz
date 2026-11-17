@@ -46,7 +46,7 @@ fn readOptional(item: Item | none): int {
 fn main(): int {
     let a: mut A = A { x: 3 };
     let b: mut B = B { y: 4 };
-    let list: []mut Item = [];
+    let list: mut []mut Item = [];
     list.push(a);
     list.push(b);
     let total = 0;

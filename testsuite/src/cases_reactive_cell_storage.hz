@@ -88,7 +88,7 @@ fn main(): int {
     assert(inArray(arr), "array version and element cells hold their values inline");
 
     // Reads, writes and tracking behave as before, for every kind of value.
-    let runs: ref Box<int> = { value: 0 };
+    let runs: mut ref Box<int> = { value: 0 };
     let sum = rx.computed(() => {
         runs.value = runs.value + 1;
         let extra = 0;

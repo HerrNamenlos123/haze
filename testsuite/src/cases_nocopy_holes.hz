@@ -50,7 +50,7 @@ fn main(): int {
     let u: W | none = W { n: 1 };
     let t = takeU(W { n: 2 });
     let m = maybe(3);
-    let h: ref H = {};
+    let h: mut ref H = {};
     h.u = W { n: 4 };
     let nothing = none;
     let empty: W | none = nothing;
@@ -87,7 +87,7 @@ fn main(): int {
     let refs: []ref W = [q1, q2];
     let sum = 0;
     for r in refs { sum += r.n; }
-    let vals: []W = [W { n: 3 }, W { n: 4 }];
+    let vals: mut []W = [W { n: 3 }, W { n: 4 }];
     for (let i = 0; i < vals.length; i++) {
         vals[i].bump();
         sum += vals[i].n;
@@ -106,7 +106,7 @@ fn main(): int {
     fmt.println(f"6: {d.n} {d2.n}");
 
     // 7. A ref or stackref stored into a value variant is a copy (§6.2).
-    let rp: ref P = { n: 1 };
+    let rp: mut ref P = { n: 1 };
     let up: P | none = rp;
     rp.n = 2;
     let stackref sp = P { n: 10 };
@@ -143,7 +143,7 @@ fn main(): int {
             """
 struct P { n: int; }
 struct HoldsRefs { items: [2]mut ref P; }   // references seen before values
-struct HoldsVals { items: []P; }            // values seen before references
+struct HoldsVals { items: mut []P; }            // values seen before references
 fn main(): int {
     let r1: mut ref P = { n: 1 };
     let r2: mut ref P = { n: 2 };
@@ -231,8 +231,8 @@ fn main(): int {
 nocopy struct W { n: int; }
 ref struct H { u: W | none = none; }
 fn main(): int {
-    let h1: ref H = {};
-    let h2: ref H = {};
+    let h1: mut ref H = {};
+    let h2: mut ref H = {};
     h2.u = W { n: 1 };
     h1.u = h2.u;
     return 0;

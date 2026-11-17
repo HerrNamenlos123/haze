@@ -116,15 +116,15 @@ namespace ChromeTrace {
         id: int;
         callFrame: CpuProfileCallFrame;
         hitCount: int;
-        children: []int;
+        children: mut []int;
     }
 
     export ref struct CpuProfile {
         nodes: []CpuProfileNode;
         startTime: real;
         endTime: real;
-        samples: []int;
-        timeDeltas: []int;
+        samples: mut []int;
+        timeDeltas: mut []int;
     }
 
     // V8's inspector protocol uses 0-indexed line/column numbers; FrameRef's
@@ -272,7 +272,7 @@ namespace ChromeTrace {
         // into the owning node's `children` array (see findOrCreateChild),
         // the same "index + 1" convention `children` itself already uses
         // for node ids so 0 can mean "absent".
-        buckets: []int = [];
+        buckets: mut []int = [];
         count: int = 0;
 
         fn constructor() {
@@ -306,22 +306,22 @@ namespace ChromeTrace {
     // preemption" can add a real visible idle marker for the voluntary case
     // without changing this default.)
     export ref struct CpuProfileBuilder {
-        nodes: []CpuProfileNode = [];
+        nodes: mut []mut CpuProfileNode = [];
         // parallel to `nodes`: the FrameRef that identifies each node, used for dedup lookups --
         // two children are the same node iff their FrameRefs are `==` (see findOrCreateChild).
-        nodeFrameRefs: []FrameRef = [];
+        nodeFrameRefs: mut []FrameRef = [];
         // parallel to `nodes`: each node's own hash (hashFrameRef of nodeFrameRefs[i]), computed
         // once at insert time. ChildTable's rehash path (insertChild) reseats existing children
         // using THIS, never by recomputing a hash from nodeFrameRefs[...] on the fly -- not
         // because it'd be wrong to recompute (hashFrameRef is a pure function of the FrameRef),
         // just to avoid redoing that work for every child on every rehash.
-        nodeHashes: []int = [];
+        nodeHashes: mut []int = [];
         // parallel to `nodes`: childTables[p] indexes nodes[p].children by
         // FrameRef, so findOrCreateChild doesn't have to rescan every
         // existing child on every call (see ChildTable above).
-        childTables: []ChildTable = [];
-        samples: []int = [];
-        timeDeltas: []int = [];
+        childTables: mut []mut ChildTable = [];
+        samples: mut []int = [];
+        timeDeltas: mut []int = [];
         startTimeUs: real = 0.0;
         // Where the profile's timeline stands AS A CONSUMER WILL RECONSTRUCT IT:
         // startTimeUs plus the sum of every timeDelta emitted so far. Deliberately not
@@ -388,7 +388,7 @@ namespace ChromeTrace {
             if (table.count + 1) * 10 >= table.buckets.length * 7 {
                 let oldBuckets = table.buckets;
                 let newCapacity = table.buckets.length * 2;
-                let newBuckets: []int = [];
+                let newBuckets: mut []int = [];
                 newBuckets.reserve(newCapacity);
                 for (let i = 0; i < newCapacity; i++) {
                     newBuckets.push(0);
@@ -411,7 +411,7 @@ namespace ChromeTrace {
         // Bucket-array insert shared by insertChild's fresh-key path and
         // its rehash path. `bucketValue` is already in the "+1" encoding
         // (0 means empty).
-        fn probeInsert(table: ChildTable, hash: int, bucketValue: int): void {
+        fn probeInsert(table: mut ChildTable, hash: int, bucketValue: int): void {
             let capacity = table.buckets.length;
             let slot = hash % capacity;
             while table.buckets[slot] != 0 {
@@ -713,7 +713,7 @@ namespace ChromeTrace {
 
     export struct TraceCpuProfileChunk {
         nodes?: []TraceProfileNode;
-        samples: []int;
+        samples: mut []int;
     }
 
     export struct TraceEventProfileChunk {
@@ -728,7 +728,7 @@ namespace ChromeTrace {
         struct Args {
             struct Data {
                 cpuProfile: TraceCpuProfileChunk;
-                timeDeltas: []int;
+                timeDeltas: mut []int;
                 source: str = "Internal";
             }
             data: Data;
@@ -850,7 +850,7 @@ namespace ChromeTrace {
     // rather than requiring these ids to be renumbered.
     export ref struct TraceBuilder {
         pid: int;
-        events: []TraceEvent = [];
+        events: mut []TraceEvent = [];
         nextProfileId: int = 1;
 
         fn constructor(pid: int = 1) {
@@ -962,7 +962,7 @@ namespace ChromeTrace {
                 });
                 return;
             }
-            let callFrames: []TraceMarkerCallFrame = [];
+            let callFrames: mut []TraceMarkerCallFrame = [];
             // Same reasoning as frameRefsForStacktrace (profiling.hz): this is called once per
             // memory-allocation capture, so an unpresized array here regrows from scratch on
             // every single call at exactly the call volume where that becomes very expensive.
@@ -1010,7 +1010,7 @@ namespace ChromeTrace {
     const chunkSampleCount = 100;
 
     fn buildProfileChunks(profile: CpuProfile, pid: int, tid: int, id: str, taskTs: real): []TraceEventProfileChunk {
-        let traceNodes: []TraceProfileNode = [];
+        let traceNodes: mut []mut TraceProfileNode = [];
         for (let i = 0; i < profile.nodes.length; i++) {
             let node = profile.nodes[i];
             traceNodes.push(TraceProfileNode {
@@ -1037,7 +1037,7 @@ namespace ChromeTrace {
             }
         }
 
-        let chunks: []TraceEventProfileChunk = [];
+        let chunks: mut []TraceEventProfileChunk = [];
         let offset = 0;
         // Anchored at taskTs, with every sample's timing preserved relative to
         // that. The deltas are emitted exactly as built: CpuProfileBuilder already
@@ -1054,8 +1054,8 @@ namespace ChromeTrace {
         let chunkTs = taskTs;
         while offset < profile.samples.length {
             let count = profile.samples.length - offset < chunkSampleCount ? profile.samples.length - offset : chunkSampleCount;
-            let chunkSamples: []int = [];
-            let chunkDeltas: []int = [];
+            let chunkSamples: mut []int = [];
+            let chunkDeltas: mut []int = [];
             for (let i = offset; i < offset + count; i++) {
                 chunkSamples.push(profile.samples[i]);
                 chunkDeltas.push(profile.timeDeltas[i]);
@@ -1065,7 +1065,7 @@ namespace ChromeTrace {
                 pid: pid, tid: tid, ts: chunkTs, id: id,
                 args: {
                     data: {
-                        cpuProfile: { nodes: offset == 0 ? traceNodes : none, samples: chunkSamples },
+                        cpuProfile: { nodes: offset == 0 ? traceNodes as []TraceProfileNode : none, samples: chunkSamples },
                         timeDeltas: chunkDeltas,
                     },
                 },

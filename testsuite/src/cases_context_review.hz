@@ -90,7 +90,7 @@ fn tReactive(t: mut Checks) {
     let sync: rx.WatchOptions = { scheduler: (job: rx.WatchJob): none => { job.run(); } };
 
     let r = rx.reactive<int>(1);
-    let seen: ref Box<int> = { value: -1 };
+    let seen: mut ref Box<int> = { value: -1 };
     let h1 = context.clone(() => {
         setDummy(40);
         return rx.watch(() => r, (v, old) => { seen.value = dummy(); }, sync);
@@ -102,7 +102,7 @@ fn tReactive(t: mut Checks) {
     t.check("a watcher runs under the context of the write (:=), not its creator's", seen.value == 50);
 
     let items = rx.reactive<[]int>([1]);
-    let seenPush: ref Box<int> = { value: -1 };
+    let seenPush: mut ref Box<int> = { value: -1 };
     let h2 = rx.watch(() => items.length, (v, old) => { seenPush.value = dummy(); }, sync);
     context.clone(() => {
         setDummy(60);
@@ -110,7 +110,7 @@ fn tReactive(t: mut Checks) {
     });
     t.check("a watcher runs under the context of a push", seenPush.value == 60);
 
-    let seenPop: ref Box<int> = { value: -1 };
+    let seenPop: mut ref Box<int> = { value: -1 };
     let h3 = rx.watch(() => items.length, (v, old) => { seenPop.value = dummy(); }, sync);
     context.clone(() => {
         setDummy(70);
@@ -118,7 +118,7 @@ fn tReactive(t: mut Checks) {
     });
     t.check("a watcher runs under the context of a pop", seenPop.value == 70);
 
-    let seenWhole: ref Box<int> = { value: -1 };
+    let seenWhole: mut ref Box<int> = { value: -1 };
     let h4 = rx.watch(() => items.length, (v, old) => { seenWhole.value = dummy(); }, sync);
     context.clone(() => {
         setDummy(80);
@@ -130,8 +130,8 @@ fn tReactive(t: mut Checks) {
     // under the outer write's context (DEVELOPMENT.md, the hidden context).
     let outer = rx.reactive<int>(0);
     let inner = rx.reactive<int>(0);
-    let seenOuter: ref Box<int> = { value: -1 };
-    let seenInner: ref Box<int> = { value: -1 };
+    let seenOuter: mut ref Box<int> = { value: -1 };
+    let seenInner: mut ref Box<int> = { value: -1 };
     let h5 = rx.watch(() => outer, (v, old) => {
         seenOuter.value = dummy();
         context.clone(() => {
@@ -194,7 +194,7 @@ fn tCloneOrder(t: mut Checks) {
     t.check("clone(mkFp()): a -> value returned by a call", context.clone(mkFp()) == 8 && dummy() == 8);
     setDummy(7);
     t.check("clone(mkHolder().f): a closure field of a returned struct", context.clone(mkHolder().f) == 9 && dummy() == 9);
-    let pts: []Pt = [Pt { x: 1 }];
+    let pts: mut []Pt = [Pt { x: 1 }];
     setDummy(7);
     t.check("clone(pts[at(12)].get): the receiver's index is evaluated first", context.clone(pts[at(12)].get) == 13 && dummy() == 12);
     setDummy(7);
@@ -500,7 +500,7 @@ fn main(): int {
         s.compileFails(
             "context review: for over computeds in an extern C body",
             """
-extern C fn entry(items: []rx.Computed<int>): int {
+extern C fn entry(items: mut []rx.Computed<int>): int {
     let n = 0;
     for c in items { // <- reading each element evaluates a computed
         n = n + 1;
@@ -509,7 +509,7 @@ extern C fn entry(items: []rx.Computed<int>): int {
 }
 
 fn main(): int {
-    let items: []rx.Computed<int> = [rx.computed(() => { return 1; })];
+    let items: mut []rx.Computed<int> = [rx.computed(() => { return 1; })];
     return entry(items);
 }
 """,
@@ -555,7 +555,7 @@ fn main(): int {
             "context review: a loop index named context",
             """
 fn main(): int {
-    let items: []int = [1, 2];
+    let items: mut []int = [1, 2];
     let sum = 0;
     for x, context in items { // <- H7222
         sum = sum + x;

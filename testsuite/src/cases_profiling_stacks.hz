@@ -121,7 +121,7 @@ fn allocateClosureEnv(x: int): () => int {
 
 fn main(): int {
     let profiler = Profiler({ samplingRate: 100 });
-    let closures: []() => int = [];
+    let closures: mut []() => int = [];
     for (let i = 0; i < 50; i++) {
         closures.push(allocateClosureEnv(i));
     }
@@ -133,9 +133,9 @@ fn main(): int {
 
     // Reconstruct the sample timeline exactly the way a consumer does, collecting the
     // timestamp of every allocation leaf sample, in emission order.
-    let nodeNames: []str = [];
-    let sampleTimes: []real = [];
-    let markerTimes: []real = [];
+    let nodeNames: mut []str = [];
+    let sampleTimes: mut []real = [];
+    let markerTimes: mut []real = [];
     let profileStart = 0.0;
     let reconstructed = 0.0;
     let previousSampleTime = -1.0;

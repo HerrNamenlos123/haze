@@ -101,7 +101,7 @@ export extern C noemit struct hzstd_color_t {
         return this.r == 0.0 && this.g == 0.0 && this.b == 0.0 && this.a == 0.0;
     }
 
-    fn operator:=(other: Color) {
+    mut fn operator:=(other: Color) {
         this.r = other.r;
         this.g = other.g;
         this.b = other.b;
@@ -193,7 +193,7 @@ export extern C noemit struct hzstd_colorf_t {
         return this.r == 0.0 as f32 && this.g == 0.0 as f32 && this.b == 0.0 as f32 && this.a == 0.0 as f32;
     }
 
-    fn operator:=(other: Colorf) {
+    mut fn operator:=(other: Colorf) {
         this.r = other.r;
         this.g = other.g;
         this.b = other.b;

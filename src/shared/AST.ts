@@ -26,6 +26,16 @@ export enum EStorageClass {
   Stackref = 3,
 }
 
+// Where a global variable's storage lives (docs/async-runtime.md section 2,
+// "Globals"). Written as `tasklocal` / `global` before `let` / `const`; a global
+// that names neither is `Thread`. The values are the wire spelling the native
+// parser emits.
+export enum EGlobalStorage {
+  Thread = "thread",
+  Task = "task",
+  Process = "process",
+}
+
 export enum EExternLanguage {
   None = 0,
   Extern = 1,
@@ -250,6 +260,8 @@ export type ASTFunctionDefinition = {
   name: string;
   noemit: boolean;
   static: boolean;
+  // `private fn` inside a struct: only code inside the struct's body may name it.
+  private: boolean;
   params: ASTParam[];
   ellipsis: boolean;
   returnType?: ASTExpr;
@@ -291,6 +303,7 @@ export type ASTGlobalVariableDefinition = {
   comptime: boolean;
   pub: boolean;
   extern: EExternLanguage;
+  storage: EGlobalStorage;
   mutability: EVariableMutability;
   name: string;
   datatype?: ASTExpr;
@@ -858,6 +871,9 @@ export type ASTStructMemberDefinition = {
   type: ASTExpr | null;
   defaultValue: ASTExpr | null;
   optional: boolean;
+  // `private x: T` inside a struct: only code inside the struct's body may
+  // name it. Always false in an anonymous struct type.
+  private: boolean;
   mutability: EVariableMutability;
   annotations: ASTMetaAnnotationItem[];
   sourceloc: SourceLoc;

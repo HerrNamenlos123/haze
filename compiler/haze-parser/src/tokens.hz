@@ -44,6 +44,9 @@ export enum TK {
     Extern,
     Fn,
     Static,
+    Private,
+    Tasklocal,
+    Global,
     Struct,
     Nodiscard,
     Nonclonable,
@@ -208,6 +211,9 @@ export fn tokenName(k: TK): str {
     if k == TK.Extern { return "extern"; }
     if k == TK.Fn { return "fn"; }
     if k == TK.Static { return "static"; }
+    if k == TK.Private { return "private"; }
+    if k == TK.Tasklocal { return "tasklocal"; }
+    if k == TK.Global { return "global"; }
     if k == TK.Struct { return "struct"; }
     if k == TK.Nodiscard { return "nodiscard"; }
     if k == TK.Nonclonable { return "nonclonable"; }

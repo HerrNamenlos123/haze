@@ -711,7 +711,7 @@ export namespace fs {
         }
 
         // Lets the lock go. Nothing on a lock already let go.
-        fn unlock() {
+        mut fn unlock() {
             if this._handle < 0 {
                 return;
             }
@@ -723,19 +723,19 @@ export namespace fs {
     // Locks the file at `path` (created empty, with its folders, when it is
     // not there), if no one else holds it: Error.Busy at once when someone
     // does. Never waits.
-    export fn tryLockFile(path: str): Result<FileLock, Error> {
+    export fn tryLockFile(path: str): Result<mut FileLock, Error> {
         let result = ffi.hzstd_file_lock(path, false);
         if result.error.code != ffi.hzstd_fs_error_code_none {
-            return Result<FileLock, Error>.Err(mapErrorEnum(result.error.code));
+            return Result<mut FileLock, Error>.Err(mapErrorEnum(result.error.code));
         }
-        return Result<FileLock, Error>.Ok(FileLock { _handle: result.handle });
+        return Result<mut FileLock, Error>.Ok(FileLock { _handle: result.handle });
     }
 
     // tryLockFile, tried again until the lock is free or `timeoutSeconds`
     // have passed (Error.Busy then). A holder that stopped without ending --
     // paused in a debugger, frozen -- keeps a lock for as long as it lives,
     // so a wait without a limit could hang for good.
-    export fn lockFile(path: str, timeoutSeconds: real): Result<FileLock, Error> {
+    export fn lockFile(path: str, timeoutSeconds: real): Result<mut FileLock, Error> {
         let deadline = time.now() + timeoutSeconds;
         while true {
             let tried = tryLockFile(path);
@@ -829,7 +829,7 @@ export namespace fs {
         if r.error != ffi.hzstd_fs_error_code_none {
             return Result<[]DirEntry, Error>.Err(mapErrorEnum(r.error));
         }
-        let entries: []DirEntry = [];
+        let entries: mut []DirEntry = [];
         while let e = ffi.hzstd_read_next_dir_entry(r.handle, allocator); e.valid {
             entries.push(DirEntry {
                 dir: path,
@@ -882,7 +882,7 @@ export namespace fs {
     }
 
     ref struct GlobalFilesystemContext {
-        watchers: []Watcher;
+        watchers: mut []mut Watcher;
         nextId: int;
         inPoll: bool;
     }

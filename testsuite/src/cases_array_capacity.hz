@@ -23,11 +23,11 @@ struct Item {
 }
 
 ref struct Holder {
-    items: []Item = [];
-    names: []str = [];
+    items: mut []Item = [];
+    names: mut []str = [];
 }
 
-fn capInts(a: []int): int {
+fn capInts(a: mut []int): int {
     do unsafe {
         let result: int = 0;
         __c__("result = (hzstd_int_t)hzstd_dynamic_array_capacity(a);");
@@ -35,7 +35,7 @@ fn capInts(a: []int): int {
     };
 }
 
-fn capItems(a: []Item): int {
+fn capItems(a: mut []Item): int {
     do unsafe {
         let result: int = 0;
         __c__("result = (hzstd_int_t)hzstd_dynamic_array_capacity(a);");
@@ -43,7 +43,7 @@ fn capItems(a: []Item): int {
     };
 }
 
-fn capStrs(a: []str): int {
+fn capStrs(a: mut []str): int {
     do unsafe {
         let result: int = 0;
         __c__("result = (hzstd_int_t)hzstd_dynamic_array_capacity(a);");

@@ -1,0 +1,165 @@
+// ============================================================================
+// `tasklocal` and `global` (Axiom C196, C198, C199, C202; docs/async-runtime.md
+// section 2, "Globals").
+//
+//   tasklocal let x: T = v;     tasklocal const x = v;
+//   global let x: T = v;        global const x = v;
+//
+// at module or namespace level, after `export` / `extern` / `pub` and before
+// `let` / `const`. Both are reserved words. The storage of each is built later;
+// until then nothing may silently behave like a plain global:
+//
+//   * `tasklocal` (let or const): H7231, task-local storage does not exist yet
+//   * `global let`: H7231, it must hold an atomic type and atomic types do not
+//     exist yet
+//   * `global const`: accepted, a process-wide C global like every global today
+//   * `extern` or `comptime` with either keyword: H7232
+//   * on a local variable: a syntax error in both parsers
+//
+// The syntax itself, in both parsers, is pinned by src/Parser/Parser.test.ts.
+// ============================================================================
+
+namespace cases_storage_keywords {
+
+    fn unavailable(s: mut testsuite.Suite, name: str, source: str) {
+        s.compileFails(name, source, [
+            testsuite.exactCount(errorcodes.Code.StorageClassNotAvailable, 1),
+            testsuite.totalErrors(1),
+        ]);
+    }
+
+    fn combination(s: mut testsuite.Suite, name: str, source: str) {
+        s.compileFails(name, source, [
+            testsuite.exactCount(errorcodes.Code.StorageClassCombination, 1),
+            testsuite.totalErrors(1),
+        ]);
+    }
+
+    export fn register(s: mut testsuite.Suite) {
+
+        // ── `global const` is accepted and behaves as today's global ────────
+        s.run(
+            "storage keywords: a global const is an ordinary process-wide constant",
+            """
+global const base = 40;
+global const name: str = "g";
+export global const exported = 2;
+namespace cfg {
+    export global const depth = 3;
+    global const hidden = 5;
+    export fn both(): int { return depth + hidden; }
+}
+struct Limits { v: int = base; }
+
+fn add(n: int): int { return n + base; }
+
+fn main(): int {
+    let f = () => base + cfg.depth;
+    fmt.println(f"{add(2)} {name} {exported} {cfg.depth} {cfg.both()} {f()} {Limits {}.v}");
+    return 0;
+}
+""",
+            "42 g 2 3 8 43 40");
+
+        // ── Rule 1: tasklocal ───────────────────────────────────────────────
+        unavailable(s, "storage keywords: tasklocal let", """
+tasklocal let counter: int = 0; // <- H7231
+
+fn main(): int { return 0; }
+""");
+
+        unavailable(s, "storage keywords: tasklocal const", """
+tasklocal const limit = 3; // <- H7231
+
+fn main(): int { return 0; }
+""");
+
+        unavailable(s, "storage keywords: tasklocal in a namespace, exported", """
+namespace n {
+    export tasklocal let counter: int = 0; // <- H7231
+}
+
+fn main(): int { return 0; }
+""");
+
+        // ── Rule 3: global let ──────────────────────────────────────────────
+        unavailable(s, "storage keywords: global let", """
+global let counter: int = 0; // <- H7231
+
+fn main(): int { return 0; }
+""");
+
+        unavailable(s, "storage keywords: global let in a namespace", """
+namespace n {
+    global let counter: int = 0; // <- H7231
+}
+
+fn main(): int { return 0; }
+""");
+
+        // A global nobody uses is still diagnosed: the declaration is the error.
+        unavailable(s, "storage keywords: an unused tasklocal is still rejected", """
+tasklocal const unused = 1; // <- H7231
+
+fn main(): int {
+    return 7;
+}
+""");
+
+        // ── Rule 4: extern and comptime ─────────────────────────────────────
+        combination(s, "storage keywords: extern with global", """
+extern C global const code: int; // <- H7232
+
+fn main(): int { return 0; }
+""");
+
+        combination(s, "storage keywords: extern with tasklocal", """
+extern C tasklocal let code: int; // <- H7232
+
+fn main(): int { return 0; }
+""");
+
+        combination(s, "storage keywords: comptime with global", """
+global const comptime k = 3; // <- H7232
+
+fn main(): int { return 0; }
+""");
+
+        combination(s, "storage keywords: comptime with tasklocal", """
+tasklocal let comptime k = 3; // <- H7232
+
+fn main(): int { return 0; }
+""");
+
+        // ── Rule 5: never on a local ────────────────────────────────────────
+        s.compileFails(
+            "storage keywords: global const on a local variable",
+            """
+fn main(): int {
+    global const x = 1;
+    return x;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.SyntaxError)]);
+
+        s.compileFails(
+            "storage keywords: tasklocal let on a local variable",
+            """
+fn main(): int {
+    tasklocal let x: int = 1;
+    return x;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.SyntaxError)]);
+
+        s.compileFails(
+            "storage keywords: global is a reserved word",
+            """
+fn main(): int {
+    let global = 1;
+    return global;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.SyntaxError)]);
+    }
+}

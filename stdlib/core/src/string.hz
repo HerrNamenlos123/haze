@@ -36,12 +36,12 @@ export opaque ref struct String {
     }
 
     // Room for `capacity` bytes in all; growth stays geometric.
-    fn reserve(capacity: int) {
+    mut fn reserve(capacity: int) {
         this._buffer.reserve(capacity);
     }
 
     // Room for exactly `capacity` bytes, for when the final size is known.
-    fn reserveExact(capacity: int) {
+    mut fn reserveExact(capacity: int) {
         this._buffer.reserveExact(capacity);
     }
 
@@ -68,7 +68,7 @@ export opaque ref struct String {
     }
 
     // Ends editing for good; afterwards string() is a view.
-    fn commit() {
+    mut fn commit() {
         this._buffer.commit();
     }
 

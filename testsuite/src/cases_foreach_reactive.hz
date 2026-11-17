@@ -119,7 +119,7 @@ fn main(): int {
             "for-each over a reactive array inside rx.computed performs a real per-element read (not a type relabel): dependency tracking and shallow-vs-deep semantics both still hold",
             """
 fn caseDeepArrayForEachInsideComputedTracksDependency() {
-    let runs: ref Box<int> = { value: 0 };
+    let runs: mut ref Box<int> = { value: 0 };
     let arr = rx.reactive<[]int>([1, 2, 3]);
     let sum = rx.computed(() => {
         runs.value = runs.value + 1;
@@ -140,8 +140,8 @@ fn caseDeepArrayForEachInsideComputedTracksDependency() {
 }
 
 fn caseShallowArrayForEachInsideComputedStillUntrackedOnPush() {
-    let runs: ref Box<int> = { value: 0 };
-    let arr = rx.shallowReactive<[]int>([1, 2, 3]);
+    let runs: mut ref Box<int> = { value: 0 };
+    let arr = rx.shallowReactive<mut []int>([1, 2, 3]);
     let sum = rx.computed(() => {
         runs.value = runs.value + 1;
         let total = 0;

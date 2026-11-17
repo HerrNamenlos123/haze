@@ -192,7 +192,7 @@ fn main(): int {
     };
     let r = rx.reactive<str | none>(none);
 
-    let log: ref Box<str> = { value: "" };
+    let log: mut ref Box<str> = { value: "" };
     let hw = rx.watch(() => rx.get(r) ?? none, (v, old) => {
         log.value = f"{log.value}[{takePlain(v)}<-{takePlain(old)}]";
     }, { immediate: true, scheduler: syncScheduler });
@@ -203,7 +203,7 @@ fn main(): int {
     hw.stop();
     fmt.println(f"variation_w getter: {log.value}");
 
-    let log2: ref Box<str> = { value: "" };
+    let log2: mut ref Box<str> = { value: "" };
     let hw2 = rx.watch(() => r, (v, old) => {
         log2.value = f"{log2.value}[{takePlain(v)}<-{takePlain(old)}]";
     }, { scheduler: syncScheduler });

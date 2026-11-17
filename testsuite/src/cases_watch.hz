@@ -27,11 +27,11 @@ namespace cases_watch {
 
 ref struct Outer {
     inner: Inner;
-    items: []int;
+    items: mut []int;
 }
 
 ref struct Queue {
-    jobs: []rx.WatchJob = [];
+    jobs: mut []rx.WatchJob = [];
 
     mut fn flush() {
         let i = 0;
@@ -52,9 +52,9 @@ fn main(): int {
 
     // ── basic: coalescing, old/new values, hasChanged, stop ─────────────
     let n = rx.reactive<int>(1);
-    let calls: ref Box<int> = { value: 0 };
-    let lastNew: ref Box<int> = { value: -1 };
-    let lastOld: ref Box<int> = { value: -1 };
+    let calls: mut ref Box<int> = { value: 0 };
+    let lastNew: mut ref Box<int> = { value: -1 };
+    let lastOld: mut ref Box<int> = { value: -1 };
     let h = rx.watch(() => n, (v, old) => {
         calls.value++;
         lastNew.value = v;
@@ -87,8 +87,8 @@ fn main(): int {
     assert(calls.value == 2, "a stopped watcher never fires");
 
     // ── immediate ───────────────────────────────────────────────────────
-    let immCalls: ref Box<int> = { value: 0 };
-    let immFirstOldWasNone: ref Box<bool> = { value: false };
+    let immCalls: mut ref Box<int> = { value: 0 };
+    let immFirstOldWasNone: mut ref Box<bool> = { value: false };
     let hImm = rx.watch(() => n, (v, old) => {
         immCalls.value++;
         if immCalls.value == 1 {
@@ -104,7 +104,7 @@ fn main(): int {
     hImm.stop();
 
     // ── once ────────────────────────────────────────────────────────────
-    let onceCalls: ref Box<int> = { value: 0 };
+    let onceCalls: mut ref Box<int> = { value: 0 };
     rx.watch(() => n, (v, old) => {
         onceCalls.value++;
     }, { once: true, scheduler: scheduler });
@@ -119,7 +119,7 @@ fn main(): int {
     // ── sync: a scheduler that runs the job at once ─────────────────────
     // Vue's `flush: 'sync'`, which core makes you ask for -- `scheduler` is
     // required precisely so this is never what a caller gets by accident.
-    let syncCalls: ref Box<int> = { value: 0 };
+    let syncCalls: mut ref Box<int> = { value: 0 };
     let syncScheduler: (job: rx.WatchJob) => none = (job: rx.WatchJob): none => {
         job.run();
     };
@@ -133,8 +133,8 @@ fn main(): int {
 
     // ── deep ────────────────────────────────────────────────────────────
     let o = rx.reactive<Outer>(Outer { inner: Inner { a: 1 }, items: [1] });
-    let shallowCalls: ref Box<int> = { value: 0 };
-    let deepCalls: ref Box<int> = { value: 0 };
+    let shallowCalls: mut ref Box<int> = { value: 0 };
+    let deepCalls: mut ref Box<int> = { value: 0 };
     rx.watch(() => o, (v, old) => {
         shallowCalls.value++;
     }, { scheduler: scheduler });
@@ -152,7 +152,7 @@ fn main(): int {
     // A struct value has no identity to compare: like Vue's Object.is on a
     // fresh object, every trigger counts as a change.
     let so = rx.shallowReactive<Outer>(Outer { inner: Inner { a: 1 }, items: [] });
-    let replaceCalls: ref Box<int> = { value: 0 };
+    let replaceCalls: mut ref Box<int> = { value: 0 };
     rx.watch(() => so, (v, old) => {
         replaceCalls.value++;
     }, { scheduler: scheduler });
@@ -162,8 +162,8 @@ fn main(): int {
 
     // ── computed source ─────────────────────────────────────────────────
     let doubled = rx.computed(() => n * 2);
-    let compCalls: ref Box<int> = { value: 0 };
-    let compLast: ref Box<int> = { value: 0 };
+    let compCalls: mut ref Box<int> = { value: 0 };
+    let compLast: mut ref Box<int> = { value: 0 };
     rx.watch(() => doubled, (v, old) => {
         compCalls.value++;
         compLast.value = v;
@@ -175,7 +175,7 @@ fn main(): int {
     // ── the callback runs untracked ─────────────────────────────────────
     let other = rx.reactive<int>(0);
     let side = rx.reactive<int>(0);
-    let untrackedCalls: ref Box<int> = { value: 0 };
+    let untrackedCalls: mut ref Box<int> = { value: 0 };
     rx.watch(() => n, (v, old) => {
         untrackedCalls.value++;
         let peek = other + 0;
@@ -191,8 +191,8 @@ fn main(): int {
     assert(untrackedCalls.value == 1, "no re-trigger from the callback's own reads or writes");
 
     // ── cleanup ─────────────────────────────────────────────────────────
-    let cleanups: ref Box<int> = { value: 0 };
-    let cleanupCalls: ref Box<int> = { value: 0 };
+    let cleanups: mut ref Box<int> = { value: 0 };
+    let cleanupCalls: mut ref Box<int> = { value: 0 };
     let cleanupFn: () => none = (): none => {
         cleanups.value++;
     };
@@ -216,7 +216,7 @@ fn main(): int {
     // Its own source: earlier watchers on `n` are still live and would
     // queue jobs of their own.
     let p = rx.reactive<int>(0);
-    let pauseCalls: ref Box<int> = { value: 0 };
+    let pauseCalls: mut ref Box<int> = { value: 0 };
     let hPause = rx.watch(() => p, (v, old) => {
         pauseCalls.value++;
     }, { scheduler: scheduler });
@@ -235,8 +235,8 @@ fn main(): int {
     hPause.stop();
 
     // ── created inside a computed: no dependency leaks into it ──────────
-    let outerRuns: ref Box<int> = { value: 0 };
-    let innerCalls: ref Box<int> = { value: 0 };
+    let outerRuns: mut ref Box<int> = { value: 0 };
+    let innerCalls: mut ref Box<int> = { value: 0 };
     let outer = rx.computed(() => {
         outerRuns.value++;
         rx.watch(() => n, (v, old) => {
@@ -254,7 +254,7 @@ fn main(): int {
 
     // ── string source ───────────────────────────────────────────────────
     let s = rx.reactive<str>("a");
-    let strCalls: ref Box<int> = { value: 0 };
+    let strCalls: mut ref Box<int> = { value: 0 };
     rx.watch(() => s, (v: str, old) => {
         strCalls.value++;
         if old is not none {

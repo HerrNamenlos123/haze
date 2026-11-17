@@ -1,0 +1,388 @@
+// ============================================================================
+// const and mut: the holes an adversarial review of stage 0 found (2026-11-17).
+//
+// Each compile-fail case is a program the reviewer ran that changed const
+// data, or changed data through a reference without `mut`, from safe code
+// (Axiom C596, C597, C601 to C603, C166, C173, C458). The run cases are valid
+// programs the first version of stage 0 rejected. Every case failed on that
+// version. Do not weaken a case to make an implementation pass.
+// ============================================================================
+
+namespace cases_const_review {
+
+    fn rejects(s: mut testsuite.Suite, name: str, code: errorcodes.Code, source: str) {
+        s.compileFails(f"const review: {name}", source, [testsuite.exactCount(code, 1)]);
+    }
+
+    export fn register(s: mut testsuite.Suite) {
+        let conv = errorcodes.Code.NoSuitableConversionFound;
+        let nonMut = errorcodes.Code.WriteThroughNonMutReference;
+        let toConst = errorcodes.Code.WriteToConstData;
+        let temp = errorcodes.Code.CannotAssignTemporaryType;
+        let priv = errorcodes.Code.PrivateMemberAccess;
+
+        // ── const data viewed or copied as changeable while it holds mut ───
+        rejects(s, "const to a plain parameter whose type reaches mut", conv, """
+ref struct Inner { v: int = 0; }
+ref struct Outer { inner: mut Inner; }
+fn f(o: Outer) { o.inner.v = 9; }
+fn main(): int {
+    const c: const Outer = Outer { inner: Inner { v: 1 } };
+    f(c);
+    return 0;
+}
+""");
+        rejects(s, "const value struct copied into a plain value that reaches mut", conv, """
+ref struct Inner { v: int = 0; }
+struct Mid { inner: mut Inner; }
+fn f(m: const Mid) {
+    let x: Mid = m;
+    x.inner.v = 9;
+}
+fn main(): int {
+    const c: const Mid = Mid { inner: Inner { v: 1 } };
+    f(c);
+    return 0;
+}
+""");
+        rejects(s, "const through a generic identity into a plain array of mut", conv, """
+ref struct Inner { v: int = 0; }
+fn id<T>(t: T): T { return t; }
+fn main(): int {
+    const c: const []mut Inner = [Inner { v: 1 }];
+    let x: []mut Inner = id(c);
+    x[0].v = 9;
+    return 0;
+}
+""");
+        rejects(s, "a non-mut method on const data that reaches mut", conv, """
+ref struct Inner { v: int = 0; }
+ref struct Outer {
+    inner: mut Inner;
+    fn poke() { this.inner.v = 9; }
+}
+fn main(): int {
+    const c: const Outer = Outer { inner: Inner { v: 1 } };
+    c.poke();
+    return 0;
+}
+""");
+        rejects(s, "a non-mut method on a const value that reaches mut", conv, """
+ref struct Inner { v: int = 0; }
+struct Mid {
+    inner: mut Inner;
+    fn poke() { this.inner.v = 9; }
+}
+fn main(): int {
+    const c: const Mid = Mid { inner: Inner { v: 1 } };
+    c.poke();
+    return 0;
+}
+""");
+        rejects(s, "a spread copies const fields as const", conv, """
+ref struct Inner { v: int = 0; }
+ref struct Outer { inner: mut Inner; n: int = 0; }
+fn f(o: const Outer) {
+    let x = Outer { ...o, n: 2 };
+    x.inner.v = 9;
+}
+fn main(): int {
+    const c: const Outer = Outer { inner: Inner { v: 1 } };
+    f(c);
+    return 0;
+}
+""");
+
+        // ── `this` in a method that is not mut ─────────────────────────────
+        rejects(s, "a value struct's method that is not mut writes a field", nonMut, """
+struct V { x: int = 0; fn set() { this.x = 9; } }
+fn main(): int {
+    let v = V { x: 1 };
+    v.set();
+    return 0;
+}
+""");
+        rejects(s, "a value struct's method that is not mut calls a mut method", nonMut, """
+struct V { x: int = 0; mut fn bump() { this.x = 9; } fn f() { this.bump(); } }
+fn main(): int {
+    let v = V { x: 1 };
+    v.f();
+    return 0;
+}
+""");
+
+        // ── unions reached through const data, and const unions ────────────
+        rejects(s, "if let on a union member of const data", toConst, """
+ref struct Inner { v: int = 0; }
+ref struct Outer { inner: mut Inner | null = null; }
+fn f(o: const Outer) {
+    if let i = o.inner {
+        i.v = 9;
+    }
+}
+fn main(): int {
+    const c: const Outer = Outer { inner: Inner { v: 1 } };
+    f(c);
+    return 0;
+}
+""");
+        rejects(s, "is-narrowing a union member of const data", toConst, """
+ref struct Inner { v: int = 0; }
+ref struct Outer { inner: mut Inner | null = null; }
+fn f(o: const Outer) {
+    if o.inner is null { return; }
+    o.inner.v = 9;
+}
+fn main(): int {
+    const c: const Outer = Outer { inner: Inner { v: 1 } };
+    f(c);
+    return 0;
+}
+""");
+        rejects(s, "a const union declared from changeable data", conv, """
+ref struct R { v: int = 0; }
+fn main(): int {
+    let r = R { v: 1 };
+    const u: mut R | int = r;
+    return 0;
+}
+""");
+        rejects(s, "a const union parameter given changeable data", conv, """
+ref struct R { v: int = 0; }
+fn keep(u: const (R | int)): int { return 0; }
+fn main(): int {
+    let r = R { v: 1 };
+    keep(r);
+    return 0;
+}
+""");
+
+        rejects(s, "const data into a plain union variant that reaches mut", conv, """
+ref struct Inner { v: int = 0; }
+ref struct Outer { inner: mut Inner; }
+fn f(o: Outer | none) {
+    if o is none { return; }
+    o.inner.v = 9;
+}
+fn main(): int {
+    const c: const Outer = Outer { inner: Inner { v: 1 } };
+    f(c);
+    return 0;
+}
+""");
+
+        rejects(s, "a const union seen as a plain union that reaches mut", conv, """
+ref struct Inner { v: int = 0; }
+ref struct Outer { inner: mut Inner; }
+fn f(o: Outer | none) {
+    if o is none { return; }
+    o.inner.v = 9;
+}
+fn pick(c: const Outer, n: int): const Outer | none {
+    if n > 0 { return c; }
+    return none;
+}
+fn main(): int {
+    const c: const Outer = Outer { inner: Inner { v: 1 } };
+    f(pick(c, 1));
+    return 0;
+}
+""");
+        rejects(s, "an array view into a mut array inside a union", conv, """
+ref struct R { v: int = 0; }
+fn keep(xs: mut []R | none) {}
+fn main(): int {
+    let xs: mut []mut R = [R { v: 1 }];
+    keep(xs);
+    return 0;
+}
+""");
+
+        rejects(s, "an array view that gives its elements more rights", conv, """
+ref struct R { v: int = 0; }
+fn f(xs: []mut R) { xs[0].v = 9; }
+fn main(): int {
+    let r: R = R { v: 1 };
+    let xs: []R = [r];
+    f(xs);
+    return 0;
+}
+""");
+
+        // ── elements of a mut array are what they were declared ────────────
+        rejects(s, "a mut array of const elements does not make them mut", toConst, """
+ref struct R { v: int = 0; }
+fn main(): int {
+    const c: const R = R { v: 1 };
+    let xs: mut []const R = [c];
+    for x in xs { x.v = 9; }
+    return 0;
+}
+""");
+        rejects(s, "a mut array of plain references does not make them mut", nonMut, """
+ref struct R { v: int = 0; }
+fn sneaky(r: R) {
+    let xs: mut []R = [r];
+    xs[0].v = 9;
+}
+fn main(): int {
+    let r: R = R { v: 1 };
+    sneaky(r);
+    return 0;
+}
+""");
+        rejects(s, "const data pushed into a mut array stays unchangeable", nonMut, """
+ref struct R { v: int = 0; }
+fn main(): int {
+    const c: const R = R { v: 1 };
+    let xs: mut []R = [];
+    xs.push(c);
+    xs[0].v = 9;
+    return 0;
+}
+""");
+
+        // ── the := operator is a mut method on its target ──────────────────
+        rejects(s, ":= through a const reference", toConst, """
+ref struct H { k: int = 0; mut fn operator:=(n: int) { this.k = n; } }
+fn f(h: const H) { h := 9; }
+fn main(): int {
+    const c = H { k: 1 };
+    f(c);
+    return 0;
+}
+""");
+        rejects(s, ":= through a plain reference", nonMut, """
+ref struct H { k: int = 0; mut fn operator:=(n: int) { this.k = n; } }
+fn f(h: H) { h := 9; }
+fn main(): int {
+    let c = H { k: 1 };
+    f(c);
+    return 0;
+}
+""");
+        rejects(s, ":= on a const value", toConst, """
+struct V { k: int = 0; mut fn operator:=(n: int) { this.k = n; } }
+fn main(): int {
+    const c = V { k: 1 };
+    c := 9;
+    return 0;
+}
+""");
+
+        // ── const globals and const members are const data ─────────────────
+        rejects(s, "a member of a global const value", toConst, """
+struct P { x: int = 0; }
+global const g = P { x: 1 };
+fn main(): int {
+    g.x = 5;
+    return 0;
+}
+""");
+        rejects(s, "a global const rebound", toConst, """
+global const g: int = 5;
+fn main(): int {
+    g = 6;
+    return 0;
+}
+""");
+        rejects(s, "a module const rebound", toConst, """
+const g: int = 5;
+fn main(): int {
+    g = 6;
+    return 0;
+}
+""");
+        rejects(s, "data behind a const member", toConst, """
+ref struct R { v: int = 0; }
+ref struct S { const r: mut R; }
+fn main(): int {
+    let s = S { r: R { v: 1 } };
+    s.r.v = 9;
+    return 0;
+}
+""");
+        rejects(s, "a const member given changeable data", conv, """
+ref struct R { v: int = 0; }
+ref struct S { const r: R; }
+fn main(): int {
+    let r = R { v: 1 };
+    let s = S { r: r };
+    return 0;
+}
+""");
+
+        // ── private constructors (C173) ─────────────────────────────────────
+        rejects(s, "a private constructor called from outside", priv, """
+struct Vault {
+    v: int = 0;
+    private fn constructor(): Vault { return Vault { v: 5 }; }
+}
+fn main(): int {
+    let x = Vault();
+    return x.v;
+}
+""");
+        rejects(s, "a private constructor reached by an implicit conversion", priv, """
+struct Meters {
+    v: int = 0;
+    private fn constructor(n: int): Meters { return Meters { v: n * 100 }; }
+}
+fn show(m: Meters): int { return m.v; }
+fn main(): int {
+    return show(3);
+}
+""");
+
+        // ── writes to temporaries ───────────────────────────────────────────
+        rejects(s, "++ on a member of a call result", temp, """
+struct V { x: int = 0; }
+fn mk(): V { return V { x: 1 }; }
+fn main(): int {
+    mk().x++;
+    return 0;
+}
+""");
+
+        // ── valid programs the first version rejected ──────────────────────
+        s.run("const review: valid writes and const data that holds no mut", """
+ref struct H { k: int = 0; mut fn operator:=(n: int) { this.k = n; } }
+ref struct R { v: int = 0; }
+ref struct Plain { r: R; n: int = 0; fn read(): int { return this.r.v + this.n; } }
+fn keepConst(u: const R | null): int {
+    if u is null { return 0; }
+    return u.v;
+}
+fn readPlain(p: Plain): int { return p.r.v; }
+fn sameShape(fa: [1]const R): int { return fa[0].v; }
+fn viewOf(xs: []R): int { return xs[0].v; }
+fn viewOfOptional(xs: []R | none): int {
+    if xs is none { return 0; }
+    return xs[0].v;
+}
+fn maybe(xs: mut []mut R, n: int): []R | none {
+    if n > 0 { return xs; }
+    return none;
+}
+fn main(): int {
+    let c: mut H = H { k: 1 };
+    let assign = () => { c := 9; };
+    assign();
+
+    const five = () => 5;
+    const p: const Plain = Plain { r: R { v: 2 }, n: 3 };
+
+    let m: [1]mut R = [R { v: 1 }];
+    m[0].v = 7;
+    const fixed: const [1]const R = [R { v: 4 }];
+
+    let xs: mut []mut R = [R { v: 1 }];
+    xs[0].v = 6;
+    for x in xs { x.v = x.v + 1; }
+
+    fmt.println(f"{c.k} {five()} {p.read()} {readPlain(p)} {keepConst(R { v: 1 })} {keepConst(null)} {m[0].v} {sameShape(fixed)} {xs[0].v} {viewOf(xs)} {viewOfOptional(xs)} {viewOfOptional(maybe(xs, 1))}");
+    return 0;
+}
+""", "9 5 5 2 1 0 7 4 7 7 7 7");
+    }
+}

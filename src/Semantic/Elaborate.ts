@@ -96,6 +96,15 @@ class GenericDeductionIncompleteError extends CompilerError {}
 // one out is the same two steps -- write the function in `array`, delete the
 // name from here.
 const ARRAY_BUILTIN_METHODS = new Set(["length", "insert", "remove", "pop"]);
+// The built-in array methods that change the array.
+const DYNAMIC_ARRAY_MUTATORS = new Set([
+  "push",
+  "pop",
+  "insert",
+  "remove",
+  "clear",
+  "reserve",
+]);
 
 /**
  * What an alias's target turned out to name.
@@ -2844,6 +2853,9 @@ export class SemanticElaborator {
       unsafe
     );
     assert(this.inFunction);
+    // `S(...)`, and an implicit conversion through a constructor, call it
+    // without naming it: a private one stays inside the struct (C173).
+    this.assertMethodAccessible(elaboratedMethodId, callSourceloc);
     return this.sr.b.callExpr(
       this.sr.b.symbolValue(elaboratedMethodId, callSourceloc)[1],
       finalArgs,
@@ -5784,12 +5796,14 @@ export class SemanticElaborator {
 
     if (global) {
       assert(variable.comptimeValue);
+      assert(variableSymbol.globalStorage !== null);
       const [_, defSymId] = this.sr.b.addSymbol(this.sr, {
         variant: Semantic.ENode.GlobalVariableDefinitionSymbol,
         comptime: variable.comptime,
         concrete: variable.concrete,
         export: variable.export,
         extern: variable.extern,
+        storage: variableSymbol.globalStorage,
         name: variable.name,
         parentSymbolId: variable.parentSymbolId,
         sourceloc: variable.sourceloc,
@@ -6144,10 +6158,16 @@ export class SemanticElaborator {
       export: false,
       extern: EExternLanguage.None,
       requiresHoisting: false,
-      mutability: EVariableMutability.Default,
+      // A `const` member is never written after construction (C166), and
+      // what it holds is const data (C603).
+      mutability: symbol.mutability,
       sourceloc: symbol.sourceloc,
       memberOfStruct: semanticStructId,
-      type: typeId,
+      private: symbol.private,
+      type:
+        symbol.mutability === EVariableMutability.Const
+          ? Conversion.constOf(this.sr, typeId)
+          : typeId,
       consumed: false,
       variableContext: EVariableContext.MemberOfStruct,
       parentSymbolId: this.sr.b.typeDefSymbol(semanticStructId)[1],
@@ -10400,6 +10420,29 @@ export class SemanticElaborator {
    * got a copy and nothing could be mutated through it, so it is an error
    * (R&D/Storage Classes and References.md §3.3).
    */
+  // Whether a written type is a bare generic parameter (`T`), whatever it is
+  // bound to in this instantiation.
+  namesGenericParameter(typeExprId: Collect.ExprId): boolean {
+    const written = this.sr.cc.exprNodes.get(typeExprId);
+    if (
+      written.variant !== Collect.ENode.SymbolValueExpr ||
+      written.genericArgs.length !== 0
+    ) {
+      return false;
+    }
+    const found = Semantic.tryLookupSymbol(this.sr, written.name, {
+      startLookupInScope: this.currentContext.currentScope,
+      sourceloc: written.sourceloc,
+    });
+    return (
+      found !== undefined &&
+      found !== null &&
+      found.type === "collect" &&
+      this.sr.cc.symbolNodes.get(found.id).variant ===
+        Collect.ENode.GenericTypeParameterSymbol
+    );
+  }
+
   assertMutApplicable(typeUse: Semantic.TypeUse, sourceloc: SourceLoc) {
     const typeDef = this.sr.typeDefNodes.get(typeUse.type);
     if (
@@ -10480,7 +10523,13 @@ export class SemanticElaborator {
               });
               return this.sr.b.untaggedUnionTypeUse(mutMembers, type.sourceloc);
             }
-            this.assertMutApplicable(resolvedTypeUse, type.sourceloc);
+            // `mut T` on a generic parameter is written for the references T
+            // may stand for; bound to a value struct it means nothing and is
+            // dropped (makeTypeUse normalises it away). Only a value type
+            // written as such is a mistake.
+            if (!this.namesGenericParameter(type.type)) {
+              this.assertMutApplicable(resolvedTypeUse, type.sourceloc);
+            }
             return makeTypeUse(
               this.sr,
               tUse.type,
@@ -10491,13 +10540,7 @@ export class SemanticElaborator {
           }
 
           case ETypeModifier.Const: {
-            return makeTypeUse(
-              this.sr,
-              tUse.type,
-              EDatatypeMutability.Const,
-              tUse.storage,
-              type.sourceloc
-            )[1];
+            return Conversion.constOf(this.sr, typeUseId);
           }
 
           case ETypeModifier.Ref: {
@@ -11321,27 +11364,110 @@ export class SemanticElaborator {
    * Writes *through* a reference reached from the copy (`captured.refField.x`)
    * are fine -- they mutate the shared object, not the copy.
    */
-  assertNotWriteToByValueCapture(
+  /**
+   * The one check every write form goes through: assignment, compound
+   * assignment, `++`, `--`, a mut method on a value receiver and the array
+   * mutators all hand it the place they write (Axiom C453, C456 to C460,
+   * C596, C601 to C603).
+   *
+   * A place is either inside the storage of a variable, reached through value
+   * steps (a member of a value struct, an element of a fixed array, a union's
+   * variant), or inside data reached through a reference (a ref or stackref
+   * struct, a dynamic array). Walking from the place outwards:
+   * - the first reference on the way decides: a `mut` one can change its data
+   *   (C601), one without a modifier cannot (C602, H7225), a const one points
+   *   to data that never changes (C596, H7226). What lies behind it is shared,
+   *   so a closure that captured the reference may write there;
+   * - a const value on the way, or a member declared const (C166), is const
+   *   data (H7226);
+   * - reached through value steps only, the place is in a variable's own
+   *   storage. A closure never writes what it captured as a copy (C458), and
+   *   its environment is never written after it is created (C460): writing a
+   *   captured copy, or rebinding a captured reference, is H7189. Writing a
+   *   variable some closure copied earlier warns (H7190).
+   * Writing a variable itself (rebinding it) is always allowed otherwise:
+   * Haze has no bindings, a variable can always be replaced (C453).
+   */
+  assertWritable(
     targetExprId: Semantic.ExprId,
-    sourceloc: SourceLoc
+    sourceloc: SourceLoc,
+    write: "store" | "receiver"
   ) {
-    // Find the root symbol of the assignment target, stopping at any link
-    // that goes through a reference.
     let cur = this.sr.exprNodes.get(targetExprId);
+    // A reactive cell is written through its own runtime path
+    // (ReactiveWriteExpr), never as a place inside the data that holds it:
+    // `cell = v`, `cell++` and `this.cell := v` change the shared cell. Whether
+    // that needs a `mut` reference to the cell is not decided here
+    // (docs/async-decisions.md, S0-11).
+    const targetDef = this.sr.typeDefNodes.get(
+      this.sr.typeUseNodes.get(this.resolveAlias(cur.type)).type
+    );
+    if (
+      targetDef.variant === Semantic.ENode.ReactiveDatatype ||
+      targetDef.variant === Semantic.ENode.ShallowReactiveDatatype
+    ) {
+      return;
+    }
+    // Whether the place is the variable itself, not a part of its value.
+    let direct = true;
     while (true) {
-      if (cur.variant === Semantic.ENode.MemberAccessExpr) {
+      if (
+        cur.variant === Semantic.ENode.MemberAccessExpr ||
+        cur.variant === Semantic.ENode.ArraySubscriptExpr
+      ) {
         const objExpr = this.sr.exprNodes.get(cur.expr);
         const objUse = this.sr.typeUseNodes.get(
           this.resolveAlias(objExpr.type)
         );
         const objDef = this.sr.typeDefNodes.get(objUse.type);
         if (
-          objDef.variant !== Semantic.ENode.StructDatatype ||
-          objUse.storage !== EStorageClass.Value
+          cur.variant === Semantic.ENode.MemberAccessExpr &&
+          objDef.variant === Semantic.ENode.StructDatatype
         ) {
+          const memberName = cur.memberName;
+          const member = objDef.members
+            .map((m) => this.sr.symbolNodes.get(m))
+            .find(
+              (m) =>
+                m.variant === Semantic.ENode.VariableSymbol &&
+                m.name === memberName
+            );
+          if (
+            member?.variant === Semantic.ENode.VariableSymbol &&
+            member.mutability === EVariableMutability.Const
+          ) {
+            throw new CompilerError(
+              `Cannot change '${memberName}': it is declared const, and const data never changes.`,
+              sourceloc,
+              HazeErrorCode.WriteToConstData
+            );
+          }
+        }
+        if (
+          objDef.variant === Semantic.ENode.DynamicArrayDatatype ||
+          (objDef.variant === Semantic.ENode.StructDatatype &&
+            objUse.storage !== EStorageClass.Value)
+        ) {
+          this.assertMutableReference(objExpr.type, sourceloc);
           return;
         }
+        if (
+          objDef.variant !== Semantic.ENode.StructDatatype &&
+          objDef.variant !== Semantic.ENode.FixedArrayDatatype
+        ) {
+          // Reactive cells and the other runtime-managed containers write
+          // through their own paths (ReactiveWriteExpr).
+          return;
+        }
+        if (objUse.mutability === EDatatypeMutability.Const) {
+          throw new CompilerError(
+            `Cannot change this: it is part of const data, and const data never changes.`,
+            sourceloc,
+            HazeErrorCode.WriteToConstData
+          );
+        }
         cur = objExpr;
+        direct = false;
         continue;
       }
       if (cur.variant === Semantic.ENode.UnionToValueCastExpr) {
@@ -11354,13 +11480,46 @@ export class SemanticElaborator {
         cur = this.sr.exprNodes.get(cur.branches[0].value);
         continue;
       }
+      // `this` in a method of a value struct is a hidden pointer (`*this`):
+      // the write goes through it, so the method's own mutability decides.
+      if (cur.variant === Semantic.ENode.DereferenceExpr) {
+        this.assertMutableReference(
+          this.sr.exprNodes.get(cur.expr).type,
+          sourceloc
+        );
+        return;
+      }
       break;
+    }
+    // A store into a temporary changes nothing anyone can see (and `x++`
+    // would evaluate its operand twice). A mut method on one is allowed.
+    if (write === "store" && cur.isTemporary) {
+      throw new CompilerError(
+        `Cannot change a temporary of type ${Semantic.serializeTypeUse(this.sr, cur.type)}: nothing could ever see the change.`,
+        sourceloc,
+        HazeErrorCode.CannotAssignTemporaryType
+      );
     }
     if (cur.variant !== Semantic.ENode.SymbolValueExpr) {
       return;
     }
     const symbolId = cur.symbol;
     const rootSymbol = this.sr.symbolNodes.get(symbolId);
+    if (rootSymbol.variant !== Semantic.ENode.VariableSymbol) {
+      return;
+    }
+    // A constant at module level (`const`, `global const`) never changes,
+    // itself or any part of its value.
+    if (
+      rootSymbol.variableContext === EVariableContext.Global &&
+      rootSymbol.mutability === EVariableMutability.Const
+    ) {
+      throw new CompilerError(
+        `Cannot change '${rootSymbol.name}': it is a constant, and const data never changes.`,
+        sourceloc,
+        HazeErrorCode.WriteToConstData
+      );
+    }
 
     // Innermost enclosing lambda scope, if any.
     let scopeId = this.currentContext.currentScope;
@@ -11386,36 +11545,57 @@ export class SemanticElaborator {
       lambda &&
       lambda.variant === Semantic.ENode.CallableExpr &&
       lambda.envType?.type === "lambda"
-        ? lambda.envType.captures.find(
-            (c) => c.capturedSymbol === symbolId && c.byValue
-          )
+        ? lambda.envType.captures.find((c) => c.capturedSymbol === symbolId)
         : undefined;
-    if (!capture) {
-      // Not a write inside a capturing closure. But a write in the declaring
-      // scope *after* some closure took a by-value copy leaves that closure
-      // with a stale value -- the same shared-state mistake from the other side.
-      const staleAt =
-        rootSymbol.variant === Semantic.ENode.VariableSymbol
-          ? this.staleByValueCapture(rootSymbol)
-          : null;
-      if (rootSymbol.variant === Semantic.ENode.VariableSymbol && staleAt) {
-        // A warning, not an error: the closure may well be finished by now,
-        // and for one that was stored or handed to a retaining function that
-        // is not knowable locally.
-        const msg = `'${rootSymbol.name}' was captured by value by a closure at ${formatSourceLoc(staleAt)}; if that closure is still alive, it keeps the old value. To share it, declare it as a stack reference ('let stackref ${rootSymbol.name} = Box(...)') or a 'ref'.`;
-        printWarningMessage(
-          msg,
-          sourceloc,
-          HazeErrorCode.WriteAfterByValueCapture
-        );
-        return;
-      }
+    if (capture) {
+      // Through value steps only a copy can be reached: a reference on the
+      // way returned above.
+      assert(capture.byValue || direct);
+      throw new CompilerError(
+        capture.byValue
+          ? `Cannot change '${capture.name}' inside this closure: it is captured by value, so the closure only holds a copy and the outer variable would not change. Copy it into a variable of the closure's own to change it there, or share it: declare it as a stack reference (e.g. 'let stackref ${capture.name} = Box(...)') or a 'ref'.`
+          : `Cannot rebind '${capture.name}' inside this closure: the closure holds its own reference to the same object, so rebinding it would change only the closure's copy and never the outer variable. Change the object through it instead, or copy the reference into a variable of the closure's own.`,
+        sourceloc,
+        HazeErrorCode.WriteToByValueCapture
+      );
+    }
+
+    // Not a write inside a capturing closure. But a write in the declaring
+    // scope *after* some closure took a by-value copy leaves that closure
+    // with a stale value -- the same shared-state mistake from the other side.
+    const staleAt = this.staleByValueCapture(rootSymbol);
+    if (staleAt) {
+      // A warning, not an error: the closure may well be finished by now,
+      // and for one that was stored or handed to a retaining function that
+      // is not knowable locally.
+      const msg = `'${rootSymbol.name}' was captured by value by a closure at ${formatSourceLoc(staleAt)}; if that closure is still alive, it keeps the old value. To share it, declare it as a stack reference ('let stackref ${rootSymbol.name} = Box(...)') or a 'ref'.`;
+      printWarningMessage(
+        msg,
+        sourceloc,
+        HazeErrorCode.WriteAfterByValueCapture
+      );
+    }
+  }
+
+  // Data changes through a reference only if the reference is `mut` (C601):
+  // one without a modifier cannot change it (C602), and const data never
+  // changes (C596).
+  assertMutableReference(referenceType: Semantic.TypeUseId, sourceloc: SourceLoc) {
+    const use = this.sr.typeUseNodes.get(this.resolveAlias(referenceType));
+    if (use.mutability === EDatatypeMutability.Mut) {
       return;
     }
+    if (use.mutability === EDatatypeMutability.Const) {
+      throw new CompilerError(
+        `Cannot change this: it is reached through a const reference, and const data never changes.`,
+        sourceloc,
+        HazeErrorCode.WriteToConstData
+      );
+    }
     throw new CompilerError(
-      `Cannot assign to '${capture.name}' inside this closure: it is captured by value, so the closure only holds a copy and the outer variable would not change. To share it, declare it as a stack reference (e.g. 'let stackref ${capture.name} = Box(...)') or a 'ref'.`,
+      `Cannot change this through a reference of type '${Semantic.serializeTypeUse(this.sr, referenceType)}': only a 'mut' reference can change the data it points to. Declare the reference 'mut' where it is made (a parameter, a variable, a field).`,
       sourceloc,
-      HazeErrorCode.WriteToByValueCapture
+      HazeErrorCode.WriteThroughNonMutReference
     );
   }
 
@@ -11475,12 +11655,23 @@ export class SemanticElaborator {
     });
 
     this.assertNotIntrinsic(valueExpr, "assigned to a variable");
-    this.assertNotWriteToByValueCapture(targetExprId, assignment.sourceloc);
 
     const lhsTypeUse = this.sr.typeUseNodes.get(
       this.sr.e.resolveAlias(targetExpr.type)
     );
     const lhsType = this.sr.typeDefNodes.get(lhsTypeUse.type);
+
+    // `x := v` on a struct calls its `operator:=` with x as the receiver
+    // (checked below, once the overload is known); x is never rebound. Every
+    // other assignment stores into x.
+    if (
+      !(
+        assignment.operation === EAssignmentOperation.Assign &&
+        lhsType.variant === Semantic.ENode.StructDatatype
+      )
+    ) {
+      this.assertWritable(targetExprId, assignment.sourceloc, "store");
+    }
 
     if (
       assignment.operation === EAssignmentOperation.Assign &&
@@ -11542,6 +11733,24 @@ export class SemanticElaborator {
       if (exactMatchId) {
         const method = this.sr.symbolNodes.get(exactMatchId);
         assert(method.variant === Semantic.ENode.FunctionSymbol);
+
+        // The receiver of a `mut fn operator:=` is changed in place, exactly
+        // like the receiver of any mut method: through a `mut` reference, or
+        // as a value that is not const and may be written.
+        if (method.methodRequiredMutability === EDatatypeMutability.Mut) {
+          if (lhsTypeUse.storage === EStorageClass.Value) {
+            if (lhsTypeUse.mutability === EDatatypeMutability.Const) {
+              throw new CompilerError(
+                `Cannot change this with ':=': it is const data, and const data never changes.`,
+                assignment.sourceloc,
+                HazeErrorCode.WriteToConstData
+              );
+            }
+            this.assertWritable(targetExprId, assignment.sourceloc, "receiver");
+          } else {
+            this.assertMutableReference(targetExpr.type, assignment.sourceloc);
+          }
+        }
 
         const instanceIds: Semantic.InstanceId[] = [];
 
@@ -11915,7 +12124,7 @@ export class SemanticElaborator {
     });
 
     // Across a union with a different type per variant: every variant's own
-    // field (see assignmentExpr).
+    // field (see assignmentExpr), each checked on its own.
     const unionWrite = this.unionFieldDispatches.get(exprId);
     if (unionWrite !== undefined) {
       return this.distributeUnionWrite(
@@ -11929,6 +12138,7 @@ export class SemanticElaborator {
           )[1]
       );
     }
+    this.assertWritable(exprId, preIncr.sourceloc, "store");
     const typeUse = this.sr.typeUseNodes.get(
       this.sr.e.resolveAlias(exprNode.type)
     );
@@ -11981,7 +12191,7 @@ export class SemanticElaborator {
     });
 
     // Across a union with a different type per variant: every variant's own
-    // field (see assignmentExpr).
+    // field (see assignmentExpr), each checked on its own.
     const unionWrite = this.unionFieldDispatches.get(exprId);
     if (unionWrite !== undefined) {
       return this.distributeUnionWrite(
@@ -11995,6 +12205,7 @@ export class SemanticElaborator {
           )[1]
       );
     }
+    this.assertWritable(exprId, postIncr.sourceloc, "store");
     const typeUse = this.sr.typeUseNodes.get(
       this.sr.e.resolveAlias(exprNode.type)
     );
@@ -12558,6 +12769,71 @@ export class SemanticElaborator {
     );
   }
 
+  /**
+   * Whether the code being elaborated is lexically inside the body of the
+   * struct `structDef` instantiates: its methods (and every lambda nested in
+   * them), its field default initializers, and the methods and defaults of
+   * structs nested in its body.
+   *
+   * Decided by the scope chain of the code's own position, not by what it is
+   * instantiated with: a generic function written outside the struct is
+   * outside for every instantiation, and a generic struct's own methods are
+   * inside for every instantiation (they all share one lexical scope).
+   */
+  private isInsideStructBody(structDef: Semantic.StructDatatypeDef): boolean {
+    assert(structDef.originalCollectedDefinition !== (-1 as Collect.TypeDefId));
+    const collectedStruct = this.sr.cc.typeDefNodes.get(
+      structDef.originalCollectedDefinition
+    );
+    assert(collectedStruct.variant === Collect.ENode.StructTypeDef);
+    let scopeId = this.currentContext.currentScope;
+    for (;;) {
+      if (scopeId === collectedStruct.lexicalScope) {
+        return true;
+      }
+      const scope = this.sr.cc.scopeNodes.get(scopeId);
+      if (scope.variant === Collect.ENode.ModuleScope) {
+        return false;
+      }
+      scopeId = scope.parentScope;
+    }
+  }
+
+  /**
+   * The one place `private` is enforced: every way of naming a private member
+   * (access, call, method value, comptime access, a field named in a literal, a
+   * spread) ends up here, with the member's name.
+   */
+  // A private method is reachable only from inside its struct (C173), also
+  // through operator syntax, which calls the method without naming it.
+  assertMethodAccessible(methodId: Semantic.SymbolId, sourceloc: SourceLoc) {
+    const method = this.sr.symbolNodes.get(methodId);
+    assert(method.variant === Semantic.ENode.FunctionSymbol);
+    const original = this.sr.cc.symbolNodes.get(method.originalCollectedFunction);
+    if (original.variant !== Collect.ENode.FunctionSymbol || !original.private) {
+      return;
+    }
+    assert(method.methodOf !== null);
+    const structDef = this.sr.typeDefNodes.get(method.methodOf);
+    assert(structDef.variant === Semantic.ENode.StructDatatype);
+    this.assertMemberAccessible(structDef, original.name, sourceloc);
+  }
+
+  assertMemberAccessible(
+    structDef: Semantic.StructDatatypeDef,
+    memberName: string,
+    sourceloc: SourceLoc
+  ) {
+    if (this.isInsideStructBody(structDef)) {
+      return;
+    }
+    throw new CompilerError(
+      `Member '${memberName}' of '${structDef.name}' is private: only code inside the struct can reach it`,
+      sourceloc,
+      HazeErrorCode.PrivateMemberAccess
+    );
+  }
+
   resolveMemberAccessInStruct(
     exprId: Semantic.ExprId,
     name: string,
@@ -12592,6 +12868,9 @@ export class SemanticElaborator {
       }
       const member = this.sr.symbolNodes.get(memberId);
       assert(member.variant === Semantic.ENode.VariableSymbol && member.type);
+      if (member.private) {
+        this.assertMemberAccessible(exprTypeDef, name, sourceloc);
+      }
 
       // Check if we're accessing a member of a comptime struct value.
       // Try to evaluate the object at compile time; this covers both the case
@@ -12650,6 +12929,9 @@ export class SemanticElaborator {
 
       const collectedMethod = this.sr.cc.symbolNodes.get(chosenOverloadId);
       assert(collectedMethod.variant === Collect.ENode.FunctionSymbol);
+      if (collectedMethod.private) {
+        this.assertMemberAccessible(exprTypeDef, name, sourceloc);
+      }
 
       let elaboratedStructCache = null as Semantic.StructDef | null;
       for (const [_, cache] of this.sr.elaboratedStructDatatypes) {
@@ -12777,6 +13059,15 @@ export class SemanticElaborator {
           HazeErrorCode.MethodCanMutateObjectButNotCalledObject
         );
       }
+      // A mut method on a value changes it in place: the value is written
+      // like any other place (a captured copy, a value inside data reached
+      // through a reference without 'mut').
+      if (
+        receiverStorage === EStorageClass.Value &&
+        elaboratedMethod.methodRequiredMutability === EDatatypeMutability.Mut
+      ) {
+        this.assertWritable(exprId, sourceloc, "receiver");
+      }
 
       // Receiver class required by `stackref fn` / `ref fn` (§12.3).
       const requiredReceiver = elaboratedMethod.methodReceiverStorage;
@@ -12798,6 +13089,24 @@ export class SemanticElaborator {
           `Method ${Semantic.serializeFullSymbolName(this.sr, elaboratedMethodId)}() is a 'ref fn' and requires a 'ref' receiver, but it is called on a ${receiverStorage === EStorageClass.Value ? "value" : "stackref"}.`,
           sourceloc,
           HazeErrorCode.ReceiverStorageTooWeak
+        );
+      }
+
+      // A method that is not const sees `this` without const. On const data
+      // that is a view without const, allowed only when it reaches no `mut`
+      // reference (C603; the same rule as the conversion).
+      if (
+        resolvedExprTypeUse.mutability === EDatatypeMutability.Const &&
+        elaboratedMethod.methodRequiredMutability !== EDatatypeMutability.Const &&
+        Conversion.reachesMut(this.sr, expr.type)
+      ) {
+        throw new CompilerError(
+          `Method ${Semantic.serializeFullSymbolName(
+            this.sr,
+            elaboratedMethodId
+          )}() is called on const data, but it sees 'this' without const, and '${Semantic.serializeTypeUse(this.sr, expr.type)}' reaches a 'mut' reference through which it could change the const data. Declare the method 'const fn'.`,
+          sourceloc,
+          HazeErrorCode.NoSuitableConversionFound
         );
       }
 
@@ -12898,6 +13207,9 @@ export class SemanticElaborator {
       }
       const member = this.sr.symbolNodes.get(memberId);
       assert(member.variant === Semantic.ENode.VariableSymbol && member.type);
+      if (member.private) {
+        this.assertMemberAccessible(clonedTypeDef, name, sourceloc);
+      }
       return this.sr.b.memberAccessRaw(
         exprId,
         name,
@@ -14130,6 +14442,12 @@ export class SemanticElaborator {
             sourceloc
           );
         }
+      }
+
+      // The mutators change the array's data, which only a `mut` reference
+      // can (C601, C602, C596).
+      if (DYNAMIC_ARRAY_MUTATORS.has(name)) {
+        this.assertMutableReference(expr.type, sourceloc);
       }
 
       if (name === "push") {
@@ -16450,6 +16768,12 @@ export class SemanticElaborator {
       }
       const variable = this.sr.symbolNodes.get(variableId);
       assert(variable.variant === Semantic.ENode.VariableSymbol);
+      // A member written out is an access. (A spread-contributed one is too,
+      // but a spread of a private field outside already failed where it was
+      // resolved, and one inside is inside here as well.)
+      if (variable.private) {
+        this.assertMemberAccessible(struct, m.key, m.sourceloc ?? sourceloc);
+      }
 
       // A member cannot be assigned twice HERE any more, because §6.1's
       // resolution collapsed repeats before this point: last write wins, and
@@ -18122,16 +18446,10 @@ export class SemanticElaborator {
 
         // Now change the mutability of the variable
         if (variableSymbol.mutability === EVariableMutability.Const) {
-          const typeUse = this.sr.typeUseNodes.get(variableSymbol.type);
-          if (typeUse.mutability !== EDatatypeMutability.Const) {
-            variableSymbol.type = makeTypeUse(
-              this.sr,
-              typeUse.type,
-              EDatatypeMutability.Const,
-              typeUse.storage,
-              s.sourceloc
-            )[1];
-          }
+          variableSymbol.type = Conversion.constOf(
+            this.sr,
+            variableSymbol.type
+          );
         }
 
         variableSymbol.concrete = this.sr.typeDefNodes.get(
@@ -18745,6 +19063,13 @@ export class SemanticElaborator {
           }
         }
 
+        // An element of const data is const too (Axiom C603).
+        elementTypeUse = Conversion.throughConst(
+          this.sr,
+          arrayExpr.type,
+          elementTypeUse
+        );
+
         // The loop variable is a copy of each element. For nocopy elements
         // that is a second binding (§9.2); they are used in place through
         // `arr[i]` instead (§8).
@@ -19340,6 +19665,14 @@ export class SemanticElaborator {
           HazeErrorCode.SpreadOfOpaqueStruct
         );
       }
+      // Spreading reads every field of the source, private ones included.
+      for (const memberId of sourceDef.members) {
+        const member = this.sr.symbolNodes.get(memberId);
+        assert(member.variant === Semantic.ENode.VariableSymbol);
+        if (member.private) {
+          this.assertMemberAccessible(sourceDef, member.name, element.sourceloc);
+        }
+      }
       // Spreading copies every member out of the source: for a nocopy value
       // that is a second binding (§9.2), unless the source is a fresh value.
       // Out of a ref/stackref it duplicates an object that keeps existing, so
@@ -19347,8 +19680,9 @@ export class SemanticElaborator {
       //
       // This closes the spread, not field access: `W { n: a.n }` still
       // rebuilds a nocopy value from its members one by one. Preventing that
-      // needs private fields, which do not exist yet; until then the stdlib's
-      // nocopy types rely on `opaque` and on not being used adversarially.
+      // needs private fields (`private` exists now, and a spread or a literal
+      // outside the struct cannot reach them); a nocopy type that declares none
+      // still relies on `opaque` and on not being used adversarially.
       if (
         Conversion.isNocopyType(this.sr, sourceUse.type) &&
         (sourceUse.storage !== EStorageClass.Value ||
@@ -19413,7 +19747,8 @@ export class SemanticElaborator {
           instanceIds: [...readFrom.instanceIds],
           expr: readFromId,
           memberName: member.name,
-          type: member.type,
+          // A member of const data is const too (C603).
+          type: Conversion.throughConst(this.sr, readFrom.type, member.type),
           sourceloc: element.sourceloc,
           isTemporary: true,
           flow: readFrom.flow,
@@ -21072,37 +21407,16 @@ export class SemanticElaborator {
         );
       }
 
-      // `arr[i]` denotes storage INSIDE the array, not a copy, so when
-      // the array itself is `mut` the element has to be mutable too --
-      // otherwise an in-place edit like `lines[i].insert(...)` is
-      // rejected and callers must rebuild the whole array to change one
-      // element.
-      //
-      // Restricted to mut DYNAMIC arrays of struct elements on purpose:
-      // widening this to every subscript re-mangles common value types
-      // (int/str/...) and makes generic stdlib functions such as
-      // fmt.format_to monomorphize twice, which is a duplicate-symbol
-      // error at C compile time.
+      // `arr[i]` is the element as the array declares it: a value element
+      // of a `mut` array is changed in place (`lines[i].insert(...)`), a
+      // reference element changes its data only if it is `mut` itself
+      // (`mut []mut R`). An element of const data is const too (C603).
       let elementTypeUse = valueType.datatype;
-      if (
-        valueType.variant === Semantic.ENode.DynamicArrayDatatype &&
-        exprTypeUse.mutability === EDatatypeMutability.Mut
-      ) {
-        const elemUse = this.sr.typeUseNodes.get(elementTypeUse);
-        const elemDef = this.sr.typeDefNodes.get(elemUse.type);
-        if (
-          elemDef.variant === Semantic.ENode.StructDatatype &&
-          elemUse.mutability !== EDatatypeMutability.Mut
-        ) {
-          elementTypeUse = makeTypeUse(
-            this.sr,
-            elemUse.type,
-            EDatatypeMutability.Mut,
-            elemUse.storage,
-            arraySubscript.sourceloc
-          )[1];
-        }
-      }
+      elementTypeUse = Conversion.throughConst(
+        this.sr,
+        value.type,
+        elementTypeUse
+      );
 
       return this.sr.b.addExpr(this.sr, {
         variant: Semantic.ENode.ArraySubscriptExpr,
@@ -22894,6 +23208,7 @@ export function makeDeepDatatypeAvailable(
       export: member.export,
       extern: member.extern,
       memberOfStruct: newStructId,
+      private: member.private,
       mutability: member.mutability,
       parentSymbolId: structSymbol,
       requiresHoisting: member.requiresHoisting,

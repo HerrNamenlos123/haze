@@ -43,7 +43,7 @@ fn main(): int {
 
     // ── a computed cut short by a panic, caught outside any computed ────
     let a = rx.reactive<int>(1);
-    let failOn: ref Box<int> = { value: 2 };
+    let failOn: mut ref Box<int> = { value: 2 };
     let d = rx.computed((): int => {
         let v = rx.get(a);
         if v == failOn.value {
@@ -53,7 +53,7 @@ fn main(): int {
     });
     state.check("computed: first read", rx.get(d) == 10);
     a := 2;
-    let caught: ref Box<bool> = { value: false };
+    let caught: mut ref Box<bool> = { value: false };
     attempt {
         rx.get(d);
     } recover e {
@@ -97,7 +97,7 @@ fn main(): int {
 
     // ── a sync watcher panicking inside the write that triggered it ─────
     let s = rx.reactive<int>(0);
-    let sCalls: ref Box<int> = { value: 0 };
+    let sCalls: mut ref Box<int> = { value: 0 };
     let ws = rx.watch(() => s, (v, old) => {
         sCalls.value++;
         if v == 1 {
@@ -105,11 +105,11 @@ fn main(): int {
         }
     }, { scheduler: sync });
     let t = rx.reactive<int>(0);
-    let tCalls: ref Box<int> = { value: 0 };
+    let tCalls: mut ref Box<int> = { value: 0 };
     let wt = rx.watch(() => t, (v, old) => {
         tCalls.value++;
     }, { scheduler: sync });
-    let caughtWatcher: ref Box<bool> = { value: false };
+    let caughtWatcher: mut ref Box<bool> = { value: false };
     attempt {
         s := 1;
     } recover e {

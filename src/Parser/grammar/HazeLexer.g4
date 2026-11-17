@@ -18,6 +18,11 @@ INLINEC: '__c__';
 EXTERN: 'extern';
 FN: 'fn';
 STATIC: 'static';
+// `private` precedes a struct member; `tasklocal` and `global` precede a global
+// variable's `let` / `const`. All three are reserved words.
+PRIVATE: 'private';
+TASKLOCAL: 'tasklocal';
+GLOBAL: 'global';
 STRUCT: 'struct';
 NODISCARD: 'nodiscard';
 NONCLONABLE: 'nonclonable';

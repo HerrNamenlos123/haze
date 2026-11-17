@@ -252,6 +252,12 @@ export class SemanticBuilder {
   ) {
     const functionSymbol = this.sr.symbolNodes.get(functionSymbolId);
     assert(functionSymbol.variant === Semantic.ENode.FunctionSymbol);
+    // Every call of a method is built here, operators (`a == b`, `a[i]`,
+    // `x as T`, `x := v`) included, so this is where a private method is
+    // kept inside its struct (C173).
+    if (envType?.type === "method") {
+      this.sr.e.assertMethodAccessible(functionSymbolId, sourceloc);
+    }
     return this.sr.b.addExpr(this.sr, {
       variant: Semantic.ENode.CallableExpr,
       functionSymbol: functionSymbolId,
@@ -1548,6 +1554,8 @@ export class SemanticBuilder {
       }
     }
     assert(memberType);
+    // A member of const data is const too (Axiom C603).
+    memberType = Conversion.throughConst(this.sr, expr.type, memberType);
 
     const [resultExpr, resultExprId] = this.memberAccessRaw(
       exprId,
@@ -1626,6 +1634,29 @@ export class SemanticBuilder {
     return [resultExpr, resultExprId] as const;
   }
 
+  // A literal of a const type creates const data (Axiom C597), so everything
+  // it holds must be able to become const too (C603): a reference to data
+  // other code can change cannot (C146).
+  assertLiteralCanBeConst(
+    literalType: Semantic.TypeUseId,
+    values: Semantic.ExprId[],
+    sourceloc: SourceLoc
+  ) {
+    const use = this.sr.typeUseNodes.get(this.sr.e.resolveAlias(literalType));
+    if (use.mutability !== EDatatypeMutability.Const) {
+      return;
+    }
+    for (const valueId of values) {
+      if (!Conversion.canBecomeConst(this.sr, valueId)) {
+        throw new CompilerError(
+          `This value cannot become part of const data: it is changeable data that other references may reach, and data becomes const only by being created const or by being copied. Create it const here (a literal), or build a new value from its contents.`,
+          this.sr.exprNodes.get(valueId).sourceloc ?? sourceloc,
+          HazeErrorCode.NoSuitableConversionFound
+        );
+      }
+    }
+  }
+
   arrayLiteral(
     arrayTypeId: Semantic.TypeUseId,
     elements: Semantic.ExprId[],
@@ -1639,6 +1670,8 @@ export class SemanticBuilder {
       structType.variant === Semantic.ENode.FixedArrayDatatype ||
         structType.variant === Semantic.ENode.DynamicArrayDatatype
     );
+
+    this.assertLiteralCanBeConst(arrayTypeId, elements, sourceloc);
 
     const flow = Semantic.FlowResult.fallthrough();
     const writes = Semantic.WriteResult.empty();
@@ -1689,6 +1722,11 @@ export class SemanticBuilder {
     const structTypeUse = this.sr.typeUseNodes.get(structTypeId);
     const structType = this.sr.typeDefNodes.get(structTypeUse.type);
     assert(structType.variant === Semantic.ENode.StructDatatype);
+    this.assertLiteralCanBeConst(
+      structTypeId,
+      assign.map((a) => a.value),
+      sourceloc
+    );
 
     const [literal, literalId] = this.addExpr<Semantic.StructLiteralExpr>(
       this.sr,

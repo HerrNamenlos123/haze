@@ -285,16 +285,19 @@ export function ExportTypeDef(
         if (memberAnnotations) {
           file.write(serializeAnnotations(memberAnnotations.annotations));
         }
+        // The consumer sees a private member as private: it is part of the
+        // interface, not an implementation detail that stops at the boundary.
+        const privateKeyword = content.private ? "private " : "";
         if (defaultValue) {
           file.writeLine(
-            `${content.name}: ${Semantic.serializeTypeUse(
+            `${privateKeyword}${content.name}: ${Semantic.serializeTypeUse(
               sr,
               content.type
             )} = ${Semantic.serializeExpr(sr, defaultValue.value)};`
           );
         } else {
           file.writeLine(
-            `${content.name}: ${Semantic.serializeTypeUse(sr, content.type)};`
+            `${privateKeyword}${content.name}: ${Semantic.serializeTypeUse(sr, content.type)};`
           );
         }
       }
@@ -377,6 +380,13 @@ export function ExportTypeDef(
             assert(false);
           }
 
+          const collectedMethod = sr.cc.symbolNodes.get(
+            method.originalCollectedFunction
+          );
+          assert(collectedMethod.variant === Collect.ENode.FunctionSymbol);
+          if (collectedMethod.private) {
+            file.write("private ");
+          }
           if (method.staticMethod) {
             file.write("static ");
           }

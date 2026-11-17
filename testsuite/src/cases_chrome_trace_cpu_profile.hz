@@ -116,7 +116,7 @@ fn checkDeepVaryingStacks(): void {
     let profile = ChromeTrace.CpuProfileBuilder();
     for (let i = 0; i < 30; i++) {
         let depth = (i % 5) + 1;
-        let frames: []ChromeTrace.FrameRef = [];
+        let frames: mut []ChromeTrace.FrameRef = [];
         for (let d = 0; d < depth; d++) {
             frames.push(frame(f"level{d}"));
         }

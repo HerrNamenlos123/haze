@@ -337,7 +337,7 @@ fn cachePath(name: str): str {
 
 fn main(): int {
     let data = rx.reactive<Prefs>(Prefs { hoverCount: 3 });
-    let runs: ref Box<int> = { value: 0 };
+    let runs: mut ref Box<int> = { value: 0 };
     let text = rx.computed((): str => {
         runs.value = runs.value + 1;
         return json.stringify(data);

@@ -15,6 +15,7 @@ import {
   type EBinaryOperation,
   EDatatypeMutability,
   EExternLanguage,
+  EGlobalStorage,
   type EIncrOperation,
   EOverloadedOperator,
   type EUnaryOperation,
@@ -163,6 +164,9 @@ export namespace Semantic {
     variant: ENode.VariableSymbol;
     name: string;
     memberOfStruct: TypeDefId | null;
+    // Struct members only: declared `private`, so only code inside the struct's
+    // body may name it (Elaborate.assertMemberAccessible). Absent = not private.
+    private?: boolean;
     type: TypeUseId | null;
     mutability: EVariableMutability;
     export: boolean;
@@ -201,6 +205,8 @@ export namespace Semantic {
     value: ExprId | null;
     export: boolean;
     extern: EExternLanguage;
+    // `tasklocal` / `global` / neither (docs/async-runtime.md, "Globals").
+    storage: EGlobalStorage;
     parentSymbolId: SymbolId | null;
     sourceloc: SourceLoc;
     comptime: boolean;

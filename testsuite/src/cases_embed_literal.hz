@@ -24,7 +24,7 @@ namespace cases_embed_literal {
     // Every byte value as a u8, indexed by value: lets an []int be written
     // out without an int-to-u8 conversion.
     export fn byteTable(): []u8 {
-        let table: []u8 = [];
+        let table: mut []u8 = [];
         let b: u8 = 0;
         for (let i = 0; i < 256; i++) {
             table.push(b);
@@ -65,7 +65,7 @@ namespace cases_embed_literal {
     // Every byte value in order, then each C string-literal trap, then long
     // runs that are split across literals, then a trailing NUL.
     export fn riskyBytes(): []int {
-        let out: []int = [];
+        let out: mut []int = [];
         for (let i = 0; i < 256; i++) {
             out.push(i);
         }

@@ -54,13 +54,13 @@ ref struct MyErr {
 ref struct Outer {
     ref struct Inner {
         v: int;
-        fn operator:=(value: real): void {
+        mut fn operator:=(value: real): void {
             this.v = value as int;
         }
     }
 
-    fn get(): Result<Inner, MyErr> {
-        return Result<Inner, MyErr>.Ok(Outer.Inner { v: 0 });
+    fn get(): Result<mut Inner, MyErr> {
+        return Result<mut Inner, MyErr>.Ok(Outer.Inner { v: 0 });
     }
 }
 

@@ -34,7 +34,7 @@ struct Settings {
     id: int;
     count: int = 3;
     name: str = "untitled";
-    tags: []str = [];
+    tags: mut []str = [];
     inner: Inner = {};
     width: real | none = 2.5;
 }
@@ -87,7 +87,7 @@ still required: json error: JSON missing field: id
             "json defaults: a cache field is a plain reactive array, not an optional",
             """
 struct Cache {
-    folders: []str = [];
+    folders: mut []str = [];
     width: real = 200.0;
 }
 

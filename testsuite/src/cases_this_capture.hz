@@ -73,10 +73,10 @@ fn main(): int {
     v.n = 100;
     fmt.println(f"{v.n} {a} {b} {c} {g()} {snap()}");
 
-    let r: ref R = { n: 5 };
+    let r: mut ref R = { n: 5 };
     let rg = r.getter();
     r.n = 6;
-    let rv: ref V = { n: 40 };
+    let rv: mut ref V = { n: 40 };
     let rvg = rv.getter();
     rv.n = 41;
     fmt.println(f"{rg()} {rvg()}");

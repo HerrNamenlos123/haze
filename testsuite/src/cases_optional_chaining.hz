@@ -39,7 +39,7 @@ namespace cases_optional_chaining {
 struct C { x: int = 7; fn twice(): int { return this.x * 2; } }
 struct B {
     c: C | null = null;
-    arr: []int = [1, 2, 3];
+    arr: mut []int = [1, 2, 3];
     fn getC(): C | none { return this.c is C ? this.c : none; }
     fn val(): int { return 5; }
     fn gen<T>(v: T): T { return v; }

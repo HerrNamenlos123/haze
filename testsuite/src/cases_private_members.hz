@@ -1,0 +1,585 @@
+// ============================================================================
+// `private` struct members (Axiom C173, C174).
+//
+// `private` precedes any member of a struct: a field (`private x: int`,
+// `private const x: int`, `private x = 3`) or a method (`private fn m()`,
+// `private static fn s()`, `private mut fn m()`, operators too).
+//
+// A private member can be reached only by code lexically inside the body of
+// the struct that declares it: its methods (and every lambda nested in them),
+// its field default initializers, and the methods of structs nested inside its
+// body. Everything else is outside: free functions in the same file, other
+// structs, and generic functions instantiated with the struct (the access site
+// is where the code is WRITTEN, not where it is instantiated).
+//
+// Per framework.hz, one compile-and-run case holds everything a running
+// program can verify; every must-fail rule is its own case, because the
+// compiler stops at the first error of a program, so each offending site is
+// exactly one H7230.
+// ============================================================================
+
+namespace cases_private_members {
+
+    fn failsAt(name: str, source: str): testsuite.TestCase {
+        return testsuite.TestCase {
+            name: name,
+            source: source,
+            expect: testsuite.ExpectKind.CompileFailure,
+            diagnosticChecks: [testsuite.exactCount(errorcodes.Code.PrivateMemberAccess, 1)],
+        };
+    }
+
+    // One offending site per program, the shared declaration first.
+    fn vaultFails(s: mut testsuite.Suite, name: str, rest: str) {
+        s.cases.push(failsAt(name, """
+struct Vault {
+    private secret: int = 7;
+    open: int = 1;
+    private fn hidden(): int { return this.secret; }
+    private static fn make(): Vault { return Vault {}; }
+    fn reveal(): int { return this.secret + this.hidden(); }
+}
+""" + rest));
+    }
+
+    fn safeLib(): testsuite.TestModule {
+        return testsuite.TestModule {
+            name: "safelib",
+            source: """
+export struct Safe {
+    private code: int = 1234;
+    open: int = 1;
+    private fn hidden(): int { return this.code; }
+    private static fn make(): Safe { return Safe {}; }
+    fn reveal(): int { return this.hidden() + 1; }
+    static fn create(): Safe { return Safe.make(); }
+    fn gen<T>(t: T): int { return this.code + this.hidden(); }
+}
+
+export struct Holder<T> {
+    private item: T;
+    open: int = 5;
+    private fn peek(): T { return this.item; }
+    fn get(): T { return this.peek(); }
+    static fn of(t: T): Holder<T> { return Holder<T> { item: t }; }
+}
+""",
+        };
+    }
+
+    // A struct P whose operator `op` (declared by `decl`) is private, used
+    // from main by `use`: H7230 exactly once.
+    fn privateOperator(s: mut testsuite.Suite, op: str, decl: str, use: str) {
+        s.compileFails(f"private: operator {op} is not usable from outside",
+            f"struct P {{\n    v: int = 0;\n{decl}\n}}\nfn main(): int {{\n{use}\n    return 0;\n}}\n",
+            [testsuite.exactCount(errorcodes.Code.PrivateMemberAccess, 1)]);
+    }
+
+    export fn register(s: mut testsuite.Suite) {
+
+        // ── What `private` does not change ──────────────────────────────────
+        s.run(
+            "private: inside access, outside use of what is public, member-wise operations",
+            """
+fn call(f: immediate () => int): int { return f(); }
+
+struct Vault {
+    private secret: int = 7;
+    private label: str = "vault";
+    open: int = 1;
+    private const fixed: int = 100;
+    private static fn seed(): int { return 40; }
+    private fn hidden(): int { return this.secret * 2; }
+    private mut fn bump() { this.secret = this.secret + 1; }
+    fn reveal(): int { return this.secret + this.hidden(); }
+    mut fn poke(): int { this.bump(); return this.secret; }
+    // A lambda nested in a method is inside.
+    fn viaLambda(): int { return call(() => this.secret + Vault.seed()); }
+    fn name(): str { return this.label; }
+    fn constant(): int { return this.fixed; }
+    // Rules 3 and 4, from inside: naming a private field in a literal, spreading.
+    static fn create(): Vault { return Vault { secret: 11 }; }
+    fn copyWith(n: int): Vault { return Vault { ...this, secret: n }; }
+    fn spreadAll(): int { let w = { ...this }; return w.secret + w.open; }
+    fn maybe(o: Vault | none): int { return o?.secret ?? -1; }
+    // A struct nested in the body is inside: its methods and its field defaults.
+    struct Meta {
+        copy: Vault = Vault { secret: 9 };
+        fn peek(v: Vault): int { return v.secret + v.hidden() + Vault.seed(); }
+    }
+}
+
+struct Tally {
+    private a: int = 3;
+    b: int = 4;
+    fn sum(): int {
+        let n = 0;
+        for comptime f in Tally.fields { n = n + this.[f.name]; }
+        return n;
+    }
+}
+
+struct Box<T> {
+    private item: T;
+    open: int = 5;
+    private fn peek(): T { return this.item; }
+    fn get(): T { return this.peek(); }
+    static fn of(t: T): Box<T> { return Box<T> { item: t }; }
+}
+
+fn main(): int {
+    let v = Vault {};
+    fmt.println(f"{v.reveal()} {v.open}");
+    fmt.println(f"{v.poke()} {v.viaLambda()} {v.name()} {v.constant()}");
+    let c = Vault.create();
+    fmt.println(f"{c.reveal()} {c.copyWith(2).reveal()} {c.spreadAll()} {v.maybe(c)} {v.maybe(none)}");
+    let m = Vault.Meta {};
+    fmt.println(f"{m.peek(v)} {m.copy.reveal()}");
+    fmt.println(f"{Tally {}.sum()}");
+
+    // Outside: a literal that omits a private field with a default is fine,
+    // and so are copies and the compiler's own member-wise equality.
+    let w = Vault { open: 3 };
+    let copy = w;
+    fmt.println(f"{w.reveal()} {w.open} {copy.reveal()} {w == copy} {w == v} {c == Vault.create()}");
+
+    // A generic struct's own methods reach its private members for every instantiation.
+    fmt.println(f"{Box<int>.of(4).get()} {Box<str>.of("s").get()} {Box<int>.of(4).open}");
+    return 0;
+}
+""",
+            """
+21 1
+8 48 vault 100
+33 6 12 11 -1
+64 27
+7
+21 3 21 true false true
+4 s 5
+""");
+
+        // ── Rule 1: reading and writing a private field from outside ────────
+        vaultFails(s, "private: reading a field from a free function", """
+fn main(): int {
+    let v = Vault {};
+    return v.secret; // <- H7230
+}
+""");
+
+        vaultFails(s, "private: writing a field from a free function", """
+fn main(): int {
+    let v = Vault {};
+    v.secret = 3; // <- H7230
+    return 0;
+}
+""");
+
+        vaultFails(s, "private: compound assignment to a field", """
+fn main(): int {
+    let v = Vault {};
+    v.secret += 1; // <- H7230
+    return 0;
+}
+""");
+
+        vaultFails(s, "private: a field through optional chaining", """
+fn main(): int {
+    let v = Vault {};
+    let o: Vault | none = v;
+    return o?.secret ?? 0; // <- H7230
+}
+""");
+
+        vaultFails(s, "private: a field from a method of another struct", """
+struct Other {
+    fn peek(v: Vault): int { return v.secret; } // <- H7230
+}
+fn main(): int {
+    let o = Other {};
+    return o.peek(Vault {});
+}
+""");
+
+        vaultFails(s, "private: a field of a ref struct", """
+ref struct Node {
+    private v: int = 1;
+}
+fn main(): int {
+    let n: ref Node = { };
+    return n.v; // <- H7230
+}
+""");
+
+        vaultFails(s, "private: a field read through a union of structs", """
+struct Twin {
+    private secret: int = 1;
+}
+fn pick(u: Vault | Twin): int {
+    return u.secret; // <- H7230
+}
+fn main(): int {
+    return pick(Vault {});
+}
+""");
+
+        s.cases.push(failsAt("private: a field declared by inference, with const", """
+struct Config {
+    private const limit = 5;
+    private name = "cfg";
+    open = 1;
+}
+fn main(): int {
+    let c = Config {};
+    return c.limit + c.open; // <- H7230
+}
+"""));
+
+        vaultFails(s, "private: a field of a reactive struct", """
+fn peek(r: rx.Reactive<Vault>): int {
+    return r.secret; // <- H7230
+}
+fn main(): int {
+    return 0;
+}
+""");
+
+        s.cases.push(failsAt("private: an inner struct's field from its enclosing struct", """
+struct Outer {
+    struct Inner {
+        private x: int = 1;
+    }
+    // The body of Outer is not the body of Inner.
+    fn peek(i: Inner): int { return i.x; } // <- H7230
+}
+fn main(): int {
+    return Outer {}.peek(Outer.Inner {});
+}
+"""));
+
+        // ── Rule 2: private methods ─────────────────────────────────────────
+        vaultFails(s, "private: calling a method from a free function", """
+fn main(): int {
+    let v = Vault {};
+    return v.hidden(); // <- H7230
+}
+""");
+
+        vaultFails(s, "private: binding a method as a value", """
+fn main(): int {
+    let v = Vault {};
+    let f = v.hidden; // <- H7230
+    return f();
+}
+""");
+
+        vaultFails(s, "private: naming a static method through the type", """
+fn main(): int {
+    let v = Vault.make(); // <- H7230
+    return v.open;
+}
+""");
+
+        vaultFails(s, "private: calling a method through optional chaining", """
+fn main(): int {
+    let v = Vault {};
+    let o: Vault | none = v;
+    return o?.hidden() ?? 0; // <- H7230
+}
+""");
+
+        s.cases.push(failsAt("private: calling a mut method", """
+struct Counter {
+    private n: int = 0;
+    private mut fn bump() { this.n = this.n + 1; }
+    mut fn tick() { this.bump(); }
+}
+fn main(): int {
+    let c = Counter {};
+    c.bump(); // <- H7230
+    return 0;
+}
+"""));
+
+        // ── Rule 3: struct literals ─────────────────────────────────────────
+        vaultFails(s, "private: a struct literal naming a private field", """
+fn main(): int {
+    let v = Vault { secret: 1 }; // <- H7230
+    return v.open;
+}
+""");
+
+        vaultFails(s, "private: a literal in a typed slot naming a private field", """
+fn main(): int {
+    let v: Vault = { secret: 1 }; // <- H7230
+    return v.open;
+}
+""");
+
+        vaultFails(s, "private: a literal as an argument naming a private field", """
+fn take(v: Vault): int { return v.open; }
+fn main(): int {
+    return take({ secret: 1 }); // <- H7230
+}
+""");
+
+        // Omitting a private field with no default is the ordinary missing-field error.
+        s.compileFails(
+            "private: a literal that omits a private field without a default",
+            """
+struct Strict {
+    private must: int;
+    open: int = 1;
+}
+fn main(): int {
+    let s = Strict { open: 2 };
+    return s.open;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.MembersWereNotAssignedAndNoDefaultValue),
+             testsuite.mustNotHave(errorcodes.Code.PrivateMemberAccess)]);
+
+        // ── Rule 4: spread ──────────────────────────────────────────────────
+        vaultFails(s, "private: spreading a struct with private fields into an anonymous struct", """
+fn main(): int {
+    let v = Vault {};
+    let w = { ...v }; // <- H7230
+    return w.open;
+}
+""");
+
+        vaultFails(s, "private: spreading a struct with private fields into a struct literal", """
+fn main(): int {
+    let v = Vault {};
+    let w = Vault { ...v, open: 2 }; // <- H7230
+    return w.open;
+}
+""");
+
+        // ── Rule 5: comptime access by name ─────────────────────────────────
+        vaultFails(s, "private: comptime member access by a literal name", """
+fn main(): int {
+    let v = Vault {};
+    return v.["secret"]; // <- H7230
+}
+""");
+
+        vaultFails(s, "private: comptime member access over a struct's fields", """
+fn sum<T>(t: T): int {
+    let n = 0;
+    for comptime f in T.fields {
+        n = n + t.[f.name]; // <- H7230 (the first private field reached)
+    }
+    return n;
+}
+fn main(): int {
+    return sum(Vault {});
+}
+""");
+
+        // The reflection listing itself is not filtered: a generic walker over
+        // the fields still sees them all, and fails at the access.
+        s.run(
+            "private: reflection lists private fields, public ones stay reachable",
+            """
+struct Vault {
+    private secret: int = 7;
+    open: int = 1;
+}
+fn count<T>(): int {
+    let n = 0;
+    for comptime f in T.fields { n = n + 1; }
+    return n;
+}
+fn sumPublic(v: Vault): int {
+    let n = 0;
+    for comptime f in Vault.fields {
+        if comptime f.name == "open" { n = n + v.[f.name]; }
+    }
+    return n;
+}
+fn main(): int {
+    fmt.println(f"{count<Vault>()} {sumPublic(Vault {})}");
+    return 0;
+}
+""",
+            "2 1");
+
+        // ── Rule 7: generics ────────────────────────────────────────────────
+        vaultFails(s, "private: a generic function written outside, instantiated with the struct", """
+fn peek<T>(t: T): int {
+    return t.secret; // <- H7230
+}
+fn main(): int {
+    return peek(Vault {});
+}
+""");
+
+        s.cases.push(failsAt("private: a field of a generic struct instantiation from outside", """
+struct Box<T> {
+    private item: T;
+    static fn of(t: T): Box<T> { return Box<T> { item: t }; }
+}
+fn main(): int {
+    let b = Box<int>.of(1);
+    return b.item; // <- H7230
+}
+"""));
+
+        s.cases.push(failsAt("private: a method of a generic struct instantiation from outside", """
+struct Box<T> {
+    private item: T;
+    private fn peek(): T { return this.item; }
+    static fn of(t: T): Box<T> { return Box<T> { item: t }; }
+}
+fn main(): int {
+    let b = Box<int>.of(1);
+    return b.peek(); // <- H7230
+}
+"""));
+
+        // ── Rule 9: across a module boundary ────────────────────────────────
+        s.runWithModules(
+            "private: a module's own methods reach their private members, its public API works",
+            [safeLib()],
+            """
+import safelib;
+
+fn main(): int {
+    let s = safelib.Safe.create();
+    fmt.println(f"{s.reveal()} {s.open} {s.gen(1)} {s.gen("x")}");
+    let w = safelib.Safe { open: 2 };
+    fmt.println(f"{w.reveal()} {w.open}");
+    let h = safelib.Holder<int>.of(4);
+    let k = safelib.Holder<str>.of("k");
+    fmt.println(f"{h.get()} {k.get()} {h.open}");
+    return 0;
+}
+""",
+            """
+1235 1 2468 2468
+1235 2
+4 k 5
+""");
+
+        s.compileFailsWithModules(
+            "private: a field of an imported struct",
+            [safeLib()],
+            """
+import safelib;
+
+fn main(): int {
+    let s = safelib.Safe.create();
+    return s.code; // <- H7230
+}
+""",
+            [testsuite.exactCount(errorcodes.Code.PrivateMemberAccess, 1)]);
+
+        s.compileFailsWithModules(
+            "private: a method of an imported struct",
+            [safeLib()],
+            """
+import safelib;
+
+fn main(): int {
+    let s = safelib.Safe.create();
+    return s.hidden(); // <- H7230
+}
+""",
+            [testsuite.exactCount(errorcodes.Code.PrivateMemberAccess, 1)]);
+
+        s.compileFailsWithModules(
+            "private: a static method of an imported struct",
+            [safeLib()],
+            """
+import safelib;
+
+fn main(): int {
+    let s = safelib.Safe.make(); // <- H7230
+    return s.open;
+}
+""",
+            [testsuite.exactCount(errorcodes.Code.PrivateMemberAccess, 1)]);
+
+        s.compileFailsWithModules(
+            "private: a literal naming a private field of an imported struct",
+            [safeLib()],
+            """
+import safelib;
+
+fn main(): int {
+    let s = safelib.Safe { code: 1 }; // <- H7230
+    return s.open;
+}
+""",
+            [testsuite.exactCount(errorcodes.Code.PrivateMemberAccess, 1)]);
+
+        s.compileFailsWithModules(
+            "private: spreading an imported struct with private fields",
+            [safeLib()],
+            """
+import safelib;
+
+fn main(): int {
+    let s = safelib.Safe.create();
+    let w = { ...s }; // <- H7230
+    return w.open;
+}
+""",
+            [testsuite.exactCount(errorcodes.Code.PrivateMemberAccess, 1)]);
+
+        s.compileFailsWithModules(
+            "private: a field of an imported generic struct",
+            [safeLib()],
+            """
+import safelib;
+
+fn main(): int {
+    let h = safelib.Holder<int>.of(4);
+    return h.item; // <- H7230
+}
+""",
+            [testsuite.exactCount(errorcodes.Code.PrivateMemberAccess, 1)]);
+
+        s.compileFailsWithModules(
+            "private: a generic function written outside, instantiated with an imported struct",
+            [safeLib()],
+            """
+import safelib;
+
+fn peek<T>(t: T): int {
+    return t.code; // <- H7230
+}
+
+fn main(): int {
+    return peek(safelib.Safe.create());
+}
+""",
+            [testsuite.exactCount(errorcodes.Code.PrivateMemberAccess, 1)]);
+
+        // ── private operators: operator syntax is a call too (C173) ────────
+        privateOperator(s, "==", "    private fn operator==(o: P): bool { return this.v == o.v; }", "    let same = P { v: 1 } == P { v: 1 };");
+        privateOperator(s, "!=", "    private fn operator!=(o: P): bool { return this.v != o.v; }", "    let other = P { v: 1 } != P { v: 2 };");
+        privateOperator(s, "<", "    private fn operator<(o: P): bool { return this.v < o.v; }", "    let less = P { v: 1 } < P { v: 2 };");
+        privateOperator(s, "[]", "    private fn operator[](i: int): int { return this.v + i; }", "    let p = P { v: 1 };\n    let at = p[2];");
+        privateOperator(s, "as", "    private fn operator as(): int { return this.v; }", "    let n = P { v: 1 } as int;");
+        privateOperator(s, ":=", "    private mut fn operator:=(n: int) { this.v = n; }", "    let p = P { v: 1 };\n    p := 5;");
+
+        s.run(
+            "private: a private operator is used inside the struct",
+            """
+struct P {
+    v: int = 0;
+    private fn operator==(o: P): bool { return this.v == o.v; }
+    private fn operator[](i: int): int { return this.v + i; }
+    fn same(o: P): bool { return this == o; }
+    fn at(i: int): int { return this[i]; }
+}
+fn main(): int {
+    let p = P { v: 3 };
+    fmt.println(f"{p.same(P { v: 3 })} {p.at(4)}");
+    return 0;
+}
+""",
+            "true 7");
+    }
+}

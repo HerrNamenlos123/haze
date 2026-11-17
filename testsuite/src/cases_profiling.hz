@@ -64,7 +64,7 @@ fn traceFingerprint(): str {
 // the whole contract of the scoped form: the caller writes no start/stop
 // pair and cannot forget the stop half.
 fn checkScopedProfileRunsBodyAndWritesTrace(): void {
-    let ran: ref Box<int> = { value: 0 };
+    let ran: mut ref Box<int> = { value: 0 };
     profiling.profile(() => {
         ran.value = ran.value + 1;
     }, "scoped_case.trace.json", { samplingRate: 1000, memoryInstrumentation: false });
@@ -87,7 +87,7 @@ fn checkScopedProfileRunsBodyAndWritesTrace(): void {
 // closure must be able to read what was in scope before it -- i.e. profile()
 // takes a real closure, not a detached function.
 fn checkScopedProfileClosesOverEnclosingScope(): void {
-    let total: ref Box<int> = { value: 0 };
+    let total: mut ref Box<int> = { value: 0 };
     let addend = 21;
     profiling.profile(() => {
         total.value = total.value + addend + addend;
@@ -130,7 +130,7 @@ fn checkAutoProfilingHooksAreInertWhenNotRequested(): void {
     // leave whatever was (or wasn't) there untouched.
     assert(traceFingerprint() == before, "expected no trace.json to be written when auto-profiling was not requested");
 
-    let ran: ref Box<int> = { value: 0 };
+    let ran: mut ref Box<int> = { value: 0 };
     profiling.profile(() => {
         ran.value = ran.value + 1;
     }, "after_auto.trace.json", { samplingRate: 1000, memoryInstrumentation: false });

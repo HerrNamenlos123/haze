@@ -85,6 +85,7 @@ import {
   EDatatypeMutability,
   EStorageClass,
   EExternLanguage,
+  EGlobalStorage,
   EIncrOperation,
   ELiteralUnit,
   EOverloadedOperator,
@@ -503,6 +504,13 @@ class ASTBuilder extends HazeParserListener {
       return EExternLanguage.Extern_C;
     }
     return EExternLanguage.Extern;
+  }
+
+  globalStorage(ctx: GlobalVariableDefinitionContext): EGlobalStorage {
+    if (ctx.TASKLOCAL()) {
+      return EGlobalStorage.Task;
+    }
+    return ctx.GLOBAL() ? EGlobalStorage.Process : EGlobalStorage.Thread;
   }
 
   /**
@@ -1579,6 +1587,7 @@ class ASTBuilder extends HazeParserListener {
       })),
       requires: requires,
       static: false,
+      private: false,
       methodType: EMethodType.None,
       name: ctx._fnName!.getText(),
       methodRequiredMutability: null,
@@ -1660,6 +1669,7 @@ class ASTBuilder extends HazeParserListener {
       pub: Boolean(ctx._pub),
       export: Boolean(ctx._export_),
       extern: this.exlang(ctx),
+      storage: this.globalStorage(ctx),
       comptime: Boolean(ctx._comptime),
       mutability: this.mutability(ctx),
       name: ctx.id().getText(),
@@ -1698,6 +1708,7 @@ class ASTBuilder extends HazeParserListener {
         ? this.mutability(ctx)
         : EVariableMutability.Default,
       optional: false,
+      private: Boolean(ctx._priv),
       defaultValue: defaultValue,
       sourceloc: this.loc(ctx),
     } satisfies ASTStructMemberDefinition);
@@ -1723,6 +1734,7 @@ class ASTBuilder extends HazeParserListener {
       annotations: [],
       mutability: EVariableMutability.Default,
       optional: Boolean(ctx.QUESTIONMARK()),
+      private: false,
       defaultValue: defaultValue,
       sourceloc: this.loc(ctx),
     } satisfies ASTStructMemberDefinition);
@@ -1783,6 +1795,7 @@ class ASTBuilder extends HazeParserListener {
         ? this.mutability(ctx)
         : EVariableMutability.Default,
       optional: Boolean(ctx.QUESTIONMARK()),
+      private: Boolean(ctx._priv),
       defaultValue: defaultValue,
       sourceloc: this.loc(ctx),
     } satisfies ASTStructMemberDefinition);
@@ -1919,6 +1932,7 @@ class ASTBuilder extends HazeParserListener {
       methodReceiverStorage: methodReceiverStorage,
       name: name,
       static: Boolean(ctx._static_),
+      private: Boolean(ctx._priv),
       generics: genericNames.map((n) => ({
         name: n,
         sourceloc: this.loc(ctx),

@@ -1130,10 +1130,10 @@ export opaque struct TypeErasedBox {
         };
     }
 
-    fn set<T>(value: T) {
+    mut fn set<T>(value: T) {
         do unsafe {
             let handle = this._handle;
-            let typedBox: ref Box<T> = uninitialized;
+            let typedBox: mut ref Box<T> = uninitialized;
             __c__("typedBox = handle;");
             typedBox.value = value;
         };
@@ -1154,7 +1154,7 @@ export opaque struct TypeErasedBox {
         }
         do unsafe {
             let handle = this._handle;
-            let typedBox: ref Box<T> = uninitialized;
+            let typedBox: mut ref Box<T> = uninitialized;
             __c__("typedBox = handle;");
             return typedBox.value;
         };

@@ -33,7 +33,7 @@ ref struct Point {
 }
 
 fn caseShallowScalar() {
-    let runs: ref Box<int> = { value: 0 };
+    let runs: mut ref Box<int> = { value: 0 };
     let n = rx.shallowReactive<int>(1);
     let c = rx.computed(() => {
         runs.value = runs.value + 1;
@@ -48,7 +48,7 @@ fn caseShallowScalar() {
 }
 
 fn caseShallowStruct() {
-    let runs: ref Box<int> = { value: 0 };
+    let runs: mut ref Box<int> = { value: 0 };
     let p = rx.shallowReactive<Point>(Point { x: 1, y: 2 });
     let c = rx.computed(() => {
         runs.value = runs.value + 1;
@@ -64,8 +64,8 @@ fn caseShallowStruct() {
 }
 
 fn caseShallowArray() {
-    let runs: ref Box<int> = { value: 0 };
-    let arr = rx.shallowReactive<[]int>([]);
+    let runs: mut ref Box<int> = { value: 0 };
+    let arr = rx.shallowReactive<mut []int>([]);
     let c = rx.computed(() => {
         runs.value = runs.value + 1;
         return arr.length;
@@ -75,7 +75,7 @@ fn caseShallowArray() {
 
     // This exact statement used to segfault: writing a whole new array into
     // a shallow-reactive array slot.
-    arr := [1, 2, 3] as []int;
+    arr := [1, 2, 3] as mut []int;
     assert(c == 3, "picks up new array after :=");
     assert(runs.value == 2, "exactly one recompute after :=");
 
@@ -119,8 +119,8 @@ ref struct Pair {
 }
 
 fn caseDeepStructFieldsIndependent() {
-    let aRuns: ref Box<int> = { value: 0 };
-    let bRuns: ref Box<int> = { value: 0 };
+    let aRuns: mut ref Box<int> = { value: 0 };
+    let bRuns: mut ref Box<int> = { value: 0 };
     let p = rx.reactive<Pair>(Pair { a: 1, b: 10 });
     let cA = rx.computed(() => { aRuns.value = aRuns.value + 1; return p.a; });
     let cB = rx.computed(() => { bRuns.value = bRuns.value + 1; return p.b; });
@@ -142,7 +142,7 @@ fn caseDeepStructFieldsIndependent() {
 }
 
 fn caseDeepArrayPushPopAndWholeValue() {
-    let runs: ref Box<int> = { value: 0 };
+    let runs: mut ref Box<int> = { value: 0 };
     let arr = rx.reactive<[]int>([1, 2, 3]);
     let c = rx.computed(() => { runs.value = runs.value + 1; return arr.length; });
     assert(c == 3, "initial length");
@@ -167,7 +167,7 @@ fn caseDeepArrayPushPopAndWholeValue() {
     // Whole-array write: this exact statement used to segfault the same way
     // the shallow-array `:=` did (same underlying representation-confusion
     // bug, reached from the write side instead of via .push/.pop).
-    let elemRuns: ref Box<int> = { value: 0 };
+    let elemRuns: mut ref Box<int> = { value: 0 };
     let c0 = rx.computed(() => { elemRuns.value = elemRuns.value + 1; return arr[0]; });
     assert(c0 == 1, "element 0 before whole-array write");
     arr := [rx.reactive<int>(100), rx.reactive<int>(200)] as []RInt;
@@ -178,12 +178,12 @@ fn caseDeepArrayPushPopAndWholeValue() {
 }
 
 ref struct DeepDoc {
-    items: []int;
+    items: mut []int;
     fn operator!=(other: DeepDoc) { return true; }
 }
 
 fn caseNestedDeepArrayInStruct() {
-    let runs: ref Box<int> = { value: 0 };
+    let runs: mut ref Box<int> = { value: 0 };
     let doc = rx.reactive<DeepDoc>(DeepDoc { items: [1, 2] });
     let c = rx.computed(() => { runs.value = runs.value + 1; return doc.items.length; });
     assert(c == 2, "initial length");
@@ -194,12 +194,12 @@ fn caseNestedDeepArrayInStruct() {
 }
 
 ref struct ShallowDoc {
-    items: []int;
+    items: mut []int;
     fn operator!=(other: ShallowDoc) { return true; }
 }
 
 fn caseNestedShallowArrayInStruct() {
-    let runs: ref Box<int> = { value: 0 };
+    let runs: mut ref Box<int> = { value: 0 };
     let doc = rx.shallowReactive<ShallowDoc>(ShallowDoc { items: [1, 2] });
     let c = rx.computed(() => { runs.value = runs.value + 1; return doc.items.length; });
     assert(c == 2, "initial length");
@@ -215,7 +215,7 @@ fn caseNestedShallowArrayInStruct() {
 }
 
 fn caseDiamondDependencyMinimalRecompute() {
-    let sumRuns: ref Box<int> = { value: 0 };
+    let sumRuns: mut ref Box<int> = { value: 0 };
     let a = rx.reactive<int>(1);
     let b = rx.shallowReactive<int>(2);
     let sum = rx.computed(() => {

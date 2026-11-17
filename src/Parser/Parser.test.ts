@@ -559,3 +559,258 @@ describe("extern C function types, in both parsers", () => {
     expect([error.line, error.column]).toEqual([1, 16]);
   });
 });
+
+/**
+ * Both parsers refuse the source. ANTLR throws a bare SyntaxError for what the
+ * grammar does not accept, and the native parser a message of its own, so only
+ * the refusal is compared (rejectBoth compares the custom messages).
+ */
+async function rejectBothAny(source: string) {
+  expect("error" in parseWithAntlr(source)).toBe(true);
+  expect("error" in (await parseWithNative(source))).toBe(true);
+}
+
+type MemberNode = { name: string; private: boolean; mutability: number };
+type MethodNode = {
+  name: string;
+  private: boolean;
+  static: boolean;
+  methodRequiredMutability: number | null;
+  methodReceiverStorage: number | null;
+  originalSourcecode: string;
+};
+type StructNode = {
+  variant: "StructDefinition";
+  members: MemberNode[];
+  methods: MethodNode[];
+  nestedStructs: unknown[];
+};
+
+describe("`private` struct members, in both parsers", () => {
+  useBothParsers();
+
+  const struct = async (body: string) =>
+    ((await parseBoth(`struct S { ${body} }`)) as StructNode[])[0];
+
+  test("private fields in every spelling", async () => {
+    const s = await struct(
+      "private a: int; private b: int = 3; private const c: int; private let d: int; private e = 3; f: int; const g: int;"
+    );
+    expect(s.members.map((m) => [m.name, m.private])).toEqual([
+      ["a", true],
+      ["b", true],
+      ["c", true],
+      ["d", true],
+      ["e", true],
+      ["f", false],
+      ["g", false],
+    ]);
+    // `const` / `let` after `private` keep their meaning.
+    expect(s.members[2].mutability).toBe(1);
+    expect(s.members[3].mutability).toBe(2);
+  });
+
+  test("private methods in every spelling", async () => {
+    const s = await struct(
+      "private fn a() {} private static fn b() {} private mut fn c() {} private stackref fn d() {} private ref fn e() {} private const fn f() {} fn g() {}"
+    );
+    expect(s.methods.map((m) => [m.name, m.private])).toEqual([
+      ["a", true],
+      ["b", true],
+      ["c", true],
+      ["d", true],
+      ["e", true],
+      ["f", true],
+      ["g", false],
+    ]);
+    expect(s.methods[1].static).toBe(true);
+    expect(s.methods[2].methodRequiredMutability).toBe(2);
+    expect(s.methods[3].methodReceiverStorage).toBe(3);
+    // `private` is part of the method's own source text, so a re-emitted
+    // generic method keeps it.
+    expect(s.methods[0].originalSourcecode.startsWith("private fn a")).toBe(
+      true
+    );
+  });
+
+  test("private operators, constructors and generic methods", async () => {
+    const s = await struct(
+      "private fn operator==(o: S): bool { return true; } private fn operator[](i: int): int { return i; } private fn constructor() {} private fn g<T>(t: T) {}"
+    );
+    expect(s.methods.map((m) => m.private)).toEqual([true, true, true, true]);
+  });
+
+  test("a private member in a generic struct and after an annotation", async () => {
+    const ast = (await parseBoth(
+      "struct G<T> { [[a.b]] private x: T; private fn m(): T { return this.x; } }"
+    )) as StructNode[];
+    expect(ast[0].members[0].private).toBe(true);
+    expect(ast[0].methods[0].private).toBe(true);
+  });
+
+  // `const` and `let` before a data member are its mutability. The native
+  // parser used to read `const` as a method modifier and lose it.
+  const mutabilityForms: [string, number][] = [
+    ["const a: int;", 1],
+    ["const a: int = 1;", 1],
+    ["const a = 1;", 1],
+    ["let a: int;", 2],
+    ["let a: int = 1;", 2],
+    ["let a = 1;", 2],
+    ["a: int;", 3],
+    ["a = 1;", 3],
+    ["private const a: int;", 1],
+    ["private const a: int = 1;", 1],
+    ["private const a = 1;", 1],
+    ["private let a: int = 1;", 2],
+    ["private let a = 1;", 2],
+    ["[[x.y]] const a: int = 1;", 1],
+    ["[[x.y]] private const a = 1;", 1],
+  ];
+  for (const [member, mutability] of mutabilityForms) {
+    test(`data member mutability: ${member}`, async () => {
+      const s = await struct(member);
+      expect(s.members.length).toBe(1);
+      expect(s.members[0].mutability).toBe(mutability);
+    });
+  }
+
+  test("`const fn` is still a method modifier", async () => {
+    const s = await struct("const fn a() {} private const fn b() {} const a2: int;");
+    expect(s.methods.map((m) => m.methodRequiredMutability)).toEqual([3, 3]);
+    expect(s.members[0].mutability).toBe(1);
+  });
+
+  test("a nested struct's members are private on their own", async () => {
+    const ast = (await parseBoth(
+      "struct O { a: int; struct I { private b: int; } private c: int; }"
+    )) as StructNode[];
+    const inner = ast[0].nestedStructs[0] as StructNode;
+    expect(ast[0].members.map((m) => m.private)).toEqual([false, true]);
+    expect(inner.members.map((m) => m.private)).toEqual([true]);
+  });
+
+  test("the names of members and methods are unchanged", async () => {
+    const s = await struct("private x: int; private fn f() {}");
+    expect(s.members[0].name).toBe("x");
+    expect(s.methods[0].name).toBe("f");
+  });
+
+  test("members without `private` are public", async () => {
+    const ast = (await parseBoth(
+      "struct S { a: int; fn f() {} } fn free() {} type A = { x: int };"
+    )) as (StructNode & { private?: boolean })[];
+    expect(ast[0].members[0].private).toBe(false);
+    expect(ast[0].methods[0].private).toBe(false);
+  });
+
+  test("`private` is a reserved word", async () => {
+    await rejectBothAny("fn f() { let private = 1; }");
+    await rejectBothAny("struct S { fn private() {} }");
+    await rejectBothAny("fn private() {}");
+  });
+
+  test("error: `private` on a nested struct or enum", async () => {
+    await rejectBothAny("struct S { private struct I { a: int; } }");
+    await rejectBothAny("struct S { private enum E { A, B } }");
+  });
+
+  test("error: `private` outside a struct", async () => {
+    await rejectBothAny("private fn f() {}");
+    await rejectBothAny("private let x = 1;");
+    await rejectBothAny("type A = { private x: int };");
+  });
+
+  test("error: `private` after `static` or the method modifiers", async () => {
+    await rejectBothAny("struct S { static private fn f() {} }");
+    await rejectBothAny("struct S { mut private fn f() {} }");
+    await rejectBothAny("struct S { let private x: int; }");
+  });
+});
+
+type GlobalNode = {
+  variant: "GlobalVariableDefinition";
+  name: string;
+  storage: string;
+  mutability: number;
+  comptime: boolean;
+  extern: number;
+  export: boolean;
+  pub: boolean;
+};
+
+describe("`tasklocal` and `global`, in both parsers", () => {
+  useBothParsers();
+
+  const globals = async (source: string) =>
+    (await parseBoth(source)) as GlobalNode[];
+
+  test("every form, and `thread` when neither is written", async () => {
+    const g = await globals(
+      "tasklocal let a: int = 1; tasklocal const b = 2; global let c: int = 3; global const d = 4; let e: int = 5; const f = 6;"
+    );
+    expect(g.map((x) => [x.name, x.storage])).toEqual([
+      ["a", "task"],
+      ["b", "task"],
+      ["c", "process"],
+      ["d", "process"],
+      ["e", "thread"],
+      ["f", "thread"],
+    ]);
+    expect(g.map((x) => x.mutability)).toEqual([2, 1, 2, 1, 2, 1]);
+  });
+
+  test("after export, extern and pub, before let and comptime", async () => {
+    const g = await globals(
+      "export global const a = 1; export tasklocal let b: int = 2; pub global const c = 3; extern C pub global const d: int; global const comptime e = 5;"
+    );
+    expect(g.map((x) => x.storage)).toEqual([
+      "process",
+      "task",
+      "process",
+      "process",
+      "process",
+    ]);
+    expect(g[0].export).toBe(true);
+    expect(g[2].pub).toBe(true);
+    expect(g[3].extern).toBe(2);
+    expect(g[4].comptime).toBe(true);
+  });
+
+  test("in a namespace", async () => {
+    const ast = (await parseBoth(
+      "namespace n { global const a = 1; tasklocal let b: int = 2; }"
+    )) as { declarations: GlobalNode[] }[];
+    expect(ast[0].declarations.map((d) => d.storage)).toEqual([
+      "process",
+      "task",
+    ]);
+  });
+
+  test("both are reserved words", async () => {
+    await rejectBothAny("fn f() { let global = 1; }");
+    await rejectBothAny("fn f() { let tasklocal = 1; }");
+    await rejectBothAny("let global = 1;");
+    await rejectBothAny("struct S { global: int; }");
+  });
+
+  test("error: on a local variable", async () => {
+    await rejectBothAny("fn f() { tasklocal let x: int = 1; }");
+    await rejectBothAny("fn f() { global let x: int = 1; }");
+    await rejectBothAny("fn f() { global const x = 1; }");
+    await rejectBothAny("fn f() { if true { tasklocal const x = 1; } }");
+    await rejectBothAny("struct S { fn m() { global let x: int = 1; } }");
+  });
+
+  test("error: on anything but a variable", async () => {
+    await rejectBothAny("global fn f() {}");
+    await rejectBothAny("tasklocal struct S { a: int; }");
+    await rejectBothAny("struct S { global let a: int; }");
+  });
+
+  test("error: both keywords, or the wrong order", async () => {
+    await rejectBothAny("global tasklocal let x: int = 1;");
+    await rejectBothAny("let global x: int = 1;");
+    await rejectBothAny("global pub let x: int = 1;");
+  });
+});

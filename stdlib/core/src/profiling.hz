@@ -13,7 +13,7 @@ namespace ffi {
     export extern C noemit opaque struct hzstd_profiling_sample_t {
         timestamp: real;
         sampling_duration: real;
-        frames: []int;
+        frames: mut []int;
         truncated: bool;
         lost_before: int;
     };
@@ -29,7 +29,7 @@ namespace ffi {
     };
 
     export extern C noemit opaque struct hzstd_profiling_result_t {
-        frames: []hzstd_profiling_frame_t;
+        frames: mut []hzstd_profiling_frame_t;
         samples: []hzstd_profiling_sample_t;
         sampling_rate_hz: int;
         memoryInstrumentationFrames: []hzstd_memory_instrumentation_frame_t;
@@ -81,7 +81,7 @@ namespace profiling {
     // to them. Building the FrameRef at each pair, as this used to, meant re-doing all of
     // that work millions of times over the same few thousand frames.
     fn buildFrameRefTable(result: ProfilingResult): []ChromeTrace.FrameRef {
-        let frameRefs: []ChromeTrace.FrameRef = [];
+        let frameRefs: mut []ChromeTrace.FrameRef = [];
         frameRefs.reserve(result.frames.length);
         for (let i = 0; i < result.frames.length; i++) {
             frameRefs.push(ChromeTrace.frameRefWithHash(frameRefForFrame(result.frames[i])));
@@ -129,7 +129,7 @@ namespace profiling {
         frameRefs: []ChromeTrace.FrameRef,
         leaf: ChromeTrace.FrameRef,
     ): []ChromeTrace.FrameRef {
-        let frames: []ChromeTrace.FrameRef = [];
+        let frames: mut []ChromeTrace.FrameRef = [];
         frames.reserve(stacktrace.frames.length - stacktrace.skip_n_frames + 1);
         for (let i = stacktrace.frames.length - 1; i >= stacktrace.skip_n_frames; i--) {
             let stackframe = stacktrace.frames[i];
@@ -203,7 +203,7 @@ namespace profiling {
         let offCpuThresholdUs = nominalIntervalUs * 4.0;
 
         // Built once, reused for every gap below -- see the off-CPU branch.
-        let idleFrames: []ChromeTrace.FrameRef = [];
+        let idleFrames: mut []ChromeTrace.FrameRef = [];
         idleFrames.push(ChromeTrace.FrameRef { name: "(idle)", url: "", line: 0, column: 0 });
 
         // Timestamps handed to addSample must never go backwards (it turns them into
@@ -351,7 +351,7 @@ namespace profiling {
                 let sample = result.samples[cpuIndex];
                 cpuIndex = cpuIndex + 1;
 
-                let frames: []ChromeTrace.FrameRef = [];
+                let frames: mut []ChromeTrace.FrameRef = [];
                 frames.reserve(sample.frames.length);
                 // sample.frames is innermost-first; CpuProfileBuilder.addSample wants outermost-first.
                 // Each entry is already a frame-table index, so this is a lookup into the shared
@@ -496,7 +496,7 @@ namespace profiling {
         // collapsed by default, as a second flame chart of the same thread that could not be
         // read against the first one. Both halves now live on the main thread's own timeline,
         // which is the only place they can actually be compared.
-        let allocationLeaves: []str = [];
+        let allocationLeaves: mut []str = [];
         if allocationCount > 0 {
             allocationLeaves.reserve(allocationCount);
             let lastProgressAt = time.now();
@@ -656,7 +656,7 @@ export ref struct Profiler {
     // carry whatever the FFI layer starts reporting beyond CPU samples (e.g. memory
     // instrumentation) that .cpuprofile has no room for.
     fn stopAndSave(path: str = "trace.json") {
-        const result = this.stop();
+        let result = this.stop();
         let r = path.endsWith(".cpuprofile") ? profiling.writeCpuProfile(result, path) : profiling.writeTraceJson(result, path);
         fmt.println(f"Results were written to {path}");
         return r;

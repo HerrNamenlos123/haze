@@ -73,7 +73,7 @@ fn t3() {
 
 // ── 4b. a closure handed to a builtin that stores it (array push) keeps a heap env
 fn t4b() {
-    let queue: [](() => int) = [];
+    let queue: mut [](() => int) = [];
     for (let i = 0; i < 3; i++) {
         let b = i;
         queue.push((): int => { return b * 10; });
@@ -132,7 +132,7 @@ fn callTwo(a: immediate (i: Inst) => int, b: immediate (i: Inst) => int): int {
 }
 
 ref struct Holder { f: ((i: Inst) => int) | none = none; }
-fn keep(h: ref Holder, f: (i: Inst) => int) { h.f = f; }
+fn keep(h: mut ref Holder, f: (i: Inst) => int) { h.f = f; }
 
 fn main(): int {
     let cap = 3;
@@ -182,7 +182,7 @@ fn main(): int {
             "immediate: storing the callable is an escape",
             """
 ref struct Holder { f: (() => int) | none = none; }
-fn keep(h: ref Holder, f: immediate () => int) { h.f = f; }
+fn keep(h: mut ref Holder, f: immediate () => int) { h.f = f; }
 fn main(): int { return 0; }
 """,
             [testsuite.mustHave(errorcodes.Code.ImmediateParameterEscapes)]);

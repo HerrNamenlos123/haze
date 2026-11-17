@@ -1922,64 +1922,48 @@ export namespace Conversion {
       };
     }
 
-    // Mutability conversions
-    if (resolvedSourceTypeUse.type === resolvedTargetTypeUse.type) {
-      // Same type but different mutability
-      if (resolvedSourceTypeUse.storage === resolvedTargetTypeUse.storage) {
-        if (
-          resolvedSourceTypeUse.mutability === resolvedTargetTypeUse.mutability
-        ) {
+    // Dynamic arrays whose elements differ only in mutability (see
+    // arrayViewChange).
+    {
+      const view = arrayViewChange(sr, sourceExpr.type, rawTargetTypeUseId);
+      if (view !== undefined) {
+        if (view === null) {
           return {
             kind: "basic-c-cast",
           };
         }
-
-        if (
-          (resolvedSourceTypeUse.mutability === EDatatypeMutability.Mut ||
-            resolvedSourceTypeUse.mutability === EDatatypeMutability.Const) &&
-          resolvedTargetTypeUse.mutability === EDatatypeMutability.Default
-        ) {
-          return {
-            kind: "basic-c-cast",
-          };
-        }
-
-        // If it is a direct literal, allow conversions from anything to const
-        if (
-          (sourceExpr.variant === Semantic.ENode.StructLiteralExpr ||
-            sourceExpr.variant === Semantic.ENode.ArrayLiteralExpr) &&
-          resolvedTargetTypeUse.mutability === EDatatypeMutability.Const
-        ) {
-          return {
-            kind: "basic-c-cast",
-          };
-        }
-
-        // A value struct is copied into the const binding: no other reference
-        // to the copy can exist, so freezing it is always safe.
-        if (
-          resolvedSourceTypeDef.variant === Semantic.ENode.StructDatatype &&
-          resolvedSourceTypeUse.storage === EStorageClass.Value &&
-          resolvedTargetTypeUse.mutability === EDatatypeMutability.Const
-        ) {
-          return {
-            kind: "basic-c-cast",
-          };
-        }
-
-        if (resolvedTargetTypeUse.mutability === EDatatypeMutability.Const) {
-          if (mode === Mode.Explicit && unsafe) {
-            return {
-              kind: "basic-c-cast",
-            };
-          }
-
-          return {
-            kind: "error",
-            message: `This value cannot be converted to 'const' since other references may exist, which may allow mutation of a const value. Use .freezeClone() to safely clone the object and make it deeply immutable.`,
-          };
-        }
+        return {
+          kind: "error",
+          message: `Cannot use ${sourceTypeText} as ${targetTypeText}: ${view}`,
+        };
       }
+    }
+
+    // Mutability conversions
+    if (
+      resolvedSourceTypeUse.type === resolvedTargetTypeUse.type &&
+      resolvedSourceTypeUse.storage === resolvedTargetTypeUse.storage
+    ) {
+      const change = mutabilityChange(
+        sr,
+        sourceExprId,
+        resolvedSourceTypeUse.mutability,
+        rawTargetTypeUseId,
+        resolvedTargetTypeUse.mutability,
+        targetTypeText
+      );
+      // The unsafe explicit cast is the marked way past C597 (C171).
+      if (
+        change === null ||
+        (resolvedTargetTypeUse.mutability === EDatatypeMutability.Const &&
+          mode === Mode.Explicit &&
+          unsafe)
+      ) {
+        return {
+          kind: "basic-c-cast",
+        };
+      }
+      return { kind: "error", message: change };
     }
 
     // Core conversions
@@ -2026,6 +2010,9 @@ export namespace Conversion {
           const sDef = sr.typeDefNodes.get(
             sr.typeUseNodes.get(resolvedSourceTypeUseId).type
           );
+          if (arrayViewChange(sr, resolvedSourceTypeUseId, m) === null) {
+            return true;
+          }
           if (
             mDef.variant === Semantic.ENode.CallableDatatype &&
             sDef.variant === Semantic.ENode.CallableDatatype
@@ -2054,29 +2041,17 @@ export namespace Conversion {
           return false;
         }
 
-        // Check match with implicit mutability change
-        if (
-          resolvedSourceTypeUse.mutability ===
-          sr.typeUseNodes.get(sr.e.resolveAlias(m)).mutability
-        ) {
-          return true;
-        }
-        if (
-          resolvedSourceTypeUse.mutability === EDatatypeMutability.Const &&
-          sr.typeUseNodes.get(sr.e.resolveAlias(m)).mutability ===
-            EDatatypeMutability.Default
-        ) {
-          return true;
-        }
-        if (
-          resolvedSourceTypeUse.mutability === EDatatypeMutability.Mut &&
-          sr.typeUseNodes.get(sr.e.resolveAlias(m)).mutability ===
-            EDatatypeMutability.Default
-        ) {
-          return true;
-        }
-
-        return false;
+        // The same type with another mutability: the one rule for that.
+        return (
+          mutabilityChange(
+            sr,
+            sourceExprId,
+            resolvedSourceTypeUse.mutability,
+            m,
+            sr.typeUseNodes.get(sr.e.resolveAlias(m)).mutability,
+            ""
+          ) === null
+        );
       });
 
       if (matching !== -1) {
@@ -2271,29 +2246,11 @@ export namespace Conversion {
       const toResolved = new Set(
         [...membersTo.possibleVariants].map((v) => sr.e.resolveAlias(v))
       );
-      // A member also matches the same type with its `mut` (or `const`)
-      // dropped, as a single value converts (see "Mutability conversions"):
-      // `mut A | mut B` is an `A | B`.
-      const toUses = [...toResolved].map((t) => sr.typeUseNodes.get(t));
-      const memberConverts = (v: Semantic.TypeUseId) => {
-        const resolved = sr.e.resolveAlias(v);
-        if (toResolved.has(resolved)) {
-          return true;
-        }
-        const from = sr.typeUseNodes.get(resolved);
-        if (
-          from.mutability !== EDatatypeMutability.Mut &&
-          from.mutability !== EDatatypeMutability.Const
-        ) {
-          return false;
-        }
-        return toUses.some(
-          (to) =>
-            to.type === from.type &&
-            to.storage === from.storage &&
-            to.mutability === EDatatypeMutability.Default
-        );
-      };
+      // A member also matches the same type with fewer rights, or an array
+      // view of it: the same rules as for a single value
+      // (unionMemberConverts): `mut A | mut B` is an `A | B`.
+      const memberConverts = (v: Semantic.TypeUseId) =>
+        [...toResolved].some((t) => unionMemberConverts(sr, v, t));
       if ([...membersFrom.possibleVariants].every(memberConverts)) {
         return {
           kind: "union-to-union",
@@ -3397,6 +3354,400 @@ export namespace Conversion {
    * copying it copies the pointer, never the value -- and a dynamic array is
    * a GC handle. This is the question every second-binding check asks.
    */
+  /**
+   * The type of something reached through a value of type `container`:
+   * everything reachable through const data is const too (Axiom C603). A
+   * primitive, an enum or a literal read out of const data is a copy, and
+   * what const means for those is not defined (C454), so they keep their
+   * type.
+   */
+  export function throughConst(
+    sr: Semantic.Context,
+    container: Semantic.TypeUseId,
+    reached: Semantic.TypeUseId
+  ): Semantic.TypeUseId {
+    const containerUse = sr.typeUseNodes.get(sr.e.resolveAlias(container));
+    if (containerUse.mutability !== EDatatypeMutability.Const) {
+      return reached;
+    }
+    return constOf(sr, reached);
+  }
+
+  /**
+   * The const form of a type: const data never changes, and everything it
+   * reaches is const too (C596, C603). A union is const in every variant, so
+   * narrowing it keeps the const. A primitive, an enum or a literal keeps its
+   * type: what const means for those is not defined (C454), and they are
+   * copies anyway.
+   */
+  export function constOf(
+    sr: Semantic.Context,
+    typeUseId: Semantic.TypeUseId
+  ): Semantic.TypeUseId {
+    const use = sr.typeUseNodes.get(typeUseId);
+    const resolved = sr.typeUseNodes.get(sr.e.resolveAlias(typeUseId));
+    const def = sr.typeDefNodes.get(resolved.type);
+    switch (def.variant) {
+      case Semantic.ENode.PrimitiveDatatype:
+      case Semantic.ENode.EnumDatatype:
+      case Semantic.ENode.LiteralDatatype:
+        return typeUseId;
+      case Semantic.ENode.UntaggedUnionDatatype:
+        return sr.b.untaggedUnionTypeUse(
+          def.members.map((m) => constOf(sr, m)),
+          use.sourceloc
+        );
+      case Semantic.ENode.TaggedUnionDatatype:
+        return sr.b.taggedUnionTypeUse(
+          def.members.map((m) => ({ tag: m.tag, type: constOf(sr, m.type) })),
+          def.nodiscard,
+          use.sourceloc
+        );
+      default:
+        if (use.mutability === EDatatypeMutability.Const) {
+          return typeUseId;
+        }
+        return makeTypeUse(
+          sr,
+          use.type,
+          EDatatypeMutability.Const,
+          use.storage,
+          use.sourceloc
+        )[1];
+    }
+  }
+
+  /**
+   * Two dynamic arrays whose element types differ only in mutability:
+   * element types are part of the array type, so `[]mut R` is not `[]R`.
+   * Seeing the elements with fewer rights is fine (`mut R` as `R`, const data
+   * as a type without const that reaches no `mut`, C603), but only through a
+   * reference that cannot change the array: through a `mut` one, an `R`
+   * stored into it would end up in the source's `mut R` slots. Fixed arrays
+   * are distinct C structs per element type and convert only with identical
+   * element types. Returns undefined when this is not such a pair, null when
+   * the view is allowed, else why not.
+   */
+  export function arrayViewChange(
+    sr: Semantic.Context,
+    sourceTypeUseId: Semantic.TypeUseId,
+    targetTypeUseId: Semantic.TypeUseId
+  ): string | null | undefined {
+    const sourceUse = sr.typeUseNodes.get(sr.e.resolveAlias(sourceTypeUseId));
+    const targetUse = sr.typeUseNodes.get(sr.e.resolveAlias(targetTypeUseId));
+    const sourceDef = sr.typeDefNodes.get(sourceUse.type);
+    const targetDef = sr.typeDefNodes.get(targetUse.type);
+    if (
+      sourceDef.variant !== Semantic.ENode.DynamicArrayDatatype ||
+      targetDef.variant !== Semantic.ENode.DynamicArrayDatatype ||
+      sourceUse.type === targetUse.type
+    ) {
+      return undefined;
+    }
+    const sourceElem = sr.typeUseNodes.get(
+      sr.e.resolveAlias(throughConst(sr, sourceTypeUseId, sourceDef.datatype))
+    );
+    const targetElem = sr.typeUseNodes.get(sr.e.resolveAlias(targetDef.datatype));
+    if (
+      sourceElem.type !== targetElem.type ||
+      sourceElem.storage !== targetElem.storage
+    ) {
+      return undefined;
+    }
+    const elementOk =
+      sourceElem.mutability === targetElem.mutability ||
+      (sourceElem.mutability === EDatatypeMutability.Mut &&
+        targetElem.mutability === EDatatypeMutability.Default) ||
+      (sourceElem.mutability === EDatatypeMutability.Const &&
+        targetElem.mutability === EDatatypeMutability.Default &&
+        !reachesMut(sr, targetDef.datatype));
+    if (!elementOk) {
+      return "its elements would gain rights over data they cannot change.";
+    }
+    if (targetUse.mutability === EDatatypeMutability.Mut) {
+      return "a 'mut' array whose elements have fewer rights could store such elements into it.";
+    }
+    return null;
+  }
+
+  /**
+   * Whether a member of one union may become a member of another as it is:
+   * the same type, or the same type with fewer rights (the one rule,
+   * mutabilityChange, judged by type alone since a member has no expression
+   * of its own). Not an array view: Lower maps union members by type, and two
+   * array types are two members; convert the array before it enters the
+   * union.
+   */
+  export function unionMemberConverts(
+    sr: Semantic.Context,
+    fromTypeUseId: Semantic.TypeUseId,
+    toTypeUseId: Semantic.TypeUseId
+  ): boolean {
+    const fromId = sr.e.resolveAlias(fromTypeUseId);
+    const toId = sr.e.resolveAlias(toTypeUseId);
+    if (fromId === toId) {
+      return true;
+    }
+    const from = sr.typeUseNodes.get(fromId);
+    const to = sr.typeUseNodes.get(toId);
+    if (from.type === to.type && from.storage === to.storage) {
+      if (from.mutability === to.mutability) {
+        return true;
+      }
+      if (
+        from.mutability === EDatatypeMutability.Mut &&
+        to.mutability === EDatatypeMutability.Default
+      ) {
+        return true;
+      }
+      if (
+        from.mutability === EDatatypeMutability.Const &&
+        to.mutability === EDatatypeMutability.Default
+      ) {
+        return !reachesMut(sr, toId);
+      }
+      if (to.mutability === EDatatypeMutability.Const) {
+        return copyMakesConst(sr, fromId);
+      }
+      return false;
+    }
+    return false;
+  }
+
+  /**
+   * Whether data of the type `source` mutability may be used as the same type
+   * with `target` mutability: null if it may, else why not. The one place
+   * that decides it, for plain conversions and for union variants alike.
+   * - `mut` to plain: fewer rights (C601, C602).
+   * - const to plain: only when the plain type reaches no `mut` reference,
+   *   through which the const data could be changed (C596, C603). A copy of a
+   *   value shares what it refers to (C465), so the same holds for copies.
+   * - anything to const: only data created const or copied (C597): a literal
+   *   whose elements can all become const, or a value whose copy holds no
+   *   reference to changeable data (C146).
+   * - plain or const to `mut`: never.
+   */
+  export function mutabilityChange(
+    sr: Semantic.Context,
+    sourceExprId: Semantic.ExprId,
+    source: EDatatypeMutability,
+    targetTypeUseId: Semantic.TypeUseId,
+    target: EDatatypeMutability,
+    targetTypeText: string
+  ): string | null {
+    if (source === target) {
+      return null;
+    }
+    if (
+      source === EDatatypeMutability.Mut &&
+      target === EDatatypeMutability.Default
+    ) {
+      return null;
+    }
+    if (
+      source === EDatatypeMutability.Const &&
+      target === EDatatypeMutability.Default
+    ) {
+      if (!reachesMut(sr, targetTypeUseId)) {
+        return null;
+      }
+      return `Const data cannot be seen as '${targetTypeText}': that type reaches a 'mut' reference, through which the const data could be changed. Keep it const ('const ${targetTypeText}').`;
+    }
+    if (target === EDatatypeMutability.Const) {
+      if (canBecomeConst(sr, sourceExprId)) {
+        return null;
+      }
+      return `This value cannot become 'const': it is changeable data that other references may reach, and data becomes const only by being created const or by being copied. Create it const where it is made (a literal written into the const slot), or build a new value from its contents.`;
+    }
+    return `A value of this type cannot become '${targetTypeText}': nothing gains the right to change data it was not handed as 'mut'.`;
+  }
+
+  /**
+   * Whether a `mut` reference can be reached from a value of this type: a
+   * `mut` ref or stackref struct, a `mut` dynamic array, anywhere in its
+   * members, elements or union variants. Const data may be seen through a
+   * type that is not const only if no such path exists; otherwise the plain
+   * view would hand out a way to change it (C596, C603). Reactive cells are
+   * written through their own path (docs/async-decisions.md S0-11), and a
+   * closure's environment is checked when it becomes const, so neither counts.
+   */
+  export function reachesMut(
+    sr: Semantic.Context,
+    typeUseId: Semantic.TypeUseId
+  ): boolean {
+    return useReachesMut(sr, typeUseId, new Set());
+  }
+
+  function useReachesMut(
+    sr: Semantic.Context,
+    typeUseId: Semantic.TypeUseId,
+    visiting: Set<Semantic.TypeDefId>
+  ): boolean {
+    const use = sr.typeUseNodes.get(sr.e.resolveAlias(typeUseId));
+    const def = sr.typeDefNodes.get(use.type);
+    const isReference =
+      def.variant === Semantic.ENode.DynamicArrayDatatype ||
+      (def.variant === Semantic.ENode.StructDatatype &&
+        use.storage !== EStorageClass.Value);
+    if (isReference && use.mutability === EDatatypeMutability.Mut) {
+      return true;
+    }
+    if (visiting.has(use.type)) {
+      return false;
+    }
+    visiting.add(use.type);
+    switch (def.variant) {
+      case Semantic.ENode.StructDatatype:
+        return def.members.some((memberId) => {
+          const member = sr.symbolNodes.get(memberId);
+          return (
+            member.variant === Semantic.ENode.VariableSymbol &&
+            member.type !== null &&
+            useReachesMut(sr, member.type, visiting)
+          );
+        });
+      case Semantic.ENode.FixedArrayDatatype:
+      case Semantic.ENode.DynamicArrayDatatype:
+        return useReachesMut(sr, def.datatype, visiting);
+      case Semantic.ENode.UntaggedUnionDatatype:
+        return def.members.some((m) => useReachesMut(sr, m, visiting));
+      case Semantic.ENode.TaggedUnionDatatype:
+        return def.members.some((m) => useReachesMut(sr, m.type, visiting));
+      default:
+        return false;
+    }
+  }
+
+  /**
+   * Whether copying a value of this type makes const data of it (Axiom C597):
+   * true when the copy holds no reference to data other code can change. A
+   * primitive, an enum, a literal, and a value struct, fixed array or union
+   * built only of such things qualify, and so does anything that is const
+   * already. A reference to changeable data (a ref or stackref struct, a
+   * dynamic array, a closure with its environment, a reactive cell) does not:
+   * the copy would still share what it points to (C465).
+   */
+  export function copyMakesConst(
+    sr: Semantic.Context,
+    typeUseId: Semantic.TypeUseId
+  ): boolean {
+    return memberCopyMakesConst(sr, typeUseId, new Set());
+  }
+
+  function typeCopyMakesConst(
+    sr: Semantic.Context,
+    typeDefId: Semantic.TypeDefId,
+    visiting: Set<Semantic.TypeDefId>
+  ): boolean {
+    const def = sr.typeDefNodes.get(typeDefId);
+    switch (def.variant) {
+      case Semantic.ENode.PrimitiveDatatype:
+      case Semantic.ENode.EnumDatatype:
+      case Semantic.ENode.LiteralDatatype:
+        return true;
+      case Semantic.ENode.StructDatatype: {
+        // A value struct can only contain itself through a reference, so a
+        // cycle here is already decided by that reference.
+        if (visiting.has(typeDefId)) {
+          return true;
+        }
+        visiting.add(typeDefId);
+        return def.members.every((memberId) => {
+          const member = sr.symbolNodes.get(memberId);
+          return (
+            member.variant !== Semantic.ENode.VariableSymbol ||
+            !member.type ||
+            memberCopyMakesConst(sr, member.type, visiting)
+          );
+        });
+      }
+      case Semantic.ENode.FixedArrayDatatype:
+        return memberCopyMakesConst(sr, def.datatype, visiting);
+      case Semantic.ENode.UntaggedUnionDatatype:
+        return def.members.every((m) => memberCopyMakesConst(sr, m, visiting));
+      case Semantic.ENode.TaggedUnionDatatype:
+        return def.members.every((m) =>
+          memberCopyMakesConst(sr, m.type, visiting)
+        );
+      default:
+        return false;
+    }
+  }
+
+  // A member of a value: copied with it if it is itself a value, shared if it
+  // is a reference (only const references are then fine).
+  function memberCopyMakesConst(
+    sr: Semantic.Context,
+    typeUseId: Semantic.TypeUseId,
+    visiting: Set<Semantic.TypeDefId>
+  ): boolean {
+    const use = sr.typeUseNodes.get(sr.e.resolveAlias(typeUseId));
+    if (use.mutability === EDatatypeMutability.Const) {
+      return true;
+    }
+    const def = sr.typeDefNodes.get(use.type);
+    if (
+      def.variant === Semantic.ENode.StructDatatype &&
+      use.storage !== EStorageClass.Value
+    ) {
+      return false;
+    }
+    return typeCopyMakesConst(sr, use.type, visiting);
+  }
+
+  /**
+   * Whether the value of an expression can become const data without a copy
+   * of anything it references: a struct or array literal whose every element
+   * can (it is created const, C597), or a value that is const or whose copy
+   * makes const data.
+   */
+  export function canBecomeConst(
+    sr: Semantic.Context,
+    exprId: Semantic.ExprId
+  ): boolean {
+    const expr = sr.exprNodes.get(exprId);
+    // A conversion keeps what it converts: a literal converted into its slot
+    // (a cast, a union variant) is still created const.
+    if (
+      expr.variant === Semantic.ENode.ExplicitCastExpr ||
+      expr.variant === Semantic.ENode.ValueToUnionCastExpr
+    ) {
+      return copyMakesConst(sr, expr.type) || canBecomeConst(sr, expr.expr);
+    }
+    // A type used as a value (`T.variants`, reflection) is a compile-time
+    // constant: nothing can change it.
+    if (expr.variant === Semantic.ENode.DatatypeAsValueExpr) {
+      return true;
+    }
+    // A function, or a closure whose environment holds only copies that can
+    // become const (its environment is never written, C460, and it holds no
+    // reference to changeable data).
+    if (expr.variant === Semantic.ENode.CallableExpr) {
+      if (expr.envType === null) {
+        return true;
+      }
+      if (expr.envType.type === "lambda") {
+        return expr.envType.captures.every(
+          (c) => c.byValue && copyMakesConst(sr, c.type)
+        );
+      }
+      return false;
+    }
+    if (expr.variant === Semantic.ENode.SymbolValueExpr) {
+      const symbol = sr.symbolNodes.get(expr.symbol);
+      if (symbol.variant === Semantic.ENode.FunctionSymbol) {
+        return true;
+      }
+    }
+    if (expr.variant === Semantic.ENode.StructLiteralExpr) {
+      return expr.assign.every((a) => canBecomeConst(sr, a.value));
+    }
+    if (expr.variant === Semantic.ENode.ArrayLiteralExpr) {
+      return expr.elements.every((e) => canBecomeConst(sr, e));
+    }
+    return copyMakesConst(sr, expr.type);
+  }
+
   export function isNocopyUse(
     sr: Semantic.Context,
     typeUseId: Semantic.TypeUseId

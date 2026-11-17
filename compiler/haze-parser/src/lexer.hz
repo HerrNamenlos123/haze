@@ -264,12 +264,14 @@ export ref struct Lexer {
             if s.startsWith("unsafe", start) { return TK.Unsafe; }
             if s.startsWith("noemit", start) { return TK.Noemit; }
             if s.startsWith("opaque", start) { return TK.Opaque; }
+            if s.startsWith("global", start) { return TK.Global; }
             return TK.Ident;
         }
         if n == 7 {
             if s.startsWith("attempt", start) { return TK.Attempt; }
             if s.startsWith("recover", start) { return TK.Recover; }
             if s.startsWith("bitflag", start) { return TK.Bitflag; }
+            if s.startsWith("private", start) { return TK.Private; }
             return TK.Ident;
         }
         if n == 8 {
@@ -285,6 +287,7 @@ export ref struct Lexer {
         if n == 9 {
             if s.startsWith("namespace", start) { return TK.Namespace; }
             if s.startsWith("nodiscard", start) { return TK.Nodiscard; }
+            if s.startsWith("tasklocal", start) { return TK.Tasklocal; }
             return TK.Ident;
         }
         if n == 11 {

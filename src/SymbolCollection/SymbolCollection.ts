@@ -25,6 +25,7 @@ import {
   EBinaryOperation,
   EDatatypeMutability,
   EExternLanguage,
+  EGlobalStorage,
   type EIncrOperation,
   type EOverloadedOperator,
   EUnaryOperation,
@@ -358,6 +359,8 @@ export namespace Collect {
     comptime: boolean;
     parentScope: Collect.ScopeId;
     staticMethod: boolean;
+    // `private fn` in a struct: only code inside the struct's body may name it.
+    private: boolean;
     overloadGroup: Collect.SymbolId;
     overloadedOperator?: EOverloadedOperator;
     parameterSymbols: Set<SymbolId>;
@@ -393,6 +396,12 @@ export namespace Collect {
     type: Collect.ExprId | null;
     mutability: EVariableMutability;
     variableContext: EVariableContext;
+    // `private` on a struct member: only code inside the struct's body may name
+    // it. false for everything that is not a struct member.
+    private: boolean;
+    // `tasklocal` / `global` on a global variable; null for everything that is
+    // not one.
+    globalStorage: EGlobalStorage | null;
     sourceloc: SourceLoc;
   };
 
@@ -1361,6 +1370,8 @@ function defineContextVariable(
       type: null,
       globalValueInitializer: null,
       variableContext: EVariableContext.ContextReference,
+      private: false,
+      globalStorage: null,
     },
     functionScopeId
   );
@@ -1978,6 +1989,7 @@ function collectSymbol(
           generics: [],
           name: item.name,
           staticMethod: item.static,
+          private: item.private,
           overloadGroup: overloadGroupId,
           parameters: parameters,
           hasParamPack: parameters.some((p) => p.kind === "param-pack"),
@@ -2063,6 +2075,8 @@ function collectSymbol(
               type: null,
               globalValueInitializer: null,
               variableContext: EVariableContext.ThisReference,
+              private: false,
+              globalStorage: null,
             },
             functionScopeId
           );
@@ -2085,6 +2099,8 @@ function collectSymbol(
               type: p.type ?? null,
               globalValueInitializer: null,
               variableContext: EVariableContext.FunctionParameter,
+              private: false,
+              globalStorage: null,
             },
             functionScopeId
           )[1];
@@ -2202,6 +2218,8 @@ function collectSymbol(
           }),
           globalValueInitializer: null,
           variableContext: EVariableContext.MemberOfStruct,
+          private: item.private,
+          globalStorage: null,
         },
         args.currentParentScope
       )[1];
@@ -2234,6 +2252,8 @@ function collectSymbol(
           ),
           globalValueInitializer: null,
           variableContext: EVariableContext.MemberOfStruct,
+          private: false,
+          globalStorage: null,
         },
         args.currentParentScope
       )[1];
@@ -2242,6 +2262,48 @@ function collectSymbol(
 
     default:
       assert(false, "All cases handled " + item.variant);
+  }
+}
+
+/**
+ * `tasklocal` and `global` name where a global's storage lives
+ * (docs/async-runtime.md, "Globals"). Only `global const` has storage today (a
+ * process-wide C global, like every global); the rest are refused so that
+ * nothing silently behaves like a plain global. The two H7231 refusals are the
+ * only code to remove when their storage is built.
+ */
+function rejectUnavailableGlobalStorage(item: ASTGlobalVariableDefinition) {
+  if (item.storage === EGlobalStorage.Thread) {
+    return;
+  }
+  const keyword = item.storage === EGlobalStorage.Task ? "tasklocal" : "global";
+  if (item.extern !== EExternLanguage.None) {
+    throw new CompilerError(
+      `'${keyword}' cannot be combined with 'extern'`,
+      item.sourceloc,
+      HazeErrorCode.StorageClassCombination
+    );
+  }
+  if (item.comptime) {
+    throw new CompilerError(
+      `'${keyword}' cannot be combined with 'comptime'`,
+      item.sourceloc,
+      HazeErrorCode.StorageClassCombination
+    );
+  }
+  if (item.storage === EGlobalStorage.Task) {
+    throw new CompilerError(
+      "task-local globals are not built yet",
+      item.sourceloc,
+      HazeErrorCode.StorageClassNotAvailable
+    );
+  }
+  if (item.mutability !== EVariableMutability.Const) {
+    throw new CompilerError(
+      "a 'global let' must hold an atomic type (C199), and atomic types do not exist yet; use 'global const'",
+      item.sourceloc,
+      HazeErrorCode.StorageClassNotAvailable
+    );
   }
 }
 
@@ -2286,6 +2348,7 @@ function collectGlobalDirective(
     // =================================================================================================================
 
     case "GlobalVariableDefinition": {
+      rejectUnavailableGlobalStorage(item);
       const variableSymbolId = defineVariableSymbol(
         cc,
         {
@@ -2305,6 +2368,8 @@ function collectGlobalDirective(
             : null,
           mutability: item.mutability,
           variableContext: EVariableContext.Global,
+          private: false,
+          globalStorage: item.storage,
           sourceloc: item.sourceloc,
         },
         args.currentParentScope
@@ -2861,6 +2926,8 @@ function collectScope(
             mutability: astStatement.mutability,
             globalValueInitializer: null,
             variableContext: astStatement.variableContext,
+            private: false,
+            globalStorage: null,
             sourceloc: astStatement.sourceloc,
           },
           blockScopeId
@@ -3235,6 +3302,7 @@ function collectExpr(
           : null,
         sourceloc: item.lambda.sourceloc,
         staticMethod: false,
+        private: false,
         vararg: false,
       });
 
@@ -3277,6 +3345,8 @@ function collectExpr(
               type: p.type,
               globalValueInitializer: null,
               variableContext: EVariableContext.FunctionParameter,
+              private: false,
+              globalStorage: null,
             },
             functionScopeId
           )[1];
@@ -3325,6 +3395,8 @@ function collectExpr(
               type: p.type,
               globalValueInitializer: null,
               variableContext: EVariableContext.FunctionParameter,
+              private: false,
+              globalStorage: null,
             },
             functionScopeId
           )[1];

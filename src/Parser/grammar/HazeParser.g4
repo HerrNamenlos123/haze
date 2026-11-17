@@ -90,7 +90,7 @@ exprAsFuncbody: expr;
 // Variables
 
 globalVariableDef
-    : (export=EXPORT)? (extern=EXTERN externLang=externLanguage?)? pub=PUB? variableMutabilitySpecifier comptime=COMPTIME? id (((COLON typeExpr)? EQUALS expr) | (COLON typeExpr)) SEMI?        #GlobalVariableDefinition
+    : (export=EXPORT)? (extern=EXTERN externLang=externLanguage?)? pub=PUB? (TASKLOCAL | GLOBAL)? variableMutabilitySpecifier comptime=COMPTIME? id (((COLON typeExpr)? EQUALS expr) | (COLON typeExpr)) SEMI?        #GlobalVariableDefinition
     ;
 
 typeDef
@@ -217,9 +217,9 @@ structContentWithSourceloc
 
 structContent
     : structContentWithSourceloc                                                                            #StructContentWithSourcelocAlt
-    | metaAnnotation? variableMutabilitySpecifier? (id | TYPE) QUESTIONMARK? COLON typeExpr (EQUALS expr)? memberSeparator?          #StructMember
-    | metaAnnotation? variableMutabilitySpecifier? (id | TYPE) EQUALS expr memberSeparator?                                          #StructMemberInferred
-    | static=STATIC? methodModifier* FN comptime=COMPTIME? name=(RAW_ID | TYPE | OPERATORASSIGN | OPERATORREBIND | OPERATORPLUS | OPERATORMINUS | OPERATORMUL | OPERATORDIV | OPERATORMOD | OPERATORSUBSCRIPT | OPERATORAS | OPERATOREQ | OPERATORNEQ | OPERATORLT | OPERATORGT | OPERATORLTE | OPERATORGTE) (LANGLE generic+=id (COMMA generic+=id)* RANGLE)? LB params RB (COLON typeExpr)? requiresBlock? (funcbody | SEMI?)    #StructMethod
+    | metaAnnotation? priv=PRIVATE? variableMutabilitySpecifier? (id | TYPE) QUESTIONMARK? COLON typeExpr (EQUALS expr)? memberSeparator?          #StructMember
+    | metaAnnotation? priv=PRIVATE? variableMutabilitySpecifier? (id | TYPE) EQUALS expr memberSeparator?                                          #StructMemberInferred
+    | priv=PRIVATE? static=STATIC? methodModifier* FN comptime=COMPTIME? name=(RAW_ID | TYPE | OPERATORASSIGN | OPERATORREBIND | OPERATORPLUS | OPERATORMINUS | OPERATORMUL | OPERATORDIV | OPERATORMOD | OPERATORSUBSCRIPT | OPERATORAS | OPERATOREQ | OPERATORNEQ | OPERATORLT | OPERATORGT | OPERATORLTE | OPERATORGTE) (LANGLE generic+=id (COMMA generic+=id)* RANGLE)? LB params RB (COLON typeExpr)? requiresBlock? (funcbody | SEMI?)    #StructMethod
     | structDefinition                                                                                      #NestedStructDefinition
     | enumDefinition                                                                                      #NestedStructDefinition
     ;

@@ -71,7 +71,7 @@ fn main(): int {
     fmt.println(f"chained  {describe(nums.filter((v: int) => v > 2).map((v: int) => v * v))}");
     fmt.println(f"none     {describe(nums.filter((v: int) => v > 99))}");
 
-    let empty: []int = [];
+    let empty: mut []int = [];
     fmt.println(f"empty    {describe(empty.map((v: int) => v + 1))}");
 
     let pts: mut []Point = [];
@@ -165,27 +165,27 @@ fn compareStr(a: str, b: str): int {
 }
 
 fn main(): int {
-    let nums: []int = [5, 3, 9, 1, 3, 7, 0, 3];
+    let nums: mut []int = [5, 3, 9, 1, 3, 7, 0, 3];
     nums.sort((a: int, b: int) => a - b);
     fmt.println(f"ints     {describe(nums)}");
     nums.sort((a: int, b: int) => b - a);
     fmt.println(f"reversed {describe(nums)}");
 
-    let empty: []int = [];
+    let empty: mut []int = [];
     empty.sort((a: int, b: int) => a - b);
-    let one: []int = [42];
+    let one: mut []int = [42];
     one.sort((a: int, b: int) => a - b);
     fmt.println(f"small    {empty.length} {describe(one)}");
 
-    let words: []str = ["pear", "apple", "fig", "apple", "banana"];
+    let words: mut []str = ["pear", "apple", "fig", "apple", "banana"];
     words.sort((a: str, b: str) => compareStr(a, b));
     let joined = "";
     for w in words { joined = f"{joined}{w},"; }
     fmt.println(f"strs     {joined}");
 
     // Stable: equal keys keep their order (seq ascending within a key).
-    let items: []Item = [];
-    let nodes: []Node = [];
+    let items: mut []Item = [];
+    let nodes: mut []Node = [];
     for (let i = 0; i < 12; i++) {
         items.push(Item { key: (i * 7) % 4, seq: i });
         nodes.push(Node { key: (i * 5) % 3, seq: i });
@@ -200,12 +200,12 @@ fn main(): int {
     fmt.println(f"refs     {nodeOut}");
 
     // A union of value structs, with a capturing comparator.
-    let entries: []Entry = [];
+    let entries: mut []Entry = [];
     entries.push(Leaf { name: "c" });
     entries.push(Branch { name: "b", size: 2 });
     entries.push(Leaf { name: "a" });
     entries.push(Branch { name: "d", size: 1 });
-    let calls: ref Box<int> = { value: 0 };
+    let calls: mut ref Box<int> = { value: 0 };
     entries.sort((a: Entry, b: Entry) => {
         calls.value += 1;
         return compareStr(entryName(a), entryName(b));
@@ -215,7 +215,7 @@ fn main(): int {
     fmt.println(f"unions   {entryOut} {calls.value > 0}");
 
     // Many elements: sorted, and still the same multiset.
-    let big: []int = [];
+    let big: mut []int = [];
     let x = 12345;
     let sum = 0;
     for (let i = 0; i < 1000; i++) {

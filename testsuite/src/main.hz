@@ -122,6 +122,11 @@ fn main(): int {
     cases_context.register(suite);
     cases_extern_c_function_types.register(suite);
     cases_context_review.register(suite);
+    cases_capture_writes.register(suite);
+    cases_const_soundness.register(suite);
+    cases_const_review.register(suite);
+    cases_private_members.register(suite);
+    cases_storage_keywords.register(suite);
 
     return testsuite.runAll(config, suite);
 }

@@ -87,7 +87,7 @@ fn make(which: int): Shape {
 
 fn main(): int {
     // 1. Read on every variant.
-    let shapes: []Shape = [Circle {}, Square {}, Tri {}];
+    let shapes: mut []Shape = [Circle {}, Square {}, Tri {}];
     for sh in shapes {
         fmt.println(f"read {sh.name} {sh.count} {sh.pos.x}");
     }
@@ -291,7 +291,7 @@ fn main(): int {
     if f is str { fmt.println(f"fail {f}"); }
 
     // Array elements.
-    let shapes: []Shape = [Circle {}, Square {}, Circle { r: 2.0 }];
+    let shapes: mut []Shape = [Circle {}, Square {}, Circle { r: 2.0 }];
     let total = 0.0;
     for each in shapes { total += each.area(); }
     fmt.println(f"total {total}");
@@ -363,7 +363,7 @@ struct C {
 }
 
 fn main(): int {
-    let items: [](A | B) = [A {}, B {}, A {}, B {}];
+    let items: mut [](A | B) = [A {}, B {}, A {}, B {}];
     let mixed: [](A | B | C) = [A {}, B {}, C {}];
     let sum = 0.0;
     let ints = 0;
@@ -578,9 +578,9 @@ after set 1 2 2
             "union member access: differing field types combine into a union, and are written per variant",
             """
 ref struct Handle { id: int = 7; }
-struct A { value: int = 1; label: str = "a"; tags: int | str = 5; handle: Handle = Handle {}; }
-struct B { value: real = 2.5; label: str = "b"; tags: real = 0.5; handle: Handle = Handle { id: 8 }; }
-struct C { value: int = 3; label: str = "c"; tags: int | str = "t"; handle: Handle = Handle { id: 9 }; }
+struct A { value: int = 1; label: str = "a"; tags: int | str = 5; handle: mut Handle = Handle {}; }
+struct B { value: real = 2.5; label: str = "b"; tags: real = 0.5; handle: mut Handle = Handle { id: 8 }; }
+struct C { value: int = 3; label: str = "c"; tags: int | str = "t"; handle: mut Handle = Handle { id: 9 }; }
 
 fn describe(x: int | real | str): str {
     if x is int { return f"int {x}"; }
@@ -622,7 +622,7 @@ fn main(): int {
     fmt.println(f"handle {w.handle.id}");
 
     // Array elements, and narrowing the result.
-    let items: [](A | B) = [A {}, B {}];
+    let items: mut [](A | B) = [A {}, B {}];
     for (let i = 0; i < items.length; i++) {
         items[i].value = 10;
     }

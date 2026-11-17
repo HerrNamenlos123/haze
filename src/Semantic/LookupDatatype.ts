@@ -488,11 +488,11 @@ export function makeStackArrayDatatypeAvailable(
   storage: EStorageClass,
   sourceloc: SourceLoc
 ): Semantic.TypeUseId {
-  // Interned by the element's definition AND storage class. The element's
-  // mutability is deliberately not part of the key (see ffba18fc), but its
-  // storage class is what the array holds: `[2]P` stores values, `[2]ref P`
-  // stores references. Keying on the definition alone made them one type,
-  // shaped by whichever was seen first.
+  // Interned by the element's definition, storage class AND mutability:
+  // `[2]P` stores values, `[2]ref P` references, and `[2]mut R`, `[2]R` and
+  // `[2]const R` hold references that may, may not, and never change their
+  // data (C601, C602, C596). Leaving any of them out of the key made two
+  // types one, shaped by whichever was seen first.
   const resolvedElemUse = sr.typeUseNodes.get(sr.e.resolveAlias(datatype));
   for (const id of sr.fixedArrayTypeCache) {
     const type = sr.typeDefNodes.get(id);
@@ -501,6 +501,7 @@ export function makeStackArrayDatatypeAvailable(
     if (
       cachedElemUse.type !== resolvedElemUse.type ||
       cachedElemUse.storage !== resolvedElemUse.storage ||
+      cachedElemUse.mutability !== resolvedElemUse.mutability ||
       type.length !== length
     ) {
       continue;
@@ -528,8 +529,8 @@ export function makeDynamicArrayDatatypeAvailable(
   storage: EStorageClass,
   sourceloc: SourceLoc
 ): Semantic.TypeUseId {
-  // Keyed like makeStackArrayDatatypeAvailable: element definition and
-  // storage class (`[]P` and `[]ref P` are different arrays).
+  // Keyed like makeStackArrayDatatypeAvailable: element definition, storage
+  // class and mutability.
   const resolvedElemUse = sr.typeUseNodes.get(sr.e.resolveAlias(datatype));
   for (const id of sr.dynamicArrayTypeCache) {
     const type = sr.typeDefNodes.get(id);
@@ -537,7 +538,8 @@ export function makeDynamicArrayDatatypeAvailable(
     const cachedElemUse = sr.typeUseNodes.get(sr.e.resolveAlias(type.datatype));
     if (
       cachedElemUse.type !== resolvedElemUse.type ||
-      cachedElemUse.storage !== resolvedElemUse.storage
+      cachedElemUse.storage !== resolvedElemUse.storage ||
+      cachedElemUse.mutability !== resolvedElemUse.mutability
     ) {
       continue;
     }

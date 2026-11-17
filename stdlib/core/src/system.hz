@@ -218,7 +218,7 @@ namespace sys {
     // Read from the OS rather than passed to main, which takes no parameters,
     // and always valid UTF-8 -- see hzstd_arg_count in hzstd_platform.h.
     export fn args(): []str {
-        let result: []str = [];
+        let result: mut []str = [];
         let count = ffi.hzstd_arg_count();
         for (let i = 0; i < count; i++) {
             result.push(ffi.hzstd_arg_at(i));

@@ -285,6 +285,11 @@ export enum HazeErrorCode {
   DeclarationNamedContext = 7222, // 'context' names the current context and cannot be declared
   CptrToFunction = 7223, // A 'cptr' cannot be converted to a function type
   FunctionToCptrNeedsExplicitCast = 7224, // A function converts to 'cptr' only with an explicit 'as cptr'
+  WriteThroughNonMutReference = 7225, // This data cannot be changed through a reference without 'mut'
+  WriteToConstData = 7226, // Const data never changes
+  PrivateMemberAccess = 7230, // Member '' of '' is private: only code inside the struct can reach it
+  StorageClassNotAvailable = 7231, // This storage class is not available yet (see the message)
+  StorageClassCombination = 7232, // 'tasklocal' / 'global' cannot be combined with ''
   ThisDistroPackageManagerNotSupportedYetPlease = 8001, // This Distro/Package Manager is not supported yet, please report
   DeadCodeDetectedAndStripped = 9001, // Dead code detected and stripped
   EmbeddedFileSizeMBExceeds50MB = 9002, // Embedded file size ( MB) exceeds 50 MB:

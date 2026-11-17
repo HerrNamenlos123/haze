@@ -41,7 +41,7 @@ ref struct Node { v: int;
     fn get(): int { return this.v; }
     ref fn self(): ref Node { return this; }
 }
-nocopy struct Writer { buf: []u8; pos: int;
+nocopy struct Writer { buf: mut []u8; pos: int;
     fn constructor(): Writer { return Writer { buf: [], pos: 0 }; }
     mut fn put(b: u8) { this.buf.push(b); this.pos = this.pos + 1; }
 }
@@ -60,7 +60,7 @@ fn t1() {
     let c = v;                 // copy
     v.bump();
     fmt.println(f"1: {v.x} {c.x} {v.sum()} {v.copyOfSelf().x}");
-    let n: ref Node = { v: 7 };     // a literal in a `ref` slot allocates (§6.1)
+    let n: mut ref Node = { v: 7 };     // a literal in a `ref` slot allocates (§6.1)
     let m = n;                      // aliases
     m.v = 8;
     fmt.println(f"1: {n.v} {n.get()} {n.self().v}");
@@ -71,7 +71,7 @@ fn t2() {
     let stackref c = Counter { n: 1 };
     bump(c);
     bump(c);
-    let n: ref Node = { v: 7 };
+    let n: mut ref Node = { v: 7 };
     let stackref sn = n;            // immortal: points at the GC object
     let stackref c2 = c;            // copies the reference: same counter
     bump(c2);
@@ -117,7 +117,7 @@ fn t4() {
 fn t5() {
     let a = 1;
     let v = Vec { x: 10, y: 0 };
-    let r: ref Node = { v: 100 };
+    let r: mut ref Node = { v: 100 };
     let stackref shared = Counter { n: 0 };
     let stackref f = () => {          // built in place, no heap
         shared.n = shared.n + 1;
@@ -142,7 +142,7 @@ fn t7() {
     let stackref v = Vec { x: 10, y: 1 };
     let f = v.sum;
     v.bump();
-    let n: ref Node = { v: 5 };
+    let n: mut ref Node = { v: 5 };
     let g = n.get;
     n.v = 6;
     fmt.println(f"7: {f()} {callTwice(f)} {g()}");
@@ -162,9 +162,9 @@ fn t7() {
 // contents now true, a test made only of those would pass even if comparison
 // were hardcoded to true.
 fn t8() {
-    let a: ref Node = { v: 1 };
-    let b: ref Node = { v: 1 };
-    let c: ref Node = { v: 2 };
+    let a: mut ref Node = { v: 1 };
+    let b: mut ref Node = { v: 1 };
+    let c: mut ref Node = { v: 2 };
     let stackref sa = a;
     let stackref sb = b;
     let a2 = a;
@@ -174,13 +174,13 @@ fn t8() {
 }
 
 // ── 9. storing a stackref is legal; it is the use that is checked (§5.5) ────
-fn storeWhileAlive(h: ref Holder) {
+fn storeWhileAlive(h: mut ref Holder) {
     let stackref c = Counter { n: 42 };
     h.r = c;
     if h.r { fmt.println(f"9: {h.r.n}"); }
 }
 fn t9() {
-    let h: ref Holder = {};
+    let h: mut ref Holder = {};
     storeWhileAlive(h);
 }
 
@@ -193,7 +193,7 @@ fn t10() {
     static_assert(typeof(sv).isStackref);
     static_assert(typeof(sv).valueType.isValue);
     static_assert(typeof(sv).valueType.isStackref == false);
-    let n: ref Node = { v: 0 };
+    let n: mut ref Node = { v: 0 };
     static_assert(typeof(n).isRef);
     static_assert(typeof(n).valueType.isValue);
     fmt.println("10: ok");
@@ -228,12 +228,12 @@ fn main(): int {
             """
 struct Counter { n: int; }
 ref struct Holder { r: stackref Counter | none = none; }
-fn escape(h: ref Holder) {
+fn escape(h: mut ref Holder) {
     let stackref c = Counter { n: 42 };
     h.r = c;
 }
 fn main(): int {
-    let h: ref Holder = {};
+    let h: mut ref Holder = {};
     escape(h);
     if h.r { fmt.println(f"{h.r.n}"); }
     return 0;
@@ -261,7 +261,7 @@ fn main(): int {
             """
 struct Vec { x: int; }
 fn main(): int {
-    let v: ref Vec = Vec { x: 1 };
+    let v: mut ref Vec = Vec { x: 1 };
     return 0;
 }
 """,
@@ -286,7 +286,7 @@ fn main(): int {
 struct Vec { x: int; }
 fn main(): int {
     let stackref v = Vec { x: 1 };
-    let r: ref Vec = v;
+    let r: mut ref Vec = v;
     return 0;
 }
 """,

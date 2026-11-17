@@ -261,10 +261,10 @@ namespace rx {
         _paused: bool = false;
         // Registered through onWatcherCleanup from inside the callback; run
         // before the callback fires next, and on stop.
-        _cleanups: [](() => none) = [];
+        _cleanups: mut [](() => none) = [];
         _schedule: () => none;
 
-        fn stop() {
+        mut fn stop() {
             if !this._active {
                 return;
             }
@@ -276,11 +276,11 @@ namespace rx {
             };
         }
 
-        fn pause() {
+        mut fn pause() {
             this._paused = true;
         }
 
-        fn resume() {
+        mut fn resume() {
             if !this._paused {
                 return;
             }
@@ -301,7 +301,7 @@ namespace rx {
             }
         }
 
-        fn runCleanups() {
+        mut fn runCleanups() {
             if this._cleanups.length == 0 {
                 return;
             }
@@ -553,7 +553,7 @@ namespace rx {
         getter: () => T,
         callback: (value: rx.UnwrapReactive<T>, oldValue: rx.UnwrapReactive<T> | none) => none,
         options: WatchOptions
-    ): WatchHandle {
+    ): mut WatchHandle {
         let deep = false;
         if options.deep {
             deep = true;
@@ -567,7 +567,7 @@ namespace rx {
         // is installed with the node and calls the trigger below, which needs
         // the node and so is put in the box afterwards; nothing makes the
         // node dirty before that.
-        let scheduled: ref Box<() => none> = { value: (): none => {} };
+        let scheduled: mut ref Box<() => none> = { value: (): none => {} };
         let schedulerWrapper = (): cptr => {
             scheduled.value();
             return none as cptr;

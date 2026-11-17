@@ -1,0 +1,172 @@
+// ============================================================================
+// const and mut are sound (Axiom C453, C596, C597, C601 to C603).
+//
+// const and mut describe the data a reference points to (C453). A mut
+// reference can change its data (C601); a reference without a modifier
+// cannot, but other code may (C602); const data never changes (C596), and
+// everything reachable through const data is const too (C603). Data becomes
+// const only by being created const or by being copied (C597): no conversion
+// may turn changeable data into const without a copy.
+//
+// Every write form is checked: assignment, compound assignment, `++`, `--`,
+// element writes, the array mutators and mut methods, also on a value reached
+// through a reference. Every conversion path into const is checked: a call
+// argument, a variable declaration (typed and `const x = ...`), a return, a
+// struct or array literal element, a value struct, a fixed array.
+//
+// Written from the claims before the fix; each compile-fail case was shown to
+// compile on the unfixed compiler (or, for the conversion cases already
+// rejected, kept as a regression). Do not weaken a case to make an
+// implementation pass.
+// ============================================================================
+
+namespace cases_const_soundness {
+
+    fn program(decls: str, body: str): str {
+        return f"{decls}\nfn main(): int {{\n{body}\n    return 0;\n}}\n";
+    }
+
+    fn rejects(s: mut testsuite.Suite, name: str, code: errorcodes.Code, decls: str, body: str) {
+        s.compileFails(f"const soundness: {name}", program(decls, body),
+            [testsuite.exactCount(code, 1)]);
+    }
+
+    export fn register(s: mut testsuite.Suite) {
+        let nonMut = errorcodes.Code.WriteThroughNonMutReference;
+        let toConst = errorcodes.Code.WriteToConstData;
+        let conv = errorcodes.Code.NoSuitableConversionFound;
+        let mutMethod = errorcodes.Code.MethodCanMutateObjectButNotCalledObject;
+
+        let h = "ref struct H { k: int = 0; }";
+        let hv = "struct V { x: int = 0; mut fn bump() { this.x = this.x + 1; } }\nref struct HV { v: V; }";
+        let deep = "ref struct Inner { v: int = 0; mut fn bump() { this.v = this.v + 1; } }\nref struct Outer { inner: mut Inner; }";
+        let deepValue = "ref struct Inner { v: int = 0; }\nstruct Mid { inner: mut Inner; }\nref struct Outer { mid: Mid; }";
+
+        // ── writes through a reference without a modifier (C602) ───────────
+        // The compiler's own mutators (insert, remove, pop) say H7225 / H7226;
+        // push, reserve, clear and sort are array.hz functions taking a
+        // `mut []T`, so a plain or const array is the ordinary H4001.
+        rejects(s, "assignment through a plain reference", nonMut, f"{h}\nfn f(h: H) {{ h.k = 5; }}", "    f(H { k: 1 });");
+        rejects(s, "compound assignment through a plain reference", nonMut, f"{h}\nfn f(h: H) {{ h.k += 5; }}", "    f(H { k: 1 });");
+        rejects(s, "++ through a plain reference", nonMut, f"{h}\nfn f(h: H) {{ h.k++; }}", "    f(H { k: 1 });");
+        rejects(s, "-- through a plain reference", nonMut, f"{h}\nfn f(h: H) {{ --h.k; }}", "    f(H { k: 1 });");
+        rejects(s, "element write through a plain array", nonMut, "fn f(a: []int) { a[0] = 1; }", "    let a: mut []int = [1];\n    f(a);");
+        rejects(s, "element ++ through a plain array", nonMut, "fn f(a: []int) { a[0]++; }", "    let a: mut []int = [1];\n    f(a);");
+        rejects(s, "push on a plain array", conv, "fn f(a: []int) { a.push(1); }", "    let a: mut []int = [1];\n    f(a);");
+        rejects(s, "pop on a plain array", nonMut, "fn f(a: []int) { let x = a.pop(); }", "    let a: mut []int = [1];\n    f(a);");
+        rejects(s, "insert on a plain array", nonMut, "fn f(a: []int) { a.insert(0, 1); }", "    let a: mut []int = [1];\n    f(a);");
+        rejects(s, "remove on a plain array", nonMut, "fn f(a: []int) { let x = a.remove(0); }", "    let a: mut []int = [1];\n    f(a);");
+        rejects(s, "clear on a plain array", conv, "fn f(a: []int) { a.clear(); }", "    let a: mut []int = [1];\n    f(a);");
+        rejects(s, "reserve on a plain array", conv, "fn f(a: []int) { a.reserve(8); }", "    let a: mut []int = [1];\n    f(a);");
+        rejects(s, "a value field through a plain reference", nonMut, f"{hv}\nfn f(h: HV) {{ h.v.x = 1; }}", "    f(HV { v: V { x: 1 } });");
+        rejects(s, "a mut method on a value field through a plain reference", nonMut, f"{hv}\nfn f(h: HV) {{ h.v.bump(); }}", "    f(HV { v: V { x: 1 } });");
+        rejects(s, "a field write in a method that is not mut", nonMut, "ref struct H { k: int = 0; fn set() { this.k = 1; } }", "    let h = H {};\n    h.set();");
+        rejects(s, "a declared plain local", nonMut, h, "    let x: H = H { k: 1 };\n    x.k = 2;");
+
+        // ── writes to const data (C596), also reached deeply (C603) ────────
+        rejects(s, "assignment through a const reference", toConst, f"{h}\nfn f(h: const H) {{ h.k = 5; }}", "    const c: const H = H { k: 1 };\n    f(c);");
+        rejects(s, "++ through a const reference", toConst, f"{h}\nfn f(h: const H) {{ h.k++; }}", "    const c: const H = H { k: 1 };\n    f(c);");
+        rejects(s, "a const local", toConst, h, "    const c = H { k: 1 };\n    c.k = 3;");
+        rejects(s, "a const value local", toConst, "struct V { x: int = 0; }", "    const v = V { x: 1 };\n    v.x = 2;");
+        rejects(s, "a const member", toConst, "ref struct S { const id: int = 0; }", "    let s = S {};\n    s.id = 2;");
+        rejects(s, "deep: a mut field reached through const", toConst, f"{deep}\nfn f(o: const Outer) {{ o.inner.v = 9; }}", "    const c: const Outer = Outer { inner: Inner { v: 1 } };\n    f(c);");
+        rejects(s, "deep: a mut field copied out of const data", toConst, f"{deep}\nfn f(o: const Outer) {{ let i = o.inner; i.v = 9; }}", "    const c: const Outer = Outer { inner: Inner { v: 1 } };\n    f(c);");
+        rejects(s, "deep: a mut method on a mut field reached through const", mutMethod, f"{deep}\nfn f(o: const Outer) {{ o.inner.bump(); }}", "    const c: const Outer = Outer { inner: Inner { v: 1 } };\n    f(c);");
+        rejects(s, "deep: through a value struct inside const data", toConst, f"{deepValue}\nfn f(o: const Outer) {{ o.mid.inner.v = 9; }}", "    const c: const Outer = Outer { mid: Mid { inner: Inner { v: 1 } } };\n    f(c);");
+        rejects(s, "deep: an element of a const array", toConst, "ref struct Inner { v: int = 0; }\nfn f(a: const []mut Inner) { a[0].v = 9; }", "    const c: const []mut Inner = [Inner { v: 1 }];\n    f(c);");
+        rejects(s, "deep: a loop variable over a const array", toConst, "ref struct Inner { v: int = 0; }\nfn f(a: const []mut Inner) { for x in a { x.v = 9; } }", "    const c: const []mut Inner = [Inner { v: 1 }];\n    f(c);");
+        rejects(s, "element write in a const array", toConst, "fn f(a: const []int) { a[0] = 9; }", "    const c: const []int = [1, 2];\n    f(c);");
+        rejects(s, "push on a const array", conv, "fn f(a: const []int) { a.push(3); }", "    const c: const []int = [1, 2];\n    f(c);");
+
+        // ── no conversion turns changeable data into const (C597) ──────────
+        rejects(s, "a plain reference passed as const", conv, f"{h}\nfn f(h: const H) {{}}", "    let x: H = H {};\n    f(x);");
+        rejects(s, "a mut reference passed as const", conv, f"{h}\nfn f(h: const H) {{}}", "    let x: mut H = H {};\n    f(x);");
+        rejects(s, "a reference declared const", conv, h, "    let x = H {};\n    const c = x;");
+        rejects(s, "a reference typed const", conv, h, "    let x = H {};\n    let c: const H = x;");
+        rejects(s, "a call result declared const", conv, f"{h}\nfn make(): H {{ return H {{}}; }}", "    const c = make();");
+        rejects(s, "a return into a const return type", conv, f"{h}\nfn f(h: H): const H {{ return h; }}", "    let x = f(H {});");
+        rejects(s, "a struct literal holding changeable data", conv, "ref struct Inner { v: int = 0; }\nref struct Outer { inner: Inner; }", "    let i = Inner { v: 1 };\n    let c: const Outer = Outer { inner: i };");
+        rejects(s, "an array literal holding changeable data", conv, "ref struct Inner { v: int = 0; }", "    let i = Inner { v: 1 };\n    let c: const []Inner = [i];");
+        rejects(s, "a nested literal holding changeable data", conv, "ref struct Inner { v: int = 0; }\nref struct Outer { inner: Inner; }", "    let i = Inner { v: 1 };\n    let c: const []Outer = [Outer { inner: i }];");
+        rejects(s, "a value struct holding a reference", conv, "ref struct Inner { v: int = 0; }\nstruct Holder { inner: Inner; }", "    let i = Inner { v: 1 };\n    let h = Holder { inner: i };\n    const c: const Holder = h;");
+        rejects(s, "a fixed array holding references", conv, "ref struct Inner { v: int = 0; }", "    let i = Inner { v: 1 };\n    let a: [1]Inner = [i];\n    const c: const [1]Inner = a;");
+        rejects(s, "a const field initialized from changeable data", conv, "ref struct Inner { v: int = 0; }\nref struct S { c: const Inner; }", "    let i = Inner { v: 1 };\n    let s = S { c: i };");
+
+        // ── what stays allowed ─────────────────────────────────────────────
+        // The loop variable over a `mut []mut R` is a `mut R`, as `xs[i]` is.
+        s.run(
+            "const soundness: a loop changes the elements of a mut array of references in place",
+            """
+ref struct R { v: int = 0; }
+fn main(): int {
+    let xs: mut []mut R = [R { v: 1 }, R { v: 2 }];
+    for x in xs {
+        x.v = x.v * 10;
+    }
+    fmt.println(f"{xs[0].v} {xs[1].v}");
+    return 0;
+}
+""",
+            "10 20");
+
+        // `mut T` in generic code is written for the references T may stand
+        // for: bound to a value struct it is just T (and `mut V` written on a
+        // value type stays an error, cases_storage_classes.hz).
+        s.run(
+            "const soundness: mut T in a generic is accepted for a value struct and a reference",
+            """
+struct V { x: int = 0; }
+ref struct R { x: int = 0; }
+fn bump<T>(t: T): T {
+    let m: mut T = t;
+    m.x = m.x + 1;
+    return m;
+}
+fn main(): int {
+    let v = bump<V>(V { x: 1 });
+    let r = R { x: 5 };
+    let r2 = bump<mut R>(r);
+    fmt.println(f"{v.x} {r.x} {r2.x}");
+    return 0;
+}
+""",
+            "2 6 6");
+
+
+        s.run(
+            "const soundness: const data is created const or copied, read through every kind of reference",
+            """
+ref struct Inner { v: int = 0; }
+ref struct Outer { inner: mut Inner; }
+struct P { x: int = 0; y: int = 0; }
+ref struct H { k: int = 0; mut fn bump() { this.k = this.k + 1; } }
+
+fn readPlain(o: Outer): int { return o.inner.v; }
+fn readConst(o: const Outer): int { return o.inner.v; }
+fn change(h: mut H) { h.k = h.k + 1; h.k += 1; h.k++; h.bump(); }
+fn grow(a: mut []int) { a.push(4); a[0] = 7; a[1]++; }
+
+fn main(): int {
+    const fresh: const Outer = Outer { inner: Inner { v: 1 } };
+    const list: const []Inner = [Inner { v: 2 }, Inner { v: 3 }];
+    const n = 5;
+    let p = P { x: 1, y: 2 };
+    const frozen: const P = p;
+    p.x = 9;
+    let fixed: [2]int = [1, 2];
+    const frozenFixed: const [2]int = fixed;
+    fixed[0] = 9;
+
+    let h = H {};
+    change(h);
+    let a: mut []int = [1, 2, 3];
+    grow(a);
+
+    let changeable = Outer { inner: Inner { v: 1 } };
+    fmt.println(f"{readPlain(changeable)} {readConst(fresh)} {list[1].v} {n} {frozen.x} {frozenFixed[0]} {h.k} {a[0]} {a[1]} {a.length}");
+    return 0;
+}
+""",
+            "1 1 3 5 1 1 4 7 3 4");
+    }
+}

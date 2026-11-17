@@ -22,7 +22,7 @@ namespace cases_recursive_optional_array {
             """
 export ref struct Node {
     id: int;
-    kids?: []Item;
+    kids?: mut []Item;
 }
 
 export ref struct Leaf {

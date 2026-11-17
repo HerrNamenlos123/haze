@@ -2,7 +2,7 @@
 namespace io {
 
     export opaque struct Resource<T> {
-        cell: Cell<T>; // Will be private in future, access is hardcoded by "using" statement.
+        cell: mut Cell<T>; // Will be private in future, access is hardcoded by "using" statement.
 
         ref struct Cell<U> {
             data: U;
@@ -26,7 +26,7 @@ namespace io {
             }
         }
 
-        fn release() {
+        mut fn release() {
             if !this.cell.alive {
                 return;
             }

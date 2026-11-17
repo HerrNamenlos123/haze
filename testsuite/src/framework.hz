@@ -114,7 +114,7 @@ namespace testsuite {
     // or it must fail to compile (compileFails) while everything around it
     // must succeed — those cannot coexist in one program or one build.
     export ref struct Suite {
-        cases: []TestCase = [];
+        cases: mut []TestCase = [];
 
         // Must compile. Never executed.
         mut fn compileOk(name: str, source: str) {
@@ -305,7 +305,7 @@ namespace testsuite {
     // Runs every check against `output`, returning a combined human-readable
     // description of everything that didn't hold ("" if everything held).
     fn evaluateChecks(output: str, checks: []ErrorCheck): str {
-        let failures: []str = [];
+        let failures: mut []str = [];
         for check in checks {
             let problem = checkError(output, check);
             if problem.length > 0 {
@@ -449,7 +449,7 @@ namespace testsuite {
     // `<verb> --quiet <target...>` -- the full argv for one invocation of the
     // compiler under test.
     fn caseArgs(verb: str, target: []str): []str {
-        let args: []str = [verb, "--quiet"];
+        let args: mut []str = [verb, "--quiet"];
         for t in target {
             args.push(t);
         }
@@ -526,12 +526,28 @@ namespace testsuite {
             sys.panic(f"testsuite: failed to create work dir {config.workDir}");
         }
 
+        // HAZE_TEST_FILTER (a regex) runs only the cases whose name matches it (for
+        // targeted runs while working; the gate sets no filter). A skipped
+        // case keeps its index, so every case keeps its work directory.
+        let filter = env.get("HAZE_TEST_FILTER");
         let passed = 0;
         let failed = 0;
+        let selected = 0;
         let index = 0;
         for tc in suite.cases {
-            let result = runOne(config, index, tc);
+            let caseIndex = index;
             index = index + 1;
+            if filter {
+                let matches = countMatches(tc.name, filter);
+                if matches < 0 {
+                    sys.panic(f"testsuite: HAZE_TEST_FILTER is not a valid regex: {filter}");
+                }
+                if matches == 0 {
+                    continue;
+                }
+            }
+            selected = selected + 1;
+            let result = runOne(config, caseIndex, tc);
 
             if result.passed {
                 passed = passed + 1;
@@ -545,7 +561,7 @@ namespace testsuite {
         }
 
         fmt.println("");
-        fmt.println(f"{passed} passed, {failed} failed, {suite.cases.length} total");
+        fmt.println(f"{passed} passed, {failed} failed, {selected} total");
 
         if failed > 0 {
             return 1;

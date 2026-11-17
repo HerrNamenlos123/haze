@@ -27,8 +27,8 @@
 // json.hz's own Proxy.to<T>()).
 [[json.serialize="toJson", json.parse="fromJson"]]
 export ref struct LinearMap<K, V> {
-    keys: []K = [];
-    values: []V = [];
+    keys: mut []K = [];
+    values: mut []V = [];
 
     fn constructor() {
         return LinearMap<K, V> {};
@@ -60,7 +60,7 @@ export ref struct LinearMap<K, V> {
 
     // Overwrites the existing value in place if `key` is already present,
     // otherwise appends a new entry.
-    fn set(key: K, value: V): void {
+    mut fn set(key: K, value: V): void {
         let i = this.indexOf(key);
         if i >= 0 {
             this.values[i] = value;
@@ -72,13 +72,13 @@ export ref struct LinearMap<K, V> {
 
     // Rebuilds both arrays without the matching entry (no splice/remove in
     // stdlib arrays). Returns whether `key` was actually present.
-    fn delete(key: K): bool {
+    mut fn delete(key: K): bool {
         let i = this.indexOf(key);
         if i < 0 {
             return false;
         }
-        let newKeys: []K = [];
-        let newValues: []V = [];
+        let newKeys: mut []K = [];
+        let newValues: mut []V = [];
         for (let j = 0; j < this.keys.length; j++) {
             if j != i {
                 newKeys.push(this.keys[j]);
@@ -94,7 +94,7 @@ export ref struct LinearMap<K, V> {
         return this.keys.length;
     }
 
-    fn clear(): void {
+    mut fn clear(): void {
         this.keys = [];
         this.values = [];
     }

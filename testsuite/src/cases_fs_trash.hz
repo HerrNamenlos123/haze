@@ -108,11 +108,11 @@ fn isStickyDir(path: str): bool {
 
 // A folder only its owner can enter (no group or other permissions).
 fn isPrivate(path: str): bool {
-    let private = false;
+    let ownerOnly = false;
     do unsafe {
-        __c__("char *c = malloc((size_t)path.length + 1); memcpy(c, path.data, (size_t)path.length); c[path.length] = 0; struct stat s; private = stat(c, &s) == 0 && S_ISDIR(s.st_mode) && (s.st_mode & 077) == 0; free(c);");
+        __c__("char *c = malloc((size_t)path.length + 1); memcpy(c, path.data, (size_t)path.length); c[path.length] = 0; struct stat s; ownerOnly = stat(c, &s) == 0 && S_ISDIR(s.st_mode) && (s.st_mode & 077) == 0; free(c);");
     };
-    return private;
+    return ownerOnly;
 }
 
 fn removeEmptyDir(path: str) {

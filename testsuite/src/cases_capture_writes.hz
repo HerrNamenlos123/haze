@@ -1,0 +1,127 @@
+// ============================================================================
+// A closure never writes what it captured (Axiom C456, C458, C460).
+//
+// A closure captures primitives, value structs, fixed arrays, unions, stack
+// references and closures as copies, and ref structs, dynamic arrays and
+// reactive cells as references to the same object (C456). It never writes a
+// value it captured as a copy (C458), so its environment is never written
+// after it is created (C460): that is what lets one closure run on several
+// threads without a race in its environment (C461), and the crossing rule
+// rests on it. Writing a captured copy would silently leave the outer
+// variable unchanged (C457).
+//
+// So every write form is rejected with H7189 on every kind of capture:
+// assignment, compound assignment, `++`, `--`, a mut method on a captured
+// value, a member or element write into a captured value, and rebinding a
+// captured reference (`r = other` would only change the closure's own
+// pointer: the environment is written, the outer variable is not). Writes
+// THROUGH a captured reference reach the shared object and are fine.
+//
+// Written from the claims before the fix; each compile-fail case was shown
+// to compile on the unfixed compiler. Do not weaken a case to make an
+// implementation pass.
+// ============================================================================
+
+namespace cases_capture_writes {
+
+    // One program: `decls` at file scope, `setup` at the top of main, then a
+    // closure whose body is `write`, created and called.
+    fn closureProgram(decls: str, setup: str, write: str): str {
+        return f"{decls}\nfn main(): int {{\n{setup}\n    let f = () => {{ {write}; }};\n    f();\n    return 0;\n}}\n";
+    }
+
+    fn rejects(s: mut testsuite.Suite, name: str, decls: str, setup: str, write: str) {
+        s.compileFails(f"capture writes: {name}", closureProgram(decls, setup, write),
+            [testsuite.exactCount(errorcodes.Code.WriteToByValueCapture, 1)]);
+    }
+
+    export fn register(s: mut testsuite.Suite) {
+        let valueStruct = "struct V { x: int = 0; mut fn bump() { this.x = this.x + 1; } }";
+        let refStruct = "ref struct R { x: int = 0; mut fn bump() { this.x = this.x + 1; } }";
+        let holder = "struct V { x: int = 0; }\nstruct W { v: V; }";
+        let unionDecl = "struct P { x: int = 0; }\nstruct Q { x: int = 0; }";
+
+        // ── a captured primitive (copy) ─────────────────────────────────────
+        rejects(s, "primitive, assignment", "", "    let n = 1;", "n = 2");
+        rejects(s, "primitive, compound assignment", "", "    let n = 1;", "n += 2");
+        rejects(s, "primitive, prefix ++", "", "    let n = 1;", "++n");
+        rejects(s, "primitive, postfix ++", "", "    let n = 1;", "n++");
+        rejects(s, "primitive, prefix --", "", "    let n = 1;", "--n");
+        rejects(s, "primitive, postfix --", "", "    let n = 1;", "n--");
+
+        // ── a captured value struct (copy) ──────────────────────────────────
+        rejects(s, "value struct, assignment", valueStruct, "    let v = V { x: 1 };", "v = V { x: 2 }");
+        rejects(s, "value struct, member assignment", valueStruct, "    let v = V { x: 1 };", "v.x = 2");
+        rejects(s, "value struct, member compound assignment", valueStruct, "    let v = V { x: 1 };", "v.x += 2");
+        rejects(s, "value struct, member ++", valueStruct, "    let v = V { x: 1 };", "v.x++");
+        rejects(s, "value struct, member --", valueStruct, "    let v = V { x: 1 };", "--v.x");
+        rejects(s, "value struct, mut method", valueStruct, "    let v = V { x: 1 };", "v.bump()");
+        rejects(s, "value struct, nested member", holder, "    let w = W { v: V { x: 1 } };", "w.v.x = 3");
+
+        // ── a captured fixed array (copy) ───────────────────────────────────
+        rejects(s, "fixed array, assignment", "", "    let a: [2]int = [1, 2];", "a = [3, 4]");
+        rejects(s, "fixed array, element assignment", "", "    let a: [2]int = [1, 2];", "a[0] = 5");
+        rejects(s, "fixed array, element compound assignment", "", "    let a: [2]int = [1, 2];", "a[0] += 5");
+        rejects(s, "fixed array, element ++", "", "    let a: [2]int = [1, 2];", "a[0]++");
+        rejects(s, "fixed array of value structs, element member", valueStruct, "    let a: [1]V = [V { x: 1 }];", "a[0].x = 7");
+        rejects(s, "fixed array of value structs, element mut method", valueStruct, "    let a: [1]V = [V { x: 1 }];", "a[0].bump()");
+
+        // ── a captured union (copy) ─────────────────────────────────────────
+        rejects(s, "union, assignment", "", "    let u: int | none = 1;", "u = none");
+        rejects(s, "union of structs, member assignment", unionDecl, "    let u: P | Q = P { x: 1 };", "u.x = 2");
+
+        // ── a captured stack reference (a copy of the reference) ────────────
+        rejects(s, "stackref, rebinding", valueStruct, "    let stackref a = V { x: 1 };\n    let stackref b = V { x: 2 };", "a = b");
+
+        // ── a captured closure (copy) ───────────────────────────────────────
+        rejects(s, "closure, rebinding", "", "    let g = () => { return 1; };", "g = () => { return 2; }");
+
+        // ── a captured reference: rebinding writes the environment ──────────
+        rejects(s, "ref struct, rebinding", refStruct, "    let r = R { x: 1 };\n    let other = R { x: 2 };", "r = other");
+        rejects(s, "dynamic array, rebinding", "", "    let xs: []int = [1, 2];", "xs = [3]");
+
+        // ── writes THROUGH a captured reference reach the shared object ─────
+        s.run(
+            "capture writes: writes through a captured reference change the shared object",
+            """
+ref struct R { x: int = 0; mut fn bump() { this.x = this.x + 1; } }
+struct V { x: int = 0; }
+fn main(): int {
+    let r = R { x: 1 };
+    let xs: mut []int = [1, 2];
+    let stackref sv = V { x: 1 };
+    let f = () => {
+        r.x = r.x + 10;
+        r.x += 1;
+        r.x++;
+        r.bump();
+        xs[0] = 9;
+        xs.push(3);
+        sv.x = 5;
+    };
+    f();
+    fmt.println(f"{r.x} {xs[0]} {xs.length} {sv.x}");
+    return 0;
+}
+""",
+            "14 9 3 5");
+
+        // ── the fix: copy into a variable of the closure's own (C458) ───────
+        s.run(
+            "capture writes: a closure changes its own copy of a captured value",
+            """
+fn main(): int {
+    let n = 1;
+    let f = () => {
+        let mine = n;
+        mine++;
+        mine += 2;
+        return mine;
+    };
+    fmt.println(f"{f()} {n}");
+    return 0;
+}
+""",
+            "4 1");
+    }
+}

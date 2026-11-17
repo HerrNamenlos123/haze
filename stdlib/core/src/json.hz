@@ -436,7 +436,7 @@ namespace json {
         if !ffi.hzstd_json_is_array(node) {
             return Error { error: () => "JSON type mismatch: expected array" };
         }
-        let arr: T = [];
+        let arr: mut T = [];
         let count = ffi.hzstd_json_get_array_size(allocator, node);
         if count <= 1000000000 {
             arr.reserve(count as int);
@@ -482,7 +482,7 @@ namespace json {
             return Error { error: () => "JSON type mismatch: expected object" };
         }
         do unsafe {
-            let result: T = uninitialized;
+            let result: mut T = uninitialized;
             if comptime T.isValue {
                 // If T is an inline struct, just leave it uninitialized, the loop will later assign each field
             }
@@ -1114,7 +1114,7 @@ namespace json {
         // longer watched, so another program's writes stop being read back
         // into `data`. A cache that is replaced (another vault opened) has to
         // be closed, or it watches its file for the life of the process.
-        fn close() {
+        mut fn close() {
             this.flush();
             if let handle = this._watch {
                 fs.unwatch(handle);
@@ -1122,7 +1122,7 @@ namespace json {
             }
         }
 
-        fn _writeToDisk() {
+        mut fn _writeToDisk() {
             // Serialize FIRST, and unconditionally. This runs inside
             // _flushComputed, and reading every field is the only thing that
             // subscribes that computed to them. Returning before these reads
