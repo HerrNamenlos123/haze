@@ -1011,10 +1011,6 @@ function requireContext(
   }
 }
 
-// The `hzstd_context_t *` of the function being lowered: its own `__hz_ctx`
-// parameter, which every function with a body has (Axiom C209, C402). `what`
-// names the construct that needs it; outside a function body it is an
-// internal error.
 // A `tasklocal let` lives in its module's task-local block; a `tasklocal
 // const` is a constant like `const` and gets none (TL-8).
 function isTaskLocalVariable(
@@ -1027,6 +1023,10 @@ function isTaskLocalVariable(
   );
 }
 
+// The `hzstd_context_t *` of the function being lowered: its own `__hz_ctx`
+// parameter, which every function with a body has (Axiom C209, C402). `what`
+// names the construct that needs it; outside a function body it is an
+// internal error.
 function currentContextPointer(
   lr: Lowered.Module,
   what: string,
@@ -1682,8 +1682,17 @@ export function lowerExpr(
           );
           if (isTaskLocalVariable(definition, symbol)) {
             // A field of this module's block in the running task: reached
-            // through the context, so it exists only inside a function.
-            requireContext(lr, `The task-local variable '${name}'`, expr.sourceloc);
+            // through the context, so it exists only inside a function. User
+            // code can reach this (a global's initializer, a struct default
+            // one uses), so it is a diagnostic, not requireContext's internal
+            // error.
+            if (!lr.currentFunction) {
+              throw new CompilerError(
+                `The task-local variable '${name}' exists once per task, and code outside a function runs in no task`,
+                expr.sourceloc,
+                HazeErrorCode.TaskLocalOutsideFunction
+              );
+            }
             return Lowered.addExpr(lr, {
               variant: Lowered.ENode.SymbolValueExpr,
               name: {

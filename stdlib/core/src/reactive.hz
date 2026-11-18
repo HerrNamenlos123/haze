@@ -77,8 +77,9 @@ namespace rx {
         };
     }
 
-    // A new cell is its creator's to write: `mut` (S0-11). A value that is a
-    // cell already is handed back; only a `mut` one can come back as `mut`.
+    // A new cell is its creator's to write: `mut` (S0-11). (The branch for a
+    // value that is a cell already does not compile today, for a plain cell
+    // or a `mut` one: ledger.)
     export fn reactive<T>(value: T): mut rx.Reactive<T> :: final {
 
         if comptime T.baseType.category == meta.TypeCategory.Reactive { 

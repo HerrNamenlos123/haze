@@ -290,6 +290,8 @@ export enum HazeErrorCode {
   StorageClassCombination = 7232, // 'tasklocal' / 'global' cannot be combined with ''
   ContextRequirementOutsideExternCDeclaration = 7233, // ':: context' is only for an 'extern C' function without a body
   TaskLocalOfNocopyType = 7234, // A 'tasklocal' variable cannot hold a nocopy type: a new task copies its parent's value
+  RebindOfDeepReactiveMember = 7235, // A member of a deep reactive value is written with ':=', never rebound to another cell
+  TaskLocalOutsideFunction = 7236, // A task-local variable exists once per task: code outside a function runs in none
   ThisDistroPackageManagerNotSupportedYetPlease = 8001, // This Distro/Package Manager is not supported yet, please report
   DeadCodeDetectedAndStripped = 9001, // Dead code detected and stripped
   EmbeddedFileSizeMBExceeds50MB = 9002, // Embedded file size ( MB) exceeds 50 MB:

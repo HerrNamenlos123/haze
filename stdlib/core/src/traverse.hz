@@ -113,7 +113,10 @@ namespace traverse {
                 const comptime skip = F["skipAttribute"].literalValue;
                 let leaf = 0;
                 for comptime field in T.fields {
-                    if comptime T.hasFieldAttribute(field.name, skip) {
+                    // A private field is never looked at from here: naming it
+                    // would be H7230, and the field walk, compiled either way,
+                    // names it in assertWalkable's static assert instead.
+                    if comptime T.hasFieldAttribute(field.name, skip) || T.isFieldPrivate(field.name) {
                         return 0;
                     }
                     else {
@@ -166,9 +169,13 @@ namespace traverse {
         if comptime T.category == meta.TypeCategory.Struct {
             let count = 0;
             for comptime field in T.fields {
-                do unsafe {
-                    let probe: T = uninitialized;
-                    count = count + plainLeafCount<F, typeof(probe.[field.name])>();
+                // Never names a private field (H7230): such a struct is not
+                // plain, and this count is only compiled, never used, for it.
+                if comptime T.isFieldPrivate(field.name) == false {
+                    do unsafe {
+                        let probe: T = uninitialized;
+                        count = count + plainLeafCount<F, typeof(probe.[field.name])>();
+                    }
                 }
             }
             return count;

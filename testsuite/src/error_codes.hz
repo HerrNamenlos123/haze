@@ -288,6 +288,8 @@ namespace errorcodes {
         StorageClassCombination = 7232,
         ContextRequirementOutsideExternCDeclaration = 7233,
         TaskLocalOfNocopyType = 7234,
+        RebindOfDeepReactiveMember = 7235,
+        TaskLocalOutsideFunction = 7236,
         ThisDistroPackageManagerNotSupportedYetPlease = 8001,
         DeadCodeDetectedAndStripped = 9001,
         EmbeddedFileSizeMBExceeds50MB = 9002,

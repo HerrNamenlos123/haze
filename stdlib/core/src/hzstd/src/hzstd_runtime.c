@@ -852,23 +852,26 @@ hzstd_panic_recovery_frame_t *hzstd_pop_panic_recovery_frame(hzstd_context_t *ct
 }
 
 // The panic path's side (it has no context): the running task's frames. A
-// thread that runs no task has none.
+// thread that runs no task has none, and neither has a task that never
+// entered an attempt. Never allocates: this runs in the SIGSEGV handler,
+// maybe after a fault inside the allocator.
 int hzstd_panic_recovery_frame_count(void)
 {
   hzstd_task_t *task = hzstd_current_task();
-  if (task == NULL) {
+  if (task == NULL || task->recovery_frames == NULL) {
     return 0;
   }
-  return hzstd_dynamic_array_size(hzstd_task_recovery_frames(task));
+  return hzstd_dynamic_array_size(task->recovery_frames);
 }
 
 hzstd_panic_recovery_frame_t *hzstd_get_current_panic_recovery_frame(void)
 {
   hzstd_task_t *task = hzstd_current_task();
-  if (task == NULL) {
-    hzstd_trap_ccstr("getting panic recovery frame failed: this thread runs no task");
+  if (task == NULL || task->recovery_frames == NULL) {
+    hzstd_trap_ccstr("getting panic recovery frame failed: No frame available");
   }
-  hzstd_dynamic_array_t *frames = hzstd_task_recovery_frames(task);
+  hzstd_dynamic_array_t *frames = task->recovery_frames;
+  hzstd_panic_recovery_check_sane(frames, sizeof(hzstd_panic_recovery_frame_t *), "task->recovery_frames");
   int length = hzstd_dynamic_array_size(frames);
   if (length == 0) {
     hzstd_trap_ccstr("getting panic recovery frame failed: No frame available");

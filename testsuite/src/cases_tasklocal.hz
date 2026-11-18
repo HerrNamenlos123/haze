@@ -114,6 +114,41 @@ fn main(): int {
 """,
             "10 10");
 
+        // Code outside a function runs in no task (review 2026-11-18: an
+        // internal compiler error before).
+        s.compileFails(
+            "tasklocal: read in a global's initializer",
+            """
+tasklocal let a: int = 1;
+let g: int = a + 1; // <- no task runs here
+fn main(): int { return g; }
+""",
+            [testsuite.exactCount(errorcodes.Code.TaskLocalOutsideFunction, 1)]);
+
+        s.compileFails(
+            "tasklocal: read by a struct default a global's initializer uses",
+            """
+tasklocal let base: int = 1;
+struct S { x: int = base; }
+let g: S = S {}; // <- the default runs here, in no task
+fn main(): int { return g.x; }
+""",
+            [testsuite.exactCount(errorcodes.Code.TaskLocalOutsideFunction, 1)]);
+
+        s.run(
+            "tasklocal: read by a struct default inside a function",
+            """
+tasklocal let base: int = 4;
+struct S { x: int = base; }
+fn main(): int {
+    base = 9;
+    let s = S {};
+    fmt.println(f"{s.x}");
+    return 0;
+}
+""",
+            "9");
+
         s.compileFails(
             "tasklocal: a nocopy type is rejected",
             """

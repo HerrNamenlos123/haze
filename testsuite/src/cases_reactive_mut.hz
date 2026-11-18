@@ -121,6 +121,27 @@ fn f(s: rx.Reactive<P>) { set(s.x); } // <- would hand out write access
 fn main(): int { f(rx.reactive<P>(P {})); return 0; }
 """);
 
+        // ── a member of a deep reactive value is written, never rebound ─────
+        // It is a cell the value owns; replacing it would leave whatever
+        // subscribed to the old one reading a cell nothing writes (review
+        // 2026-11-18: accepted through a plain reference, then invalid C).
+        rejects(s, "rebinding a member of a deep value through a plain reference", errorcodes.Code.RebindOfDeepReactiveMember, """
+struct P { x: int = 0; }
+fn f(s: rx.Reactive<P>) { s.x = rx.reactive<int>(5); }
+fn main(): int { f(rx.reactive<P>(P {})); return 0; }
+""");
+        rejects(s, "rebinding a member of a deep value through a mut reference", errorcodes.Code.RebindOfDeepReactiveMember, """
+struct P { x: int = 0; }
+fn f(s: mut rx.Reactive<P>) { s.x = rx.reactive<int>(5); }
+fn main(): int { f(rx.reactive<P>(P {})); return 0; }
+""");
+        rejects(s, "rebinding a nested member of a deep value", errorcodes.Code.RebindOfDeepReactiveMember, """
+struct In { v: int = 0; }
+struct P { inner: In = {}; }
+fn f(s: mut rx.Reactive<P>) { s.inner = rx.reactive<In>(In { v: 2 }); }
+fn main(): int { f(rx.reactive<P>(P {})); return 0; }
+""");
+
         // ── rebinding is a store into the holder ───────────────────────────
         rejects(s, "rebinding a field through a plain reference", nonMut, """
 ref struct Holder { n: mut rx.Reactive<int>; }

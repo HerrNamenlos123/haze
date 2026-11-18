@@ -1502,18 +1502,21 @@ class CodeGenerator {
   // block's initial image (C518), and the descriptor hzstd finds the block by.
   // File-local: only this module's code reaches its task-locals. The layout
   // fingerprint (with the module name the key for hot reload, TL-10) covers
-  // the field names and C types, and the block's size and alignment.
+  // the field names and their layouts (layoutSignature), and the block's size
+  // and alignment.
   private emitTaskLocalBlock() {
     if (this.lr.loweredTaskLocals.length === 0) {
       return;
     }
     const fields: string[] = [];
+    const signature: string[] = [];
     const initializers: string[] = [];
     for (const statementId of this.lr.loweredTaskLocals) {
       const statement = this.lr.statementNodes.get(statementId);
       assert(statement.variant === Lowered.ENode.VariableStatement);
       const name = this.mangleName(statement.name);
       fields.push(`${this.mangleTypeUse(statement.type)} ${name};`);
+      signature.push(`${name}:${this.layoutSignature(statement.type, new Set())};`);
       if (statement.value) {
         this.inGlobalScope = true;
         let value = this.emitExpr(statement.value).out.get();
@@ -1526,7 +1529,7 @@ class CodeGenerator {
     }
     const layout = fields.join(" ");
     let hash = 0xcbf29ce484222325n;
-    for (const byte of new TextEncoder().encode(layout)) {
+    for (const byte of new TextEncoder().encode(signature.join(""))) {
       hash = ((hash ^ BigInt(byte)) * 0x100000001b3n) & 0xffffffffffffffffn;
     }
     const module = getModuleNamespaceMangledSegment(
@@ -1542,6 +1545,43 @@ class CodeGenerator {
     out.writeLine(
       `static hzstd_tl_desc_t __hz_tl_desc = { .abi_version = HZSTD_TL_ABI_VERSION, .align = (uint32_t)_Alignof(__hz_tl_block_t), .size = sizeof(__hz_tl_block_t), .initial = &__hz_tl_initial, .module = ${JSON.stringify(module)}, .fingerprint = UINT64_C(0x${hash.toString(16)}) ^ ((uint64_t)sizeof(__hz_tl_block_t) << 32) ^ (uint64_t)_Alignof(__hz_tl_block_t) };`
     );
+  }
+
+  // What a value of this type occupies, field by field: a C type name does
+  // not tell a struct's fields apart (two orders of the same fields have one
+  // name), so inline structs, unions and fixed arrays are spelled out. A
+  // pointer is a pointer, whatever it points to.
+  private layoutSignature(
+    typeUseId: Lowered.TypeUseId,
+    open: Set<Lowered.TypeDefId>
+  ): string {
+    const use = this.lr.typeUseNodes.get(typeUseId);
+    const name = this.mangleTypeUse(typeUseId);
+    if (use.pointer || use.stackref) {
+      return name;
+    }
+    const def = this.lr.typeDefNodes.get(use.type);
+    // An inline type cannot contain itself; `open` only guards the walk.
+    if (open.has(use.type)) {
+      return name;
+    }
+    open.add(use.type);
+    let inner: string | null = null;
+    if (def.variant === Lowered.ENode.StructDatatype) {
+      inner = def.members
+        .map((m) => `${m.name}:${this.layoutSignature(m.type, open)}`)
+        .join(",");
+    } else if (def.variant === Lowered.ENode.FixedArrayDatatype) {
+      inner = `${def.length}x${this.layoutSignature(def.datatype, open)}`;
+    } else if (def.variant === Lowered.ENode.UntaggedUnionDatatype) {
+      inner = def.members.map((m) => this.layoutSignature(m, open)).join("|");
+    } else if (def.variant === Lowered.ENode.TaggedUnionDatatype) {
+      inner = def.members
+        .map((m) => `${m.tag}=${this.layoutSignature(m.type, open)}`)
+        .join("|");
+    }
+    open.delete(use.type);
+    return inner === null ? name : `${name}{${inner}}`;
   }
 
   private currentFunctionReturnType = "void";

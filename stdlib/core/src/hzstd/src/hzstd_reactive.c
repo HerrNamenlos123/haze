@@ -297,6 +297,7 @@ void hzstd_reactive_save_state(hzstd_context_t* ctx, hzstd_reactive_state_t* sta
   state->evaluating = rs->evaluating;
   state->write_depth = rs->write_depth;
   state->delivering = rs->delivering_effects;
+  state->active_watcher = rs->active_watcher;
 }
 
 void hzstd_reactive_restore_state(hzstd_context_t* ctx, const hzstd_reactive_state_t* state)
@@ -317,6 +318,9 @@ void hzstd_reactive_restore_state(hzstd_context_t* ctx, const hzstd_reactive_sta
   rs->current_computed = state->current;
   rs->write_depth = state->write_depth;
   rs->delivering_effects = state->delivering;
+  // A panic out of a watcher's callback skipped putting the previous active
+  // watcher back.
+  rs->active_watcher = state->active_watcher;
 }
 
 void hzstd_slot_write(void* slot, void* src, size_t size) { memcpy(slot, src, size); }

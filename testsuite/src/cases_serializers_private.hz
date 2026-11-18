@@ -112,6 +112,8 @@ ref struct W {
     out: mut ref Box<str> = { value: "" };
     fn writesPlain<T>(): bool { return true; }
     fn writePlain<T>(memory: RawMemory, count: int) { this.out.value = this.out.value + "bytes;"; }
+    fn beginArray<T>(length: int) { this.out.value = this.out.value + "["; }
+    fn endArray<T>() { this.out.value = this.out.value + "]"; }
     fn beginStruct<T>() { this.out.value = this.out.value + "{"; }
     fn beginField<T>(name: str, index: int) { this.out.value = this.out.value + name + "="; }
     fn endField<T>(name: str, index: int) {}
@@ -123,6 +125,25 @@ ref struct W {
 opaque struct Handle { id: int = 0; static fn make(): Handle { return Handle { id: 3 }; } }
 struct Pair { a: int = 1; h: Handle; }
 fn main(): int { traverse.write<W, Pair>(W {}, Pair { h: Handle.make() }); return 0; }
+""");
+        // The plainness probe of an array's element type looked at the
+        // element's fields by name: H7230 from inside traverse (review
+        // 2026-11-18).
+        rejects(s, "traverse.write of an array of structs with a private field, by a format that copies plain data", plainWriteFormat + """
+struct Account { a: int = 1; private pin: int = 1234; }
+fn main(): int {
+    let accounts: []Account = [Account {}];
+    traverse.write<W, []Account>(W {}, accounts);
+    return 0;
+}
+""");
+        rejects(s, "traverse.write of a fixed array of structs with a private field", plainWriteFormat + """
+struct Account { a: int = 1; private pin: int = 1234; }
+fn main(): int {
+    let accounts: [1]Account = [Account {}];
+    traverse.write<W, [1]Account>(W {}, accounts);
+    return 0;
+}
 """);
         rejects(s, "traverse.write of an opaque struct", writeFormat + """
 opaque struct Handle { id: int = 0; static fn make(): Handle { return Handle { id: 3 }; } }

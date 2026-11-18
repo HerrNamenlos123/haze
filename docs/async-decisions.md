@@ -123,7 +123,8 @@ Run of 2026-11-17 (unattended, started 01:10 Vienna time on main 8fc71ae9).
   `a == b`, `a[i]`, `x as T`, `x := v` call the method without naming it. Found by lane S as a
   hole after its checks in member access; fixed test-first.
 - **S0-19. Serializers never reach inside an encapsulated struct** (user, 2026-11-18). A struct
-  with a private member, or an opaque one, is no plain data any more: its inside is its own code's
+  with a private field, or an opaque one, is no plain data any more (a private method alone
+  changes nothing: no serializer calls methods): its inside is its own code's
   business, so free copying and serializing no longer hold. New reflection: `T.isFieldPrivate(name)`
   (a field T lacks is H7161) and `T.isOpaque`. json writes such a struct only through its
   `[[json.serialize]]` hook or with every private field `[[json.ignore]]`d, and reads one only
@@ -273,8 +274,12 @@ module's own task-locals, although they do not exist in the library the context 
 
 - **TL-1. The task struct is the task's storage.** `hzstd_task_t` has two parts:
   - hzstd's own per-task state (recovery frames, panic info, reactive tracking, held stackref
-    slots, later cleanup registrations and held locks) in fields only hzstd reads. hzstd is linked
-    once per program, so its private layout may change between compiler versions;
+    slots, later cleanup registrations and held locks). hzstd is linked once per program, but its
+    headers are compiled into every module: the generated code reads the panic info, the
+    stackref table and the recovery frames through hzstd's macros (stage 2), as it reads cells,
+    arrays and frames already. So every module of a program has to be built against the same
+    hzstd headers; TL-4 covers only what a module's own compiler lays out, its task-local block
+    (review 2026-11-18: this item used to say generated code reads only the fields of TL-4);
   - a table of **module blocks**: every module that declares `tasklocal` variables gets one block,
     a C struct of its task-locals laid out by the compiler that built the module.
 - **TL-2. Blocks are found by a process-wide index, never by offset.** Each module emits a static
@@ -291,11 +296,12 @@ module's own task-locals, although they do not exist in the library the context 
   `if (i < task->tl_capacity && (b = task->tl_blocks[i]))` use `b`; otherwise one call to the slow
   path. Slot 0 is never filled, so an unregistered module (index 0) always takes the slow path,
   which registers it. No platform thread-local lookup on any access (C207, C208, C502).
-- **TL-4. ABI.** Generated code reads exactly three things: `hzstd_context_t.task` (first field),
-  and `hzstd_task_t.tl_blocks` and `tl_capacity` (the task struct's first two fields). They never
-  move; the descriptor carries `HZSTD_TL_ABI_VERSION`, and registering a descriptor of another
-  version panics with a message that names the module (a library built by an incompatible
-  compiler fails loudly, C419).
+- **TL-4. ABI of the block.** To reach its block, generated code reads `hzstd_context_t.task`
+  (first field) and `hzstd_task_t.tl_blocks` and `tl_capacity` (the task struct's first two
+  fields). They never move; the descriptor carries `HZSTD_TL_ABI_VERSION`, and registering a
+  descriptor of another version panics with a message that names the module (C419). Everything
+  else generated code reads of hzstd comes from hzstd's headers, the same for every module of a
+  program (TL-1); nothing checks that yet (ledger).
 - **TL-5. Blocks are made on first use.** The slow path grows the task's table if needed and
   allocates the block (GC memory, scanned), initialized from the descriptor's initial image. A task
   that never touches a module's task-locals pays nothing for them.
@@ -434,6 +440,10 @@ variable not declared `mut` (S0-11: declare it `mut rx.Reactive<T>`; cells from 
 `mut`), and every `json.stringify`/`json.parse`/traverse use on a struct with private fields or an
 opaque struct without hooks (S0-19). Not counted: those modules do not compile on the branch for
 the reasons below anyway.
+
+**After stage 2:** `HZSTD_STACKREF_DEREF` takes the context first (`(ctx, type, ref)`); stdlib/ui_layout
+(ui_layout.hz:34) and stdlib/wgpu (utils.hz:110) still call it with two arguments (review
+2026-11-18).
 
 **After stage 0 (S0-1, writes need `mut`):** everything outside stdlib/core that changes data
 through a plain reference. A static scan (2026-11-17) counts at least 672 typed array variables

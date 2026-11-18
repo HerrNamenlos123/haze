@@ -11082,6 +11082,24 @@ export class SemanticElaborator {
           this.assertMutableReference(objExpr.type, sourceloc);
           return;
         }
+        if (objDef.variant === Semantic.ENode.DeepDatatype) {
+          // A member of a deep reactive value read out of a cell is a cell
+          // the value owns: it is written with `:=`, never replaced, or
+          // whatever subscribed to it would read a cell nothing writes (and
+          // the value read out of the cell is a copy anyway).
+          if (objExpr.variant === Semantic.ENode.ReactiveReadExpr) {
+            throw new CompilerError(
+              `Cannot replace a member of a deep reactive value: it is a cell the value owns. Write it with ':=' instead.`,
+              sourceloc,
+              HazeErrorCode.RebindOfDeepReactiveMember
+            );
+          }
+          // A Deep<T> held directly (rx.reactive builds one) is a value: its
+          // member is stored in place, like a value struct's.
+          cur = objExpr;
+          direct = false;
+          continue;
+        }
         if (
           objDef.variant !== Semantic.ENode.StructDatatype &&
           objDef.variant !== Semantic.ENode.FixedArrayDatatype

@@ -515,6 +515,7 @@ typedef struct {
   struct hzstd_computed_node_t *evaluating;
   int write_depth;
   int delivering;
+  void *active_watcher;
 } hzstd_reactive_state_t;
 
 // The reactive core's tracking state (hzstd_reactive.c). It follows the call

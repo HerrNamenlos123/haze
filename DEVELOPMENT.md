@@ -405,7 +405,7 @@ access              HZSTD_TL_FIELD(__hz_ctx, __hz_tl_desc, __hz_tl_block_t, f1) 
   initial image; the first in the process registers the module (`hzstd_tl_block_slow`,
   hzstd_runtime.c), which gives it a process-wide index (from 1, never reused; the same module
   name and fingerprint get their old index back for hot reload).
-- Generated code reads only `ctx->task`, `task->tl_blocks` and `task->tl_capacity`: those fields
+- To reach a block, generated code reads `ctx->task`, `task->tl_blocks` and `task->tl_capacity`: those fields
   stay first. A descriptor of another `HZSTD_TL_ABI_VERSION` panics, naming its module.
 - Only the declaring module's code reaches its task-locals (globals are not exported), so no
   module depends on another's block layout. A `nocopy` type is rejected (H7234).

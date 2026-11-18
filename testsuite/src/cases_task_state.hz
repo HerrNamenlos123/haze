@@ -185,6 +185,46 @@ fn main(): int {
 """,
             "255 true 0");
 
+        // A panic out of a watcher's callback is recovered: the watcher whose
+        // callback it was is no longer the active one (review 2026-11-18: the
+        // recovery left it set, and onWatcherCleanup would have registered
+        // on the dead watcher).
+        s.run(
+            "task state: a recovered panic in a watcher callback restores the active watcher",
+            """
+fn main(): int {
+    let sync: rx.WatchOptions = { scheduler: (job: rx.WatchJob): none => { job.run(); } };
+    let x = rx.reactive<int>(0);
+    let w = rx.watch(() => x, (v, old) => {
+        if v == 1 { sys.panic("in the callback"); }
+    }, sync);
+    attempt { x := 1; } recover e {};
+    fmt.println(f"{rx.activeWatcher() is rx.WatchHandle}");
+    return 0;
+}
+""",
+            "false");
+
+        // The panic path runs in a signal handler: counting a task's frames
+        // must never allocate, also for a task that has none yet (review
+        // 2026-11-18).
+        s.run(
+            "task state: counting the frames of a task without any allocates nothing",
+            """
+__c__("static hzstd_task_t other_task;");
+fn main(): int {
+    let p = sys.contextPtr();
+    let count = -1;
+    let untouched = false;
+    do unsafe {
+        __c__("hzstd_context_t *c = (hzstd_context_t *)p; other_task = (hzstd_task_t) { .thread = c->thread }; hzstd_task_t *mine = c->thread->current_task; c->thread->current_task = &other_task; count = hzstd_panic_recovery_frame_count(); c->thread->current_task = mine; untouched = other_task.recovery_frames == NULL;");
+    };
+    fmt.println(f"{count} {untouched}");
+    return 0;
+}
+""",
+            "0 true");
+
         // rx's active watcher is the task's, never another task's (TL-7).
         s.run(
             "task state: the active watcher is the task's",

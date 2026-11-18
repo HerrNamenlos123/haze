@@ -41,6 +41,11 @@ bun test src/ModuleCompiler/FileStamps.test.ts src/ModuleCompiler/ModuleBuildCac
 echo "==> Checking the parser equivalence file set"
 bun test scripts/parser-equivalence-files.test.ts
 
+# The task-local block's layout fingerprint follows every layout change (two
+# builds of one module, so no testsuite/ case can check it).
+echo "==> Checking the task-local layout fingerprint"
+bun test scripts/tasklocal-fingerprint.test.ts
+
 # haze.toml validation, which no testsuite/ case can reach: the framework
 # writes every case's manifest itself, so they are well-formed by construction.
 echo "==> Checking haze.toml validation"
