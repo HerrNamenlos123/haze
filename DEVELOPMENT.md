@@ -423,8 +423,10 @@ when a library it links changed. `scripts/incremental-build.test.ts` pins all of
 
 `./scripts/run-tests.sh` (`bun run test`) is the gate. It builds `dist/haze`, then runs, in order:
 the parser bootstrap check, the parser tests (`src/Parser/Parser.test.ts`), the incremental-build
-and `haze.toml` checks, parser equivalence over every `.hz` file in the tree, and the compiler
-test suite (`testsuite/`). On branch async-runtime the headless stdlib path tests
+and `haze.toml` checks, the compiler test suite (`testsuite/`), and then parser equivalence over
+every `.hz` file git tracks plus the untracked ones this run wrote (the cases' sources, the
+interfaces it built; `scripts/parser-equivalence-files.ts`). Build output older than the run is
+never read: it differs between checkouts and goes stale. On branch async-runtime the headless stdlib path tests
 (`tests/stdlib-paths/headless`) are out of the gate until SDL and ui_layout are migrated to the
 new context and `mut` rules (`docs/async-decisions.md`, S0-16).
 

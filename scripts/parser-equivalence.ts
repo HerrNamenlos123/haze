@@ -5,9 +5,12 @@
  * it remains the correctness oracle: it is the specification the native parser
  * in `compiler/haze-parser` is checked against. `--parser assert` already diffs
  * the two, but only over files reachable from a compiled project. This sweep is
- * parse-only, so it reaches everything: the stdlib, the parser's own sources,
- * test fixtures, `R&D/` snippets, the generated `__haze__/**\/import.hz`
- * interfaces, and files that belong to no project or do not typecheck at all.
+ * parse-only, so it reaches everything git tracks: the stdlib, the parser's own
+ * sources, test fixtures, `R&D/` snippets, and files that belong to no project
+ * or do not typecheck at all. With `--fresh-since <file>` (the gate passes a
+ * marker it touched when it started) it also reads every untracked `.hz` file
+ * written since: the run's test case sources and the module interfaces it
+ * generated. Older build output is never read (parser-equivalence-files.ts).
  *
  * **Equivalence means same outcome, not same success.**
  *
@@ -25,11 +28,11 @@
  * different outcomes, so this costs nothing in coverage and takes the sweep
  * from ~950k lines to ~120k.
  *
- * Run with: bun run scripts/parser-equivalence.ts [--verbose]
+ * Run with: bun run scripts/parser-equivalence.ts [--fresh-since <file>] [--verbose]
  */
 
 import * as crypto from "node:crypto";
-import { readdirSync, readFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -42,13 +45,22 @@ import { Parser } from "../src/Parser/Parser";
 import { setParserMode } from "../src/Parser/ParserMode";
 import type { ModuleConfig } from "../src/shared/Config";
 import { setDiagnosticSink } from "../src/shared/Errors";
+import { sweepFiles } from "./parser-equivalence-files";
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const VERBOSE = process.argv.includes("--verbose");
 
-// node_modules holds no Haze; .git holds no working tree. .claude holds the
-// sessions' worktrees and scratch copies, which are not this tree.
-const SKIP_DIRECTORIES = new Set(["node_modules", ".git", "target", ".claude"]);
+function freshSinceMs(): number | null {
+  const at = process.argv.indexOf("--fresh-since");
+  if (at < 0) {
+    return null;
+  }
+  const marker = process.argv[at + 1];
+  if (marker === undefined) {
+    throw new Error("--fresh-since needs a file whose time marks the start of the run");
+  }
+  return statSync(marker).mtimeMs;
+}
 
 // The ASTBuilder takes a ModuleConfig but never reads it -- module identity
 // comes from the source text, not from the project a file happens to sit in,
@@ -58,18 +70,6 @@ const STUB_CONFIG = {
   version: "0.0.1",
   id: "eqvsweep",
 } as unknown as ModuleConfig;
-
-function collectHazeFiles(dir: string, out: string[]): void {
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    if (entry.isDirectory()) {
-      if (!SKIP_DIRECTORIES.has(entry.name)) {
-        collectHazeFiles(join(dir, entry.name), out);
-      }
-    } else if (entry.isFile() && entry.name.endsWith(".hz")) {
-      out.push(join(dir, entry.name));
-    }
-  }
-}
 
 type Outcome =
   | { accepted: true; ast: unknown }
@@ -150,9 +150,7 @@ async function main(): Promise<void> {
   // The sweep drives both parsers by hand, so nothing may auto-select one.
   setParserMode("antlr", REPO_ROOT);
 
-  const files: string[] = [];
-  collectHazeFiles(REPO_ROOT, files);
-  files.sort();
+  const files = sweepFiles(REPO_ROOT, freshSinceMs());
 
   // One representative per distinct content; the rest are recorded so the
   // report can say what the coverage actually was.
@@ -161,8 +159,7 @@ async function main(): Promise<void> {
     { path: string; text: string; duplicates: number }
   >();
   for (const file of files) {
-    // Generated scratch (testsuite/.work) can be swept away underneath a long
-    // sweep; a file that no longer exists is not a divergence.
+    // A file deleted while the sweep runs is not a divergence.
     let text: string;
     try {
       text = readFileSync(file, "utf8");

@@ -10,6 +10,12 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 REPO_ROOT="$(pwd)"
 
+# Everything this run writes is newer than this marker; the parser equivalence
+# check at the end reads what the run generated, never older build output.
+mkdir -p "$REPO_ROOT/__haze__"
+GATE_START="$REPO_ROOT/__haze__/.gate-start"
+touch "$GATE_START"
+
 echo "==> Building the Haze compiler distributable (bun run build)"
 bun run build
 
@@ -31,16 +37,14 @@ echo "==> Checking incremental builds"
 bun test src/ModuleCompiler/FileStamps.test.ts src/ModuleCompiler/ModuleBuildCache.test.ts \
   src/shared/Workspace.test.ts scripts/incremental-build.test.ts
 
+# Which files the parser equivalence check at the end reads.
+echo "==> Checking the parser equivalence file set"
+bun test scripts/parser-equivalence-files.test.ts
+
 # haze.toml validation, which no testsuite/ case can reach: the framework
 # writes every case's manifest itself, so they are well-formed by construction.
 echo "==> Checking haze.toml validation"
 bun test src/shared/Config.test.ts
-
-# ANTLR is not a compilation path, but it is the oracle the native parser is
-# checked against. This proves the two still agree on every .hz file in the
-# tree, not just on whatever a compiled project happens to reach (§8.3).
-echo "==> Checking parser equivalence over the whole repository (§8.3)"
-bun run scripts/parser-equivalence.ts
 
 export HAZE_STDLIB_DIR="$REPO_ROOT/dist/stdlib"
 export HAZE_TEST_BINARY="$REPO_ROOT/dist/haze"
@@ -97,5 +101,12 @@ set +e
 "$HAZE_BIN" run --quiet --dir "$REPO_ROOT/testsuite"
 exit_code=$?
 set -e
+
+# ANTLR is not a compilation path, but it is the oracle the native parser is
+# checked against. This proves the two still agree on every .hz file git
+# tracks, and on what this run generated (the cases' sources, the interfaces
+# it built), not just on whatever a compiled project happens to reach (§8.3).
+echo "==> Checking parser equivalence (§8.3)"
+bun run scripts/parser-equivalence.ts --fresh-since "$GATE_START"
 
 exit "$exit_code"
