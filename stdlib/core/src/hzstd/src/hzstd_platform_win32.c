@@ -473,8 +473,9 @@ LONG WINAPI VectoredHandler(PEXCEPTION_POINTERS ExceptionInfo)
     _resetstkoflw();
   }
 
-  // Set the TLS variable so the recover: label can read it.
-  _hz_panic_stacktrace = panic_recovery_target->_hz_panic_stacktrace;
+  // Hand the info to the task, so the recover: label can read it (the
+  // recovery frame exists, so this thread runs a task).
+  hzstd_current_task()->panic_info = panic_recovery_target->_hz_panic_stacktrace;
 
   HZSTD_LONGJMP(panic_recovery_target->recovery_point, 1);
   // Unreachable.
@@ -506,7 +507,7 @@ _Noreturn void hzstd_panic_with_stacktrace(hzstd_str_t msg, hzstd_int_t skip_n_f
 
   WaitForSingleObject(panic_response->handle, INFINITE);
 
-  _hz_panic_stacktrace = panic_recovery_target->_hz_panic_stacktrace;
+  hzstd_current_task()->panic_info = panic_recovery_target->_hz_panic_stacktrace;
   HZSTD_LONGJMP(panic_recovery_target->recovery_point, 1);
   __assume(0); /* MSVC/clang _Noreturn hint */
 }

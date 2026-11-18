@@ -1,0 +1,215 @@
+// ============================================================================
+// State that follows the call stack belongs to the task (Axiom C598, C377,
+// C261, C280; docs/async-implementation-plan.md stage 2).
+//
+// Tasks are built in stage 3, but a second task can be built in C already: a
+// task struct under a copy of the context. Where hzstd has no context (the
+// panic path) it asks the thread which task runs, so a case that panics in the
+// second task also switches the thread to it, as the scheduler will.
+// ============================================================================
+
+namespace cases_task_state {
+
+    export fn register(s: mut testsuite.Suite) {
+        // A cell read while another task runs never subscribes the computed
+        // the main task is evaluating: tracking state is the task's (C377).
+        s.run(
+            "task state: a read under another task does not subscribe this task's computed",
+            """
+__c__("static hzstd_task_t other_task;");
+
+extern C fn readCell(cellPtr: cptr): int {
+    let total = 0;
+    do unsafe {
+        let cell: rx.Reactive<int> = uninitialized;
+        __c__("cell = cellPtr;");
+        total = cell;
+    };
+    return total;
+}
+
+fn main(): int {
+    let x = rx.reactive<int>(1);
+    let runs: mut ref Box<int> = { value: 0 };
+    let p = sys.contextPtr();
+    let xPtr = none as cptr;
+    do unsafe { __c__("xPtr = x;"); };
+    let c = rx.computed(() => {
+        runs.value = runs.value + 1;
+        let seen = 0;
+        // Copied into plain locals: raw C can only name those.
+        let ctxPtr = p;
+        let cellPtr = xPtr;
+        do unsafe {
+            __c__("hzstd_context_t other = *(hzstd_context_t *)ctxPtr; other_task = (hzstd_task_t) { .thread = other.thread }; other.task = &other_task; seen = readCell(&other, cellPtr);");
+        };
+        return seen;
+    });
+    let first: int = c;
+    x := 5;
+    let second: int = c;
+    // The computed never read x itself, so writing x leaves it clean.
+    fmt.println(f"{first} {second} {runs.value}");
+    return 0;
+}
+""",
+            "1 1 1");
+
+        // A panic recovered inside the other task unwinds that task's frames
+        // only; the main task's attempt still recovers its own panic after.
+        s.run(
+            "task state: recovery frames are the task's",
+            """
+__c__("static hzstd_task_t other_task;");
+
+extern C fn panicAndRecover(): int {
+    // The frames this task sees are its own: one, not the main task's too.
+    let frames = 0;
+    let r = attempt {
+        do unsafe { __c__("frames = hzstd_panic_recovery_frame_count();"); };
+        sys.panic("in the other task");
+        0
+    } recover e {
+        7
+    };
+    return r * 10 + frames;
+}
+
+fn main(): int {
+    let p = sys.contextPtr();
+    let fromOther = 0;
+    let outer = attempt {
+        do unsafe {
+            __c__("hzstd_context_t other = *(hzstd_context_t *)p; other_task = (hzstd_task_t) { .thread = other.thread }; other.task = &other_task; hzstd_task_t *mine = other.thread->current_task; other.thread->current_task = &other_task; fromOther = panicAndRecover(&other); other.thread->current_task = mine;");
+        };
+        sys.panic("in the main task");
+        1
+    } recover e {
+        2
+    };
+    fmt.println(f"{fromOther} {outer}");
+    return 0;
+}
+""",
+            "71 2");
+
+        // Two tasks interleave stackref scopes on one thread: each exit
+        // releases its own task's slot (a depth counter would release the
+        // other task's newest one).
+        s.run(
+            "task state: interleaved stackref scopes of two tasks release their own slots",
+            """
+__c__("static hzstd_task_t other_task;");
+fn main(): int {
+    let p = sys.contextPtr();
+    let ok = false;
+    do unsafe {
+        __c__("hzstd_context_t *a = (hzstd_context_t *)p; hzstd_context_t b = *a; other_task = (hzstd_task_t) { .thread = b.thread }; b.task = &other_task;");
+        __c__("size_t sa = hzstd_stackref_scope_enter(a); size_t sb = hzstd_stackref_scope_enter(&b); hzstd_stackref_t ra = HZSTD_STACKREF_MAKE(a, &ok, sa); hzstd_stackref_t rb = HZSTD_STACKREF_MAKE(&b, &ok, sb);");
+        __c__("hzstd_stackref_scope_exit(a); bool aDead = !HZSTD_STACKREF_VALID(a->thread, ra); bool bAlive = HZSTD_STACKREF_VALID(b.thread, rb); hzstd_stackref_scope_exit(&b); bool bDead = !HZSTD_STACKREF_VALID(b.thread, rb); ok = aDead && bAlive && bDead;");
+    };
+    fmt.println(f"{ok}");
+    return 0;
+}
+""",
+            "true");
+
+        // A panic longjmps over the scope exits between it and its recovery
+        // frame: the recovery releases exactly the task's slots taken since
+        // the frame was pushed, and none older.
+        s.run(
+            "task state: a recovered panic releases the stackref scopes it skipped, and only those",
+            """
+__c__("static hzstd_stackref_t saved_inner;");
+struct Point { x: int = 0; }
+fn makeAndPanic() {
+    let stackref inner = Point { x: 1 };
+    do unsafe { __c__("saved_inner = inner;"); };
+    sys.panic("skips the scope exit");
+}
+fn main(): int {
+    let stackref outer = Point { x: 2 };
+    attempt { makeAndPanic(); } recover e {};
+    let p = sys.contextPtr();
+    let innerDead = false;
+    let outerAlive = false;
+    do unsafe {
+        __c__("hzstd_context_t *c = (hzstd_context_t *)p; innerDead = !HZSTD_STACKREF_VALID(c->thread, saved_inner); outerAlive = HZSTD_STACKREF_VALID(c->thread, outer);");
+    };
+    fmt.println(f"{innerDead} {outerAlive} {outer.x}");
+    return 0;
+}
+""",
+            "true true 2");
+
+        // A stackref may be used from any task on its thread (C261).
+        s.run(
+            "task state: a stackref is usable from another task on its thread",
+            """
+__c__("static hzstd_task_t other_task;");
+struct Point { x: int = 0; }
+extern C fn readX(r: stackref Point): int { return r.x; }
+fn main(): int {
+    let stackref pt = Point { x: 41 };
+    let p = sys.contextPtr();
+    let got = 0;
+    do unsafe {
+        __c__("hzstd_context_t other = *(hzstd_context_t *)p; other_task = (hzstd_task_t) { .thread = other.thread }; other.task = &other_task; got = readX(&other, pt);");
+    };
+    fmt.println(f"{got + 1}");
+    return 0;
+}
+""",
+            "42");
+
+        // A stackref of another thread panics before anything is accessed
+        // (C280). The program runs itself as a child, which forges one.
+        s.run(
+            "task state: a stackref owned by another thread panics before it is used",
+            """
+struct Point { x: int = 0; }
+fn readX(r: stackref Point): int { return r.x; }
+fn main(): int {
+    let args = sys.args();
+    if args.length > 1 && args[1] == "child" {
+        let stackref pt = Point { x: 3 };
+        do unsafe { __c__("pt.slot = (pt.slot & 0xffffffffull) | ((uint64_t)99 << HZSTD_STACKREF_THREAD_SHIFT);"); };
+        fmt.println(f"{readX(pt)}");
+        return 0;
+    }
+    let r = process.runCaptured(args[0], ["child"]);
+    let named = r.stderrResult.contains("does not own it");
+    fmt.println(f"{r.exitCode} {named} {r.stdoutResult.length}");
+    return 0;
+}
+""",
+            "255 true 0");
+
+        // rx's active watcher is the task's, never another task's (TL-7).
+        s.run(
+            "task state: the active watcher is the task's",
+            """
+__c__("static hzstd_task_t other_task;");
+extern C fn otherSeesWatcher(): bool { return rx.activeWatcher() is rx.WatchHandle; }
+fn main(): int {
+    let sync: rx.WatchOptions = { scheduler: (job: rx.WatchJob): none => { job.run(); } };
+    let x = rx.reactive<int>(0);
+    let seen: mut ref Box<str> = { value: "" };
+    let p = sys.contextPtr();
+    let w = rx.watch(() => x, (v, old) => {
+        let mine = rx.activeWatcher() is rx.WatchHandle;
+        let other = false;
+        let ctxPtr = p;
+        do unsafe {
+            __c__("hzstd_context_t o = *(hzstd_context_t *)ctxPtr; other_task = (hzstd_task_t) { .thread = o.thread }; o.task = &other_task; other = otherSeesWatcher(&o);");
+        };
+        seen.value = f"{mine} {other}";
+    }, sync);
+    x := 1;
+    fmt.println(seen.value);
+    return 0;
+}
+""",
+            "true false");
+    }
+}

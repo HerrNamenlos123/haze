@@ -28,7 +28,8 @@ void hzstd_initialize() {
   hzstd_initialize_platform();
   hzstd_setup_panic_handler();
   hzstd_initialize_main_thread();
-  // The main thread's recovery-frame stack is sized once here (64 frames)
+  // The main task's recovery-frame stack is sized once here (64 frames)
   // so no `attempt` ever grows it in practice.
-  hzstd_reserve_panic_recovery_frames();
+  hzstd_context_t root = hzstd_context_for_current_thread();
+  hzstd_reserve_panic_recovery_frames(&root);
 }

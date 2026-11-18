@@ -645,8 +645,9 @@ static void hzstd_panic_handler(int sig, siginfo_t *si, void *ucontext)
   sigaddset(&unblock, SIGSEGV);
   sigprocmask(SIG_UNBLOCK, &unblock, NULL);
 
-  // Set the TLS variable so the recover: label can read it.
-  _hz_panic_stacktrace = localRecoveryTarget->_hz_panic_stacktrace;
+  // Hand the info to the task, so the recover: label can read it (the
+  // recovery frame exists, so this thread runs a task).
+  hzstd_current_task()->panic_info = localRecoveryTarget->_hz_panic_stacktrace;
 
   // Only now -- after every shared global this thread needed has been fully
   // consumed -- release the gate. See the INVARIANT comment above
@@ -695,7 +696,7 @@ _Noreturn void hzstd_panic_with_stacktrace(hzstd_str_t msg, hzstd_int_t skip_n_f
 
   hzstd_wait_for_semaphore(panic_response);
 
-  _hz_panic_stacktrace = localRecoveryTarget->_hz_panic_stacktrace;
+  hzstd_current_task()->panic_info = localRecoveryTarget->_hz_panic_stacktrace;
   atomic_store(&panic_in_progress, 0);
   HZSTD_LONGJMP(localRecoveryTarget->recovery_point, 1);
   __builtin_unreachable();
@@ -816,27 +817,9 @@ void hzstd_setup_panic_handler(void)
   // it is dead anyways, so that when the GC hits it, it has enough stack space.
   static thread_local char altstack_buf[65536];
 
-  // _hz_panic_stacktrace (declared in hzstd_runtime.h, defined below) is
-  // _Thread_local and holds a value-embedded hzstd_panic_info_t -- which in
-  // turn embeds a GC-heap hzstd_dynamic_array_t* (stacktrace.frames) and a
-  // GC-heap string (message.data). Same root-registration fix as
-  // panic_recovery_frames in hzstd_runtime.c and
-  // hzstd_json_current_allocator in hzstd_json.c, and for the same reason:
-  // BDWGC does not scan _Thread_local storage as a GC root on this
-  // platform/config, confirmed via isolated reproduction (see
-  // panic_recovery_frames's comment for the full writeup). This is set by
-  // hzstd_panic_handler/hzstd_panic_with_stacktrace right before longjmp-ing
-  // to the recovery point, then read back from the `recover:` label -- a
-  // window in which other allocations (and therefore a collection) can
-  // legitimately happen before it's read, so it needs to stay reachable
-  // just as reliably as panic_recovery_frames does. hzstd_setup_panic_handler
-  // already runs exactly once per thread, making it the natural place to
-  // register that thread's own copy.
-  static thread_local bool panic_stacktrace_root_registered = false;
-  if (!panic_stacktrace_root_registered) {
-    panic_stacktrace_root_registered = true;
-    GC_add_roots(&_hz_panic_stacktrace, (char *)&_hz_panic_stacktrace + sizeof(_hz_panic_stacktrace));
-  }
+  // The panic info a panic hands to its recovery point lives in the task
+  // (hzstd_task_t.panic_info), which the GC scans, so no thread-local needs a
+  // GC_add_roots here any more.
 
   // panic_trigger/panic_response and the single dedicated worker thread that
   // services them are process-wide singleton state (see the big DESIGN

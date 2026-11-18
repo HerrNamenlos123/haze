@@ -65,16 +65,19 @@ void hzstd_log(void *ctx, hzstd_str_t text);
 // The panic machinery sets this on the panicking thread before longjmping to
 // the nearest recovery frame.  Read it from the recover: label that follows a
 // HAZE_ATTEMPT block.  NULL if no panic has reached this thread.
-extern _Thread_local hzstd_panic_info_t _hz_panic_stacktrace;
+// The task the calling thread runs, NULL on a thread Haze does not manage.
+// For the panic path only, which has no context: everything else reaches the
+// task through the context it is handed (C502).
+hzstd_task_t *hzstd_current_task(void);
 
 // ── Recovery frame API ───────────────────────────────────────────────────────
 
 int hzstd_panic_recovery_frame_count(void);
 // `frame` is the caller's stack storage (see HAZE_ATTEMPT); nothing is allocated.
-hzstd_panic_recovery_frame_t *hzstd_push_panic_recovery_frame(hzstd_panic_recovery_frame_t *frame);
+hzstd_panic_recovery_frame_t *hzstd_push_panic_recovery_frame(hzstd_context_t *ctx, hzstd_panic_recovery_frame_t *frame);
 // Pre-sizes this thread's frame stack (64 frames); called at startup for the main thread.
-void hzstd_reserve_panic_recovery_frames(void);
-hzstd_panic_recovery_frame_t *hzstd_pop_panic_recovery_frame(void);
+void hzstd_reserve_panic_recovery_frames(hzstd_context_t *ctx);
+hzstd_panic_recovery_frame_t *hzstd_pop_panic_recovery_frame(hzstd_context_t *ctx);
 hzstd_panic_recovery_frame_t *hzstd_get_current_panic_recovery_frame(void);
 
 void hzstd_panic_recovery_frame_push_cleanup(void (*fn)(void *), void *env);
@@ -102,40 +105,52 @@ void hzstd_panic_recovery_frame_run_cleanup(hzstd_panic_recovery_frame_t *frame)
 // iteration so a reference from iteration N cannot alias iteration N+1's
 // storage. Every read/write through a stackref goes through HZSTD_STACKREF_DEREF.
 
-extern _Thread_local hzstd_gen_table_t hzstd_gen_table;
-
-size_t hzstd_stackref_scope_enter(void);
-void hzstd_stackref_scope_exit(void);
-void hzstd_stackref_scope_renew(size_t slot);
-// Pop every scope above `depth` (recovery path after a longjmp skipped the exits).
-void hzstd_stackref_unwind_to(size_t depth);
-_Noreturn void hzstd_panic_dead_stackref(void);
+hzstd_gen_table_t hzstd_gen_table_new(void);
+size_t hzstd_stackref_scope_enter(hzstd_context_t *ctx);
+void hzstd_stackref_scope_exit(hzstd_context_t *ctx);
+void hzstd_stackref_scope_renew(hzstd_context_t *ctx, size_t slot);
+size_t hzstd_stackref_held_count(hzstd_context_t *ctx);
+void hzstd_stackref_unwind_to(hzstd_context_t *ctx, size_t held);
+_Noreturn void hzstd_panic_bad_stackref(hzstd_thread_t *thread, hzstd_stackref_t ref);
 
 #define HZSTD_STACKREF_IMMORTAL_SLOT ((uint64_t)0)
 #define HZSTD_STACKREF_IMMORTAL_GEN ((uint64_t)1)
 
-#define HZSTD_STACKREF_MAKE(pointer, slot_)                                                                            \
-  ((hzstd_stackref_t) { .ptr = (void *)(pointer), .slot = (uint64_t)(slot_), .gen = hzstd_gen_table.gens[(slot_)] })
+// A stackref is made on the thread whose context is at hand and records it
+// (C280); it reads that thread's table.
+#define HZSTD_STACKREF_MAKE(ctx, pointer, slot_)                                                                       \
+  ((hzstd_stackref_t) { .ptr = (void *)(pointer),                                                                      \
+                        .slot = ((uint64_t)(ctx)->thread->id << HZSTD_STACKREF_THREAD_SHIFT) | (uint64_t)(slot_),      \
+                        .gen = (ctx)->thread->stackrefs.gens[(slot_)] })
 
-#define HZSTD_STACKREF_IMMORTAL(pointer)                                                                               \
-  ((hzstd_stackref_t) { .ptr = (void *)(pointer), .slot = HZSTD_STACKREF_IMMORTAL_SLOT, .gen = HZSTD_STACKREF_IMMORTAL_GEN })
+#define HZSTD_STACKREF_IMMORTAL(ctx, pointer)                                                                          \
+  ((hzstd_stackref_t) { .ptr = (void *)(pointer),                                                                      \
+                        .slot = ((uint64_t)(ctx)->thread->id << HZSTD_STACKREF_THREAD_SHIFT) | HZSTD_STACKREF_IMMORTAL_SLOT, \
+                        .gen = HZSTD_STACKREF_IMMORTAL_GEN })
 
-// Checks the witness and yields the raw pointer, cast to `type *`.
-#define HZSTD_STACKREF_DEREF(type, ref)                                                                                \
+// Using a stackref checks, before anything is accessed, that this thread owns
+// it (C280) and that its scope is still alive (C261): one compare of the
+// thread, then one of the generation.
+#define HZSTD_STACKREF_VALID(thread, r)                                                                                \
+  ((uint32_t)((r).slot >> HZSTD_STACKREF_THREAD_SHIFT) == (uint32_t)(thread)->id &&                                    \
+   (thread)->stackrefs.gens[(uint32_t)(r).slot] == (r).gen)
+
+#define HZSTD_STACKREF_DEREF(ctx, type, ref)                                                                           \
   ((type *)({                                                                                                          \
     hzstd_stackref_t __hz_r = (ref);                                                                                   \
-    if (__builtin_expect(hzstd_gen_table.gens[__hz_r.slot] != __hz_r.gen, 0)) {                                      \
-      hzstd_panic_dead_stackref();                                                                                     \
+    hzstd_thread_t *__hz_t = (ctx)->thread;                                                                            \
+    if (__builtin_expect(!HZSTD_STACKREF_VALID(__hz_t, __hz_r), 0)) {                                                  \
+      hzstd_panic_bad_stackref(__hz_t, __hz_r);                                                                        \
     }                                                                                                                  \
     __hz_r.ptr;                                                                                                        \
   }))
 
-// Check only (no pointer); used before invoking a stackref callable.
-#define HZSTD_STACKREF_CHECK(ref)                                                                                      \
+#define HZSTD_STACKREF_CHECK(ctx, ref)                                                                                 \
   do {                                                                                                                 \
     hzstd_stackref_t __hz_r = (ref);                                                                                   \
-    if (__builtin_expect(hzstd_gen_table.gens[__hz_r.slot] != __hz_r.gen, 0)) {                                      \
-      hzstd_panic_dead_stackref();                                                                                     \
+    hzstd_thread_t *__hz_t = (ctx)->thread;                                                                            \
+    if (__builtin_expect(!HZSTD_STACKREF_VALID(__hz_t, __hz_r), 0)) {                                                  \
+      hzstd_panic_bad_stackref(__hz_t, __hz_r);                                                                        \
     }                                                                                                                  \
   } while (0)
 
@@ -146,14 +161,14 @@ _Noreturn void hzstd_panic_dead_stackref(void);
 //   // normal completion falls through here
 //   goto done;
 //   recover_label:
-//     // _hz_panic_stacktrace (TLS) holds the stacktrace, or NULL if not set
+//     // the task's panic_info holds the stacktrace, or NULL if not set
 //     ...
 //   done:
 //
 // Design notes:
 // * HZSTD_SETJMP is used so that signal-mask is restored on Linux recovery.
 // * cleanup handlers are run on the recovery path only (defer-on-panic).
-// * _hz_panic_stacktrace is set as a TLS variable by the panic machinery
+// * the task's panic_info is set by the panic machinery
 //   before longjmping, so it is readable from the recover label even though
 //   the label is outside this macro's scope.
 
@@ -167,19 +182,19 @@ _Noreturn void hzstd_panic_dead_stackref(void);
 #define HAZE_ATTEMPT(id, recovery_label, body)                                                                         \
   {                                                                                                                    \
     hzstd_panic_recovery_frame_t __hz_frame_storage_##id;                                                              \
-    hzstd_panic_recovery_frame_t *__hz_frame_##id = hzstd_push_panic_recovery_frame(&__hz_frame_storage_##id);         \
+    hzstd_panic_recovery_frame_t *__hz_frame_##id = hzstd_push_panic_recovery_frame(__hz_ctx, &__hz_frame_storage_##id);\
     int __hz_jmp_##id = HZSTD_SETJMP(__hz_frame_##id->recovery_point);                                                 \
     if (__hz_jmp_##id == 0) {                                                                                          \
       body;                                                                                                            \
     }                                                                                                                  \
     else if (__hz_jmp_##id == 1) {                                                                                     \
-      /* panic_machinery already set _hz_panic_stacktrace (TLS) */                                                     \
+      /* the panic machinery already set the task's panic_info */                                                      \
       /* The longjmp skipped every stackref scope exit between the panic site and here. */                             \
-      hzstd_stackref_unwind_to(__hz_frame_##id->saved_stackref_depth);                                                 \
+      hzstd_stackref_unwind_to(__hz_ctx, __hz_frame_##id->saved_stackref_count);                                       \
       /* ...and every computed evaluation and write delivery: see hzstd_reactive_state_t. */                           \
-      hzstd_reactive_restore_state(&__hz_frame_##id->saved_reactive);                                                  \
+      hzstd_reactive_restore_state(__hz_ctx, &__hz_frame_##id->saved_reactive);                                        \
       hzstd_panic_recovery_frame_run_cleanup(__hz_frame_##id);                                                         \
-      hzstd_pop_panic_recovery_frame();                                                                                \
+      hzstd_pop_panic_recovery_frame(__hz_ctx);                                                                        \
       goto recovery_label;                                                                                             \
     }                                                                                                                  \
     else {                                                                                                             \

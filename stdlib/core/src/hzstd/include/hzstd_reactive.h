@@ -31,7 +31,7 @@
 // whole life: a write copies the new value into that slot and then notifies
 // (hzstd_reactive_cell_write), it never swaps the slot.
 
-void* hzstd_reactive_cell_read(hzstd_reactive_cell_t* cell);
+void* hzstd_reactive_cell_read(hzstd_context_t* ctx, hzstd_reactive_cell_t* cell);
 // Notifies the cell's dependents that its slot was just written.
 void hzstd_reactive_cell_write(hzstd_context_t *ctx, hzstd_reactive_cell_t* cell);
 // One allocation: the cell with its slot, holding a copy of the `size`
@@ -59,26 +59,30 @@ void hzstd_computed_stop(hzstd_computed_node_t* c);
 // Suspends dependency tracking for the calling code: reads in between
 // register with no computed at all. Returns the tracking context to hand
 // back to hzstd_reactive_resume_tracking.
-hzstd_computed_node_t* hzstd_reactive_pause_tracking(void);
-void hzstd_reactive_resume_tracking(hzstd_computed_node_t* prev);
+hzstd_computed_node_t* hzstd_reactive_pause_tracking(hzstd_context_t* ctx);
+void hzstd_reactive_resume_tracking(hzstd_context_t* ctx, hzstd_computed_node_t* prev);
+
+// rx's active watcher (reactive.hz), the running task's (TL-7).
+void* hzstd_reactive_active_watcher(hzstd_context_t* ctx);
+void hzstd_reactive_set_active_watcher(hzstd_context_t* ctx, void* watcher);
 
 // The panic machinery's side of the core (see hzstd_reactive_state_t): every
 // recovery frame saves the state when it is pushed, and its recovery path
 // restores it before any recovering code runs.
-void hzstd_reactive_save_state(hzstd_reactive_state_t* state);
-void hzstd_reactive_restore_state(const hzstd_reactive_state_t* state);
+void hzstd_reactive_save_state(hzstd_context_t* ctx, hzstd_reactive_state_t* state);
+void hzstd_reactive_restore_state(hzstd_context_t* ctx, const hzstd_reactive_state_t* state);
 
 // The slot a computed's wrapper should write its result into: the node's
 // existing cached slot when it is being re-run (same size every time), a
 // fresh one only on the first run or outside any computed.
-void* hzstd_computed_result_slot(size_t size);
+void* hzstd_computed_result_slot(hzstd_context_t* ctx, size_t size);
 void hzstd_slot_write(void* slot, void* src, size_t size);
 void hzstd_slot_read(void* dst, void* slot, size_t size);
 
-#define HZSTD_REACTIVE_CELL_READ(value_T, __reactive_value)                                                            \
+#define HZSTD_REACTIVE_CELL_READ(ctx, value_T, __reactive_value)                                                       \
   ({                                                                                                                   \
     value_T __tmp_result = { 0 };                                                                                      \
-    void* __slot = hzstd_reactive_cell_read(__reactive_value);                                                         \
+    void* __slot = hzstd_reactive_cell_read((ctx), __reactive_value);                                                  \
     hzstd_slot_read(&__tmp_result, __slot, sizeof(value_T));                                                           \
     __tmp_result;                                                                                                      \
   })
@@ -87,7 +91,7 @@ void hzstd_slot_read(void* dst, void* slot, size_t size);
   ({                                                                                                                   \
     reactive_T __tmp_reactive = reactive_value;                                                                        \
     value_T __tmp_value = value;                                                                                       \
-    void* __slot = hzstd_reactive_cell_read(__tmp_reactive);                                                           \
+    void* __slot = hzstd_reactive_cell_read((ctx), __tmp_reactive);                                                    \
     hzstd_slot_write(__slot, &__tmp_value, sizeof(__tmp_value));                                                       \
     hzstd_reactive_cell_write(ctx, __tmp_reactive);                                                                    \
     __tmp_reactive;                                                                                                    \

@@ -65,12 +65,12 @@ hzstd_reactive_array_mark_changed(hzstd_context_t *ctx, hzstd_reactive_array_t* 
 }
 
 // Register a read dependency on the version counter (for length / subscript reads).
-#define HZSTD_REACTIVE_ARRAY_READ_TRACK(ra) \
-  ((void)hzstd_reactive_cell_read((ra)->version))
+#define HZSTD_REACTIVE_ARRAY_READ_TRACK(ctx, ra) \
+  ((void)hzstd_reactive_cell_read((ctx), (ra)->version))
 
 // .length — track + return element count as hzstd_int_t
-#define HZSTD_REACTIVE_ARRAY_LENGTH(ra) \
-  (HZSTD_REACTIVE_ARRAY_READ_TRACK(ra), (hzstd_int_t)(ra)->data->size)
+#define HZSTD_REACTIVE_ARRAY_LENGTH(ctx, ra) \
+  (HZSTD_REACTIVE_ARRAY_READ_TRACK(ctx, ra), (hzstd_int_t)(ra)->data->size)
 
 // .push(element) — push element then notify
 #define HZSTD_REACTIVE_ARRAY_PUSH(ctx, ra, elemType, elem)      \
@@ -95,8 +95,8 @@ hzstd_reactive_array_mark_changed(hzstd_context_t *ctx, hzstd_reactive_array_t* 
   } while (0)
 
 // arr[index] — track + bounds-checked element access
-#define HZSTD_REACTIVE_ARRAY_GET(ra, elemType, index) \
-  (HZSTD_REACTIVE_ARRAY_READ_TRACK(ra),               \
+#define HZSTD_REACTIVE_ARRAY_GET(ctx, ra, elemType, index) \
+  (HZSTD_REACTIVE_ARRAY_READ_TRACK(ctx, ra),               \
    HZSTD_DYNAMIC_ARRAY_GET((ra)->data, elemType, index))
 
 // arr[index] = val — overwrite element and notify
@@ -135,9 +135,9 @@ hzstd_reactive_array_create_from_plain(hzstd_dynamic_array_t* plain,
 // so would silently drop the reader's ability to further unwrap/track
 // individual elements.
 static inline hzstd_dynamic_array_t*
-hzstd_reactive_array_read(hzstd_reactive_array_t* ra)
+hzstd_reactive_array_read(hzstd_context_t* ctx, hzstd_reactive_array_t* ra)
 {
-  HZSTD_REACTIVE_ARRAY_READ_TRACK(ra);
+  HZSTD_REACTIVE_ARRAY_READ_TRACK(ctx, ra);
   return ra->data;
 }
 

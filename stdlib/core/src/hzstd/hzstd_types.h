@@ -517,18 +517,38 @@ typedef struct {
   int delivering;
 } hzstd_reactive_state_t;
 
+// The reactive core's tracking state (hzstd_reactive.c). It follows the call
+// stack of the task that runs (a computed being evaluated, a write delivering
+// its effects), so it is the task's, never the thread's (C377, C598): two tasks
+// interleaving on one thread must not see each other's.
+typedef struct {
+  struct hzstd_computed_node_t *current_computed; // the computed whose reads are tracked, or NULL
+  struct hzstd_computed_node_t *evaluating;       // the computed whose body runs (tracking paused or not)
+  int write_depth;                                // > 0 while a write marks the graph dirty
+  int delivering_effects;
+  // Effects owed a scheduler call, collected while a write marks and
+  // delivered once it is done.
+  struct hzstd_computed_node_t **pending_effects;
+  size_t pending_effects_len;
+  size_t pending_effects_cap;
+  // rx's active watcher (a Haze rx.WatchHandle, or NULL), never inherited by
+  // a new task (TL-7).
+  void *active_watcher;
+} hzstd_reactive_task_state_t;
+
 typedef struct {
   hzstd_panic_recovery_cleanup_entry_t inline_cleanups[HZSTD_RECOVERY_INLINE_CLEANUPS];
   size_t cleanup_count; /* total, inline + overflow */
   hzstd_dynamic_array_t *cleanup_overflow; /* entries [HZSTD_RECOVERY_INLINE_CLEANUPS..); NULL until needed */
   HZSTD_JMP_BUF recovery_point;
   hzstd_panic_info_t _hz_panic_stacktrace; /* filled before longjmp */
-  // Generational stack-reference table depth at the time this frame was pushed
-  // (see hzstd_gen_table_t). A panic longjmps over every scope exit between the
-  // panic site and this frame, so the recovery path unwinds the table back to
-  // this depth explicitly -- otherwise skipped slots keep live generations and a
-  // stale stackref would pass its check (soundness hole, not a leak).
-  size_t saved_stackref_depth;
+  // How many stackref slots the task held when this frame was pushed (see
+  // hzstd_gen_table_t). A panic longjmps over every scope exit between the
+  // panic site and this frame, so the recovery path releases the task's slots
+  // back to this count explicitly -- otherwise skipped slots keep live
+  // generations and a stale stackref would pass its check (soundness hole, not
+  // a leak).
+  size_t saved_stackref_count;
   // Same reason, for the reactive core.
   hzstd_reactive_state_t saved_reactive;
 } hzstd_panic_recovery_frame_t;
@@ -630,11 +650,33 @@ typedef struct hzstd_tl_desc_t {
   _Atomic size_t index; // 0: not registered yet; never reused
 } hzstd_tl_desc_t;
 
-// Runtime structures; the task's state follows in the later stages. One thread
-// runs one task for now.
+// Generational stack references (C261, C280): one table per thread, since a
+// stackref may be used from any task on its thread but never on another. Every
+// stackref scope takes a slot, from the free list or a new one, with a
+// generation unique on the thread; leaving the scope zeroes it and frees the
+// slot. A slot's index never moves (references hold the index, not an
+// address). Slot 0 is the immortal one (references to memory that never dies).
+// The task records the slots its scopes hold (hzstd_task_t.held_slots), so a
+// panic in one task releases exactly its own, however tasks interleave scopes.
+typedef struct {
+  uint64_t *gens;      // [slot] = live generation, 0 when free
+  size_t cap;
+  size_t next_slot;    // the first slot never handed out (slot 0 never is)
+  uint64_t serial;     // monotonic, never reused; generation 0 is never handed out
+  uint32_t *free_slots; // released slots, reused first
+  size_t free_len;
+  size_t free_cap;
+} hzstd_gen_table_t;
+
+// A stackref's `slot` field: the slot index in the low 32 bits, the owning
+// thread's id in the high 32 (thread ids are never reused, at most 2^32 - 1).
+#define HZSTD_STACKREF_THREAD_SHIFT 32
+
+// Runtime structures. One thread runs one task until tasks exist (stage 3).
 struct hzstd_thread_t {
   uint64_t id; // process-unique, never reused; the main thread is 1
   hzstd_task_t *current_task; // the task running on this thread
+  hzstd_gen_table_t stackrefs;
 };
 struct hzstd_task_t {
   // The two fields generated code reads (TL-4): they stay first, in this
@@ -643,14 +685,20 @@ struct hzstd_task_t {
   void **tl_blocks;
   size_t tl_capacity;
   hzstd_thread_t *thread;
+  // State that follows the task's call stack (C598; docs/async-decisions.md,
+  // stage 2), hzstd's own:
+  hzstd_reactive_task_state_t reactive;
+  // The task's HAZE_ATTEMPT frames, innermost last (hzstd_panic_recovery_frame_t *);
+  // NULL until its first attempt block.
+  hzstd_dynamic_array_t *recovery_frames;
+  // What a panic hands to the recovery point it longjmps to.
+  hzstd_panic_info_t panic_info;
+  // The stackref slots this task's scopes hold, innermost last (slots of its
+  // thread's table); GC memory without pointers, NULL until the first scope.
+  uint32_t *held_slots;
+  size_t held_len;
+  size_t held_cap;
 };
-
-typedef struct {
-  uint64_t *gens;  // index-stable across growth (references hold an index, not an address)
-  size_t cap;
-  size_t depth;    // number of currently active *participating* scopes (+1 for slot 0)
-  uint64_t serial; // monotonic, never reused; generation 0 is never handed out
-} hzstd_gen_table_t;
 
 // ── Meta ─────────────────────────────────────────────────────────────────────
 

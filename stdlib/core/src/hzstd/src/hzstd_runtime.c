@@ -18,12 +18,21 @@
 #include <stdlib.h>
 #include <string.h>
 
-// ── Thread-local panic stacktrace ────────────────────────────────────────────
+// ── The running task ─────────────────────────────────────────────────────────
 //
-// Set by the panic machinery on the panicking thread before longjmping to the
-// nearest recovery frame.  Read from the recover: label after HAZE_ATTEMPT.
+// The thread's own struct, NULL on a thread Haze does not manage. Generated
+// code and the runtime entry points reach the task through the context they
+// are handed and never look this up (C502); only hzstd_context_for_current_thread
+// and the panic path, which has no context, do. A thread Haze does not manage
+// runs no task (NULL). The panic info a panic hands to its recovery point is the
+// task's (hzstd_task_t.panic_info), read at the recover: label after
+// HAZE_ATTEMPT.
+static _Thread_local hzstd_thread_t *hzstd_current_thread = NULL;
 
-_Thread_local hzstd_panic_info_t _hz_panic_stacktrace = { 0 };
+hzstd_task_t *hzstd_current_task(void)
+{
+  return hzstd_current_thread == NULL ? NULL : hzstd_current_thread->current_task;
+}
 
 // ── ANSI colours ─────────────────────────────────────────────────────────────
 
@@ -736,28 +745,19 @@ hzstd_str_t hzstd_stringify_stacktrace(hzstd_allocator_t alloc, hzstd_stacktrace
 // ── Panic recovery frame stack
 // ────────────────────────────────────────────────
 //
-// _Thread_local, deliberately: a HAZE_ATTEMPT block's try/recover nesting is
-// inherently per-thread (thread A entering one must never be visible to, or
-// interleave with, thread B's), but this used to be a single plain `static`
-// -- one recovery-frame stack shared, unsynchronized, across every thread in
-// the process. In a multi-threaded app (render thread, disk I/O threads,
-// GC markers, ...) any two threads pushing/popping HAZE_ATTEMPT frames
-// concurrently raced on the same unprotected hzstd_dynamic_array_t: lost
-// updates, corruption across a concurrent grow/realloc, or one thread
-// reading a frame pointer that belongs to (and may already have been popped
-// by) a completely different thread. That's what was actually behind a
-// string of hard-to-reproduce crashes-during-cleanup that looked like
-// memory corruption (garbage hzstd_dynamic_array_t* / closure-environment
-// pointers) -- confirmed via a live repro: hzstd_panic_recovery_frame_t
-// pointers being read back with clearly-garbage fields under real
-// concurrent UI load.
-static _Thread_local hzstd_dynamic_array_t *panic_recovery_frames = NULL;
-static _Thread_local bool panic_recovery_frames_initialized = false;
+// The task's, deliberately (hzstd_task_t.recovery_frames, C598): a HAZE_ATTEMPT
+// block's try/recover nesting follows the call stack, so two tasks on one
+// thread, or two threads, must never see each other's. (A single process-wide
+// static once raced across threads: lost updates and garbage frame pointers
+// under real concurrent UI load, the crashes-during-cleanup that looked like
+// memory corruption.) The task struct is GC memory or a static, scanned either
+// way, so the array needs no GC_add_roots (a _Thread_local pointer did: BDWGC
+// does not scan thread-local storage).
 
 // TEMPORARY diagnostic: validates that `da` still looks like a real,
 // uncorrupted hzstd_dynamic_array_t (elem_size matches what it was created
 // with, size never exceeds capacity). Added to pin down a still-unexplained
-// corruption of panic_recovery_frames / a frame's cleanup_handlers that has
+// corruption of a recovery frame stack / a frame's cleanup_handlers that has
 // so far only been observed *after the fact* -- once something tries to use
 // the already-corrupted array (e.g. a bogus elem_size turning a routine
 // grow into a multi-petabyte GC_realloc). Checking at every touchpoint here
@@ -802,54 +802,27 @@ static void hzstd_panic_recovery_check_frame_sane(hzstd_panic_recovery_frame_t *
   }
 }
 
-static void hzstd_init_panic_recovery_frames(void)
+// The task's frame stack, made on first use. Reserved generously up front
+// and never shrunk: nesting this many attempts is rare, so in practice the
+// stack of frame pointers is allocated exactly once per task.
+static hzstd_dynamic_array_t *hzstd_task_recovery_frames(hzstd_task_t *task)
 {
-  if (!panic_recovery_frames_initialized) {
-    panic_recovery_frames_initialized = true;
-    // Reserved generously up front and never shrunk: nesting this many
-    // attempts is rare, so in practice the stack of frame pointers is
-    // allocated exactly once per thread.
-    panic_recovery_frames = HZSTD_DYNAMIC_ARRAY_CREATE(hzstd_make_heap_allocator(), hzstd_panic_recovery_frame_t *, 64, "hzstd_panic_recovery_frame_t*");
-
-    // Root-registration fix, found via isolated reproduction: BDWGC does
-    // NOT scan _Thread_local storage as a GC root on this platform/config
-    // (confirmed empirically -- a minimal standalone repro mirroring this
-    // exact shape, a _Thread_local pointer to a GC-heap dynamic array under
-    // real recursive allocation pressure, reliably has its target's memory
-    // silently handed out to a same-size-class GC_malloc elsewhere within a
-    // few frames, corrupting it in place; GC_add_roots on the TLS slot
-    // itself made 500 stress iterations pass cleanly where the unfixed
-    // version failed on the very first one). Ordinary `static` globals don't
-    // need this -- they live in .data/.bss, which BDWGC registers as a root
-    // region unconditionally at GC_INIT time -- but a _Thread_local
-    // variable's storage is a separate, per-thread block the collector has
-    // no reason to know about unless told. Each thread's copy of
-    // panic_recovery_frames lives at its own address, so this must run once
-    // per thread (naturally satisfied here: this whole branch already only
-    // runs once per thread, guarded by panic_recovery_frames_initialized),
-    // registering *this* thread's slot specifically. Never unregistered --
-    // harmless even after a thread exits (GC_add_roots regions are
-    // permanent for the process's life), and correctness here matters far
-    // more than reclaiming a few bytes of address-range bookkeeping.
-    // sizeof(void*), not sizeof(panic_recovery_frames): the latter is a
-    // pointer-typed expression, which trips "suspicious sizeof on pointer"
-    // linting even though the intent here genuinely is the size of the
-    // pointer *slot* itself (the TLS storage holding the pointer value),
-    // not the array it points to.
-    GC_add_roots(&panic_recovery_frames, (char *)&panic_recovery_frames + sizeof(void *));
+  if (task->recovery_frames == NULL) {
+    task->recovery_frames = HZSTD_DYNAMIC_ARRAY_CREATE(hzstd_make_heap_allocator(), hzstd_panic_recovery_frame_t *, 64, "hzstd_panic_recovery_frame_t*");
   }
   hzstd_panic_recovery_check_sane(
-      panic_recovery_frames, sizeof(hzstd_panic_recovery_frame_t *), "panic_recovery_frames");
+      task->recovery_frames, sizeof(hzstd_panic_recovery_frame_t *), "task->recovery_frames");
+  return task->recovery_frames;
 }
 
-void hzstd_reserve_panic_recovery_frames(void)
+void hzstd_reserve_panic_recovery_frames(hzstd_context_t *ctx)
 {
-  hzstd_init_panic_recovery_frames();
+  hzstd_task_recovery_frames(ctx->task);
 }
 
-hzstd_panic_recovery_frame_t *hzstd_push_panic_recovery_frame(hzstd_panic_recovery_frame_t *frame)
+hzstd_panic_recovery_frame_t *hzstd_push_panic_recovery_frame(hzstd_context_t *ctx, hzstd_panic_recovery_frame_t *frame)
 {
-  hzstd_init_panic_recovery_frames();
+  hzstd_dynamic_array_t *frames = hzstd_task_recovery_frames(ctx->task);
 
   // `frame` is the HAZE_ATTEMPT block's own stack storage: nothing is
   // allocated here. The compiler pops it on every way out of the block
@@ -858,41 +831,50 @@ hzstd_panic_recovery_frame_t *hzstd_push_panic_recovery_frame(hzstd_panic_recove
   frame->cleanup_count = 0;
   frame->cleanup_overflow = NULL;
   memset(&frame->_hz_panic_stacktrace, 0, sizeof(frame->_hz_panic_stacktrace));
-  frame->saved_stackref_depth = hzstd_gen_table.depth;
-  hzstd_reactive_save_state(&frame->saved_reactive);
+  frame->saved_stackref_count = ctx->task->held_len;
+  hzstd_reactive_save_state(ctx, &frame->saved_reactive);
 
-  HZSTD_DYNAMIC_ARRAY_PUSH(panic_recovery_frames, frame);
+  HZSTD_DYNAMIC_ARRAY_PUSH(frames, frame);
   return frame;
 }
 
-hzstd_panic_recovery_frame_t *hzstd_pop_panic_recovery_frame(void)
+hzstd_panic_recovery_frame_t *hzstd_pop_panic_recovery_frame(hzstd_context_t *ctx)
 {
-  hzstd_init_panic_recovery_frames();
-  int length = hzstd_dynamic_array_size(panic_recovery_frames);
+  hzstd_dynamic_array_t *frames = hzstd_task_recovery_frames(ctx->task);
+  int length = hzstd_dynamic_array_size(frames);
   if (length == 0) {
     hzstd_trap_ccstr("popping panic recovery frame failed: No frame available");
   }
 
   hzstd_panic_recovery_frame_t *frame;
-  hzstd_dynamic_array_pop(panic_recovery_frames, &frame);
+  hzstd_dynamic_array_pop(frames, &frame);
   return frame;
 }
 
+// The panic path's side (it has no context): the running task's frames. A
+// thread that runs no task has none.
 int hzstd_panic_recovery_frame_count(void)
 {
-  hzstd_init_panic_recovery_frames();
-  return hzstd_dynamic_array_size(panic_recovery_frames);
+  hzstd_task_t *task = hzstd_current_task();
+  if (task == NULL) {
+    return 0;
+  }
+  return hzstd_dynamic_array_size(hzstd_task_recovery_frames(task));
 }
 
 hzstd_panic_recovery_frame_t *hzstd_get_current_panic_recovery_frame(void)
 {
-  hzstd_init_panic_recovery_frames();
-  int length = hzstd_dynamic_array_size(panic_recovery_frames);
+  hzstd_task_t *task = hzstd_current_task();
+  if (task == NULL) {
+    hzstd_trap_ccstr("getting panic recovery frame failed: this thread runs no task");
+  }
+  hzstd_dynamic_array_t *frames = hzstd_task_recovery_frames(task);
+  int length = hzstd_dynamic_array_size(frames);
   if (length == 0) {
     hzstd_trap_ccstr("getting panic recovery frame failed: No frame available");
   }
 
-  return HZSTD_DYNAMIC_ARRAY_GET(panic_recovery_frames, hzstd_panic_recovery_frame_t *, length - 1);
+  return HZSTD_DYNAMIC_ARRAY_GET(frames, hzstd_panic_recovery_frame_t *, length - 1);
 }
 
 void hzstd_panic_recovery_frame_push_cleanup(void (*fn)(void *), void *env)
@@ -953,25 +935,32 @@ void hzstd_panic_recovery_frame_run_cleanup(hzstd_panic_recovery_frame_t *frame)
 
 // ── Generational stack references ────────────────────────────────────────────
 //
-// The table is runtime-managed (malloc/realloc), deliberately not GC memory:
-// it holds no pointers, so the GC has no business scanning it, and being a
-// _Thread_local it would otherwise need GC_add_roots like panic_recovery_frames
-// above. It starts out pointing at a static one-entry array holding only the
-// immortal slot, so a thread that never participates never allocates and the
-// check in HZSTD_STACKREF_DEREF is valid from the first instruction.
-
+// One table per thread (hzstd_gen_table_t in hzstd_types.h), slots from a free
+// list, the slots a task's scopes hold recorded in the task. The table is
+// runtime-managed (malloc/realloc), deliberately not GC memory: it holds no
+// pointers, and it lives as long as its thread. A new table points at a static
+// one-entry array holding only the immortal slot, so a thread that never
+// enters a scope never allocates, and the check in HZSTD_STACKREF_DEREF is
+// valid from the first instruction. The static array is never written: slot 0
+// is never handed out, and growing copies it.
 static uint64_t hzstd_gen_table_initial[1] = { HZSTD_STACKREF_IMMORTAL_GEN };
 
-_Thread_local hzstd_gen_table_t hzstd_gen_table = {
-  .gens = hzstd_gen_table_initial,
-  .cap = 1,
-  .depth = 1,    // slot 0 is always occupied (immortal)
-  .serial = 1,   // the immortal generation; the next handed out is 2
-};
+hzstd_gen_table_t hzstd_gen_table_new(void)
+{
+  return (hzstd_gen_table_t) {
+    .gens = hzstd_gen_table_initial,
+    .cap = 1,
+    .next_slot = 1, // slot 0 is always occupied (immortal)
+    .serial = 1,    // the immortal generation; the next handed out is 2
+  };
+}
 
 static void hzstd_gen_table_grow(hzstd_gen_table_t *t)
 {
   size_t newCap = t->cap < 64 ? 64 : t->cap * 2;
+  if (newCap > ((size_t)1 << HZSTD_STACKREF_THREAD_SHIFT)) {
+    hzstd_trap_ccstr("too many stackref scopes on one thread at once");
+  }
   uint64_t *newGens;
   if (t->gens == hzstd_gen_table_initial) {
     newGens = (uint64_t *)malloc(newCap * sizeof(uint64_t));
@@ -985,56 +974,91 @@ static void hzstd_gen_table_grow(hzstd_gen_table_t *t)
   if (!newGens) {
     hzstd_trap_ccstr("out of memory growing the stackref generation table");
   }
-  // Zero-fill the new half: a slot at or above the current depth must read 0,
-  // and no real generation is ever 0.
+  // Zero-fill the new half: a slot never handed out must read 0, and no real
+  // generation is ever 0.
   memset(newGens + t->cap, 0, (newCap - t->cap) * sizeof(uint64_t));
   t->gens = newGens;
   t->cap = newCap;
 }
 
-size_t hzstd_stackref_scope_enter(void)
+static void hzstd_gen_table_release(hzstd_gen_table_t *t, uint32_t slot)
 {
-  hzstd_gen_table_t *t = &hzstd_gen_table;
-  if (t->depth == t->cap) {
-    hzstd_gen_table_grow(t);
+  t->gens[slot] = 0;
+  if (t->free_len == t->free_cap) {
+    size_t cap = t->free_cap == 0 ? 64 : t->free_cap * 2;
+    uint32_t *grown = (uint32_t *)realloc(t->free_slots, cap * sizeof(uint32_t));
+    if (!grown) {
+      hzstd_trap_ccstr("out of memory growing the stackref free list");
+    }
+    t->free_slots = grown;
+    t->free_cap = cap;
   }
-  size_t slot = t->depth++;
+  t->free_slots[t->free_len++] = slot;
+}
+
+size_t hzstd_stackref_scope_enter(hzstd_context_t *ctx)
+{
+  hzstd_gen_table_t *t = &ctx->thread->stackrefs;
+  uint32_t slot;
+  if (t->free_len > 0) {
+    slot = t->free_slots[--t->free_len];
+  }
+  else {
+    if (t->next_slot == t->cap) {
+      hzstd_gen_table_grow(t);
+    }
+    slot = (uint32_t)t->next_slot++;
+  }
   // Never hand out generation 0: a reference born with gen 0 whose scope
   // exits (writing 0) would compare equal forever.
   t->serial += 1 + (t->serial + 1 == 0);
   t->gens[slot] = t->serial;
+
+  hzstd_task_t *task = ctx->task;
+  if (task->held_len == task->held_cap) {
+    size_t cap = task->held_cap == 0 ? 16 : task->held_cap * 2;
+    uint32_t *grown = hzstd_heap_allocate_unscanned(cap * sizeof(uint32_t), "hzstd stackref held slots");
+    if (task->held_len > 0) {
+      memcpy(grown, task->held_slots, task->held_len * sizeof(uint32_t));
+    }
+    task->held_slots = grown;
+    task->held_cap = cap;
+  }
+  task->held_slots[task->held_len++] = slot;
   return slot;
 }
 
-void hzstd_stackref_scope_exit(void)
+void hzstd_stackref_scope_exit(hzstd_context_t *ctx)
 {
-  hzstd_gen_table_t *t = &hzstd_gen_table;
-  if (t->depth <= 1) {
+  hzstd_task_t *task = ctx->task;
+  if (task->held_len == 0) {
     hzstd_trap_ccstr("stackref scope exit without matching enter");
   }
-  t->gens[--t->depth] = 0;
+  hzstd_gen_table_release(&ctx->thread->stackrefs, task->held_slots[--task->held_len]);
 }
 
-void hzstd_stackref_scope_renew(size_t slot)
+void hzstd_stackref_scope_renew(hzstd_context_t *ctx, size_t slot)
 {
-  hzstd_gen_table_t *t = &hzstd_gen_table;
+  hzstd_gen_table_t *t = &ctx->thread->stackrefs;
   t->serial += 1 + (t->serial + 1 == 0);
   t->gens[slot] = t->serial;
 }
 
-void hzstd_stackref_unwind_to(size_t depth)
+size_t hzstd_stackref_held_count(hzstd_context_t *ctx) { return ctx->task->held_len; }
+
+void hzstd_stackref_unwind_to(hzstd_context_t *ctx, size_t held)
 {
-  hzstd_gen_table_t *t = &hzstd_gen_table;
-  if (depth < 1) {
-    depth = 1;
-  }
-  while (t->depth > depth) {
-    t->gens[--t->depth] = 0;
+  hzstd_task_t *task = ctx->task;
+  while (task->held_len > held) {
+    hzstd_gen_table_release(&ctx->thread->stackrefs, task->held_slots[--task->held_len]);
   }
 }
 
-_Noreturn void hzstd_panic_dead_stackref(void)
+_Noreturn void hzstd_panic_bad_stackref(hzstd_thread_t *thread, hzstd_stackref_t ref)
 {
+  if ((uint32_t)(ref.slot >> HZSTD_STACKREF_THREAD_SHIFT) != (uint32_t)thread->id) {
+    hzstd_panic_fmt_n(1, "use of a stackref on a thread that does not own it: a stack reference never leaves the thread whose stack it points into");
+  }
   hzstd_panic_fmt_n(1, "use of a dead stackref: the scope that owned the referenced value has already exited");
 }
 
@@ -1052,16 +1076,18 @@ static _Atomic uint64_t g_next_thread_id = 2;
 
 uint64_t hzstd_next_thread_id(void)
 {
-  return atomic_fetch_add(&g_next_thread_id, 1);
+  uint64_t id = atomic_fetch_add(&g_next_thread_id, 1);
+  // A stackref carries its owning thread's id in 32 bits (C280), and ids are
+  // never reused.
+  if (id > UINT32_MAX) {
+    hzstd_panic("more threads than stack references can tell apart (2^32 - 1)");
+  }
+  return id;
 }
-
-// The thread's own struct, NULL on a thread Haze does not manage. Read only by
-// hzstd_context_for_current_thread: the generated code never looks it up (C502).
-static _Thread_local hzstd_thread_t *hzstd_current_thread = NULL;
 
 void hzstd_initialize_main_thread(void)
 {
-  g_main_thread = (hzstd_thread_t) { .id = 1, .current_task = &g_main_task };
+  g_main_thread = (hzstd_thread_t) { .id = 1, .current_task = &g_main_task, .stackrefs = hzstd_gen_table_new() };
   g_main_task = (hzstd_task_t) { .thread = &g_main_thread };
   hzstd_current_thread = &g_main_thread;
 }

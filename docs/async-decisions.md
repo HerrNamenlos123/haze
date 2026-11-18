@@ -353,6 +353,54 @@ As built (2026-11-18, the user's go "task-local storage and stage 2"):
   `hzstd_panic_fmt_n`, so every message it formatted was garbage (the task-local ABI panic named
   module '' and version 389384704). Both now format through one `va_list` function.
 
+## Stage 2: state that follows the call stack moves onto the task (C377, C598, C261, C280)
+
+- **S2-1. `hzstd_task_t` holds hzstd's own per-task state** after the task-local fields: the
+  reactive tracking state (current computed, evaluating, write depth, delivering flag, pending
+  effects, active watcher), the recovery frame stack, the panic info a panic hands its recovery
+  point, and the stackref slots the task holds. The main task is a static; tasks will be GC
+  memory (stage 3); scanned either way, so the `GC_add_roots` workarounds for thread-locals are
+  gone.
+- **S2-2. The task is reached through the context** (C502): every runtime entry that touches that
+  state takes `hzstd_context_t *` (reactive reads and array reads, pause and resume, the result
+  slot, save and restore, the active watcher, frame push and pop, stackref enter, exit, unwind,
+  make and use). Generated code passes `__hz_ctx`, reactive.hz `sys.contextPtr()`. Only the panic
+  path, which has no context, asks the thread for its running task (`hzstd_current_task`); a
+  thread Haze does not manage runs none and has no frames. Invariant: `ctx->task` is the thread's
+  running task whenever Haze code runs (stage 3's switch keeps it so).
+- **S2-3. The pending effects were a process-wide static**, shared and unsynchronized between
+  threads; they are the task's now, like the rest of the tracking state.
+- **S2-4. Stackrefs: one table per thread** (C261: any task on the thread may use a stackref),
+  slots from a free list with generations unique per thread; the task records the slots its
+  scopes hold, releasing them in reverse on scope exit and back to the frame's saved count on
+  recovery, so interleaved tasks release only their own. A stackref carries its owning thread's
+  id in the upper 32 bits of `slot` (ids above 2^32 - 1 panic at thread creation); every use
+  checks the thread, then the generation (`HZSTD_STACKREF_VALID`), and the panic says which
+  (C280). Rejected: a table per task (another task on the thread could not check a stackref it
+  was handed); a depth counter (interleaved scopes would release each other's slots).
+- **S2-5. `__rx_activeWatcher` is gone**: `rx.activeWatcher` and `rx.setActiveWatcher` read and
+  write the task's (TL-7).
+- **S2-6. The thread-locals that stay**, each justified:
+  - `hzstd_current_thread` (hzstd_runtime.c): per thread by definition.
+  - the signal stack (`t_previous_altstack`, `t_altstack_borrowed`, `altstack_buf`,
+    hzstd_platform_linux.c): the kernel's alternate signal stack is per thread.
+  - the JSON allocator (`hzstd_json_current_allocator` and its root flag, hzstd_json.c): set only
+    around one hzstd_json call, which runs no Haze code and never suspends (C218: tasks switch
+    only where they wait), so no other task can ever see it set.
+  - the profiler's allocation suppression flag (hzstd_memory.c): set only around the profiler's
+    own allocations, which never suspend.
+  - the profiler's frame-pointer stack bounds (`hz_fp_stack_low/high`, hzstd_profiling.c): the
+    bounds of the running stack, per thread while each thread runs one stack; stage 3's task
+    switch has to update them.
+  - the profiler's unwinding and symbol-resolution state (`g_hzstd_perf_current_sample`,
+    `..._truncated`, `g_hzstd_perf_unwinding_active`, `g_profiling_resolve_recovery`,
+    `g_profiling_resolving_active`, `g_profiling_resolve_prev_segv/_bus`): used only on the
+    profiler's own threads, which run no Haze code.
+- **S2-7. Cleanup registrations and held locks** have no runtime yet (locks are stage 4); their
+  per-task fields come with them.
+- Found: `HZSTD_STACKREF_CHECK` and `hzstd_stackref_scope_renew` have no users (ledger); both
+  follow the new design all the same.
+
 ## Tooling
 
 - **G-1. The parser-equivalence sweep reads what the commit and the run decide** (user,

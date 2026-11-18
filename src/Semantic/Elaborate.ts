@@ -21391,7 +21391,7 @@ export class SemanticElaborator {
         sourceloc: sourceloc,
         vararg: false,
       });
-      const body = `__c__("HZSTD_REACTIVE_ARRAY_READ_TRACK(this); return HZSTD_DYNAMIC_ARRAY_GET(this->data, ${promotedElemCName}, index);");`;
+      const body = `__c__("HZSTD_REACTIVE_ARRAY_READ_TRACK(__hz_ctx, this); return HZSTD_DYNAMIC_ARRAY_GET(this->data, ${promotedElemCName}, index);");`;
       const [, id] = this.sr.b.syntheticFunctionFromCode({
         functionTypeId: functionType,
         parameterNames: ["index"],
@@ -22092,7 +22092,7 @@ export class SemanticElaborator {
 
     if (attempt.recoverScope !== null) {
       // Resolve ffi.hzstd_panic_info_t.  The recover block is only ever reached
-      // via the panic longjmp, which unconditionally sets _hz_panic_stacktrace
+      // via the panic longjmp, which unconditionally sets the task's panic_info
       // before jumping, so the PanicInfo is always present — no | none needed.
       const panicInfoCollectSymbolId = Semantic.findBuiltinSymbolByName(
         this.sr,

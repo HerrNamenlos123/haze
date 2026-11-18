@@ -1,11 +1,3 @@
-// The watcher whose callback is currently running -- see onWatcherCleanup.
-// File-level rather than a member of the namespace (a variable declared
-// inside `namespace rx` cannot be referenced from outside it with the
-// current compiler), and only ever touched through rx.activeWatcher /
-// rx.setActiveWatcher: those are non-generic, so their bodies compile here
-// in the package, whereas a generic like rx.watch<T> is re-elaborated in
-// the importing module, where this variable does not exist.
-let __rx_activeWatcher: rx.WatchHandle | null = null;
 // Source of WatchHandle.id -- see rx.allocateWatcherId.
 let __rx_nextWatcherId: int = 1;
 
@@ -145,13 +137,14 @@ namespace rx {
         return do unsafe {
             let fnWrapper = (): cptr => {
                 let resultValue = rx.get(func());
+                let p = sys.contextPtr();
                 do unsafe {
                     let slot = none as cptr;
                     // Re-runs write into the node's existing result slot
                     // (readers copy out of it immediately), so only the
                     // first evaluation allocates.
                     __c__("""
-                        slot = hzstd_computed_result_slot(sizeof(resultValue));
+                        slot = hzstd_computed_result_slot((hzstd_context_t *)p, sizeof(resultValue));
                         hzstd_slot_write(slot, &resultValue, sizeof(resultValue));
                     """);
                     return slot;
@@ -319,14 +312,25 @@ namespace rx {
         }
     }
 
-    // The watcher whose callback is currently running, if any. See the
-    // note on __rx_activeWatcher for why these two are functions.
+    // The watcher whose callback is currently running, if any (see
+    // onWatcherCleanup). It is the running task's, like the rest of the
+    // reactive tracking state (C377), and never inherited by a new task
+    // (docs/async-decisions.md TL-7): hzstd keeps it in the task. Functions,
+    // non-generic, so their inline C compiles here in the package.
     export fn activeWatcher(): WatchHandle | null {
-        return __rx_activeWatcher;
+        let p = sys.contextPtr();
+        return do unsafe {
+            let watcher: WatchHandle | null = null;
+            __c__("watcher = hzstd_reactive_active_watcher((hzstd_context_t *)p);");
+            watcher
+        };
     }
 
     export fn setActiveWatcher(watcher: WatchHandle | null) {
-        __rx_activeWatcher = watcher;
+        let p = sys.contextPtr();
+        do unsafe {
+            __c__("hzstd_reactive_set_active_watcher((hzstd_context_t *)p, (void *)watcher);");
+        };
     }
 
     // Non-generic for the same reason as activeWatcher(): the counter lives
@@ -387,15 +391,17 @@ namespace rx {
     // cannot take an `immediate` parameter.
     export fn _pauseTracking(): cptr :: final {
         let prev: cptr = none as cptr;
+        let p = sys.contextPtr();
         do unsafe {
-            __c__("prev = (void*)hzstd_reactive_pause_tracking();");
+            __c__("prev = (void*)hzstd_reactive_pause_tracking((hzstd_context_t *)p);");
         };
         return prev;
     }
 
     export fn _resumeTracking(prev: cptr): none :: final {
+        let p = sys.contextPtr();
         do unsafe {
-            __c__("hzstd_reactive_resume_tracking((hzstd_computed_node_t*)prev);");
+            __c__("hzstd_reactive_resume_tracking((hzstd_context_t *)p, (hzstd_computed_node_t*)prev);");
         };
         return none;
     }
@@ -427,12 +433,13 @@ namespace rx {
             // Read untracked: this is a write, and a computed calling it must
             // not end up subscribed to the cell it writes.
             let prev: cptr = none as cptr;
+            let p = sys.contextPtr();
             do unsafe {
-                __c__("prev = (void*)hzstd_reactive_pause_tracking();");
+                __c__("prev = (void*)hzstd_reactive_pause_tracking((hzstd_context_t *)p);");
             };
             let current: T = target;
             do unsafe {
-                __c__("hzstd_reactive_resume_tracking((hzstd_computed_node_t*)prev);");
+                __c__("hzstd_reactive_resume_tracking((hzstd_context_t *)p, (hzstd_computed_node_t*)prev);");
             };
             if hasChanged<T>(value, current) {
                 target := value;
@@ -602,12 +609,13 @@ namespace rx {
         // become a dependency of that.
         let run = () => {
             let prev: cptr = none as cptr;
+            let p = sys.contextPtr();
             do unsafe {
-                __c__("prev = (void*)hzstd_reactive_pause_tracking();");
+                __c__("prev = (void*)hzstd_reactive_pause_tracking((hzstd_context_t *)p);");
             };
             let value = rx.get(node);
             do unsafe {
-                __c__("hzstd_reactive_resume_tracking((hzstd_computed_node_t*)prev);");
+                __c__("hzstd_reactive_resume_tracking((hzstd_context_t *)p, (hzstd_computed_node_t*)prev);");
             };
             return value;
         };

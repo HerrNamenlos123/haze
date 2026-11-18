@@ -1171,13 +1171,16 @@ function isDeepReactiveArray(
 function lowerReactiveCellRead(
   lr: Lowered.Module,
   rawExprId: Lowered.ExprId,
-  targetTypeUseId: Lowered.TypeUseId
+  targetTypeUseId: Lowered.TypeUseId,
+  sourceloc: SourceLoc
 ): Lowered.ExprId {
   const targetType = lr.typeUseNodes.get(targetTypeUseId);
   return makeIntrinsicCall(
     lr,
     "HZSTD_REACTIVE_CELL_READ",
     [
+      // A tracked read: it registers with the running task's computed.
+      currentContextPointer(lr, "A reactive read", sourceloc),
       Lowered.addExpr(lr, {
         variant: Lowered.ENode.SymbolValueExpr,
         name: targetType.name,
@@ -1271,7 +1274,7 @@ function lowerForEachElementRead(
             nextTypeUseId,
             sourceloc
           )
-        : lowerReactiveCellRead(lr, value, nextTypeUseId);
+        : lowerReactiveCellRead(lr, value, nextTypeUseId, sourceloc);
     semTypeUseId = nextSemTypeUseId;
     semTypeDef = lr.sr.typeDefNodes.get(
       lr.sr.typeUseNodes.get(lr.sr.e.resolveAlias(semTypeUseId)).type
@@ -1879,6 +1882,13 @@ export function lowerExpr(
           // StructDatatype/DynamicArrayDatatype), so member access never uses '->'.
           isDeepAccess = true;
         }
+      }
+
+      // A deep reactive array's length is a tracked read (CodeGenerator emits
+      // HZSTD_REACTIVE_ARRAY_LENGTH with the context): it registers with the
+      // running task's computed.
+      if (accessedExprTypeDef.variant === Semantic.ENode.ReactiveDatatype) {
+        requireContext(lr, "Reading a reactive array's length", expr.sourceloc);
       }
 
       let objectExprId = lowerExpr(lr, expr.expr, flattened, instanceInfo)[1];
@@ -3026,7 +3036,11 @@ hzstd_slot_read(&__tmp_result, __slot, sizeof(__tmp_result));`,
         return makeIntrinsicCall(
           lr,
           "hzstd_reactive_array_read",
-          [lowerExpr(lr, expr.value, statements, instanceInfo)[1]],
+          [
+            // A tracked read: it registers with the running task's computed.
+            currentContextPointer(lr, "A reactive read", expr.sourceloc),
+            lowerExpr(lr, expr.value, statements, instanceInfo)[1],
+          ],
           valueTypeId
         );
       }
@@ -3035,6 +3049,8 @@ hzstd_slot_read(&__tmp_result, __slot, sizeof(__tmp_result));`,
         lr,
         "HZSTD_REACTIVE_CELL_READ",
         [
+          // A tracked read: it registers with the running task's computed.
+          currentContextPointer(lr, "A reactive read", expr.sourceloc),
           Lowered.addExpr(lr, {
             variant: Lowered.ENode.SymbolValueExpr,
             name: valueType.name,
@@ -3577,7 +3593,8 @@ hzstd_slot_read(&__tmp_result, __slot, sizeof(__tmp_result));`,
         enclosingBlockScope.statements.push(
           Lowered.addStatement(lr, {
             variant: Lowered.ENode.InlineCStatement,
-            value: `${expr.panicInfoVarname} = _hz_panic_stacktrace;`,
+            // The panic handed its info to the task (hzstd_task_t.panic_info).
+            value: `${expr.panicInfoVarname} = __hz_ctx->task->panic_info;`,
             sourceloc: expr.sourceloc,
           })[1]
         );
