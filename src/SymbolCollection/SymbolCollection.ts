@@ -382,8 +382,19 @@ export namespace Collect {
     // `ref fn` / `stackref fn` (R&D/Storage Classes and References.md §12.3)
     methodReceiverStorage: EStorageClass.Ref | EStorageClass.Stackref | null;
     extern: EExternLanguage;
+    // `:: context` on an `extern C` function without a body: it takes the
+    // context first all the same (C401). Module interfaces write it for
+    // `extern C` functions with a Haze body.
+    declaresContext: boolean;
     sourceloc: SourceLoc;
+    // The scope of the body; null for a declaration without one.
     functionScope: Collect.ScopeId | null;
+    // The scope the signature is elaborated in: the function scope if there is
+    // a body, else a scope of its own that holds only `context`. A default
+    // parameter value is evaluated by the caller, so `context` in it is the
+    // caller's context, also for a declaration without a body (a module
+    // interface, a C-implemented entry).
+    signatureScope: Collect.ScopeId;
     originalSourcecode: string;
   };
 
@@ -1352,7 +1363,7 @@ export function rejectDeclarationNamedContext(
   }
 }
 
-/** Defines the implicit `context` in a Haze function's or lambda's own scope. */
+/** Defines the implicit `context` in a function's or lambda's own scope, or in the signature scope of a declaration without a body. */
 function defineContextVariable(
   cc: CollectionContext,
   functionScopeId: Collect.ScopeId,
@@ -2018,9 +2029,30 @@ function collectSymbol(
           methodReceiverStorage: item.methodReceiverStorage,
           sourceloc: item.sourceloc,
           functionScope: null,
+          signatureScope: -1 as Collect.ScopeId,
+          declaresContext: item.requires.context,
           originalSourcecode: item.originalSourcecode,
         });
       overloadGroup.overloads.add(functionSymbolId);
+      // Every other function takes the context anyway, or (a C function)
+      // never: the flag says it of a C-named one without a body only.
+      if (
+        item.requires.context &&
+        item.externLanguage !== EExternLanguage.Extern_C
+      ) {
+        throw new CompilerError(
+          `':: context' is only for an 'extern C' function: every other function takes the context already`,
+          item.sourceloc,
+          HazeErrorCode.ContextRequirementOutsideExternCDeclaration
+        );
+      }
+      if (item.requires.context && item.funcbody) {
+        throw new CompilerError(
+          `':: context' is only for an 'extern C' function without a body: one with a Haze body takes the context already`,
+          item.sourceloc,
+          HazeErrorCode.ContextRequirementOutsideExternCDeclaration
+        );
+      }
 
       if (item.funcbody) {
         const [functionScope, functionScopeId] = Collect.makeScope(cc, {
@@ -2032,6 +2064,7 @@ function collectSymbol(
           symbols: new Set(),
         });
         functionSymbol.functionScope = functionScopeId;
+        functionSymbol.signatureScope = functionScopeId;
 
         if (item.funcbody.variant === "ExprAsFuncBody") {
           item.funcbody = {
@@ -2082,10 +2115,9 @@ function collectSymbol(
           );
         }
 
-        // An `extern C` function has no context (C402): it is what C calls.
-        if (item.externLanguage !== EExternLanguage.Extern_C) {
-          defineContextVariable(cc, functionScopeId, functionSymbol.sourceloc);
-        }
+        // Every function with a Haze body has a context, an `extern C` one
+        // too: C passes it as the first parameter (C401, C402).
+        defineContextVariable(cc, functionScopeId, functionSymbol.sourceloc);
 
         for (const p of parameters) {
           const varsymId = defineVariableSymbol(
@@ -2106,6 +2138,21 @@ function collectSymbol(
           )[1];
           functionSymbol.parameterSymbols.add(varsymId);
         }
+      } else {
+        // No body: the signature gets a scope of its own, holding only
+        // `context` for the default parameter values (the caller's context).
+        const [, signatureScopeId] = Collect.makeScope(cc, {
+          variant: Collect.ENode.BlockScope,
+          owningSymbol: functionSymbolId,
+          parentScope: args.currentParentScope,
+          sourceloc: item.sourceloc,
+          statements: [],
+          unsafe: false,
+          emittedExpr: null,
+          symbols: new Set(),
+        });
+        functionSymbol.signatureScope = signatureScopeId;
+        defineContextVariable(cc, signatureScopeId, functionSymbol.sourceloc);
       }
 
       if (
@@ -3235,12 +3282,21 @@ function collectExpr(
         overloads: new Set(),
         parentScope: args.currentParentScope,
       });
+      if (item.lambda.requires.context) {
+        throw new CompilerError(
+          `':: context' is only for an 'extern C' function: a lambda takes the context already`,
+          item.sourceloc,
+          HazeErrorCode.ContextRequirementOutsideExternCDeclaration
+        );
+      }
       const [functionSymbol, functionSymbolId] = Collect.makeSymbol(cc, {
         variant: Collect.ENode.FunctionSymbol,
         comptime: false,
         export: false,
         extern: EExternLanguage.None,
+        declaresContext: false,
         functionScope: -1 as Collect.ScopeId,
+        signatureScope: -1 as Collect.ScopeId,
         generics: [],
         methodRequiredMutability: null,
         methodReceiverStorage: null,
@@ -3326,6 +3382,7 @@ function collectExpr(
         });
         lambdaScope.functionScope = functionScopeId;
         functionSymbol.functionScope = functionScopeId;
+        functionSymbol.signatureScope = functionScopeId;
         functionScope.blockScope = collectScope(cc, item.lambda.scope, {
           currentParentScope: functionScopeId,
         });
@@ -3369,6 +3426,7 @@ function collectExpr(
           symbols: new Set(),
         });
         functionSymbol.functionScope = functionScopeId;
+        functionSymbol.signatureScope = functionScopeId;
         functionScope.blockScope = collectScope(cc, item.lambda.scope, {
           currentParentScope: functionScopeId,
         });
@@ -3908,6 +3966,13 @@ function collectExpr(
         };
       });
 
+      if (item.requires.context) {
+        throw new CompilerError(
+          `':: context' is only for an 'extern C' function, not a function type: a Haze function type takes the context already`,
+          item.sourceloc,
+          HazeErrorCode.ContextRequirementOutsideExternCDeclaration
+        );
+      }
       const requires = {
         final: item.requires.final,
         pure: item.requires.pure,
@@ -3968,6 +4033,13 @@ function collectExpr(
         };
       });
 
+      if (item.requires.context) {
+        throw new CompilerError(
+          `':: context' is only for an 'extern C' function, not a function type: a Haze function type takes the context already`,
+          item.sourceloc,
+          HazeErrorCode.ContextRequirementOutsideExternCDeclaration
+        );
+      }
       const requires = {
         final: item.requires.final,
         pure: item.requires.pure,

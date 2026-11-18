@@ -135,7 +135,7 @@ void* hzstd_computed_result_slot(size_t size)
   return slot;
 }
 
-void* hzstd_computed_read(hzstd_context_t ctx, hzstd_computed_node_t* c)
+void* hzstd_computed_read(hzstd_context_t *ctx, hzstd_computed_node_t* c)
 {
   if (g_current_computed) {
     register_dependency(&c->base, g_current_computed);
@@ -143,8 +143,8 @@ void* hzstd_computed_read(hzstd_context_t ctx, hzstd_computed_node_t* c)
   return hzstd_computed_get(ctx, c);
 }
 
-// Runs the computed's body under the reader's context.
-void* hzstd_computed_get(hzstd_context_t ctx, hzstd_computed_node_t* comp)
+// Runs the computed's body under the reader's context (valid for this call only).
+void* hzstd_computed_get(hzstd_context_t *ctx, hzstd_computed_node_t* comp)
 {
   if (!comp->dirty || comp->stopped) {
     return comp->cached;
@@ -201,8 +201,8 @@ static void queue_effect(hzstd_computed_node_t* comp)
 // A delivery a recovered panic cut short leaves its delivered entries NULL
 // and the rest pending; the next delivery skips the one and makes the other.
 //
-// Every scheduler runs under the context of the write that delivers it.
-static void deliver_effects(hzstd_context_t ctx)
+// Every scheduler runs under the context of the write that delivers it, passed on as the pointer the write received.
+static void deliver_effects(hzstd_context_t *ctx)
 {
   if (g_delivering_effects) {
     return;
@@ -246,7 +246,7 @@ void* hzstd_reactive_cell_read(hzstd_reactive_cell_t* cell)
   return cell->value;
 }
 
-void hzstd_reactive_cell_write(hzstd_context_t ctx, hzstd_reactive_cell_t* cell)
+void hzstd_reactive_cell_write(hzstd_context_t *ctx, hzstd_reactive_cell_t* cell)
 {
   g_write_depth++;
   mark_dirty(&cell->base);

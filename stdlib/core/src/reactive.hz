@@ -20,22 +20,24 @@ namespace rx {
     // A Haze closure handed to the reactive core: a computed's body, or an
     // effect's scheduler. Boxed, so C can hold it as one pointer (the thunk
     // of hzstd_computed_entry_t). C never runs it itself (Axiom C402): it
-    // calls __hz_rx_run_thunk with the context of the Haze code that read the
-    // computed or wrote the cell that triggered it.
+    // calls __hz_rx_run_thunk with the context pointer of the Haze code that
+    // read the computed or wrote the cell that triggered it.
     export ref struct Thunk {
         run: () => cptr;
     }
 
-    // hzstd_computed_entry_t: runs a Thunk under the context C hands over
-    // (C401, C402). Not exported: it takes any pointer for a Thunk, so only
-    // _computedNode below names it.
-    extern C fn __hz_rx_run_thunk(ctx: Context, thunk: cptr): cptr {
+    // hzstd_computed_entry_t: runs a Thunk. An `extern C` function defined in
+    // Haze, so it takes the context C hands over as its first C parameter
+    // (C401) and has `context` like every Haze function (C402): the thunk runs
+    // under the context of the code that read or wrote. Not exported: it takes
+    // any pointer for a Thunk, so only _computedNode below names it.
+    extern C fn __hz_rx_run_thunk(thunk: cptr): cptr {
         let box = do unsafe {
             let b: Thunk = uninitialized;
             __c__("b = thunk;");
             b
         };
-        return Context.init(ctx, () => box.run());
+        return box.run();
     }
 
     // The C node of a computed whose value `body` computes, with the

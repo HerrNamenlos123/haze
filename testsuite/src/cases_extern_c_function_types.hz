@@ -3,12 +3,17 @@
 //
 // A Haze function always takes a context, whether it is called by name,
 // through a `->` value or through a `=>` closure. `extern C (params) -> R` is
-// the only function type without one: what C can call. `extern C` functions,
-// with or without a body, have that type, so `typeof(externCFn)` is a C
-// function pointer type. The two kinds never convert into each other, and the
-// marker is never added automatically. A function becomes a `cptr` only with
-// an explicit `as cptr`; a `cptr` never becomes a function (the escape hatch
-// is inline C).
+// the only function type without one: a C function. An `extern C` function
+// declared without a body (implemented in C) has that type, so
+// `typeof(cFn)` is a C function pointer type. An `extern C` function with a
+// Haze body is a Haze function with a C name: it takes the context first,
+// which C passes (C401, C402), so its type is a Haze function type. The two
+// kinds never convert into each other, and the marker is never added
+// automatically. A function becomes a `cptr` only with an explicit `as cptr`;
+// a `cptr` never becomes a function (the escape hatch is inline C).
+//
+// The C functions here are defined in C by a top-level `__c__` and declared
+// without a body.
 //
 // Written from the contract before the implementation and shown to fail
 // without it. Do not weaken a case to make an implementation pass.
@@ -20,7 +25,7 @@ namespace cases_extern_c_function_types {
     export fn register(s: mut testsuite.Suite) {
 
         s.run(
-            "extern C function types: values called from Haze and C, every position, typeof, as cptr, legal extern C bodies",
+            "extern C function types: values called from Haze and C, every position, typeof, as cptr, extern C bodies",
             """
 ref struct Checks {
     checks: int = 0;
@@ -35,28 +40,31 @@ ref struct Checks {
     }
 }
 
-fn dummyOf(c: Context): int {
+// Observed without allocating: a raw integer kept in a field of the settings.
+fn heldOf(c: Context): int {
     let copy = c;
     let v = 0;
-    do unsafe { __c__("v = (hzstd_int_t)(intptr_t)copy.dummy;"); };
+    do unsafe { __c__("v = copy.userBox2.fingerprint;"); };
     return v;
 }
 
-fn withDummy(c: Context, n: int): Context {
+fn withHeld(c: Context, n: int): Context {
     let copy = c;
-    do unsafe { __c__("copy.dummy = (void *)(intptr_t)n;"); };
+    do unsafe { __c__("copy.userBox2.fingerprint = n;"); };
     return copy;
 }
 
-fn dummy(): int { return dummyOf(context); }
-fn setDummy(n: int) { context = withDummy(context, n); }
+fn held(): int { return heldOf(context); }
+fn setHeld(n: int) { context = withHeld(context, n); }
 
 // ── functions of both kinds ─────────────────────────────────────────────────
-fn hazeTimes2(x: int): int { return x * 2 + dummy(); }
-extern C fn twice(x: int): int { return x * 2; }
-extern C fn thrice(x: int): int { return x * 3; }
-extern C fn enterWith(ctx: Context, x: int): int {
-    return Context.init(ctx, () => { return dummy() + x; });
+fn hazeTimes2(x: int): int { return x * 2 + held(); }
+__c__("hzstd_int_t twice(hzstd_int_t x) { return x * 2; } hzstd_int_t thrice(hzstd_int_t x) { return x * 3; }");
+extern C fn twice(x: int): int :: final;
+extern C fn thrice(x: int): int :: final;
+// A Haze function with a C name: C passes the context (C401).
+extern C fn enterWith(x: int): int {
+    return held() + x;
 }
 
 // `extern C (...) -> R` in every position a function type can take.
@@ -79,36 +87,20 @@ fn pick(third: bool): extern C (x: int) -> int {
 extern C type HazeAlias = (x: int) -> int;
 extern C fn storesHaze(f: (x: int) -> int): cptr { return f as cptr; }
 
-// Everything that needs no context is allowed in an extern C body.
-struct Pt { x: int = 0; y: int = 0; }
-extern C noemit fn labs(x: int): int :: final;
-extern C fn plainC(a: int, b: int): int { return a * 10 + b; }
-extern C fn legalBody(ctx: Context, f: extern C (a: int, b: int) -> int, n: int): int {
-    let p = Pt { x: n, y: 2 };
-    let sum = p.x * 3 + p.y - 1;
-    let viaValue = f(sum, 1);
-    let direct = plainC(viaValue, 0);
-    let lib = labs(-3);
-    let fresh = Context();
-    let items: []int = [1, 2, 3];
-    let inner = Context.init(ctx, () => { return dummy() + items.length; });
-    let other = Context.init(fresh, () => { return dummy(); });
-    return direct + lib + inner + other;
-}
 
 fn main(): int {
     let t = Checks {};
-    setDummy(9);
+    setHeld(9);
 
     // A `->` value is a Haze function: called from Haze it gets the caller's context.
     let hv: (x: int) -> int = hazeTimes2;
     t.check("a -> value receives the caller's context", hv(1) == 11);
     let underClone = context.clone(() => {
-        setDummy(20);
+        setHeld(20);
         let inner: (x: int) -> int = hazeTimes2;
         return inner(1);
     });
-    t.check("a -> value inside a clone receives the clone's", underClone == 22 && dummy() == 9);
+    t.check("a -> value inside a clone receives the clone's", underClone == 22 && held() == 9);
 
     // An `extern C` value: no context, callable from Haze and from C.
     let cv: extern C (x: int) -> int = twice;
@@ -116,12 +108,17 @@ fn main(): int {
     let fromC = 0;
     do unsafe { __c__("fromC = cv(5);"); };
     t.check("an extern C value called from C", fromC == 10);
-    let ev: extern C (ctx: Context, x: int) -> int = enterWith;
-    t.check("an extern C value taking a context explicitly", ev(withDummy(context, 30), 1) == 31 && dummy() == 9);
-    let evC = 0;
-    let passed = withDummy(context, 40);
-    do unsafe { __c__("evC = ev(passed, 2);"); };
-    t.check("the same, called from C", evC == 42 && dummy() == 9);
+    // An `extern C` function with a Haze body is a Haze function type.
+    let ev: (x: int) -> int = enterWith;
+    t.check("an extern C function with a body, as a -> value, gets the caller's context", context.clone(() => { setHeld(30); return ev(1); }) == 31 && held() == 9);
+    let evC = context.clone(() => {
+        setHeld(40);
+        let p = sys.contextPtr();
+        let r = 0;
+        do unsafe { __c__("r = enterWith((hzstd_context_t *)p, 2);"); };
+        return r;
+    });
+    t.check("the same, called from C with the context pointer", evC == 42 && held() == 9);
 
     // Positions: parameter, alias, typeof, generic, return, field, union.
     t.check("parameter", applyC(thrice, 2) == 6);
@@ -164,8 +161,6 @@ fn main(): int {
     do unsafe { __c__("ptrsOk = p1 != NULL && p2 == (void *)twice && p3 != NULL && p4 == (void *)twice;"); };
     t.check("f as cptr", ptrsOk);
 
-    t.check("everything that needs no context, in an extern C body", legalBody(withDummy(Context(), 50), plainC, 4) == 1366 && dummy() == 9);
-
     if t.failures > 0 {
         fmt.println(f"{t.failures} of {t.checks} checks FAILED");
         return 1;
@@ -174,7 +169,7 @@ fn main(): int {
     return 0;
 }
 """,
-            "all 19 checks passed");
+            "all 18 checks passed");
 
         // Export.ts re-serialises signatures, fields, aliases and generic bodies into
         // the module interface; a dropped marker turns the type into a Haze one.
@@ -193,7 +188,8 @@ export fn applyBox(b: CBox, x: int): int { return b.cb(x); }
 export fn applyGeneric<T>(f: extern C (x: T) -> T, x: T): T { return f(x); }
 export fn applyHaze(f: (x: int) -> int, x: int): int { return f(x); }
 
-export extern C fn libTwice(x: int): int { return x * 2; }
+__c__("hzstd_int_t libTwice(hzstd_int_t x) { return x * 2; }");
+export extern C fn libTwice(x: int): int :: final;
 export fn pick(): extern C (x: int) -> int { return libTwice; }
 
 export struct Caller {
@@ -206,7 +202,8 @@ export struct Caller {
             """
 import cfnlib;
 
-extern C fn plus1(x: int): int { return x + 1; }
+__c__("hzstd_int_t plus1(hzstd_int_t x) { return x + 1; }");
+extern C fn plus1(x: int): int :: final;
 fn hazeTimes3(x: int): int { return x * 3; }
 
 fn main(): int {
@@ -296,7 +293,8 @@ fn main(): int {
         s.compileFails(
             "extern C function types: an extern C function to cptr without as cptr",
             """
-extern C fn twice(x: int): int { return x * 2; }
+__c__("hzstd_int_t twice(hzstd_int_t x) { return x * 2; }");
+extern C fn twice(x: int): int :: final;
 
 fn takesPointer(p: cptr): int { return 0; }
 
@@ -313,7 +311,8 @@ fn main(): int {
             "extern C function types: a => closure never converts to cptr",
             """
 fn helper(): int { return 1; }
-extern C fn twice(x: int): int { return x * 2; }
+__c__("hzstd_int_t twice(hzstd_int_t x) { return x * 2; }");
+extern C fn twice(x: int): int :: final;
 
 fn main(): int {
     let viaValue: extern C (x: int) -> int = twice;
@@ -381,10 +380,90 @@ fn main(): int {
         s.compileFails(
             "extern C function types: an extern C function where a -> type is expected",
             """
-extern C fn twice(x: int): int { return x * 2; }
+__c__("hzstd_int_t twice(hzstd_int_t x) { return x * 2; }");
+extern C fn twice(x: int): int :: final;
 
 fn main(): int {
     let hv: (x: int) -> int = twice; // <- an extern C function takes no context
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.NoSuitableConversionFound)]);
+
+        // `:: context` declares an `extern C` function without a Haze body that
+        // takes the context first: an entry implemented in C (module interfaces
+        // write it for `extern C` functions with a Haze body). Called from Haze,
+        // it gets the caller's context.
+        s.run(
+            "extern C function types: an extern C declaration with :: context gets the caller's context",
+            """
+__c__("hzstd_int_t cEntry(hzstd_context_t *ctx, hzstd_int_t n) { return n + (hzstd_int_t)ctx->thread->id + ctx->settings.userBox2.fingerprint; }");
+extern C fn cEntry(n: int): int :: final, context;
+
+fn main(): int {
+    let viaClone = context.clone(() => {
+        let p = sys.contextPtr();
+        do unsafe { __c__("((hzstd_context_t *)p)->settings.userBox2.fingerprint = 100;"); };
+        return cEntry(40);
+    });
+    let asValue: (n: int) -> int = cEntry;
+    fmt.println(f"{cEntry(41)} {viaClone} {asValue(1)}");
+    return 0;
+}
+""",
+            "42 141 2");
+
+        s.compileFails(
+            "extern C function types: :: context on a Haze function",
+            """
+fn f(): int :: context { return 1; }
+fn main(): int { return f(); }
+""",
+            [testsuite.exactCount(errorcodes.Code.ContextRequirementOutsideExternCDeclaration, 1)]);
+
+        s.compileFails(
+            "extern C function types: :: context on an extern C function with a body",
+            """
+extern C fn f(): int :: context { return 1; } // <- a Haze body takes the context already
+fn main(): int { return f(); }
+""",
+            [testsuite.exactCount(errorcodes.Code.ContextRequirementOutsideExternCDeclaration, 1)]);
+
+        s.compileFails(
+            "extern C function types: :: context on a lambda",
+            """
+fn main(): int {
+    let l = (): int :: context => { return 1; };
+    return l();
+}
+""",
+            [testsuite.exactCount(errorcodes.Code.ContextRequirementOutsideExternCDeclaration, 1)]);
+
+        s.compileFails(
+            "extern C function types: :: context on a function type",
+            """
+type F = (x: int) -> int :: context;
+fn main(): int { return 0; }
+""",
+            [testsuite.exactCount(errorcodes.Code.ContextRequirementOutsideExternCDeclaration, 1)]);
+
+        s.compileFails(
+            "extern C function types: :: context on a closure type",
+            """
+type G = (x: int) => int :: context;
+fn main(): int { return 0; }
+""",
+            [testsuite.exactCount(errorcodes.Code.ContextRequirementOutsideExternCDeclaration, 1)]);
+
+        // An `extern C` function with a Haze body takes the context first: it is a
+        // Haze function type, not a C one (C401, C402).
+        s.compileFails(
+            "extern C function types: an extern C function with a body where an extern C type is expected",
+            """
+extern C fn withBody(x: int): int { return x * 2; }
+
+fn main(): int {
+    let cv: extern C (x: int) -> int = withBody; // <- it takes a context first
     return 0;
 }
 """,
@@ -394,7 +473,8 @@ fn main(): int {
             "extern C function types: an extern C type alias of a plain -> is a Haze type",
             """
 extern C type HazeCallback = (x: int) -> int;
-extern C fn twice(x: int): int { return x * 2; }
+__c__("hzstd_int_t twice(hzstd_int_t x) { return x * 2; }");
+extern C fn twice(x: int): int :: final;
 
 fn main(): int {
     let cb: HazeCallback = twice; // <- the marker is never added automatically

@@ -13,6 +13,7 @@
 #include <gc/gc.h>
 
 #include <stdarg.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1028,4 +1029,73 @@ void hzstd_stackref_unwind_to(size_t depth)
 _Noreturn void hzstd_panic_dead_stackref(void)
 {
   hzstd_panic_fmt_n(1, "use of a dead stackref: the scope that owned the referenced value has already exited");
+}
+
+// ── The context: threads, tasks, creating one from C ─────────────────────────
+//
+// Axiom C468-C477, C500-C510, C567-C569. The types are in hzstd_types.h.
+// One thread runs one task for now: the main thread's structs are static,
+// set up by hzstd_initialize_main_thread.
+
+static hzstd_task_t g_main_task;
+static hzstd_thread_t g_main_thread;
+
+// Ids of the threads Haze starts later; the main thread is 1. Never reused.
+static _Atomic uint64_t g_next_thread_id = 2;
+
+uint64_t hzstd_next_thread_id(void)
+{
+  return atomic_fetch_add(&g_next_thread_id, 1);
+}
+
+// The thread's own struct, NULL on a thread Haze does not manage. Read only by
+// hzstd_context_for_current_thread: the generated code never looks it up (C502).
+static _Thread_local hzstd_thread_t *hzstd_current_thread = NULL;
+
+void hzstd_initialize_main_thread(void)
+{
+  g_main_thread = (hzstd_thread_t) { .id = 1, .current_task = &g_main_task };
+  g_main_task = (hzstd_task_t) { .thread = &g_main_thread };
+  hzstd_current_thread = &g_main_thread;
+}
+
+static hzstd_none_t hzstd_log_to_stderr(hzstd_context_t *ctx, void *state, hzstd_str_t text)
+{
+  fwrite(text.data, 1, text.length, stderr);
+  fputc('\n', stderr);
+  return (hzstd_none_t) { 0 };
+}
+
+hzstd_context_settings_t hzstd_context_settings_default(void)
+{
+  return (hzstd_context_settings_t) {
+    .allocator = hzstd_make_heap_allocator(),
+    .logger = { .write = hzstd_log_to_stderr, .state = NULL },
+    .userBox1 = { 0 },
+    .userBox2 = { 0 },
+  };
+}
+
+hzstd_context_t hzstd_context_for_current_thread(void)
+{
+  hzstd_thread_t *thread = hzstd_current_thread;
+  if (thread == NULL) {
+    hzstd_panic("a Haze context was created on a thread Haze does not manage");
+  }
+  return (hzstd_context_t) {
+    .task = thread->current_task,
+    .thread = thread,
+    .settings = hzstd_context_settings_default(),
+  };
+}
+
+hzstd_int_t hzstd_thread_id(void *ctx)
+{
+  return (hzstd_int_t)((hzstd_context_t *)ctx)->thread->id;
+}
+
+void hzstd_log(void *ctx, hzstd_str_t text)
+{
+  hzstd_context_t *context = (hzstd_context_t *)ctx;
+  context->settings.logger.write(context, context->settings.logger.state, text);
 }

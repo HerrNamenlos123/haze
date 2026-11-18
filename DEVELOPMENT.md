@@ -298,92 +298,91 @@ Tests: `testsuite/src/cases_union_member_access.hz`.
 
 ## The hidden context (calling convention)
 
-> **Being replaced.** This section describes the code as built. The design in Axiom changed on
-> 2026-11-16: every extern C function defined in Haze takes the context as its first parameter
-> (C401, C402), `Context.init` goes, the context is split into hidden runtime data and settings
-> (C468 to C477, C568, C569), and `sys.threadId()` / `sys.contextPtr()` read the runtime data (C477,
-> C509). The target design and API: `docs/async-runtime.md`, sections 2 and 3. Implement new work
-> against those, not against the rules below.
-
 Every Haze function receives its caller's context as its first C parameter
-(Axiom C209, C390-C406). Haze names it `context`, a value of type `Context`
-(`stdlib/core/src/context.hz`); in C it is `hzstd_context_t`
-(`hzstd_types.h`), and the generated code passes a pointer to it.
+(Axiom C209, C390 to C406, C468 to C477, C500 to C510, C567 to C569; the API
+contract is `docs/async-runtime.md` section 3). In C the context is
+`hzstd_context_t` (`hzstd_types.h`): hidden **runtime data** (`task`,
+`thread`) and the **settings** (`hzstd_context_settings_t`: allocator, logger,
+two user boxes; the same layout in every program). Haze names the settings
+`context`, a value of type `Context` (`stdlib/core/src/context.hz`, an opaque
+extern C struct: only `Context()` or a copy makes one). `Logger` and
+`Allocator` are opaque too, and `json.parse` and `traverse.read` refuse all
+three: a zero one would hold NULL function pointers, and every context is
+valid (C399).
 
 ```
 Haze function        R f(hzstd_context_t *__hz_ctx, [this], params...)
+extern C, Haze body  R f(hzstd_context_t *__hz_ctx, params...)   (C name, C401)
+C function           R f(params...)              (`extern C` without a body)
 closure trampoline   R t(hzstd_context_t *__hz_ctx, void *__hz_env, params...)
-extern C function    R f(params...)                 (with or without a body: unchanged)
-Haze fn typedef      R (*)(hzstd_context_t *, params...)      for `->` and the `fn` of a `=>` struct
+Haze fn typedef      R (*)(hzstd_context_t *, params...)      for `->` and `=>`
 extern C fn typedef  R (*)(params...)                         for `extern C (...) -> R`
-`context`            (*__hz_ctx)
+`context`            (*__hz_ctx).settings        (reads copy, writes go through)
 context.clone(b)     { <b>; hzstd_context_t __hz_ctxN = *__hz_ctx; b(&__hz_ctxN, env); }
-Context.init(v, b)   { hzstd_context_t __hz_ctxN = v; <b>;         b(&__hz_ctxN, env); }
-Context()            hzstd_context_default()        (a plain C call)
-main                 hzstd_context_t __hz_root; hzstd_context_init(&__hz_root); main(&__hz_root)
+Context()            hzstd_context_settings_default()
+main                 hzstd_context_t __hz_root = hzstd_context_for_current_thread();
 ```
 
-`<b>` is the evaluation of the body expression, in source order: `clone` copies
-the context after it (so `context.clone(make())` runs under what `make()`
-wrote), `init` copies its value before it.
-
-Mangled names do not change. Module trampolines (`__hz_modtramp_*`) forward
-`__hz_ctx`; the hot-reload tables stay `void *`.
+- Assigning, reading or cloning carries settings only, never the runtime data
+  (C474): `context = c` writes `(*__hz_ctx).settings`; `clone` copies the whole
+  struct, so the copy has the same task and thread.
+- An `extern C` function **with a Haze body** is a Haze function with a C name:
+  it takes the context first, which C must pass (C401), and has `context` like
+  every function (C402). Its type is a Haze function type. An `extern C`
+  function **without a body** is a C function (no context, C211); `:: context`
+  on such a declaration says it takes the context first after all (an entry
+  implemented in C; module interfaces write it for Haze-bodied ones, since the
+  interface has no bodies). `:: context` on any other function (one with a
+  body included), a lambda or a function type is H7233. Structs and enums take
+  no requirements at all (a syntax error in both parsers).
+- A default parameter value is evaluated by the caller, so `context` in it is
+  the caller's. A declaration without a body has a signature scope of its own
+  (`Collect.FunctionSymbol.signatureScope`) that holds only `context` for this.
+- C receives the context as a pointer, valid only during that call (C400), and
+  creates one for its thread with `hzstd_context_for_current_thread()` (C504),
+  which panics on a thread Haze does not manage (C505). Runtime entry points
+  that can run Haze code take `hzstd_context_t *ctx`; the generated code passes
+  `__hz_ctx`.
+- `sys.contextPtr()` hands the raw context to C (C509): the one place allowed
+  to name `__hz_ctx` in inline C. `sys.threadId()` reads the runtime data
+  (C477); `sys.log` writes through the context's logger; `sys.makeUserBox` /
+  `sys.userBoxValue` fill and read the two user boxes.
 
 Where it lives:
 
 - **Semantic.** `context` is an implicit variable
   (`EVariableContext.ContextReference`) that `defineContextVariable`
-  (`src/SymbolCollection/SymbolCollection.ts`) puts into every Haze function,
-  `=>` lambda and `->` literal, like `this`; so a lambda never captures the
-  outer one and a closure runs under its caller's context (C404). `extern C`
-  functions get none. Function types carry `FunctionDatatypeDef.externC`
-  (interned and mangled separately: flag `c` in the requires block), and a
-  call passes a context exactly when its callee's function type is a Haze one.
-  `context.clone` / `Context.init` become `ContextScopeExpr`
-  (`tryContextIntrinsicCall` in `src/Semantic/Elaborate.ts`).
+  (`src/SymbolCollection/SymbolCollection.ts`) puts into every function with a
+  body, `=>` lambda and `->` literal, like `this`; so a lambda never captures the
+  outer one and a closure runs under its caller's context (C404). Function
+  types carry `FunctionDatatypeDef.externC`, decided by `isCFunction`
+  (`src/Semantic/Elaborate.ts`); a call passes a context exactly when its
+  callee's function type is a Haze one. `context.clone` becomes a
+  `ContextScopeExpr` (`tryContextIntrinsicCall`).
 - **Lower.** `Lowered.ExprCallExpr.context` is the pointer the callee gets
-  (null for `extern C` callees and runtime intrinsics); every call goes through
-  `lowerCallOf`. Everything that needs a context asks `requireContext`, which
-  throws an internal error inside an `extern C` body (H7220 rejects that
-  first).
+  (null for C callees and runtime intrinsics); every call goes through
+  `lowerCallOf`. Everything that needs a context asks `requireContext`.
 - **Codegen.** `functionSignatureParts` adds the parameter for Haze function
   types; the generated `main` creates the root context.
 
 Rules for C and inline C:
 
-- C only ever receives a context **by value** (C400) and never passes or
-  keeps the address of one (only the generated code takes addresses, of its
-  own locals, for one call). Haze passes it like any argument:
-  `someCFunction(context)`. Nothing is ever passed implicitly, even to a C
-  function whose first parameter is a `Context`.
-- C enters Haze through an `extern C` function with a Haze body that calls
-  `Context.init(ctx, () => { ... })`; inside the lambda everything works.
-  The `extern C` body itself may only do what needs no context (H7220):
-  `o?.field` is fine, `o?.m()` is a call.
-- A function type C calls is spelled `extern C (...) -> R`, also on the right
-  of `extern C type X = ...` (the marker is never added automatically).
-  Haze and `extern C` function types never convert into each other; a
-  function becomes a `cptr` only with an explicit `as cptr` (H7224), and a
-  `cptr` never becomes a function (H7223).
-- Never name `__hz_ctx` in inline C. A closure handed to C is boxed and run by
-  an `extern C` entry: the reactive core is the model (`rx.Thunk` and
-  `rx.__hz_rx_run_thunk` in `reactive.hz`; every hzstd entry point that can
-  run Haze code takes `hzstd_context_t ctx` first). The stdlib's Clay, SDL,
-  wgpu and single_instance paths follow the same rule.
+- Never name `__hz_ctx` in inline C (except `sys.contextPtr`). A closure handed
+  to C is boxed and run by an `extern C` function with a Haze body: the reactive
+  core is the model (`rx.Thunk` and `rx.__hz_rx_run_thunk` in `reactive.hz`).
 - Such an entry takes any `cptr` for its box, so it is never exported: a
   generic reaches it through a non-generic exported function that takes only
-  typed values (`rx._computedNode` takes `rx.Thunk`s,
-  `single_instance._setParser` a `->` function).
-- A reactive write runs the schedulers it triggers under its own context. A
-  write made inside one of their callbacks is delivered by the outer write's
-  loop, under the outer write's context.
+  typed values (`rx._computedNode` takes `rx.Thunk`s).
+- Haze and `extern C` function types never convert into each other; a
+  function becomes a `cptr` only with `as cptr` (H7224), and a `cptr` never
+  becomes a function (H7223).
+- A reactive write runs the schedulers it triggers under its own context.
 
-Errors: H7219 `context` in an `extern C` function, H7220 something needing a
-context in an `extern C` body, H7221 `let stackref r = context`, H7222 a
-declaration named `context`, H7223 / H7224 the `cptr` conversions.
-Tests: `testsuite/src/cases_context.hz`, `cases_extern_c_function_types.hz`,
-`cases_context_review.hz`.
+Errors: H7221 `let stackref r = context`, H7222 a declaration named
+`context`, H7223 / H7224 the `cptr` conversions, H7233 `:: context` outside a
+body-less `extern C` declaration. (H7219 and H7220 are retired: every function with a body
+has a context.) Tests: `testsuite/src/cases_context.hz`,
+`cases_context_review.hz`, `cases_extern_c_function_types.hz`.
 
 ## Module System Architecture
 
@@ -424,8 +423,10 @@ when a library it links changed. `scripts/incremental-build.test.ts` pins all of
 
 `./scripts/run-tests.sh` (`bun run test`) is the gate. It builds `dist/haze`, then runs, in order:
 the parser bootstrap check, the parser tests (`src/Parser/Parser.test.ts`), the incremental-build
-and `haze.toml` checks, parser equivalence over every `.hz` file in the tree, the headless stdlib
-path tests (`tests/stdlib-paths/headless`), and the compiler test suite (`testsuite/`).
+and `haze.toml` checks, parser equivalence over every `.hz` file in the tree, and the compiler
+test suite (`testsuite/`). On branch async-runtime the headless stdlib path tests
+(`tests/stdlib-paths/headless`) are out of the gate until SDL and ui_layout are migrated to the
+new context and `mut` rules (`docs/async-decisions.md`, S0-16).
 
 `dist/haze` keys its build cache on its version alone, so before its first `dist/haze` build the
 script deletes what an earlier run built for the gate: the cases (`__haze__/case_*`) and the
@@ -435,10 +436,9 @@ stay). Every run compiles everything the gate builds with the compiler under tes
 warnings are reported again.
 
 The stdlib path tests check that the Haze code a C path reaches runs under the context of the
-Haze code that drove the C call (see "The hidden context"). The gate runs the headless ones: SDL
-event dispatch (the offscreen video driver, never a window on a display) and Clay's children,
-`measureText` and render callbacks. The rest need a GPU adapter or a second process and are
-opt-in: `scripts/run-stdlib-path-tests.sh` builds `tests/stdlib-paths/optin` with the dev compiler
+Haze code that drove the C call (see "The hidden context"). The headless ones: SDL event dispatch
+(the offscreen video driver, never a window on a display) and Clay's children, `measureText` and
+render callbacks. The rest need a GPU adapter or a second process and are opt-in: `scripts/run-stdlib-path-tests.sh` builds `tests/stdlib-paths/optin` with the dev compiler
 and runs the wgpu request callbacks, the GL loader (glad through a window's `getProcAddress`,
 via the offscreen driver's EGL) and single_instance (the server thread's parse, then `onActivate`
 under the poller's context, between two processes). Run it after changing a C <-> Haze path in

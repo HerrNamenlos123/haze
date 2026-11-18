@@ -33,14 +33,14 @@
 
 void* hzstd_reactive_cell_read(hzstd_reactive_cell_t* cell);
 // Notifies the cell's dependents that its slot was just written.
-void hzstd_reactive_cell_write(hzstd_context_t ctx, hzstd_reactive_cell_t* cell);
+void hzstd_reactive_cell_write(hzstd_context_t *ctx, hzstd_reactive_cell_t* cell);
 // One allocation: the cell with its slot, holding a copy of the `size`
 // bytes at `initial`.
 hzstd_reactive_cell_t* hzstd_reactive_cell_create(const void* initial, size_t size);
 
 hzstd_computed_node_t* hzstd_computed_create(hzstd_computed_entry_t entry, void* thunk);
-void* hzstd_computed_read(hzstd_context_t ctx, hzstd_computed_node_t* c);
-void* hzstd_computed_get(hzstd_context_t ctx, hzstd_computed_node_t* comp);
+void* hzstd_computed_read(hzstd_context_t *ctx, hzstd_computed_node_t* c);
+void* hzstd_computed_get(hzstd_context_t *ctx, hzstd_computed_node_t* comp);
 
 // Turns a computed into an effect. The graph itself stays pull-based: a
 // write still only marks dependents dirty. What a scheduler adds is a

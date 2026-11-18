@@ -622,6 +622,11 @@ export function ExportSymbol(
       if (functype.requires.noreturn) {
         file.write(", noreturn");
       }
+      // An `extern C` function with a Haze body is declared here without
+      // one: `context` keeps it a function that takes the context (C401).
+      if (symbol.extern === EExternLanguage.Extern_C && !functype.externC) {
+        file.write(", context");
+      }
       if (functype.requires.noreturnIf) {
         file.write(
           `, noreturn_if(${printCollectedExpr(sr.cc, functype.requires.noreturnIf.expr)})`

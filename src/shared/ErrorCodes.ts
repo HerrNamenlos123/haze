@@ -279,8 +279,6 @@ export enum HazeErrorCode {
   UnionMemberNotCallable = 7216, // Calling a member across a union: in some variant it is a field that cannot be called
   FieldDoesNotHaveAttributeNamed = 7217, // Field '' of type does not have an attribute named ''
   ThisCapturedByEscapingClosure = 7218, // A closure that can outlive the call captures 'this' of a plain method; declare the method 'stackref fn'
-  ContextInExternCFunction = 7219, // 'context' does not exist in an 'extern C' function; run Haze code under one with Context.init
-  ContextNeededInExternCFunction = 7220, // This needs a context, which an 'extern C' function does not have; use Context.init
   ContextReferenceFormed = 7221, // No reference to 'context' can be formed
   DeclarationNamedContext = 7222, // 'context' names the current context and cannot be declared
   CptrToFunction = 7223, // A 'cptr' cannot be converted to a function type
@@ -290,6 +288,7 @@ export enum HazeErrorCode {
   PrivateMemberAccess = 7230, // Member '' of '' is private: only code inside the struct can reach it
   StorageClassNotAvailable = 7231, // This storage class is not available yet (see the message)
   StorageClassCombination = 7232, // 'tasklocal' / 'global' cannot be combined with ''
+  ContextRequirementOutsideExternCDeclaration = 7233, // ':: context' is only for an 'extern C' function without a body
   ThisDistroPackageManagerNotSupportedYetPlease = 8001, // This Distro/Package Manager is not supported yet, please report
   DeadCodeDetectedAndStripped = 9001, // Dead code detected and stripped
   EmbeddedFileSizeMBExceeds50MB = 9002, // Embedded file size ( MB) exceeds 50 MB:

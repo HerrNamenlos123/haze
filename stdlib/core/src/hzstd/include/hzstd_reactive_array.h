@@ -56,7 +56,7 @@ hzstd_reactive_array_create(hzstd_dynamic_array_t* data)
 // Like every write, it delivers the effects it triggers under `ctx`, the
 // writer's context (see hzstd_reactive.h); so does every mutation below.
 static inline void
-hzstd_reactive_array_mark_changed(hzstd_context_t ctx, hzstd_reactive_array_t* ra)
+hzstd_reactive_array_mark_changed(hzstd_context_t *ctx, hzstd_reactive_array_t* ra)
 {
   // Access the slot directly to avoid registering a spurious dependency.
   size_t* counter = (size_t*)(ra->version->value);
@@ -147,7 +147,7 @@ hzstd_reactive_array_read(hzstd_reactive_array_t* ra)
 // Reactive<T> cells (matching hzstd_reactive_array_read's contract above,
 // and what the compiler produces for e.g. `arr := [rx.reactive(1), ...]`).
 static inline hzstd_reactive_array_t*
-hzstd_reactive_array_write(hzstd_context_t ctx, hzstd_reactive_array_t* ra, hzstd_dynamic_array_t* newData)
+hzstd_reactive_array_write(hzstd_context_t *ctx, hzstd_reactive_array_t* ra, hzstd_dynamic_array_t* newData)
 {
   ra->data = newData;
   hzstd_reactive_array_mark_changed(ctx, ra);

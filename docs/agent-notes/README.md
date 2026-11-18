@@ -10,7 +10,7 @@ and against which commit it was verified; re-check a note against the code befor
 - [Value vs shared state](feedback_value_vs_shared_state.md) - never mix value fields and handles in one copied struct
 - [Zero allocation per frame](feedback_zero_allocation_rule.md) - standing requirement and coding rules
 - [Editor click vs drag](reference_editor_mouse_drag_detection.md) - detect drags in pixels; pass the font to measureText
-- [Array insert/remove and string loops](reference_haze_array_string_mutation.md) - in-place edits, narrow mut-subscript rule, quadratic concat
+- [Array insert/remove and string loops](reference_haze_array_string_mutation.md) - in-place edits, element mutability is part of the array type, quadratic concat
 - [No glyph fallback](reference_haze_ui_font_glyphs.md) - tofu for uncovered chars; tabs have no glyph
 - [stdlib/claude](project_claude_module.md) - Haze client for the Claude CLI; zero-alloc idle path; test suites
 - [Claude usage tracking](claude-usage-tracking.md) - 1-token probe, Claude Code's usage cache entry and its lock; contract in claude-account-switcher/usage
@@ -42,7 +42,7 @@ and against which commit it was verified; re-check a note against the code befor
 - [Shape page ownership](haze-notes-shape-page-ownership.md) - shape lives on the page of its bbox middle
 - [haze-notes UI](haze-notes-ui-architecture.md) - theme, components, flat FileTree, flat vault index, caches, background walk, tree scroll restore
 - [Headless UI testing](headless-ui-testing-technique.md) - real Clay layout without GPU
-- [Hidden context](hidden-context-implemented.md) - context keyword, clone/init, extern C ABI, error codes; as built, design superseded (see docs/async-runtime.md)
+- [Hidden context](hidden-context-implemented.md) - runtime data and settings, clone, extern C bodies take the context, `:: context`, sys.contextPtr; as built on branch async-runtime
 - [Hit geometry](hit-geometry-rules.md) - clipping and per-pass boxes for hit testing
 - [hzstd scratch C strings](hzstd-scratch-cstr.md) - HZSTD_SCRATCH_CSTR, errno views, spawn blocks
 - [hzui id spaces](hzui-component-id-spaces.md) - negative component ids, loop keys

@@ -562,20 +562,66 @@ typedef struct {
 
 // ── Context ──────────────────────────────────────────────────────────────────
 //
-// The hidden context (Axiom C209, C390-C406). Every Haze function receives the
-// current one as its first C parameter, `hzstd_context_t *__hz_ctx`, pointing
-// into a caller's stack frame; Haze names it `context` and sees a value of
-// type `Context` with no visible fields. Hand-written C (the runtime, FFI
-// files) receives a context only by value (C400), never passes or keeps the
-// address of one, and enters Haze through an `extern C` function that calls
-// `Context.init`. An address is only ever taken of a local, for one call:
-// `hzstd_context_default` fills its own through `hzstd_context_init`, and the
-// generated code passes `&__hz_root` (main) and `&__hz_ctxN` (clone, init) to
-// the function it calls. `dummy` is the one hidden field, a placeholder for
-// per-task state (C405); copies carry it along.
-typedef struct hzstd_context_t {
-  void *dummy;
-} hzstd_context_t;
+// The hidden context (Axiom C209, C390-C406, C468-C477, C567-C569). Every Haze
+// function receives the current one as its first C parameter,
+// `hzstd_context_t *__hz_ctx`, pointing into a caller's stack frame (so does an
+// `extern C` function defined in Haze, C401). It holds two things:
+//
+//  * the runtime data (C469): the current task and the thread it runs on.
+//    Hidden from Haze, never assigned, only derived (C475, C476), and read
+//    through global functions such as `sys.threadId()` (C477);
+//  * the settings (C470, C568): allocator, logger and two user boxes, the same
+//    layout in every program. Haze's `context` is exactly this struct (C473):
+//    assigning, reading and cloning it carries settings only, never identity
+//    (C474).
+//
+// C that is handed a context (C401) uses it only during that call and never
+// keeps its address (C400). C creates one for the current thread with
+// hzstd_context_for_current_thread() (C504), which panics on a thread Haze does
+// not manage (C505).
+typedef struct hzstd_context_t hzstd_context_t;
+typedef struct hzstd_thread_t hzstd_thread_t;
+typedef struct hzstd_task_t hzstd_task_t;
+
+// A logger (C470, C484): `write` is called with the context of the code that
+// logs, and the logger's own `state`. It returns hzstd_none_t because that is
+// the C type of an `extern C` function defined in Haze that returns nothing:
+// such a function is the logger's `write` as it is, without a cast.
+typedef struct hzstd_logger_t {
+  hzstd_none_t (*write)(hzstd_context_t *ctx, void *state, hzstd_str_t text);
+  void *state;
+} hzstd_logger_t;
+
+// A user box (C569): one type-erased value, empty when `value` is NULL.
+typedef struct hzstd_user_box_t {
+  void *value;
+  hzstd_int_t fingerprint;
+  hzstd_str_t type_name;
+} hzstd_user_box_t;
+
+// The settings (C470, C568). Field names are the Haze field names.
+typedef struct hzstd_context_settings_t {
+  hzstd_allocator_t allocator;
+  hzstd_logger_t logger;
+  hzstd_user_box_t userBox1;
+  hzstd_user_box_t userBox2;
+} hzstd_context_settings_t;
+
+struct hzstd_context_t {
+  hzstd_task_t *task;
+  hzstd_thread_t *thread;
+  hzstd_context_settings_t settings;
+};
+
+// Runtime structures; the task's state follows in the later stages. One thread
+// runs one task for now.
+struct hzstd_thread_t {
+  uint64_t id; // process-unique, never reused; the main thread is 1
+  hzstd_task_t *current_task; // the task running on this thread
+};
+struct hzstd_task_t {
+  hzstd_thread_t *thread;
+};
 
 typedef struct {
   uint64_t *gens;  // index-stable across growth (references hold an index, not an address)
@@ -805,11 +851,11 @@ typedef struct {
 
 // How C runs a Haze closure the reactive core was handed (a computed's body,
 // an effect's scheduler): `entry` is an `extern C` function defined in Haze
-// (reactive.hz) that runs the closure boxed in `thunk` under `ctx`, through
-// Context.init. C never calls a Haze closure itself (Axiom C211, C402): it
-// gets the context by value from the Haze code that read or wrote, and hands
-// it on.
-typedef void *(*hzstd_computed_entry_t)(hzstd_context_t ctx, void *thunk);
+// (reactive.hz) that runs the closure boxed in `thunk`. C never calls a Haze
+// closure itself (Axiom C211, C402): it gets the context pointer from the Haze
+// code that read or wrote, and passes it to the entry (C401). The pointer is
+// valid only during that call (C400).
+typedef void *(*hzstd_computed_entry_t)(hzstd_context_t *ctx, void *thunk);
 
 typedef struct hzstd_dep_edge_t hzstd_dep_edge_t;
 typedef struct hzstd_cell_dep_t hzstd_cell_dep_t;

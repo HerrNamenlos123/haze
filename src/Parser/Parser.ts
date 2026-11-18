@@ -700,6 +700,7 @@ class ASTBuilder extends HazeParserListener {
       noreturn: false,
       noreturnIf: null,
       pure: false,
+      context: false,
     };
   }
 
@@ -1502,6 +1503,22 @@ class ASTBuilder extends HazeParserListener {
     } satisfies ASTExprAsFuncbody);
   };
 
+  /** The grammar allows a requires block after a struct's or enum's name, but
+   * requirements are a function's: nothing would read them there. The native
+   * parser reports the same (parser.hz, rejectRequiresBlock). */
+  private rejectTypeRequirements(
+    block: RequiresBlockContext | null,
+    what: string
+  ) {
+    if (block) {
+      throw new CompilerError(
+        `${what} takes no requirements`,
+        this.loc(block),
+        HazeErrorCode.SyntaxError
+      );
+    }
+  }
+
   exitRequiresBlock = (ctx: RequiresBlockContext) => {
     const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
@@ -1512,6 +1529,7 @@ class ASTBuilder extends HazeParserListener {
       final: false,
       pure: false,
       noreturn: false,
+      context: false,
       noreturnIf: null,
     };
 
@@ -1522,6 +1540,15 @@ class ASTBuilder extends HazeParserListener {
         block.pure = true;
       } else if (part.NORETURN()) {
         block.noreturn = true;
+      } else if (part._contextFlag) {
+        if (part._contextFlag.text !== "context") {
+          throw new CompilerError(
+            `'${part._contextFlag.text}' is not a function requirement`,
+            this.loc(part),
+            HazeErrorCode.SyntaxError
+          );
+        }
+        block.context = true;
       } else if (part.NORETURNIF()) {
         if (i >= produced.length) {
           throw new InternalError("RequiresBlock stack underflow");
@@ -1975,6 +2002,7 @@ class ASTBuilder extends HazeParserListener {
   exitEnumDefinition = (ctx: EnumDefinitionContext) => {
     const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
+    this.rejectTypeRequirements(ctx.requiresBlock(), "an enum");
 
     // Every produced child must be an enum value
     for (const v of produced) {
@@ -2016,6 +2044,7 @@ class ASTBuilder extends HazeParserListener {
   exitStructDefinition = (ctx: StructDefinitionContext) => {
     const start = this.getMark(ctx);
     const produced = this.stack.splice(start);
+    this.rejectTypeRequirements(ctx.requiresBlock(), "a struct");
 
     let i = 0;
     let annotations: ASTMetaAnnotationItem[] = [];

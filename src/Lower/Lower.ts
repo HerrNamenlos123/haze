@@ -1,5 +1,10 @@
+import { Collect } from "../SymbolCollection/SymbolCollection";
 import { Conversion } from "../Semantic/Conversion";
-import { makePrimitiveAvailable, makeVoidType } from "../Semantic/Elaborate";
+import {
+  isCFunction,
+  makePrimitiveAvailable,
+  makeVoidType,
+} from "../Semantic/Elaborate";
 import {
   makeRawFunctionDatatypeAvailable,
   makeTypeUse,
@@ -159,11 +164,11 @@ export namespace Lowered {
       { loweredType: Lowered.TypeUseId; suppressHoisting: boolean }
     >;
 
-    // The function whose body is being lowered, for the context it has: a
-    // Haze function or lambda has its `__hz_ctx` parameter, an `extern C`
-    // function has none (Axiom C402), and neither has anything outside a
-    // function body (global initializers, enum values). null outside one.
-    currentFunction: { name: string; hasContext: boolean } | null;
+    // The function whose body is being lowered: every function with a body,
+    // `extern C` ones included, has its `__hz_ctx` parameter (Axiom C209,
+    // C401, C402). Code outside a function body (global initializers, enum
+    // values) has none. null outside one.
+    currentFunction: { name: string } | null;
     // The C types `hzstd_context_t` and `hzstd_context_t *` (hzstd_types.h),
     // made on first use. Never emitted: hzstd declares them.
     contextTypes: {
@@ -982,29 +987,26 @@ function contextTypes(lr: Lowered.Module) {
   return lr.contextTypes;
 }
 
-// Throws unless the function being lowered has a context; for generated C
-// that names `__hz_ctx` itself. See currentContextPointer.
+// Throws unless code is being lowered inside a function body, the only place
+// with a context; for generated C that names `__hz_ctx` itself. See
+// currentContextPointer.
 function requireContext(
   lr: Lowered.Module,
   what: string,
   sourceloc: SourceLoc
 ) {
-  const f = lr.currentFunction;
-  if (!f || !f.hasContext) {
+  if (!lr.currentFunction) {
     throw new InternalError(
-      `${what} needs a context, but ${
-        f ? `the 'extern C' function '${f.name}'` : "code outside a function"
-      } has none; this should have been rejected as H${HazeErrorCode.ContextNeededInExternCFunction}`,
+      `${what} needs a context, but code outside a function has none`,
       sourceloc ?? undefined
     );
   }
 }
 
 // The `hzstd_context_t *` of the function being lowered: its own `__hz_ctx`
-// parameter, which every Haze function has (Axiom C209). `what` names the
-// construct that needs it. An `extern C` function has no context (C402), so
-// needing one in its body is an internal error: the checker rejects every
-// such construct first (H7220). The same holds outside any function body.
+// parameter, which every function with a body has (Axiom C209, C402). `what`
+// names the construct that needs it; outside a function body it is an
+// internal error.
 function currentContextPointer(
   lr: Lowered.Module,
   what: string,
@@ -1028,9 +1030,10 @@ function contextParameter(lr: Lowered.Module): Lowered.ExprId {
   })[1];
 }
 
-// The current context itself, an lvalue of type `hzstd_context_t`:
-// `(*__hz_ctx)`. What Haze's `context` names, and what the runtime's entry
-// points that can run Haze code receive by value (C400).
+// The whole current context, an lvalue of type `hzstd_context_t`:
+// `(*__hz_ctx)`, runtime data and settings. Only `context.clone` copies it;
+// Haze's `context` is its `settings`, and the runtime's entry points that can
+// run Haze code get the pointer (C400).
 function currentContextValue(
   lr: Lowered.Module,
   what: string,
@@ -1198,7 +1201,7 @@ function lowerComputedCellRead(
   statements.push(
     Lowered.addStatement(lr, {
       variant: Lowered.ENode.InlineCStatement,
-      value: `void* __slot = hzstd_computed_read(*__hz_ctx, __tmp_computed);
+      value: `void* __slot = hzstd_computed_read(__hz_ctx, __tmp_computed);
 hzstd_slot_read(&__tmp_result, __slot, sizeof(__tmp_result));`,
       sourceloc: sourceloc,
     })[1]
@@ -1602,13 +1605,22 @@ export function lowerExpr(
         assert(symbol.type);
 
         if (symbol.variableContext === EVariableContext.ContextReference) {
-          // `context` (Axiom C392): the function's own hidden context, an
-          // lvalue over its `__hz_ctx` parameter. Every function and lambda
-          // has its own, so it is never a capture.
+          // `context` (Axiom C392, C473): the settings of the function's own
+          // hidden context, an lvalue `(*__hz_ctx).settings` over its
+          // `__hz_ctx` parameter. Reading copies the settings, assigning
+          // writes only them (C474, C567); the runtime data next to them is
+          // never named. Every function and lambda has its own context, so it
+          // is never a capture.
           return Lowered.addExpr(lr, {
-            variant: Lowered.ENode.DereferenceExpr,
-            expr: currentContextPointer(lr, "'context'", expr.sourceloc),
+            variant: Lowered.ENode.MemberAccessExpr,
+            memberName: "settings",
+            requiresDeref: false,
             type: lowerTypeUse(lr, symbol.type),
+            expr: Lowered.addExpr(lr, {
+              variant: Lowered.ENode.DereferenceExpr,
+              expr: currentContextPointer(lr, "'context'", expr.sourceloc),
+              type: contextTypes(lr).value,
+            })[1],
           });
         }
 
@@ -2873,8 +2885,9 @@ export function lowerExpr(
           "hzstd_reactive_array_write",
           [
             // A write delivers the effects it triggers (watchers): Haze
-            // code, run under the writer's context.
-            currentContextValue(lr, "A reactive write", expr.sourceloc),
+            // code, run under the writer's context, whose pointer the
+            // runtime gets for this call (C400, C401).
+            currentContextPointer(lr, "A reactive write", expr.sourceloc),
             lowerExpr(lr, expr.target, flattened, instanceInfo)[1],
             lowerExpr(lr, expr.value, flattened, instanceInfo)[1],
           ],
@@ -2887,7 +2900,7 @@ export function lowerExpr(
         "HZSTD_REACTIVE_CELL_WRITE",
         [
           // See hzstd_reactive_array_write above.
-          currentContextValue(lr, "A reactive write", expr.sourceloc),
+          currentContextPointer(lr, "A reactive write", expr.sourceloc),
           Lowered.addExpr(lr, {
             variant: Lowered.ENode.SymbolValueExpr,
             name: reactiveType.name,
@@ -2940,7 +2953,7 @@ export function lowerExpr(
       statements.push(
         Lowered.addStatement(lr, {
           variant: Lowered.ENode.InlineCStatement,
-          value: `void* __slot = hzstd_computed_read(*__hz_ctx, __tmp_computed);
+          value: `void* __slot = hzstd_computed_read(__hz_ctx, __tmp_computed);
 hzstd_slot_read(&__tmp_result, __slot, sizeof(__tmp_result));`,
           sourceloc: expr.sourceloc,
         })[1]
@@ -3591,26 +3604,22 @@ hzstd_slot_read(&__tmp_result, __slot, sizeof(__tmp_result));`,
     }
 
     case Semantic.ENode.ContextScopeExpr: {
-      // `context.clone(body)` / `Context.init(value, body)` (Axiom C396,
-      // C397, C401):
+      // `context.clone(body)` (Axiom C396, C397):
       //
       //   ({ <body>;  hzstd_context_t __hz_ctxN = *__hz_ctx;
       //      <body>(&__hz_ctxN, ...); })
-      //   ({ hzstd_context_t __hz_ctxN = <value>;  <body>;
-      //      <body>(&__hz_ctxN, ...); })
       //
-      // In source order, like a call: the arguments first, then the callee
-      // runs. `context.clone` copies the current context after its body
-      // expression is evaluated (which may write it, `context.clone(mk())`),
-      // `Context.init` copies its value before.
+      // In source order, like a call: the callee expression first, then it
+      // runs. The current context is copied after the body expression is
+      // evaluated (which may write it, `context.clone(mk())`). The copy holds
+      // the same runtime data (the same task and thread: identity is never
+      // changed, C474) and a copy of the settings.
       //
       // The new context is a local of this frame and the body is called with
       // its address, so nothing is allocated (a lambda literal body has its
       // env on the stack too, see CallableExpr.stackEnv). The caller's own
       // context is never written: it is in effect again however the body is
       // left, a recovered panic included, with nothing to restore.
-      // `Context.init` needs no context of its own, so it is legal in an
-      // `extern C` function: that is how C enters Haze (C402).
       const statements: Lowered.StatementId[] = [];
       const ctxName = `__hz_ctx${makeTempId()}`;
       const ctxNameSet: NameSet = {
@@ -3619,7 +3628,7 @@ hzstd_slot_read(&__tmp_result, __slot, sizeof(__tmp_result));`,
         wasMangled: false,
       };
       const { value: ctxType, pointer: ctxPointerType } = contextTypes(lr);
-      const pushContextCopy = (initValue: Lowered.ExprId) =>
+      const pushContextCopy = (copied: Lowered.ExprId) =>
         statements.push(
           Lowered.addStatement(lr, {
             variant: Lowered.ENode.VariableStatement,
@@ -3628,15 +3637,10 @@ hzstd_slot_read(&__tmp_result, __slot, sizeof(__tmp_result));`,
             type: ctxType,
             variableContext: EVariableContext.FunctionLocal,
             intrinsicTakeAddrOfValue: false,
-            value: initValue,
+            value: copied,
             sourceloc: expr.sourceloc,
           })[1]
         );
-      if (expr.initValue !== null) {
-        pushContextCopy(
-          lowerExpr(lr, expr.initValue, statements, instanceInfo)[1]
-        );
-      }
 
       // The body is called right here, like the callee of a call: a method
       // bound on a value receiver only has to outlive this call (§12.2).
@@ -3648,23 +3652,19 @@ hzstd_slot_read(&__tmp_result, __slot, sizeof(__tmp_result));`,
         bodyExpr.immediatelyCalled = true;
       }
       let [body, bodyId] = lowerExpr(lr, expr.body, statements, instanceInfo);
-      if (expr.initValue === null) {
-        // Whatever the call below would still evaluate (a callee returned by
-        // a call, a receiver behind an index) is evaluated into a temporary
-        // first, so the copy sees every write it makes.
-        if (!isEvaluatedCallee(lr, body)) {
-          [body, bodyId] = storeInTempVarAndGet(
-            lr,
-            body.type,
-            bodyId,
-            expr.sourceloc,
-            statements
-          );
-        }
-        pushContextCopy(
-          currentContextValue(lr, "context.clone()", expr.sourceloc)
+      // Whatever the call below would still evaluate (a callee returned by a
+      // call, a receiver behind an index) is evaluated into a temporary
+      // first, so the copy sees every write it makes.
+      if (!isEvaluatedCallee(lr, body)) {
+        [body, bodyId] = storeInTempVarAndGet(
+          lr,
+          body.type,
+          bodyId,
+          expr.sourceloc,
+          statements
         );
       }
+      pushContextCopy(currentContextValue(lr, "context.clone()", expr.sourceloc));
       const call = lowerCallOf(
         lr,
         body,
@@ -5271,13 +5271,20 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
         makeTrampoline = true;
       }
 
-      // An `extern C` function keeps its C signature; every other one takes
-      // the caller's context first (Axiom C209, C402). The function's type
-      // says which (Semantic.FunctionDatatypeDef.externC).
+      // A C function (`extern C` without a Haze body) keeps its C
+      // signature; every function with a Haze body, `extern C` ones included,
+      // takes the caller's context first (Axiom C209, C401, C402). The
+      // function's type says which (Semantic.FunctionDatatypeDef.externC).
       const externC = originalFuncType.externC;
-      if (externC !== (symbol.extern === EExternLanguage.Extern_C)) {
+      const collected = lr.sr.cc.symbolNodes.get(
+        symbol.originalCollectedFunction
+      );
+      if (
+        collected.variant !== Collect.ENode.FunctionSymbol ||
+        externC !== isCFunction(collected)
+      ) {
         throw new InternalError(
-          `The function type of '${symbol.name}' and its declaration disagree on whether it is 'extern C'`,
+          `The function type of '${symbol.name}' and its declaration disagree on whether it is a C function`,
           symbol.sourceloc ?? undefined
         );
       }
@@ -5566,7 +5573,7 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
       }
 
       const prevFunction = lr.currentFunction;
-      lr.currentFunction = { name: symbol.name, hasContext: !externC };
+      lr.currentFunction = { name: symbol.name };
       f.scope =
         (symbol.scope &&
           lowerBlockScope(lr, symbol.scope, {

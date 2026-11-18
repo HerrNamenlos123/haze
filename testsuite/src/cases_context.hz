@@ -1,22 +1,27 @@
 // ============================================================================
-// The hidden context (Axiom C209-C214, C390-C406).
+// The hidden context (Axiom C209-C214, C390-C406, C468-C477, C567-C569).
 //
 // Every Haze function receives its caller's context, and `context` names it,
-// like `this`. Haze sees a value without visible fields: reading `context`
-// copies it, writing it (a member, or the whole value) goes through to the
-// current one, and no reference to it can be formed. `context.clone(body)`
-// runs a body under a copy and gives the caller's own context back
-// afterwards; `Context.init(c, body)` runs one under a context set up from the
-// value `c`. That is how C enters Haze: C calls an `extern C` function, hands
-// it a context by value, and the body calls `Context.init`. An `extern C`
-// function has no context, so naming it there, or doing anything that needs
-// one, is an error. A closure runs under the context of whoever calls it.
+// like `this`. In C the context holds hidden runtime data (the task and its
+// thread) and the settings; in Haze `context` is only the settings (allocator,
+// logger, two user boxes): reading it copies them, writing it (a member, or the
+// whole value) goes through to the current context (C567), and no reference to
+// it can be formed. `context.clone(body)` runs a body under a copy and gives
+// the caller's own context back afterwards (C397). Assigning or cloning carries
+// settings only, never the runtime data (C474). An `extern C` function defined
+// in Haze takes the context as its first C parameter, which C passes (C401),
+// and has `context` like every Haze function (C402). C makes a context for the
+// current thread with hzstd_context_for_current_thread (C504); on a thread Haze
+// does not manage that panics (C505). A closure runs under the context of
+// whoever calls it.
 //
-// Haze cannot see the context's one hidden field, `dummy`, so the runtime
-// cases read and write it with inline C on a local copy: `dummy()` reports
-// what the caller's context holds, `setDummy(n)` changes it. Each observation
-// runs under its own value, so a callee handed the wrong context (the root
-// one, a stale one, its creator's) cannot pass by accident.
+// The runtime cases observe which context code runs under through user box 1:
+// `held()` reports the integer the caller's context holds, `setHeld(n)` changes
+// it (a member write), `setHeldWhole(n)` changes it by assigning the whole
+// context. Each observation runs under its own value, so a callee handed the
+// wrong context (the root one, a stale one, its creator's) cannot pass by
+// accident. The runtime data is observed with `sys.threadId()` and inline C on
+// `sys.contextPtr()`.
 //
 // Written from the contract before the implementation and shown to fail
 // without it. Do not weaken a case to make an implementation pass.
@@ -44,33 +49,35 @@ ref struct Checks {
 }
 
 // ── observing the context ───────────────────────────────────────────────────
-// Haze sees no field of a Context; inline C reads and writes the hidden
-// `dummy` field of a local copy.
-fn dummyOf(c: Context): int {
-    let copy = c;
-    let v = 0;
-    do unsafe { __c__("v = (hzstd_int_t)(intptr_t)copy.dummy;"); };
-    return v;
+// The integer a context holds in user box 1; an empty box reads as 0.
+fn heldOf(c: Context): int {
+    let v = sys.userBoxValue<int>(c.userBox1);
+    if v is int {
+        return v;
+    }
+    return 0;
 }
 
-fn withDummy(c: Context, n: int): Context {
+fn withHeld(c: Context, n: int): Context {
     let copy = c;
-    do unsafe { __c__("copy.dummy = (void *)(intptr_t)n;"); };
+    copy.userBox1 = sys.makeUserBox(n);
     return copy;
 }
 
 // The caller's context: a function runs under the context of its caller.
-fn dummy(): int {
-    let c = context;
-    let v = 0;
-    do unsafe { __c__("v = (hzstd_int_t)(intptr_t)c.dummy;"); };
-    return v;
+fn held(): int {
+    return heldOf(context);
 }
 
-// Changes the caller's context: modify a copy, assign it back whole.
-fn setDummy(n: int) {
+// Changes the caller's context: a member write goes through (C567).
+fn setHeld(n: int) {
+    context.userBox1 = sys.makeUserBox(n);
+}
+
+// The same by assigning the whole context, from a modified copy (C567, C473).
+fn setHeldWhole(n: int) {
     let c = context;
-    do unsafe { __c__("c.dummy = (void *)(intptr_t)n;"); };
+    c.userBox1 = sys.makeUserBox(n);
     context = c;
 }
 
@@ -82,83 +89,93 @@ type IntFn = () => int;
 
 // ── 1. copies, whole assignment, Context() ──────────────────────────────────
 fn tValues(t: mut Checks) {
-    t.check("Context() has dummy == NULL", dummyOf(Context()) == 0);
-    setDummy(1);
-    t.check("a callee's write goes through to its caller's context", dummy() == 1);
+    t.check("Context() has empty user boxes", heldOf(Context()) == 0 && sys.userBoxValue<int>(Context().userBox2) is none);
+    setHeld(1);
+    t.check("a callee's write goes through to its caller's context", held() == 1);
     let c = context;
-    setDummy(2);
-    t.check("let c = context is a copy: a later write to context does not reach it", dummyOf(c) == 1 && dummy() == 2);
+    setHeld(2);
+    t.check("let c = context is a copy: a later write to context does not reach it", heldOf(c) == 1 && held() == 2);
     let d = context;
-    do unsafe { __c__("d.dummy = (void *)(intptr_t)99;"); };
-    t.check("writing the copy does not change context", dummy() == 2 && dummyOf(d) == 99);
+    d.userBox1 = sys.makeUserBox<int>(99);
+    t.check("writing the copy does not change context", held() == 2 && heldOf(d) == 99);
     context = d;
-    t.check("context = c copies the hidden field", dummy() == 99);
-    d = withDummy(d, 3);
-    t.check("after context = c, the two stay separate", dummy() == 99 && dummyOf(d) == 3);
+    t.check("context = c copies the settings", held() == 99);
+    d = withHeld(d, 3);
+    t.check("after context = c, the two stay separate", held() == 99 && heldOf(d) == 3);
     context = Context();
-    t.check("context = Context() gives the defaults", dummy() == 0);
-    setDummy(4);
+    t.check("context = Context() gives the defaults", held() == 0);
+    setHeld(4);
     let holder = CtxHolder { ctx: context };
     let list: []Context = [context, Context()];
     let returned = snapshot();
-    setDummy(5);
-    t.check("stored in a field, an array, returned: copies", dummyOf(holder.ctx) == 4 && dummyOf(list[0]) == 4 && dummyOf(list[1]) == 0 && dummyOf(returned) == 4);
+    setHeld(5);
+    t.check("stored in a field, an array, returned: copies", heldOf(holder.ctx) == 4 && heldOf(list[0]) == 4 && heldOf(list[1]) == 0 && heldOf(returned) == 4);
     let snap = context;
-    let captured = () => { return dummyOf(snap); };
-    setDummy(6);
-    t.check("a captured context value is a copy", captured() == 5 && dummy() == 6);
+    let captured = () => { return heldOf(snap); };
+    setHeld(6);
+    t.check("a captured context value is a copy", captured() == 5 && held() == 6);
+
+    // C567: assigning the whole context, and one field of it, inside a callee
+    // changes the caller's.
+    setHeldWhole(7);
+    t.check("a callee assigning the whole context changes its caller's", held() == 7);
+    setHeld(8);
+    t.check("a callee assigning one field changes its caller's", held() == 8);
+    let before = context;
+    setHeldWhole(9);
+    t.check("whole assignment replaces every setting, member write keeps the others", held() == 9 && heldOf(before) == 8);
 }
 
 // ── 2. context.clone ────────────────────────────────────────────────────────
 fn arrowBody(): int {
-    setDummy(16);
-    return dummy() + 2;
+    setHeld(16);
+    return held() + 2;
 }
 
 fn tClone(t: mut Checks) {
-    setDummy(10);
+    setHeld(10);
     context.clone(() => {
-        t.check("clone: the body starts with a copy of the current context", dummy() == 10);
-        setDummy(11);
-        t.check("clone: a write inside is visible inside", dummy() == 11);
+        t.check("clone: the body starts with a copy of the current context", held() == 10);
+        setHeld(11);
+        t.check("clone: a write inside is visible inside", held() == 11);
     });
-    t.check("clone: a write inside is gone after it", dummy() == 10);
+    t.check("clone: a write inside is gone after it", held() == 10);
 
     let nested = context.clone(() => {
-        setDummy(20);
+        setHeld(20);
         let deeper = context.clone(() => {
-            setDummy(30);
-            return dummy();
+            setHeld(30);
+            return held();
         });
-        return deeper * 100 + dummy();
+        return deeper * 100 + held();
     });
-    t.check("clone: nested clones each give their caller's context back", nested == 3020 && dummy() == 10);
+    t.check("clone: nested clones each give their caller's context back", nested == 3020 && held() == 10);
 
     let pair = context.clone((): Pair => {
-        setDummy(12);
-        return Pair { a: dummy(), b: 7 };
+        setHeld(12);
+        return Pair { a: held(), b: 7 };
     });
-    t.check("clone: returns the body's struct", pair.a == 12 && pair.b == 7 && dummy() == 10);
+    t.check("clone: returns the body's struct", pair.a == 12 && pair.b == 7 && held() == 10);
 
-    let nothing = context.clone(() => { setDummy(13); });
-    t.check("clone: a body returning none", nothing is none && dummy() == 10);
+    let nothing = context.clone(() => { setHeld(13); });
+    t.check("clone: a body returning none", nothing is none && held() == 10);
 
     let body = () => {
-        setDummy(14);
-        return dummy() + 1;
+        setHeld(14);
+        return held() + 1;
     };
-    t.check("clone: a closure value as the body", context.clone(body) == 15 && dummy() == 10);
+    t.check("clone: a closure value as the body", context.clone(body) == 15 && held() == 10);
 
     let fp: () -> int = arrowBody;
-    t.check("clone: a -> function value as the body", context.clone(fp) == 18 && dummy() == 10);
+    t.check("clone: a -> function value as the body", context.clone(fp) == 18 && held() == 10);
 
-    t.check("clone: a -> literal as the body", context.clone((): int -> { setDummy(17); return dummy(); }) == 17 && dummy() == 10);
+    t.check("clone: a -> literal as the body", context.clone((): int -> { setHeld(17); return held(); }) == 17 && held() == 10);
 
     let direct = context.clone(() => {
-        context = withDummy(context, 19);
-        return dummy();
+        context = withHeld(context, 19);
+        return held();
     });
-    t.check("clone: the body's own `context` is the copy", direct == 19 && dummy() == 10);
+    t.check("clone: the body's own `context` is the copy", direct == 19 && held() == 10);
 
     // The body is an immediate argument: narrowing reaches into it.
     let maybe: Pair | none = Pair { a: 1, b: 2 };
@@ -169,11 +186,11 @@ fn tClone(t: mut Checks) {
 
 // ── 3. a panic inside clone ─────────────────────────────────────────────────
 fn tPanic(t: mut Checks) {
-    setDummy(10);
+    setHeld(10);
     let recovered = attempt {
         context.clone(() => {
-            setDummy(66);
-            if dummy() == 66 {
+            setHeld(66);
+            if held() == 66 {
                 sys.panic("boom inside clone");
             }
         });
@@ -182,14 +199,14 @@ fn tPanic(t: mut Checks) {
         1
     };
     t.check("panic in clone: recovered", recovered == 1);
-    t.check("panic in clone: the outer context is intact", dummy() == 10);
+    t.check("panic in clone: the outer context is intact", held() == 10);
 
     let mid = context.clone(() => {
-        setDummy(70);
+        setHeld(70);
         let r = attempt {
             context.clone(() => {
-                setDummy(71);
-                if dummy() == 71 {
+                setHeld(71);
+                if held() == 71 {
                     sys.panic("boom inside a nested clone");
                 }
             });
@@ -197,44 +214,44 @@ fn tPanic(t: mut Checks) {
         } recover e {
             1
         };
-        return dummy() * 10 + r;
+        return held() * 10 + r;
     });
-    t.check("panic in a nested clone, recovered in the outer one: its context is intact", mid == 701 && dummy() == 10);
+    t.check("panic in a nested clone, recovered in the outer one: its context is intact", mid == 701 && held() == 10);
 }
 
 // ── 4. closures run under the context of whoever calls them ─────────────────
 fn makeReader(): IntFn {
-    setDummy(dummy() + 1000);
-    return () => { return dummy(); };
+    setHeld(held() + 1000);
+    return () => { return held(); };
 }
 
 fn tClosures(t: mut Checks) {
-    setDummy(10);
+    setHeld(10);
     let stored = context.clone((): IntFn => {
-        setDummy(100);
-        return () => { return dummy(); };
+        setHeld(100);
+        return () => { return held(); };
     });
     t.check("a stored closure sees its caller's context, not its creator's", stored() == 10);
-    t.check("a stored closure called inside a clone sees the clone's", context.clone(() => { setDummy(200); return stored(); }) == 200);
+    t.check("a stored closure called inside a clone sees the clone's", context.clone(() => { setHeld(200); return stored(); }) == 200);
 
     let made = context.clone(() => { return makeReader(); });
     t.check("a closure returned from a callee sees its caller's context", made() == 10);
 
     let reader = () => {
         let c = context;
-        return dummyOf(c);
+        return heldOf(c);
     };
     t.check("a lambda's `context` is its caller's", reader() == 10);
-    t.check("a lambda's `context` is never the outer one captured", context.clone(() => { setDummy(300); return reader(); }) == 300);
+    t.check("a lambda's `context` is never the outer one captured", context.clone(() => { setHeld(300); return reader(); }) == 300);
 
-    let writer = () => { context = withDummy(context, 400); };
-    t.check("a lambda assigning `context` changes its caller's", context.clone(() => { writer(); return dummy(); }) == 400 && dummy() == 10);
+    let writer = () => { context = withHeld(context, 400); };
+    t.check("a lambda assigning `context` changes its caller's", context.clone(() => { writer(); return held(); }) == 400 && held() == 10);
 
     let outer = () => {
-        let inner = () => { return dummy(); };
-        return context.clone(() => { setDummy(500); return inner(); });
+        let inner = () => { return held(); };
+        return context.clone(() => { setHeld(500); return inner(); });
     };
-    t.check("nested lambdas: each runs under its caller's", outer() == 500 && dummy() == 10);
+    t.check("nested lambdas: each runs under its caller's", outer() == 500 && held() == 10);
 }
 
 // ── 5. every kind of call hands the callee the caller's context ─────────────
@@ -242,36 +259,36 @@ struct Other { v: int = 0; }
 
 struct Probe {
     v: int = 0;
-    fn seen(): int { return dummy() + this.v; }
-    fn constructor(x: int): Probe { return Probe { v: dummy() + x }; }
-    fn operator<(o: Probe): bool { return dummy() == o.v; }
-    fn operator as(): Other { return Other { v: dummy() + this.v }; }
+    fn seen(): int { return held() + this.v; }
+    fn constructor(x: int): Probe { return Probe { v: held() + x }; }
+    fn operator<(o: Probe): bool { return held() == o.v; }
+    fn operator as(): Other { return Other { v: held() + this.v }; }
 }
 
 struct EqInner {
     x: int = 0;
-    fn operator==(o: EqInner): bool { return dummy() == o.x; }
+    fn operator==(o: EqInner): bool { return held() == o.x; }
 }
 struct EqOuter { inner: EqInner = {}; }
 
 ref struct Counter {
     n: int = 0;
-    fn seen(): int { return dummy() + this.n; }
+    fn seen(): int { return held() + this.n; }
 }
 
 struct Gen<T> {
     v: T;
-    fn seen(): int { return dummy(); }
+    fn seen(): int { return held(); }
 }
 
-fn seenFree(): int { return dummy(); }
-fn seenGeneric<T>(x: T): int { return dummy(); }
+fn seenFree(): int { return held(); }
+fn seenGeneric<T>(x: T): int { return held(); }
 fn viaTwoLevels(): int { return seenFree(); }
 
 fn tCalls(t: mut Checks) {
-    setDummy(10);
+    setHeld(10);
     context.clone(() => {
-        setDummy(500);
+        setHeld(500);
         let p = Probe { v: 1 };
         t.check("method", p.seen() == 501);
         t.check("constructor", Probe(2).v == 502);
@@ -283,11 +300,11 @@ fn tCalls(t: mut Checks) {
         t.check("generic function", seenGeneric<int>(1) == 500 && seenGeneric("s") == 500);
         t.check("method of a generic struct", Gen<int> { v: 1 }.seen() == 500);
         t.check("passed along two levels", viaTwoLevels() == 500);
-        let cl = () => { return dummy(); };
+        let cl = () => { return held(); };
         t.check("closure", cl() == 500);
         let fp: () -> int = seenFree;
         t.check("-> function value", fp() == 500);
-        let fl = (): int -> { return dummy(); };
+        let fl = (): int -> { return held(); };
         t.check("-> literal", fl() == 500);
         let c = Counter { n: 3 };
         let bm = c.seen;
@@ -295,53 +312,169 @@ fn tCalls(t: mut Checks) {
         let stackref sp = Probe { v: 4 };
         let sm = sp.seen;
         t.check("bound method on a stackref receiver (stackref callable)", sm() == 504);
-        let stackref sc = () => { return dummy(); };
+        let stackref sc = () => { return held(); };
         t.check("in-place (stackref) lambda", sc() == 500);
-        let comp = rx.computed(() => { return dummy() + 1; });
+        let comp = rx.computed(() => { return held() + 1; });
         t.check("f-string formatting (a computed read inside the formatter)", f"{comp}" == "501");
     });
-    t.check("calls: the caller's context is back after the clone", dummy() == 10);
+    t.check("calls: the caller's context is back after the clone", held() == 10);
 }
 
-// ── 6. extern C functions enter Haze through Context.init ───────────────────
-extern C fn enterFromC(ctx: Context, add: int): int {
-    return Context.init(ctx, () => {
-        let own = context;
-        setDummy(dummyOf(own) + add);
-        return dummy();
-    });
+// ── 6. extern C functions defined in Haze take the context first ────────────
+// C passes the context (C401); the body has `context` like every Haze function
+// and can call any Haze code (C402).
+extern C fn enterFromC(add: int): int {
+    setHeld(held() + add);
+    return held();
 }
 
-extern C fn freshFromC(): int {
-    return Context.init(Context(), () => { return dummy(); });
+extern C fn describeFromC(): int {
+    return sys.threadId() * 1000 + held();
 }
 
-fn callThroughC(c: Context, add: int): int {
-    let copy = c;
+// Calls enterFromC from C with this function's own context pointer.
+fn callThroughC(add: int): int {
+    let p = sys.contextPtr();
     let r = 0;
-    do unsafe { __c__("r = enterFromC(copy, add);"); };
+    do unsafe { __c__("r = enterFromC((hzstd_context_t *)p, add);"); };
+    return r;
+}
+
+// C504: a context made by hzstd for the current thread, handed to an extern C
+// function. The calling Haze function's settings are not part of it.
+fn callWithFreshContext(): int {
+    let r = 0;
+    do unsafe { __c__("hzstd_context_t fresh = hzstd_context_for_current_thread(); r = describeFromC(&fresh);"); };
     return r;
 }
 
 fn tExternC(t: mut Checks) {
-    setDummy(10);
-    t.check("extern C + Context.init: the body runs under the passed context", enterFromC(withDummy(Context(), 600), 1) == 601);
-    t.check("extern C + Context.init: the caller's context is intact", dummy() == 10);
-    t.check("extern C + Context.init: `context` passed explicitly", enterFromC(context, 5) == 15 && dummy() == 10);
-    t.check("round trip: Haze -> C -> extern C -> Context.init -> Haze", callThroughC(withDummy(context, 700), 2) == 702 && dummy() == 10);
-    t.check("Context.init(Context(), ...) inside an extern C body", freshFromC() == 0);
-    let base = withDummy(context, 800);
-    let inside = Context.init(base, () => {
-        setDummy(dummy() + 1);
-        return dummy();
+    setHeld(10);
+    t.check("extern C called from Haze: the body runs under the caller's context", enterFromC(1) == 11 && held() == 11);
+    t.check("extern C called from C with sys.contextPtr(): the body sees the caller's user box", callThroughC(2) == 13 && held() == 13);
+    context.clone(() => {
+        setHeld(700);
+        t.check("round trip: Haze -> C -> extern C -> Haze, inside a clone", callThroughC(2) == 702 && held() == 702);
     });
-    t.check("Context.init from Haze runs on a copy of its value", inside == 801 && dummyOf(base) == 800 && dummy() == 10);
+    t.check("extern C: the clone's write did not reach the caller", held() == 13);
+    t.check("C504: a fresh context on the main thread has thread id 1 and empty user boxes", callWithFreshContext() == 1000);
+    t.check("C504: the caller's context is untouched", held() == 13);
+}
+
+// ── 6b. the runtime data: derived, never assigned (C474-C477, C209) ─────────
+fn addressOf(p: cptr): int {
+    let n = 0;
+    do unsafe { __c__("n = (hzstd_int_t)(intptr_t)p;"); };
+    return n;
+}
+
+fn taskOf(): int {
+    let p = sys.contextPtr();
+    let n = 0;
+    do unsafe { __c__("n = (hzstd_int_t)(intptr_t)((hzstd_context_t *)p)->task;"); };
+    return n;
+}
+
+fn calleePtr(): int {
+    return addressOf(sys.contextPtr());
+}
+
+fn tRuntimeData(t: mut Checks) {
+    let thread = sys.threadId();
+    let task = taskOf();
+    t.check("the main thread has id 1", thread == 1);
+    t.check("a task exists", task != 0);
+
+    let saved = context;
+    setHeld(41);
+    context = Context();
+    t.check("context = Context() changes the settings", held() == 0);
+    t.check("context = Context() leaves the thread id and the task", sys.threadId() == thread && taskOf() == task);
+    context = saved;
+    t.check("context = c restores the settings", held() == heldOf(saved));
+    t.check("context = c leaves the thread id and the task", sys.threadId() == thread && taskOf() == task);
+
+    let inClone = context.clone(() => {
+        setHeld(42);
+        let pair: []int = [sys.threadId(), taskOf()];
+        return pair;
+    });
+    t.check("context.clone keeps the thread id and the task", inClone[0] == thread && inClone[1] == task);
+
+    let mine = addressOf(sys.contextPtr());
+    t.check("C209: a callee's contextPtr is its caller's", calleePtr() == mine);
+    let cl = () => { return addressOf(sys.contextPtr()); };
+    t.check("C209: a closure's contextPtr is its caller's", cl() == mine);
+    let cloned = context.clone(() => {
+        let inside = addressOf(sys.contextPtr());
+        let triple: []int = [inside, calleePtr(), cl()];
+        return triple;
+    });
+    t.check("C209: inside context.clone the context is another one, handed on to callees", cloned[0] != mine && cloned[1] == cloned[0] && cloned[2] == cloned[0]);
+}
+
+// ── 6c. the default settings (C398, C479) ───────────────────────────────────
+fn tDefaults(t: mut Checks) {
+    let fresh = Context();
+    let ok = false;
+    do unsafe {
+        __c__("ok = fresh.allocator.allocate != NULL && fresh.logger.write != NULL && fresh.logger.state == NULL && fresh.userBox1.value == NULL && fresh.userBox2.value == NULL;");
+    };
+    t.check("Context(): an allocator, the default logger, empty user boxes", ok);
+    let same = false;
+    do unsafe {
+        __c__("same = fresh.logger.write == hzstd_context_settings_default().logger.write && fresh.allocator.allocate == hzstd_make_heap_allocator().allocate;");
+    };
+    t.check("Context() is hzstd's default settings", same);
+}
+
+// ── 6d. sys.log goes through the context's logger ───────────────────────────
+// The logger's write function is an `extern C` function defined in Haze: its C
+// type (context, state, text, returning none) is exactly the logger's `write`,
+// so C assigns it without a cast (a mismatch fails to compile).
+extern C fn captureLine(state: cptr, text: str) {
+    do unsafe {
+        let sink: mut ref Box<str> = uninitialized;
+        __c__("sink = state;");
+        sink.value = sink.value + f"{text}{held()}|";
+    };
+}
+
+fn installLogger(sink: ref Box<str>) {
+    let p = sys.contextPtr();
+    let st = none as cptr;
+    do unsafe {
+        __c__("st = sink;");
+        __c__("hzstd_context_t *c = (hzstd_context_t *)p; c->settings.logger.write = captureLine; c->settings.logger.state = st;");
+    };
+}
+
+fn logDeeper() {
+    sys.log("deep");
+}
+
+fn tLog(t: mut Checks) {
+    let saved = context;
+    setHeld(1);
+    let outer: ref Box<str> = { value: "" };
+    let inner: ref Box<str> = { value: "" };
+    installLogger(outer);
+    sys.log("a");
+    context.clone(() => {
+        setHeld(5);
+        installLogger(inner);
+        sys.log("b");
+        logDeeper();
+    });
+    sys.log("c");
+    t.check("sys.log writes through the logger of the context it runs under, with that context", outer.value == "a1|c1|" && inner.value == "b5|deep5|");
+    context = saved;
 }
 
 // ── 7. `context` stays an ordinary name for members ─────────────────────────
 struct Named {
     context: int = 5;
-    fn both(): int { return this.context * 1000 + dummyOf(context); }
+    fn both(): int { return this.context * 1000 + heldOf(context); }
 }
 struct WithMethod {
     n: int = 1;
@@ -349,7 +482,7 @@ struct WithMethod {
 }
 
 fn tNames(t: mut Checks) {
-    setDummy(7);
+    setHeld(7);
     let named = Named {};
     t.check("a field named context", named.context == 5);
     named.context = 6;
@@ -360,13 +493,16 @@ fn tNames(t: mut Checks) {
 
 fn main(): int {
     let t = Checks {};
-    t.check("main starts under the root context, with the defaults", dummy() == 0);
+    t.check("main starts under the root context, with the defaults", held() == 0);
     tValues(t);
     tClone(t);
     tPanic(t);
     tClosures(t);
     tCalls(t);
     tExternC(t);
+    tRuntimeData(t);
+    tDefaults(t);
+    tLog(t);
     tNames(t);
     if t.failures > 0 {
         fmt.println(f"{t.failures} of {t.checks} checks FAILED");
@@ -376,31 +512,30 @@ fn main(): int {
     return 0;
 }
 """,
-            "all 58 checks passed");
+            "all 74 checks passed");
 
         // The profiler writes its progress to stdout, so the allocation count is
         // asserted rather than compared as output (see cases_immediate.hz).
         s.runExitCode(
-            "context: clone and Context.init with a lambda literal body allocate nothing",
+            "context: clone with a lambda literal body, and an extern C entry, allocate nothing",
             """
-fn dummy(): int {
-    let c = context;
+// The caller's context, observed without allocating: a raw integer kept in a
+// field of its settings, read and written through the context pointer.
+fn held(): int {
+    let p = sys.contextPtr();
     let v = 0;
-    do unsafe { __c__("v = (hzstd_int_t)(intptr_t)c.dummy;"); };
+    do unsafe { __c__("v = ((hzstd_context_t *)p)->settings.userBox2.fingerprint;"); };
     return v;
 }
 
-fn setDummy(n: int) {
-    let c = context;
-    do unsafe { __c__("c.dummy = (void *)(intptr_t)n;"); };
-    context = c;
+fn setHeld(n: int) {
+    let p = sys.contextPtr();
+    do unsafe { __c__("((hzstd_context_t *)p)->settings.userBox2.fingerprint = n;"); };
 }
 
-extern C fn enter(ctx: Context, n: int): int {
-    return Context.init(ctx, () => {
-        setDummy(n);
-        return dummy();
-    });
+extern C fn enter(n: int): int {
+    setHeld(n);
+    return held();
 }
 
 fn main(): int {
@@ -410,52 +545,47 @@ fn main(): int {
     for (let i = 0; i < 50; i++) {
         let b = i;
         total = total + context.clone(() => {
-            setDummy(b);
-            return a + dummy();
+            setHeld(b);
+            return a + held();
         });
-        total = total + Context.init(context, () => {
-            setDummy(b + 1);
-            return dummy();
-        });
-        total = total + enter(context, b);
+        total = total + context.clone(() => enter(b + 1));
     }
     let result = p.stop();
-    assert(total == 3775, f"wrong total {total}");
-    assert(dummy() == 0, "the caller's context changed");
+    assert(total == 2550, f"wrong total {total}");
+    assert(held() == 0, "the caller's context changed");
     // The Profiler object itself is the one allocation inside the window.
-    assert(result.memoryInstrumentationFrames.length == 1, f"expected no allocations from clone or init, got {result.memoryInstrumentationFrames.length - 1}");
+    assert(result.memoryInstrumentationFrames.length == 1, f"expected no allocations from clone or the entry, got {result.memoryInstrumentationFrames.length - 1}");
     return 0;
 }
 """,
             0);
 
         // A generic exported function is re-emitted into the consumer as source and
-        // elaborated there, so `context`, `context.clone` and `Context.init` in its
-        // body have to survive Export.ts (DEVELOPMENT.md: the most common bug shape).
+        // elaborated there, so `context` and `context.clone` in its body have to
+        // survive Export.ts (DEVELOPMENT.md: the most common bug shape).
         s.runWithModules(
-            "context: calls, closures, clone and Context.init across a module boundary",
+            "context: calls, closures, clone and an extern C entry across a module boundary",
             [
                 testsuite.TestModule {
                     name: "ctxlib",
                     source: """
-// The context's hidden field, seen from this module.
+// The caller's context, seen from this module: a raw integer in its settings.
 export fn seen(): int {
-    let c = context;
+    let p = sys.contextPtr();
     let v = 0;
-    do unsafe { __c__("v = (hzstd_int_t)(intptr_t)c.dummy;"); };
+    do unsafe { __c__("v = ((hzstd_context_t *)p)->settings.userBox2.fingerprint;"); };
     return v;
 }
 
 export fn set(n: int) {
-    let c = context;
-    do unsafe { __c__("c.dummy = (void *)(intptr_t)n;"); };
-    context = c;
+    let p = sys.contextPtr();
+    do unsafe { __c__("((hzstd_context_t *)p)->settings.userBox2.fingerprint = n;"); };
 }
 
 export fn seenGeneric<T>(x: T): int { return seen(); }
 
-// Generic bodies are re-emitted into the consumer as source: `context`,
-// `context.clone` and `Context.init` have to survive that.
+// Generic bodies are re-emitted into the consumer as source: `context` and
+// `context.clone` have to survive that.
 export fn snapshotGeneric<T>(x: T): Context { return context; }
 
 export fn cloneGeneric<T>(x: T): int {
@@ -463,10 +593,6 @@ export fn cloneGeneric<T>(x: T): int {
         set(seen() + 1);
         return seen();
     });
-}
-
-export fn initGeneric<T>(c: Context, x: T): int {
-    return Context.init(c, () => { return seen(); });
 }
 
 export fn callBack(f: () => int): int { return f(); }
@@ -484,8 +610,17 @@ export struct Thing {
     fn constructor(v: int): Thing { return Thing { v: seen() + v }; }
 }
 
-export extern C fn enterLib(ctx: Context): int {
-    return Context.init(ctx, () => { return seen(); });
+// C calls it with a context (C401); here this module's own C does.
+export extern C fn enterLib(n: int): int {
+    set(seen() + n);
+    return seen();
+}
+
+export fn callEnterFromC(n: int): int {
+    let p = sys.contextPtr();
+    let r = 0;
+    do unsafe { __c__("r = enterLib((hzstd_context_t *)p, n);"); };
+    return r;
 }
 """,
                 },
@@ -493,34 +628,36 @@ export extern C fn enterLib(ctx: Context): int {
             """
 import ctxlib;
 
-fn dummyOf(c: Context): int {
+fn heldOf(c: Context): int {
     let copy = c;
     let v = 0;
-    do unsafe { __c__("v = (hzstd_int_t)(intptr_t)copy.dummy;"); };
+    do unsafe { __c__("v = copy.userBox2.fingerprint;"); };
     return v;
 }
 
-fn dummy(): int { return dummyOf(context); }
+fn held(): int { return heldOf(context); }
 
 fn main(): int {
     let failures = 0;
     ctxlib.set(5);
-    if dummy() != 5 { fmt.println("FAIL: a write in the other module reaches this one"); failures++; }
+    if held() != 5 { fmt.println("FAIL: a write in the other module reaches this one"); failures++; }
     if ctxlib.seen() != 5 { fmt.println("FAIL: the other module sees this one's context"); failures++; }
     if ctxlib.seenGeneric<int>(1) != 5 || ctxlib.seenGeneric("s") != 5 { fmt.println("FAIL: generic across the boundary"); failures++; }
-    if dummyOf(ctxlib.snapshotGeneric(1)) != 5 { fmt.println("FAIL: `context` in a re-emitted generic body"); failures++; }
-    if ctxlib.cloneGeneric(1) != 6 || dummy() != 5 { fmt.println("FAIL: clone in a re-emitted generic body"); failures++; }
-    if ctxlib.initGeneric(Context(), 1) != 0 || dummy() != 5 { fmt.println("FAIL: Context.init in a re-emitted generic body"); failures++; }
-    if ctxlib.callBack(() => { return dummy(); }) != 5 { fmt.println("FAIL: a closure called from the other module"); failures++; }
-    if ctxlib.callBackInClone(() => { return dummy(); }) != 42 || dummy() != 5 { fmt.println("FAIL: a closure called inside the other module's clone"); failures++; }
+    if heldOf(ctxlib.snapshotGeneric(1)) != 5 { fmt.println("FAIL: `context` in a re-emitted generic body"); failures++; }
+    if ctxlib.cloneGeneric(1) != 6 || held() != 5 { fmt.println("FAIL: clone in a re-emitted generic body"); failures++; }
+    if ctxlib.callBack(() => { return held(); }) != 5 { fmt.println("FAIL: a closure called from the other module"); failures++; }
+    if ctxlib.callBackInClone(() => { return held(); }) != 42 || held() != 5 { fmt.println("FAIL: a closure called inside the other module's clone"); failures++; }
     let thing = ctxlib.Thing(1);
     if thing.v != 6 || thing.look() != 11 { fmt.println("FAIL: constructor and method across the boundary"); failures++; }
     let inner = context.clone(() => {
         ctxlib.set(7);
         return ctxlib.seen();
     });
-    if inner != 7 || dummy() != 5 { fmt.println("FAIL: the other module under this one's clone"); failures++; }
-    if ctxlib.enterLib(Context()) != 0 || dummy() != 5 { fmt.println("FAIL: the other module's extern C entry"); failures++; }
+    if inner != 7 || held() != 5 { fmt.println("FAIL: the other module under this one's clone"); failures++; }
+    let fromC = context.clone(() => ctxlib.callEnterFromC(3));
+    if fromC != 8 || held() != 5 { fmt.println("FAIL: the other module's extern C entry, called from C"); failures++; }
+    let fromHaze = context.clone(() => ctxlib.enterLib(2));
+    if fromHaze != 7 || held() != 5 { fmt.println("FAIL: the other module's extern C entry, called from Haze"); failures++; }
     if failures > 0 {
         return 1;
     }
@@ -529,6 +666,71 @@ fn main(): int {
 }
 """,
             "context crosses module boundaries");
+
+        // A default value is evaluated by the caller, so `context` in it is the
+        // caller's context. A declaration without a body (a module interface, or
+        // a C-implemented `:: context` entry) has such defaults too.
+        s.runWithModules(
+            "context: a default parameter value naming context, across a module boundary and on a declaration without a body",
+            [
+                testsuite.TestModule {
+                    name: "ctxdef",
+                    source: """
+__c__("hzstd_int_t cEntry(hzstd_context_t *ctx, hzstd_user_box_t b) { return b.value == NULL ? -1 : 2; }");
+
+export fn withBox(b: UserBox = context.userBox1): int { return sys.userBoxValue<int>(b) ?? -1; }
+export fn withSettings(c: Context = context): int { return sys.userBoxValue<int>(c.userBox1) ?? -1; }
+export extern C fn entryWithDefault(b: UserBox = context.userBox1): int { return (sys.userBoxValue<int>(b) ?? -1) + 1; }
+export extern C fn cEntry(b: UserBox = context.userBox1): int :: final, context;
+export fn viaLocalDeclaration(): int { return cEntry(); }
+""",
+                },
+            ],
+            """
+import ctxdef;
+
+fn main(): int {
+    context.userBox1 = sys.makeUserBox<int>(7);
+    let inner = context.clone(() => {
+        context.userBox1 = sys.makeUserBox<int>(9);
+        return ctxdef.withBox();
+    });
+    fmt.println(f"{ctxdef.withBox()} {ctxdef.withSettings()} {ctxdef.entryWithDefault()} {ctxdef.cEntry()} {ctxdef.viaLocalDeclaration()} {inner}");
+    return 0;
+}
+""",
+            "7 7 8 2 2 9");
+
+        // ── C505: a context for a thread Haze does not manage panics ──────────────
+        // The program runs itself again as a child; the child starts a plain
+        // pthread that asks hzstd for a context. The parent checks the child's
+        // exit status and its panic message.
+        s.run(
+            "context: creating a context on a thread Haze does not manage panics (C505)",
+            """
+__c__("#include <pthread.h>\nstatic void *haze_unmanaged(void *arg) { (void)arg; hzstd_context_t c = hzstd_context_for_current_thread(); (void)c; return NULL; }");
+
+fn child(): int {
+    do unsafe { __c__("pthread_t t; pthread_create(&t, NULL, haze_unmanaged, NULL); pthread_join(t, NULL);"); };
+    fmt.println("the unmanaged thread got a context");
+    return 0;
+}
+
+fn main(): int {
+    let args = sys.args();
+    if args.length > 1 && args[1] == "child" {
+        return child();
+    }
+    // On the main thread, a managed one, C gets a context.
+    let onMain = 0;
+    do unsafe { __c__("hzstd_context_t c = hzstd_context_for_current_thread(); onMain = (hzstd_int_t)c.thread->id;"); };
+    let r = process.runCaptured(args[0], ["child"]);
+    let panicked = r.stderrResult.contains("a Haze context was created on a thread Haze does not manage");
+    fmt.println(f"{onMain} {r.exitCode} {panicked} {r.stdoutResult.length}");
+    return 0;
+}
+""",
+            "1 255 true 0");
 
         // ── Context values are made only by Context() ──────────────────────────────
         s.compileFails(
@@ -542,233 +744,84 @@ fn main(): int {
 """,
             [testsuite.mustHave(errorcodes.Code.StructMarkedAsOpaqueAndThereforeNoStruct)]);
 
-        // ── an extern C function has no context ────────────────────────────────────
-        s.compileFails(
-            "context: named inside an extern C function",
+        // ── an extern C function defined in Haze has a context (C401, C402) ──────
+        // C passes it as the first parameter; the body can do everything a Haze
+        // function can, and runs under the context C handed over.
+        s.run(
+            "context: an extern C body has the context C passes and calls any Haze code",
             """
-extern C fn entry(): int {
-    let c = context; // <- an extern C function has no context
-    return 0;
-}
+ref struct Counter { n: int = 0; mut fn bump(): int { this.n = this.n + 1; return this.n; } }
+struct Meters { v: int = 0; fn constructor(v: int): Meters { return Meters { v: v }; } fn operator==(o: Meters): bool { return this.v == o.v; } }
+fn doubled(n: int): int { return n * 2; }
+fn held(): int { return sys.userBoxValue<int>(context.userBox1) ?? 0; }
 
-fn main(): int {
-    return entry();
-}
-""",
-            [testsuite.mustHave(errorcodes.Code.ContextInExternCFunction)]);
-
-        s.compileFails(
-            "context: context.clone inside an extern C function names it",
-            """
-extern C fn entry(): int {
-    context.clone(() => { return 1; }); // <- Context.init is the way in
-    return 0;
-}
-
-fn main(): int {
-    return entry();
-}
-""",
-            [testsuite.mustHave(errorcodes.Code.ContextInExternCFunction)]);
-
-        // Everything that needs a context, one construct per case. What an extern C
-        // body may do (calls of extern C functions and values, arithmetic, field
-        // access, struct literals, Context(), Context.init) is in the runtime case of
-        // cases_extern_c_function_types.hz.
-        s.compileFails(
-            "context: an extern C body calls a Haze function",
-            """
-fn helper(): int { return 1; }
-
-extern C fn entry(): int {
-    let n = helper(); // <- a Haze function takes a context
-    return 0;
-}
-
-fn main(): int {
-    return entry();
-}
-""",
-            [testsuite.mustHave(errorcodes.Code.ContextNeededInExternCFunction)]);
-
-        s.compileFails(
-            "context: an extern C body calls a method",
-            """
-struct Thing {
-    v: int = 1;
-    fn get(): int { return this.v; }
-}
-
-extern C fn entry(): int {
-    let thing = Thing {};
-    let n = thing.get(); // <- a method takes a context
-    return 0;
-}
-
-fn main(): int {
-    return entry();
-}
-""",
-            [testsuite.mustHave(errorcodes.Code.ContextNeededInExternCFunction)]);
-
-        s.compileFails(
-            "context: an extern C body calls a constructor",
-            """
-struct Thing {
-    v: int = 1;
-    fn constructor(v: int): Thing { return Thing { v: v }; }
-}
-
-extern C fn entry(): int {
-    let thing = Thing(2); // <- a constructor takes a context
-    return 0;
-}
-
-fn main(): int {
-    return entry();
-}
-""",
-            [testsuite.mustHave(errorcodes.Code.ContextNeededInExternCFunction)]);
-
-        s.compileFails(
-            "context: an extern C body uses an overloaded operator",
-            """
-struct Thing {
-    v: int = 1;
-    fn operator<(o: Thing): bool { return this.v < o.v; }
-}
-
-extern C fn entry(): int {
-    let less = Thing {} < Thing { v: 2 }; // <- an operator takes a context
-    return 0;
-}
-
-fn main(): int {
-    return entry();
-}
-""",
-            [testsuite.mustHave(errorcodes.Code.ContextNeededInExternCFunction)]);
-
-        s.compileFails(
-            "context: an extern C body converts with operator as",
-            """
-struct Other { v: int = 0; }
-struct Thing {
-    v: int = 1;
-    fn operator as(): Other { return Other { v: this.v }; }
-}
-
-extern C fn entry(): int {
-    let thing = Thing {};
-    let other: Other = thing; // <- the conversion takes a context
-    return 0;
-}
-
-fn main(): int {
-    return entry();
-}
-""",
-            [testsuite.mustHave(errorcodes.Code.ContextNeededInExternCFunction)]);
-
-        s.compileFails(
-            "context: an extern C body formats an f-string",
-            """
 extern C fn entry(n: int): int {
-    let text = f"{n}"; // <- formatting runs Haze code
-    return 0;
+    let c = Counter {};
+    let closure = (x: int) => x + 1;
+    let fnValue: (x: int) -> int = doubled;
+    let cell = rx.reactive<int>(1);
+    let twiceCell = rx.computed(() => cell * 2);
+    cell := 5;
+    let inner = context.clone(() => {
+        context.userBox1 = sys.makeUserBox<int>(9);
+        return held();
+    });
+    let text = f"{n}";
+    let sum = doubled(n) + c.bump() + closure(n) + fnValue(1) + twiceCell + inner + text.length + held();
+    if Meters(3) == Meters(3) { sum = sum + 100; }
+    return sum;
 }
 
 fn main(): int {
-    return entry(1);
+    context.userBox1 = sys.makeUserBox<int>(1000);
+    let p = sys.contextPtr();
+    let result = 0;
+    do unsafe { __c__("result = entry((hzstd_context_t *)p, 4);"); };
+    // 8 + 1 + 5 + 2 + 10 + 9 + 1 + 1000 + 100
+    fmt.println(f"{result} {held()}");
+    return 0;
 }
 """,
-            [testsuite.mustHave(errorcodes.Code.ContextNeededInExternCFunction)]);
+            "1136 1000");
 
-        s.compileFails(
-            "context: an extern C body compares structs whose member has an operator",
+        // The constructs that call Haze code without looking like a call: each one
+        // reads the context's user box, so the sum proves they ran under C's context.
+        s.run(
+            "context: an extern C body converts with as, calls through ?., iterates computeds and compares under C's context",
             """
-struct Inner {
-    x: int = 0;
-    fn operator==(o: Inner): bool { return this.x == o.x; }
-}
+fn held(): int { return sys.userBoxValue<int>(context.userBox1) ?? 0; }
+struct Other { v: int = 0; }
+struct Meters { v: int = 0; fn operator as(): Other { return Other { v: this.v + held() }; } }
+struct Inner { x: int = 0; fn operator==(o: Inner): bool { return held() == 1000; } }
 struct Outer { inner: Inner = {}; }
+struct M { v: int = 0; fn get(): int { return this.v + held(); } }
 
-extern C fn entry(): int {
-    let same = Outer {} == Outer {}; // <- the comparison calls Inner's operator==
-    return 0;
+extern C fn entry(o: M | none): int {
+    let other: Other = Meters { v: 3 };
+    let items: mut []rx.Computed<int> = [rx.computed(() => { return held(); })];
+    let fromComputeds = 0;
+    for c in items {
+        fromComputeds = fromComputeds + c;
+    }
+    let sum = other.v + (o?.get() ?? 0) + fromComputeds;
+    let same = Outer {} == Outer {};
+    if same { sum = sum + 1; }
+    return sum;
 }
 
 fn main(): int {
-    return entry();
-}
-""",
-            [testsuite.mustHave(errorcodes.Code.ContextNeededInExternCFunction)]);
-
-        s.compileFails(
-            "context: an extern C body calls a => closure",
-            """
-extern C fn entry(): int {
-    let f = () => { return 1; };
-    let n = f(); // <- a closure takes a context
+    context.userBox1 = sys.makeUserBox<int>(1000);
+    let p = sys.contextPtr();
+    let o: M | none = M { v: 20 };
+    let result = 0;
+    do unsafe { __c__("result = entry((hzstd_context_t *)p, o);"); };
+    // 1003 + 1020 + 1000 + 1
+    fmt.println(f"{result}");
     return 0;
 }
-
-fn main(): int {
-    return entry();
-}
 """,
-            [testsuite.mustHave(errorcodes.Code.ContextNeededInExternCFunction)]);
+            "3024");
 
-        s.compileFails(
-            "context: an extern C body calls a -> function value",
-            """
-fn helper(): int { return 1; }
-
-extern C fn entry(): int {
-    let f: () -> int = helper;
-    let n = f(); // <- a -> function is a Haze function
-    return 0;
-}
-
-fn main(): int {
-    return entry();
-}
-""",
-            [testsuite.mustHave(errorcodes.Code.ContextNeededInExternCFunction)]);
-
-        s.compileFails(
-            "context: an extern C body reads a computed",
-            """
-extern C fn entry(c: rx.Computed<int>): int {
-    let v: int = c; // <- evaluating a computed runs Haze code
-    return 0;
-}
-
-fn main(): int {
-    let c = rx.computed(() => { return 1; });
-    return entry(c);
-}
-""",
-            [testsuite.mustHave(errorcodes.Code.ContextNeededInExternCFunction)]);
-
-        s.compileFails(
-            "context: an extern C body writes a reactive",
-            """
-extern C fn entry(r: rx.Reactive<int>): int {
-    r := 2; // <- a write notifies dependents, which runs Haze code
-    return 0;
-}
-
-fn main(): int {
-    let r = rx.reactive<int>(1);
-    return entry(r);
-}
-""",
-            [testsuite.mustHave(errorcodes.Code.ContextNeededInExternCFunction)]);
-
-        // ── no reference to the context ────────────────────────────────────────────
-        // Haze has no `&` operator (addressOf() is a library function), so
-        // `&context` is a syntax error like any `&x`: no path to a reference.
         s.compileFails(
             "context: &context is a syntax error",
             """

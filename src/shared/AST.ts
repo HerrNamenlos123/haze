@@ -199,6 +199,9 @@ export type ASTFunctionRequiresBlock = {
   final: boolean;
   pure: boolean;
   noreturn: boolean;
+  // `:: context`: an `extern C` function that takes the context first (C401)
+  // although it is declared without a body (module interfaces, C entries).
+  context: boolean;
   noreturnIf: {
     expr: ASTExpr;
   } | null;

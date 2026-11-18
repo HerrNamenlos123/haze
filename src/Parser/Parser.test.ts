@@ -814,3 +814,60 @@ describe("`tasklocal` and `global`, in both parsers", () => {
     await rejectBothAny("global pub let x: int = 1;");
   });
 });
+
+describe("`:: context` on an extern C function, in both parsers", () => {
+  useBothParsers();
+  const requiresOf = (ast: unknown) =>
+    (ast as { requires: { context: boolean; final: boolean } }[])[0].requires;
+
+  test("a declaration that takes the context", async () => {
+    const r = requiresOf(
+      await parseBoth("extern C fn entry(x: i32): i32 :: context;")
+    );
+    expect(r.context).toBe(true);
+  });
+
+  test("next to final, in either order", async () => {
+    const a = requiresOf(
+      await parseBoth("extern C fn entry(): i32 :: final, context;")
+    );
+    const b = requiresOf(
+      await parseBoth("extern C fn entry(): i32 :: context, final;")
+    );
+    expect([a.context, a.final, b.context, b.final]).toEqual([
+      true,
+      true,
+      true,
+      true,
+    ]);
+  });
+
+  test("absent, it is false", async () => {
+    const r = requiresOf(await parseBoth("extern C fn entry(): i32 :: final;"));
+    expect(r.context).toBe(false);
+  });
+
+  test("any other word is rejected the same way", async () => {
+    const error = await rejectBoth("extern C fn entry(): i32 :: frobnicate;");
+    expect(error.message).toContain("'frobnicate' is not a function requirement");
+  });
+
+  // Requirements are a function's; on a struct or enum nothing would read them.
+  test("a struct takes no requirements", async () => {
+    const error = await rejectBoth("struct S :: context { x: i32 = 0; }");
+    expect(error.message).toContain("a struct takes no requirements");
+    expect([error.line, error.column]).toEqual([1, 9]);
+  });
+
+  test("a generic struct takes none either, not even final", async () => {
+    const error = await rejectBoth("struct S<T> :: final {\n    x: T;\n}");
+    expect(error.message).toContain("a struct takes no requirements");
+    expect([error.line, error.column]).toEqual([1, 12]);
+  });
+
+  test("an enum takes no requirements", async () => {
+    const error = await rejectBoth("enum E :: context { A, B }");
+    expect(error.message).toContain("an enum takes no requirements");
+    expect([error.line, error.column]).toEqual([1, 7]);
+  });
+});

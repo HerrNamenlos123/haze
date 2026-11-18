@@ -72,8 +72,9 @@
 // A struct is numbered (describeStruct) before its fields are described, so
 // a type that contains itself ends: the format looks itself up first.
 //
-// Not walked: reactive values, Context, pointers, callables (a static assert
-// names the type).
+// Not walked: reactive values, pointers, callables (a static assert names the
+// type). Never read: Context, Logger, Allocator (they hold C function pointers;
+// a context is made only by Context() and every context is valid, C398, C399).
 
 namespace traverse {
 
@@ -442,6 +443,11 @@ namespace traverse {
     }
 
     export fn readStruct<F, T>(f: F): Result<T, Failed> :: final {
+        // Every struct read comes through here (none of these three is plain, so
+        // read() never copies one as bytes), so one nested inside T is caught too.
+        if comptime T is Context || T is Logger || T is Allocator {
+            static_assert(false, f"traverse.read(): a {T.prettyName} cannot be read: it holds C function pointers");
+        }
         const comptime skip = F["skipAttribute"].literalValue;
         do unsafe {
             let result: T = uninitialized;

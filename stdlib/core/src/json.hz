@@ -559,12 +559,13 @@ namespace json {
     // again while it is still being elaborated -- which the compiler only
     // allows for a function whose signature is final.
     export fn parseJsonNodeFromFfi<T>(allocator: Allocator, node: ffi.hzstd_json_node_t): Result<T, Error> :: final {
-        if comptime T is Context {
-            // Parsing makes a value without its constructor, and a context is
-            // made only by Context() or by copying one (Axiom C398). Every
-            // nested value comes through here, so a Context anywhere inside
-            // T (a field, an element, a variant) is caught too.
-            static_assert(false, "json.parse(): a Context cannot be parsed: a context is made only by Context() or by copying one");
+        if comptime T is Context || T is Logger || T is Allocator {
+            // These hold C function pointers, which no JSON text can name; a
+            // context is made only by Context() or by copying one (Axiom
+            // C398), and every context is valid (C399). Every nested value
+            // comes through here, so one anywhere inside T (a field, an
+            // element, a variant) is caught too.
+            static_assert(false, f"json.parse(): a {T.prettyName} cannot be parsed: it holds C function pointers");
         }
         else if comptime T.category == meta.TypeCategory.Literal {
             if comptime T.baseType is str {

@@ -180,6 +180,69 @@ Run of 2026-11-17 (unattended, started 01:10 Vienna time on main 8fc71ae9).
   use. It returns with their migration. `DEVELOPMENT.md` "What the test gate covers" still lists
   it (stale, not edited).
 
+## Stage 1: the context rework (C209, C390 to C406, C468 to C477, C500 to C510, C567 to C569)
+
+- **S1-1. C layout.** `hzstd_context_t { task, thread, settings }`; `hzstd_context_settings_t
+  { allocator, logger, userBox1, userBox2 }` (hzstd_types.h), field names equal to the Haze names
+  so Haze declares the C struct directly. A logger is `{ write(ctx, state, text), state }`, `write` returning `hzstd_none_t`, the C type
+  of a Haze `extern C` function that returns nothing (S1-11); a user
+  box is `{ value, fingerprint, type_name }`, empty when `value` is NULL. Rejected: Haze-generated
+  settings layouts (C568 wants one layout in every program, also across compilers).
+- **S1-2. `Context` is opaque** (an `extern C noemit opaque struct`): its fields are readable and
+  writable, but `Context {}` is rejected, so only `Context()` or a copy makes one (C398).
+- **S1-3. `context` lowers to `(*__hz_ctx).settings`.** Reading copies the settings, assigning
+  writes only them (C474, C567); `context.clone` copies the whole struct, so the copy keeps the
+  same task and thread.
+- **S1-4. An `extern C` function with a Haze body is a Haze function with a C name** (C401,
+  C402): it takes the context first and its type is a Haze function type. One rule decides,
+  `isCFunction`: `extern C`, no body, no `:: context`. Rejected: an implicit context parameter on
+  an otherwise C-typed function (two meanings for one type).
+- **S1-5. `:: context`** declares, without a body, an `extern C` function that takes the context.
+  Needed because module interfaces carry no bodies: without it an importer called such a function
+  without a context (a crash, found by the module-boundary case). It also lets C implement an entry
+  that receives the context. Elsewhere it is H7233. Rejected: a second, mangled Haze symbol per
+  such function (two symbols for one function), a link-name attribute (new syntax with no other
+  use).
+- **S1-6. Runtime entry points take `hzstd_context_t *`** (C400: the pointer is valid only during
+  the call); the generated code passes `__hz_ctx`.
+- **S1-7. One thread-local lookup.** `hzstd_context_for_current_thread()` (C504) reads the thread's
+  struct from one `_Thread_local`, the only such lookup (C502); it panics on a thread Haze does not
+  manage (C505). The main thread and its task are statics until threads exist (stage 5).
+- **S1-8. `sys.contextPtr()` names `__hz_ctx` in inline C**, the one place allowed to (a
+  function's `__hz_ctx` is its caller's pointer, C209). Rejected: a compiler intrinsic (more code
+  for the same one line).
+- **S1-9. Stubs for the settings** (plan: mostly stubs): `sys.log` through the context's logger
+  (default: a line to stderr), `sys.makeUserBox<T>` / `sys.userBoxValue<T>` (panics on a type
+  mismatch, like TypeErasedBox). Allocations and log lines are not routed through the context yet.
+  `makeUserBox(7)` deduces the literal type `const 7`; give `<int>` (generic deduction keeps
+  literal types).
+- **S1-10. Retired:** `Context.init`, H7219, H7220, `checkExternCBodyNeedsNoContext`,
+  `hzstd_context_init`, `hzstd_context_default`, Lower's `hasContext`.
+- **S1-11. C slots that hold Haze functions have the Haze function's C type exactly.** A Haze
+  function returning nothing returns `hzstd_none_t` in C, so the logger's `write` returns
+  `hzstd_none_t`, not `void` (UBSan found the call through a `void` pointer; the test now assigns
+  the Haze function without a cast, which clang rejects on a mismatch). Rejected: emitting `void`
+  for Haze-bodied `extern C` functions (S1-4 makes them Haze functions whose values Haze calls as
+  returning `hzstd_none_t`; two C types for one function).
+
+Fixes from the adversarial review of stage 1 (3 confirmed findings, all fixed test-first):
+
+- **S1-12. Logger and Allocator are opaque**, like Context (C399: a zero one has NULL function
+  pointers; `context.logger = Logger {}` then crashed in `sys.log`). `json.parse` and
+  `traverse.readStruct` static-assert on Context, Logger and Allocator, nested ones included.
+  Rejected: a NULL check in `hzstd_log` (it would make an invalid context look valid).
+- **S1-13. A declaration without a body has a signature scope** holding only `context`
+  (`Collect.FunctionSymbol.signatureScope`; for a function with a body it is the function scope).
+  A default parameter value is evaluated by the caller, so `context` in it is the caller's; an
+  exported function with such a default failed in every importer (H3002), since interfaces carry
+  no bodies. Rejected: giving body-less declarations a function scope (`functionScope` means "has
+  a body" in isCFunction and the body elaboration).
+- **S1-14. `:: context` with a body is H7233** (a Haze body takes the context already). Structs and
+  enums take no requirements: the grammar allowed a block there that nothing read (the native
+  parser dropped it, the ANTLR builder failed with an internal error); both now report "a struct
+  takes no requirements" at the `::`. Rejected: rejecting only `context` there (one more special
+  case on a block that means nothing).
+
 ## Task-local storage (contract section 3, C200 to C202, C207, C208, C285, C377, C469, C518, C598)
 
 The problem: a program is many modules, built by slightly different compilers, each with task-local
@@ -246,6 +309,15 @@ module's own task-locals, although they do not exist in the library the context 
   behaviour; nothing here decides C454.
 
 ## What no longer compiles on this branch
+
+**After stage 1:** everything that uses `Context.init` or a context by value at a C boundary:
+stdlib/sdl, stdlib/ui_layout, stdlib/wgpu, stdlib/single_instance,
+stdlib/language_server_protocol, tests/stdlib-paths/headless. Also stdlib/glfw (and
+stdlib/glfw_wgpu, which imports it): `glfw_getProcAddress` has a Haze body, so it takes the
+context and returning it as `extern C (name: ccstr) -> cptr` is H4001; glad calls it without a
+context, so it has to become a C function (found by reading, not built). They wait for the user's migration
+decision (plan, stage 1). Every C entry they have becomes an `extern C` function with a Haze body
+called with the context pointer.
 
 **After stage 0 (S0-1, writes need `mut`):** everything outside stdlib/core that changes data
 through a plain reference. A static scan (2026-11-17) counts at least 672 typed array variables

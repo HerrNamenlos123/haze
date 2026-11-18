@@ -1,5 +1,8 @@
 
-export extern C noemit struct hzstd_allocator_t {};
+// Opaque: a zero allocator would hold no allocate function, so allocators come
+// only from the runtime (hzstd_make_heap_allocator, arenas). The context holds
+// one, and every context is valid (C399).
+export extern C noemit opaque struct hzstd_allocator_t {};
 export type Allocator = hzstd_allocator_t;
 
 export extern C fn hzstd_make_heap_allocator(): Allocator :: final;

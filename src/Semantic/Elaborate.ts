@@ -73,6 +73,20 @@ import {
 import { Semantic } from "./SemanticTypes";
 import { findClosestByLevenshtein } from "../utils";
 
+// A C function: declared `extern C` without a Haze body and without
+// `:: context`. Its type is an `extern C (...) -> R` type and calls pass no
+// context (C211). An `extern C` function with a Haze body is a Haze function
+// with a C name: it takes the context first, which C passes (C401, C402); a
+// declaration of one (a module interface, an entry implemented in C) says so
+// with `:: context`.
+export function isCFunction(func: Collect.FunctionSymbol): boolean {
+  return (
+    func.extern === EExternLanguage.Extern_C &&
+    func.functionScope === null &&
+    !func.declaresContext
+  );
+}
+
 function isPowerOfTwo(x: bigint): boolean {
   // biome-ignore lint/suspicious/noBitwiseOperators: false
   return x > 0n && (x & (x - 1n)) === 0n;
@@ -8141,9 +8155,11 @@ export class SemanticElaborator {
       return this.coreContext;
     }
     this.coreContext = null;
+    // `Context` is the settings of the C context (C473); the runtime data
+    // around them is never a Haze type.
     const structSymbolId = Semantic.tryFindBuiltinSymbolByName(
       this.sr,
-      "hzstd_context_t",
+      "hzstd_context_settings_t",
       null
     );
     if (structSymbolId === null) {
@@ -8229,34 +8245,6 @@ export class SemanticElaborator {
     );
   }
 
-  // Does this collected symbol name the core `Context` type, directly or
-  // through aliases? Decided on the collected symbols, without elaborating
-  // the callee, so it is safe to ask about any `X.init(...)`.
-  isCoreContextCollectSymbol(symbolId: Collect.SymbolId): boolean {
-    let symbol = this.sr.cc.symbolNodes.get(symbolId);
-    if (symbol.variant !== Collect.ENode.TypeDefSymbol) {
-      return false;
-    }
-    const def = this.sr.cc.typeDefNodes.get(symbol.typeDef);
-    if (def.variant === Collect.ENode.AliasDef) {
-      if (def.generics.length > 0) {
-        return false;
-      }
-      const target = this.resolveAliasTarget(symbol.typeDef);
-      if (target.kind !== "symbol" || target.generics.length > 0) {
-        return false;
-      }
-      symbol = this.sr.cc.symbolNodes.get(target.symbolId);
-      if (symbol.variant !== Collect.ENode.TypeDefSymbol) {
-        return false;
-      }
-    } else if (def.variant !== Collect.ENode.StructTypeDef) {
-      return false;
-    }
-    const core = this.coreContextType();
-    return core !== null && symbol.typeDef === core.collectTypeDef;
-  }
-
   // Elaborates the implicit `context` of a Haze function or lambda into its
   // own context's variable map. It is not a parameter: it is the hidden
   // context pointer, which lowering passes first.
@@ -8265,12 +8253,14 @@ export class SemanticElaborator {
     functionSymbolId: Semantic.SymbolId,
     context: Semantic.ElaborationContext
   ) {
-    if (!func.functionScope) {
-      return;
-    }
-    const functionScope = this.sr.cc.scopeNodes.get(func.functionScope);
-    assert(functionScope.variant === Collect.ENode.FunctionScope);
-    for (const sId of functionScope.symbols) {
+    // The signature scope: the function scope, or a body-less declaration's
+    // own scope for its default parameter values (SymbolCollection).
+    const signatureScope = this.sr.cc.scopeNodes.get(func.signatureScope);
+    assert(
+      signatureScope.variant === Collect.ENode.FunctionScope ||
+        signatureScope.variant === Collect.ENode.BlockScope
+    );
+    for (const sId of signatureScope.symbols) {
       const collected = this.sr.cc.symbolNodes.get(sId);
       if (
         collected.variant !== Collect.ENode.VariableSymbol ||
@@ -8302,33 +8292,12 @@ export class SemanticElaborator {
     }
   }
 
-  // `context` named where no implicit `context` is in scope: inside an
-  // `extern C` function (H7219), or outside of any function.
+  // `context` named where no implicit `context` is in scope: outside of any
+  // function. Every function has one, `extern C` functions defined in Haze
+  // included (C402).
   contextNotAvailable(sourceloc: SourceLoc): CompilerError {
-    let scopeId = this.currentContext.currentScope;
-    for (let guard = 0; guard < 10000; guard++) {
-      const scope = this.sr.cc.scopeNodes.get(scopeId);
-      if (scope.variant === Collect.ENode.FunctionScope) {
-        const owner = this.sr.cc.symbolNodes.get(scope.owningSymbol);
-        if (
-          owner.variant === Collect.ENode.FunctionSymbol &&
-          owner.extern === EExternLanguage.Extern_C
-        ) {
-          return new CompilerError(
-            `'context' does not exist in the 'extern C' function '${owner.name}': C calls it without a context. To run Haze code from it, take a 'Context' parameter and use 'Context.init(ctx, () => { ... })'.`,
-            sourceloc,
-            HazeErrorCode.ContextInExternCFunction
-          );
-        }
-        break;
-      }
-      if (scope.variant === Collect.ENode.ModuleScope) {
-        break;
-      }
-      scopeId = scope.parentScope;
-    }
     return new CompilerError(
-      `'context' only exists inside a Haze function`,
+      `'context' only exists inside a function`,
       sourceloc,
       HazeErrorCode.SymbolWasNotDeclaredThisScope
     );
@@ -8361,9 +8330,8 @@ export class SemanticElaborator {
     return null;
   }
 
-  // `Context()`: the only way to make a context (C398). An ordinary call of
-  // the C function behind it, so it needs no context and is legal in an
-  // `extern C` body.
+  // `Context()`: the only way to make a context (C398): the default settings
+  // (C479). An ordinary call of the C function behind it.
   contextConstructorCall(
     argumentCount: number,
     sourceloc: SourceLoc
@@ -8384,12 +8352,12 @@ export class SemanticElaborator {
     }
     const defaultFnId = Semantic.tryFindBuiltinSymbolByName(
       this.sr,
-      "ffi.hzstd_context_default",
+      "ffi.hzstd_context_settings_default",
       sourceloc
     );
     if (defaultFnId === null) {
       throw new InternalError(
-        "Context() needs ffi.hzstd_context_default from the core module"
+        "Context() needs ffi.hzstd_context_settings_default from the core module"
       );
     }
     const [, calleeId] = this.explicitSymbolValue(
@@ -8402,15 +8370,13 @@ export class SemanticElaborator {
     return this.sr.b.callExpr(calleeId, [], this.inFunction, sourceloc);
   }
 
-  // `context.clone(body)` (initValue null; C396, C397) and
-  // `Context.init(value, body)` (C401): runs `body`, a callable with no
-  // parameters, under a new context that lives in the calling frame, and
-  // yields its value. `body` is used like an `immediate` argument: it runs
-  // inside the expression, so a lambda literal gets its env on the stack and
-  // sees the narrowings in effect here.
+  // `context.clone(body)` (C396, C397): runs `body`, a callable with no
+  // parameters, under a copy of the current context that lives in the calling
+  // frame, and yields its value. `body` is used like an `immediate` argument:
+  // it runs inside the expression, so a lambda literal gets its env on the
+  // stack and sees the narrowings in effect here.
   contextScopeExpr(
     what: string,
-    initValueArg: Collect.ExprId | null,
     bodyArg: Collect.ExprId,
     inference: Semantic.Inference,
     sourceloc: SourceLoc
@@ -8425,23 +8391,6 @@ export class SemanticElaborator {
       );
     }
     const inFunction = this.inFunction;
-
-    let initValueId: Semantic.ExprId | null = null;
-    if (initValueArg !== null) {
-      const [, valueId] = this.expr(initValueArg, {
-        gonnaInstantiateStructWithType: core.typeUse,
-        unsafe: inference?.unsafe,
-      });
-      initValueId = Conversion.MakeConversionOrThrow(
-        this.sr,
-        valueId,
-        core.typeUse,
-        this.currentContext.constraints,
-        this.sr.cc.exprNodes.get(initValueArg).sourceloc ?? sourceloc,
-        Conversion.Mode.Implicit,
-        inference?.unsafe ?? false
-      );
-    }
 
     const [body, bodyId] = this.expr(bodyArg, {
       unsafe: inference?.unsafe,
@@ -8496,11 +8445,8 @@ export class SemanticElaborator {
 
     const flow = Semantic.FlowResult.empty();
     const writes = Semantic.WriteResult.empty();
-    for (const id of initValueId === null ? [bodyId] : [initValueId, bodyId]) {
-      const e = this.sr.exprNodes.get(id);
-      flow.addAll(e.flow);
-      writes.addAll(e.writes);
-    }
+    flow.addAll(body.flow);
+    writes.addAll(body.writes);
     flow.remove(Semantic.FlowType.Fallthrough);
     flow.add(
       functionTypeDef.requires.noreturn
@@ -8516,7 +8462,6 @@ export class SemanticElaborator {
     return this.sr.b.addExpr<Semantic.ContextScopeExpr>(this.sr, {
       variant: Semantic.ENode.ContextScopeExpr,
       instanceIds: [],
-      initValue: initValueId,
       body: bodyId,
       type: functionTypeDef.returnType,
       isTemporary: true,
@@ -8526,356 +8471,42 @@ export class SemanticElaborator {
     });
   }
 
-  // `context.clone(...)` / `Context.init(...)` (both intrinsics on the
-  // context), or null when the call is something else.
+  // `context.clone(...)`, the one intrinsic on the context, or null when the
+  // call is something else.
   tryContextIntrinsicCall(
     callExpr: Collect.ExprCallExpr,
     callee: Collect.MemberAccessExpr,
     inference: Semantic.Inference
   ): [Semantic.Expression, Semantic.ExprId] | null {
-    if (callee.memberName !== "clone" && callee.memberName !== "init") {
+    if (callee.memberName !== "clone") {
       return null;
     }
     const object = this.sr.cc.exprNodes.get(callee.expr);
     if (
       object.variant !== Collect.ENode.SymbolValueExpr ||
-      object.genericArgs.length !== 0
+      object.genericArgs.length !== 0 ||
+      object.name !== CONTEXT_VARIABLE_NAME
     ) {
       return null;
     }
-
-    if (
-      callee.memberName === "clone" &&
-      object.name === CONTEXT_VARIABLE_NAME
-    ) {
-      // Resolves the name like any read: H7219 in an `extern C` function.
-      const [, contextId] = this.expr(callee.expr, undefined);
-      if (this.contextVariableBehind(contextId) === null) {
-        return null;
-      }
-      if (callee.genericArgs.length !== 0 || callExpr.arguments.length !== 1) {
-        throw new CompilerError(
-          `context.clone() takes exactly one argument: the closure to run under a copy of the current context, like 'context.clone(() => { ... })'`,
-          callExpr.sourceloc,
-          HazeErrorCode.ThisCallRequiresArgumentsButWereGiven
-        );
-      }
-      return this.contextScopeExpr(
-        "context.clone",
-        null,
-        callExpr.arguments[0],
-        inference,
-        callExpr.sourceloc
-      );
+    // Resolves the name like any read.
+    const [, contextId] = this.expr(callee.expr, undefined);
+    if (this.contextVariableBehind(contextId) === null) {
+      return null;
     }
-
-    if (callee.memberName === "init") {
-      const found = Semantic.tryLookupSymbol(this.sr, object.name, {
-        startLookupInScope: this.currentContext.currentScope,
-        sourceloc: object.sourceloc,
-      });
-      if (
-        !found ||
-        found.type !== "collect" ||
-        !this.isCoreContextCollectSymbol(found.id)
-      ) {
-        return null;
-      }
-      if (callee.genericArgs.length !== 0 || callExpr.arguments.length !== 2) {
-        throw new CompilerError(
-          `Context.init() takes exactly two arguments: the context value to start from and the closure to run under it, like 'Context.init(ctx, () => { ... })'`,
-          callExpr.sourceloc,
-          HazeErrorCode.ThisCallRequiresArgumentsButWereGiven
-        );
-      }
-      return this.contextScopeExpr(
-        "Context.init",
-        callExpr.arguments[0],
-        callExpr.arguments[1],
-        inference,
-        callExpr.sourceloc
-      );
-    }
-
-    return null;
-  }
-
-  // An `extern C` function has no context (C402), so nothing in its body may
-  // need one (H7220): no call of Haze code, which receives the caller's
-  // context, and no runtime entry that can run Haze code (reading a
-  // computed, writing a reactive). Lambdas written in the body are Haze
-  // functions with their own context and are not entered; running them, or
-  // any Haze code, under a context is what `Context.init` is for.
-  checkExternCBodyNeedsNoContext(fn: Semantic.FunctionSymbol) {
-    if (fn.scope === null) {
-      return;
-    }
-    const fail = (what: string, sourceloc: SourceLoc): never => {
+    if (callee.genericArgs.length !== 0 || callExpr.arguments.length !== 1) {
       throw new CompilerError(
-        `${what} needs a context, which the 'extern C' function '${fn.name}' does not have. Take a 'Context' parameter and run Haze code under it: 'Context.init(ctx, () => { ... })'.`,
-        sourceloc ?? fn.sourceloc,
-        HazeErrorCode.ContextNeededInExternCFunction
+        `context.clone() takes exactly one argument: the closure to run under a copy of the current context, like 'context.clone(() => { ... })'`,
+        callExpr.sourceloc,
+        HazeErrorCode.ThisCallRequiresArgumentsButWereGiven
       );
-    };
-    const typeDefOf = (typeUseId: Semantic.TypeUseId) =>
-      this.sr.typeDefNodes.get(
-        this.sr.typeUseNodes.get(this.resolveAlias(typeUseId)).type
-      );
-    const calleeName = (calleeId: Semantic.ExprId): string => {
-      const callee = this.sr.exprNodes.get(calleeId);
-      if (callee.variant === Semantic.ENode.SymbolValueExpr) {
-        return `'${Semantic.serializeFullSymbolName(this.sr, callee.symbol)}'`;
-      }
-      if (
-        callee.variant === Semantic.ENode.CallableExpr &&
-        callee.envType?.type === "method"
-      ) {
-        return `'${Semantic.serializeFullSymbolName(this.sr, callee.functionSymbol)}'`;
-      }
-      return `'${Semantic.serializeExpr(this.sr, calleeId)}'`;
-    };
-
-    // Expressions can be shared between parents (a default argument, an
-    // argument reused by a dispatch); each is checked once.
-    const seen = new Set<Semantic.ExprId>();
-    const block = (blockId: Semantic.BlockScopeId) => {
-      const scope = this.sr.blockScopeNodes.get(blockId);
-      scope.statements.forEach(statement);
-      if (scope.emittedExpr) {
-        expr(scope.emittedExpr);
-      }
-    };
-    const statement = (statementId: Semantic.StatementId) => {
-      const s = this.sr.statementNodes.get(statementId);
-      switch (s.variant) {
-        case Semantic.ENode.InlineCStatement:
-        case Semantic.ENode.BreakStatement:
-        case Semantic.ENode.ContinueStatement:
-          return;
-        case Semantic.ENode.ReturnStatement:
-          if (s.expr) {
-            expr(s.expr);
-          }
-          return;
-        case Semantic.ENode.RaiseStatement:
-          expr(s.expr);
-          return;
-        case Semantic.ENode.VariableStatement:
-          if (s.value) {
-            expr(s.value);
-          }
-          return;
-        case Semantic.ENode.ExprStatement:
-          expr(s.expr);
-          return;
-        case Semantic.ENode.IfStatement:
-          expr(s.condition);
-          block(s.thenBlock);
-          for (const e of s.elseIfs) {
-            expr(e.condition);
-            block(e.thenBlock);
-          }
-          if (s.else) {
-            block(s.else);
-          }
-          return;
-        case Semantic.ENode.WhileStatement:
-          expr(s.condition);
-          block(s.thenBlock);
-          return;
-        case Semantic.ENode.ForStatement:
-          if (s.initStatement !== null) {
-            statement(s.initStatement);
-          }
-          if (s.loopCondition !== null) {
-            expr(s.loopCondition);
-          }
-          if (s.loopIncrement !== null) {
-            expr(s.loopIncrement);
-          }
-          block(s.body);
-          return;
-        case Semantic.ENode.ForEachStatement: {
-          expr(s.arrayExpr);
-          // Each element is read through every Reactive/Computed layer it
-          // has; a computed one is evaluated, which can run Haze code.
-          const arrayDef = typeDefOf(this.sr.exprNodes.get(s.arrayExpr).type);
-          if (
-            arrayDef.variant === Semantic.ENode.FixedArrayDatatype ||
-            arrayDef.variant === Semantic.ENode.DynamicArrayDatatype
-          ) {
-            let elementDef = typeDefOf(arrayDef.datatype);
-            for (let guard = 0; guard < 64; guard++) {
-              if (elementDef.variant === Semantic.ENode.ComputedDatatype) {
-                fail("Iterating over computed values", s.sourceloc);
-              }
-              if (
-                elementDef.variant !== Semantic.ENode.ReactiveDatatype &&
-                elementDef.variant !== Semantic.ENode.ShallowReactiveDatatype
-              ) {
-                break;
-              }
-              elementDef = typeDefOf(elementDef.wrappedType);
-            }
-          }
-          block(s.body);
-          return;
-        }
-        default: {
-          const unhandled: never = s;
-          assert(false, `${(unhandled as Semantic.Statement).variant}`);
-        }
-      }
-    };
-    const expr = (exprId: Semantic.ExprId) => {
-      if (seen.has(exprId)) {
-        return;
-      }
-      seen.add(exprId);
-      const e = this.sr.exprNodes.get(exprId);
-      switch (e.variant) {
-        case Semantic.ENode.SymbolValueExpr:
-        case Semantic.ENode.IntrinsicSymbol:
-        case Semantic.ENode.DatatypeAsValueExpr:
-        case Semantic.ENode.UnionTagReferenceExpr:
-        case Semantic.ENode.LiteralExpr:
-          return;
-
-        case Semantic.ENode.ExprCallExpr: {
-          const calleeDef = typeDefOf(this.sr.exprNodes.get(e.calledExpr).type);
-          if (
-            calleeDef.variant === Semantic.ENode.CallableDatatype ||
-            (calleeDef.variant === Semantic.ENode.FunctionDatatype &&
-              !calleeDef.externC)
-          ) {
-            fail(`Calling ${calleeName(e.calledExpr)}`, e.sourceloc);
-          }
-          expr(e.calledExpr);
-          e.arguments.forEach(expr);
-          return;
-        }
-        case Semantic.ENode.ComputedReadExpr:
-          return fail("Reading a computed value", e.sourceloc);
-        case Semantic.ENode.ReactiveWriteExpr:
-          return fail("Writing a reactive value", e.sourceloc);
-        case Semantic.ENode.ContextScopeExpr:
-          if (e.initValue === null) {
-            return fail("context.clone()", e.sourceloc);
-          }
-          // The body runs under the context Context.init sets up.
-          expr(e.initValue);
-          expr(e.body);
-          return;
-        case Semantic.ENode.CallableExpr:
-          // Making a closure needs no context; its body is a function of its
-          // own, run by whoever calls it.
-          if (e.envValue?.type === "method") {
-            expr(e.envValue.thisExpr);
-          } else if (e.envValue?.type === "lambda") {
-            e.envValue.captures.forEach((c) => expr(c.value));
-          }
-          return;
-
-        case Semantic.ENode.MemberAccessExpr:
-        case Semantic.ENode.AddressOfExpr:
-        case Semantic.ENode.DereferenceExpr:
-        case Semantic.ENode.ExplicitCastExpr:
-        case Semantic.ENode.UnaryExpr:
-        case Semantic.ENode.ValueToUnionCastExpr:
-        case Semantic.ENode.UnionToValueCastExpr:
-        case Semantic.ENode.UnionToUnionCastExpr:
-        case Semantic.ENode.UnionTagCheckExpr:
-        case Semantic.ENode.AttemptErrorPropagationExpr:
-        case Semantic.ENode.PreIncrExpr:
-        case Semantic.ENode.PostIncrExpr:
-          expr(e.expr);
-          return;
-        case Semantic.ENode.SizeofExpr:
-        case Semantic.ENode.AlignofExpr:
-          expr(e.valueExpr);
-          return;
-        case Semantic.ENode.ReactiveReadExpr:
-          expr(e.value);
-          return;
-        case Semantic.ENode.BlockScopeExpr:
-          block(e.block);
-          return;
-        case Semantic.ENode.ExprAssignmentExpr:
-          expr(e.target);
-          expr(e.value);
-          return;
-        case Semantic.ENode.BinaryExpr:
-          expr(e.left);
-          expr(e.right);
-          return;
-        case Semantic.ENode.TernaryExpr:
-          expr(e.condition);
-          expr(e.thenExpr);
-          expr(e.else);
-          return;
-        case Semantic.ENode.AttemptExpr:
-          expr(e.attemptScopeExpr);
-          if (e.elseScopeExpr !== null) {
-            expr(e.elseScopeExpr);
-          }
-          if (e.recoverScopeExpr !== null) {
-            expr(e.recoverScopeExpr);
-          }
-          return;
-        case Semantic.ENode.UnionMemberSelectExpr:
-          expr(e.union);
-          for (const branch of e.branches) {
-            if (branch.condition !== null) {
-              expr(branch.condition);
-            }
-            expr(branch.value);
-          }
-          return;
-        case Semantic.ENode.StructLiteralExpr:
-          e.assign.forEach((a) => expr(a.value));
-          if (e.allocator !== null) {
-            expr(e.allocator);
-          }
-          return;
-        case Semantic.ENode.ArrayLiteralExpr:
-          e.elements.forEach(expr);
-          if (e.allocator !== null) {
-            expr(e.allocator);
-          }
-          return;
-        case Semantic.ENode.ArraySubscriptExpr:
-          expr(e.expr);
-          e.indices.forEach(expr);
-          return;
-        case Semantic.ENode.ArraySliceExpr:
-          expr(e.expr);
-          for (const index of e.indices) {
-            if (index.start !== null) {
-              expr(index.start);
-            }
-            if (index.end !== null) {
-              expr(index.end);
-            }
-          }
-          return;
-        case Semantic.ENode.StringSubscriptExpr:
-          expr(e.expr);
-          expr(e.index);
-          return;
-        case Semantic.ENode.StringConstructExpr:
-          expr(e.value.data);
-          expr(e.value.length);
-          return;
-        default: {
-          const unhandled: never = e;
-          assert(false, `${(unhandled as Semantic.Expression).variant}`);
-        }
-      }
-    };
-
-    // Default arguments are evaluated by the caller and are part of each
-    // call's arguments, so a call made here is checked with its defaults.
-    block(fn.scope);
+    }
+    return this.contextScopeExpr(
+      "context.clone",
+      callExpr.arguments[0],
+      inference,
+      callExpr.sourceloc
+    );
   }
 
   elaborateFunctionSymbolWithGenerics(
@@ -8972,8 +8603,8 @@ export class SemanticElaborator {
 
     const newContext = Semantic.isolateElaborationContext(this.currentContext, {
       pathEntry: pathEntry,
-      genericsScope: func.functionScope || func.parentScope,
-      currentScope: func.functionScope || func.parentScope,
+      genericsScope: func.signatureScope,
+      currentScope: func.signatureScope,
       // A lambda body (bypassCache is the lambda path) does not inherit the
       // creation site's narrowings: nobody knows when it will run and what
       // the captured variables hold by then. Unless it is a literal passed
@@ -9486,7 +9117,7 @@ export class SemanticElaborator {
               parameters: parameters,
               returnType: returnType,
               vararg: func.vararg,
-              externC: symbol.extern === EExternLanguage.Extern_C,
+              externC: isCFunction(func),
               requires: {
                 final: func.requires.final,
                 noreturn: func.requires.noreturn,
@@ -9675,9 +9306,6 @@ export class SemanticElaborator {
               );
               symbol.scope = scopeId;
               this.finalizeEscapeAnalysis(symbol, symbolId);
-              if (symbol.extern === EExternLanguage.Extern_C) {
-                this.checkExternCBodyNeedsNoContext(symbol);
-              }
 
               if (func.name === "main" && parentSymbolId) {
                 const modulePrefix = getModuleGlobalNamespaceName(
@@ -9777,7 +9405,7 @@ export class SemanticElaborator {
                   parameters: parameters,
                   returnType: inferredReturnType,
                   vararg: func.vararg,
-                  externC: symbol.extern === EExternLanguage.Extern_C,
+                  externC: isCFunction(func),
                   requires: {
                     final: true,
                     pure:
@@ -12468,10 +12096,8 @@ export class SemanticElaborator {
         const isolatedContext = Semantic.isolateElaborationContext(
           this.currentContext,
           {
-            currentScope:
-              functionSymbol.functionScope || functionSymbol.parentScope,
-            genericsScope:
-              functionSymbol.functionScope || functionSymbol.parentScope,
+            currentScope: functionSymbol.signatureScope,
+            genericsScope: functionSymbol.signatureScope,
             constraints: ConstraintSet.empty(),
             instanceDeps: {
               instanceDependsOn: new Map(),
@@ -12509,10 +12135,8 @@ export class SemanticElaborator {
       this.withContext(
         {
           context: Semantic.isolateElaborationContext(this.currentContext, {
-            currentScope:
-              functionSymbol.functionScope || functionSymbol.parentScope,
-            genericsScope:
-              functionSymbol.functionScope || functionSymbol.parentScope,
+            currentScope: functionSymbol.signatureScope,
+            genericsScope: functionSymbol.signatureScope,
             constraints: ConstraintSet.empty(),
             instanceDeps: {
               instanceDependsOn: new Map(),
@@ -16150,7 +15774,7 @@ export class SemanticElaborator {
       const funcname = `__hz_reactive_array_push_${suffix}`;
       // A notifying mutation runs the effects it triggers under the
       // method's own context (hzstd_reactive_array.h).
-      const body = `__c__("HZSTD_REACTIVE_ARRAY_PUSH(*__hz_ctx, this, ${promotedElemCName}, HZSTD_REACTIVE_CELL_CREATE(${promotedElemCName}, ${userElemCName}, element));");`;
+      const body = `__c__("HZSTD_REACTIVE_ARRAY_PUSH(__hz_ctx, this, ${promotedElemCName}, HZSTD_REACTIVE_CELL_CREATE(${promotedElemCName}, ${userElemCName}, element));");`;
       return makeCallable(
         ensureSyntheticMethod(
           funcname,
@@ -16165,7 +15789,7 @@ export class SemanticElaborator {
       const funcname = `__hz_reactive_array_pop_${
         Semantic.mangleTypeUse(this.sr, promotedElemTypeId).name
       }`;
-      const body = `__c__("return HZSTD_REACTIVE_ARRAY_POP(*__hz_ctx, this, ${promotedElemCName});");`;
+      const body = `__c__("return HZSTD_REACTIVE_ARRAY_POP(__hz_ctx, this, ${promotedElemCName});");`;
       return makeCallable(
         ensureSyntheticMethod(funcname, [], promotedElemTypeId, body)
       );

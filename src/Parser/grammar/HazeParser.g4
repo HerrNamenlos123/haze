@@ -297,6 +297,9 @@ requiresPart
     | NORETURNIF LB expr RB
     | FINAL
     | PURE
+    // `context`: an `extern C` function that takes the context first (C401),
+    // not a keyword elsewhere; the AST builder rejects any other name.
+    | contextFlag=RAW_ID
     | LB requiresPart RB
     ;
 

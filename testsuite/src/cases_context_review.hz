@@ -5,8 +5,8 @@
 // pins one that a mutant broke without any other case noticing, or a bug
 // the review found.
 //
-// The runtime cases observe the context's hidden `dummy` field the way
-// cases_context.hz does: `dummy()` reports the caller's, `setDummy(n)`
+// The runtime cases observe the context's hidden `box` field the way
+// cases_context.hz does: `held()` reports the caller's, `setHeld(n)`
 // changes it.
 //
 // Written before the fixes and shown to fail without them (or, for a rule
@@ -34,29 +34,27 @@ ref struct Checks {
     }
 }
 
-fn dummyOf(c: Context): int {
+// Observed without allocating: a raw integer kept in a field of the settings.
+fn heldOf(c: Context): int {
     let copy = c;
     let v = 0;
-    do unsafe { __c__("v = (hzstd_int_t)(intptr_t)copy.dummy;"); };
+    do unsafe { __c__("v = copy.userBox2.fingerprint;"); };
     return v;
 }
 
-fn withDummy(c: Context, n: int): Context {
+fn withHeld(c: Context, n: int): Context {
     let copy = c;
-    do unsafe { __c__("copy.dummy = (void *)(intptr_t)n;"); };
+    do unsafe { __c__("copy.userBox2.fingerprint = n;"); };
     return copy;
 }
 
-fn dummy(): int {
-    let c = context;
-    let v = 0;
-    do unsafe { __c__("v = (hzstd_int_t)(intptr_t)c.dummy;"); };
-    return v;
+fn held(): int {
+    return heldOf(context);
 }
 
-fn setDummy(n: int) {
+fn setHeld(n: int) {
     let c = context;
-    do unsafe { __c__("c.dummy = (void *)(intptr_t)n;"); };
+    do unsafe { __c__("c.userBox2.fingerprint = n;"); };
     context = c;
 }
 
@@ -64,21 +62,21 @@ fn setDummy(n: int) {
 // A computed is evaluated by whoever reads it; a watcher's scheduler (here a
 // synchronous one) is run by the write that makes its node dirty.
 fn tReactive(t: mut Checks) {
-    setDummy(10);
+    setHeld(10);
     let comp = context.clone(() => {
-        setDummy(20);
-        return rx.computed(() => { return dummy(); });
+        setHeld(20);
+        return rx.computed(() => { return held(); });
     });
     let read = context.clone(() => {
-        setDummy(30);
+        setHeld(30);
         let v: int = comp;
         return v;
     });
     t.check("a computed runs under its reader's context, not its creator's", read == 30);
 
-    let comps: []rx.Computed<int> = [rx.computed(() => { return dummy(); }), rx.computed(() => { return dummy() + 1; })];
+    let comps: []rx.Computed<int> = [rx.computed(() => { return held(); }), rx.computed(() => { return held() + 1; })];
     let fromLoop = context.clone(() => {
-        setDummy(35);
+        setHeld(35);
         let sum = 0;
         for v in comps {
             sum = sum + v;
@@ -92,36 +90,36 @@ fn tReactive(t: mut Checks) {
     let r = rx.reactive<int>(1);
     let seen: mut ref Box<int> = { value: -1 };
     let h1 = context.clone(() => {
-        setDummy(40);
-        return rx.watch(() => r, (v, old) => { seen.value = dummy(); }, sync);
+        setHeld(40);
+        return rx.watch(() => r, (v, old) => { seen.value = held(); }, sync);
     });
     context.clone(() => {
-        setDummy(50);
+        setHeld(50);
         r := 2;
     });
     t.check("a watcher runs under the context of the write (:=), not its creator's", seen.value == 50);
 
     let items = rx.reactive<[]int>([1]);
     let seenPush: mut ref Box<int> = { value: -1 };
-    let h2 = rx.watch(() => items.length, (v, old) => { seenPush.value = dummy(); }, sync);
+    let h2 = rx.watch(() => items.length, (v, old) => { seenPush.value = held(); }, sync);
     context.clone(() => {
-        setDummy(60);
+        setHeld(60);
         items.push(2);
     });
     t.check("a watcher runs under the context of a push", seenPush.value == 60);
 
     let seenPop: mut ref Box<int> = { value: -1 };
-    let h3 = rx.watch(() => items.length, (v, old) => { seenPop.value = dummy(); }, sync);
+    let h3 = rx.watch(() => items.length, (v, old) => { seenPop.value = held(); }, sync);
     context.clone(() => {
-        setDummy(70);
+        setHeld(70);
         let x = items.pop();
     });
     t.check("a watcher runs under the context of a pop", seenPop.value == 70);
 
     let seenWhole: mut ref Box<int> = { value: -1 };
-    let h4 = rx.watch(() => items.length, (v, old) => { seenWhole.value = dummy(); }, sync);
+    let h4 = rx.watch(() => items.length, (v, old) => { seenWhole.value = held(); }, sync);
     context.clone(() => {
-        setDummy(80);
+        setHeld(80);
         items := [rx.reactive<int>(7), rx.reactive<int>(8), rx.reactive<int>(9)] as []rx.Reactive<int>;
     });
     t.check("a watcher runs under the context of a whole deep-array :=", seenWhole.value == 80);
@@ -133,86 +131,84 @@ fn tReactive(t: mut Checks) {
     let seenOuter: mut ref Box<int> = { value: -1 };
     let seenInner: mut ref Box<int> = { value: -1 };
     let h5 = rx.watch(() => outer, (v, old) => {
-        seenOuter.value = dummy();
+        seenOuter.value = held();
         context.clone(() => {
-            setDummy(99);
+            setHeld(99);
             inner := 1;
         });
     }, sync);
-    let h6 = rx.watch(() => inner, (v, old) => { seenInner.value = dummy(); }, sync);
+    let h6 = rx.watch(() => inner, (v, old) => { seenInner.value = held(); }, sync);
     context.clone(() => {
-        setDummy(90);
+        setHeld(90);
         outer := 1;
     });
     t.check("a write inside a callback is delivered under the outer write's context", seenOuter.value == 90 && seenInner.value == 90);
-    t.check("reactive: the caller's context is unchanged", dummy() == 10);
+    t.check("reactive: the caller's context is unchanged", held() == 10);
 }
 
 // ── 2. context.clone(e): e first, then the copy ─────────────────────────────
 // Like a call, whose callee runs after its arguments: evaluating the body
 // expression may write the current context, and the body starts from the
-// result. Context.init(v, e) evaluates v (the copy), then e.
+// result.
 fn makeReader(): () => int {
-    setDummy(dummy() + 1000);
-    return () => { return dummy(); };
+    setHeld(held() + 1000);
+    return () => { return held(); };
 }
 
 struct Pt {
     x: int = 0;
-    fn get(): int { return this.x + dummy(); }
+    fn get(): int { return this.x + held(); }
     mut fn bump(): int {
         this.x = this.x + 1;
-        return this.x * 100 + dummy();
+        return this.x * 100 + held();
     }
 }
 
 ref struct RefPt {
     x: int = 0;
-    fn get(): int { return this.x + dummy(); }
+    fn get(): int { return this.x + held(); }
 }
 
 struct FnHolder { f: () => int; }
 
-fn plainReader(): int { return dummy(); }
-fn mkPt(): Pt { setDummy(5); return Pt { x: 1 }; }
-fn mkRefPt(): RefPt { setDummy(6); return RefPt { x: 2 }; }
-fn mkFp(): () -> int { setDummy(8); return plainReader; }
-fn mkHolder(): FnHolder { setDummy(9); return FnHolder { f: () => { return dummy(); } }; }
-fn at(n: int): int { setDummy(n); return 0; }
+fn plainReader(): int { return held(); }
+fn mkPt(): Pt { setHeld(5); return Pt { x: 1 }; }
+fn mkRefPt(): RefPt { setHeld(6); return RefPt { x: 2 }; }
+fn mkFp(): () -> int { setHeld(8); return plainReader; }
+fn mkHolder(): FnHolder { setHeld(9); return FnHolder { f: () => { return held(); } }; }
+fn at(n: int): int { setHeld(n); return 0; }
 
 fn tCloneOrder(t: mut Checks) {
-    setDummy(10);
+    setHeld(10);
     let r = context.clone(makeReader());
-    t.check("clone(makeReader()): the body starts from what makeReader() wrote", r == 1010 && dummy() == 1010);
-    let s = Context.init(context, makeReader());
-    t.check("Context.init(context, makeReader()): the value is taken first", s == 1010 && dummy() == 2010);
-    setDummy(7);
-    t.check("clone(mkPt().get): a method bound on a temporary", context.clone(mkPt().get) == 6 && dummy() == 5);
-    setDummy(7);
-    t.check("clone(mkRefPt().get): a method bound on a returned ref", context.clone(mkRefPt().get) == 8 && dummy() == 6);
-    setDummy(7);
-    t.check("clone(mkFp()): a -> value returned by a call", context.clone(mkFp()) == 8 && dummy() == 8);
-    setDummy(7);
-    t.check("clone(mkHolder().f): a closure field of a returned struct", context.clone(mkHolder().f) == 9 && dummy() == 9);
+    t.check("clone(makeReader()): the body starts from what makeReader() wrote", r == 1010 && held() == 1010);
+    setHeld(7);
+    t.check("clone(mkPt().get): a method bound on a temporary", context.clone(mkPt().get) == 6 && held() == 5);
+    setHeld(7);
+    t.check("clone(mkRefPt().get): a method bound on a returned ref", context.clone(mkRefPt().get) == 8 && held() == 6);
+    setHeld(7);
+    t.check("clone(mkFp()): a -> value returned by a call", context.clone(mkFp()) == 8 && held() == 8);
+    setHeld(7);
+    t.check("clone(mkHolder().f): a closure field of a returned struct", context.clone(mkHolder().f) == 9 && held() == 9);
     let pts: mut []Pt = [Pt { x: 1 }];
-    setDummy(7);
-    t.check("clone(pts[at(12)].get): the receiver's index is evaluated first", context.clone(pts[at(12)].get) == 13 && dummy() == 12);
-    setDummy(7);
+    setHeld(7);
+    t.check("clone(pts[at(12)].get): the receiver's index is evaluated first", context.clone(pts[at(12)].get) == 13 && held() == 12);
+    setHeld(7);
     let bumped = context.clone(pts[at(13)].bump);
-    t.check("clone(pts[at(13)].bump): a mut method still changes the element itself", bumped == 213 && pts[0].x == 2 && dummy() == 13);
-    setDummy(10);
+    t.check("clone(pts[at(13)].bump): a mut method still changes the element itself", bumped == 213 && pts[0].x == 2 && held() == 13);
+    setHeld(10);
 }
 
 // ── 3. bodies and calls the main case does not reach ────────────────────────
 struct Probe {
     v: int = 0;
     fn get(): int {
-        setDummy(dummy() + 1);
-        return dummy() + this.v;
+        setHeld(held() + 1);
+        return held() + this.v;
     }
 }
 
-fn hazeTimes2(x: int): int { return x * 2 + dummy(); }
+fn hazeTimes2(x: int): int { return x * 2 + held(); }
 fn runImmediate(f: immediate () => int): int { return f(); }
 
 // An immediate parameter as the body of clone, and called inside a clone
@@ -221,14 +217,13 @@ fn cloneImmediate(f: immediate () => int): int { return context.clone(f); }
 fn cloneCallsImmediate(f: immediate () => int): int { return context.clone(() => { return f(); }); }
 
 // A default parameter value naming `context` is the caller's context.
-fn seenVia(c: Context = context): int { return dummyOf(c); }
+fn seenVia(c: Context = context): int { return heldOf(c); }
 
 struct Seer {
-    fn seenVia(c: Context = context): int { return dummyOf(c); }
+    fn seenVia(c: Context = context): int { return heldOf(c); }
 }
 
-// `init` of a namespace or of a struct value is an ordinary call, not
-// Context.init.
+// `init` of a namespace or of a struct value is an ordinary call.
 namespace Pool {
     export fn init(a: int, b: () => int): int { return a + b(); }
 }
@@ -239,14 +234,12 @@ struct Pooled {
 }
 
 fn tBodies(t: mut Checks) {
-    setDummy(10);
+    setHeld(10);
     let p = Probe { v: 5 };
     let a = context.clone(p.get);
-    t.check("clone(p.get): a method bound on a value receiver runs under the copy", a == 16 && dummy() == 10);
-    let b = Context.init(withDummy(context, 20), p.get);
-    t.check("Context.init(c, p.get): a method bound on a value receiver runs under c", b == 26 && dummy() == 10);
+    t.check("clone(p.get): a method bound on a value receiver runs under the copy", a == 16 && held() == 10);
 
-    setDummy(3);
+    setHeld(3);
     let hv: (x: int) -> int = hazeTimes2;
     t.check("a captured -> value called in a stack-env closure", runImmediate(() => { return hv(1); }) == 5);
     let stored = () => { return hv(2); };
@@ -254,30 +247,30 @@ fn tBodies(t: mut Checks) {
     let stackref inPlace = () => { return hv(3); };
     t.check("a captured -> value called in a let stackref lambda", inPlace() == 9);
     let underClone = context.clone(() => {
-        setDummy(100);
+        setHeld(100);
         return hv(4);
     });
-    t.check("a captured -> value called in a clone body", underClone == 108 && dummy() == 3);
+    t.check("a captured -> value called in a clone body", underClone == 108 && held() == 3);
 
-    setDummy(4);
+    setHeld(4);
     t.check("default = context in a free function", seenVia() == 4);
     let inner = context.clone(() => {
-        setDummy(9);
+        setHeld(9);
         return seenVia();
     });
     t.check("default = context under a clone", inner == 9);
     let seer = Seer {};
     t.check("default = context in a method", seer.seenVia() == 4);
-    t.check("default = context, given explicitly", seenVia(withDummy(context, 7)) == 7);
+    t.check("default = context, given explicitly", seenVia(withHeld(context, 7)) == 7);
 
     let k = 5;
-    t.check("clone(f) with f an immediate parameter", cloneImmediate(() => { return k + dummy(); }) == 9);
+    t.check("clone(f) with f an immediate parameter", cloneImmediate(() => { return k + held(); }) == 9);
     t.check("an immediate parameter called inside a clone lambda", cloneCallsImmediate(() => { return k + 1; }) == 6);
 
     let pooled = Pooled {};
     t.check("Pool.init(a, b) is an ordinary call", Pool.init(1, () => { return 2; }) == 3);
     t.check("t.init(a, b) is an ordinary method call", pooled.init(1, () => { return 2; }) == 13);
-    setDummy(10);
+    setHeld(10);
 }
 
 fn main(): int {
@@ -285,7 +278,7 @@ fn main(): int {
     tReactive(t);
     tCloneOrder(t);
     tBodies(t);
-    if dummy() != 10 {
+    if held() != 10 {
         t.check("main's context is back to 10", false);
     }
     if t.failures > 0 {
@@ -296,7 +289,7 @@ fn main(): int {
     return 0;
 }
 """,
-            "all 30 checks passed");
+            "all 28 checks passed");
 
         // Reading an optional field needs no context, so `?.` field reads work
         // in an extern C body: the impossible branch of the expansion is a C
@@ -349,25 +342,6 @@ fn main(): int {
 6 -1
 7 -2 -3
 """);
-
-        s.compileFails(
-            "context review: ?. calling a method in an extern C body still needs a context",
-            """
-struct M {
-    v: int = 0;
-    fn get(): int { return this.v; }
-}
-
-extern C fn entry(o: M | none): int {
-    let a = o?.get(); // <- a method call takes a context
-    return 0;
-}
-
-fn main(): int {
-    return entry(none);
-}
-""",
-            [testsuite.mustHave(errorcodes.Code.ContextNeededInExternCFunction)]);
 
         // ── A context is made only by Context() or by copying one (C398) ─────────
         // json.parse builds values without their constructors; a Context
@@ -424,6 +398,134 @@ fn main(): int {
 """,
             [testsuite.mustHave(errorcodes.Code.StaticAssertFailedWithMessage)]);
 
+        // ── Every context is valid (C399): no part of the settings is made in Haze ─
+        // A zero Logger or Allocator holds NULL function pointers; assigned into
+        // the context, the next sys.log (or allocation) would jump to address 0.
+        s.compileFails(
+            "context review: a Logger literal is rejected (opaque)",
+            """
+fn main(): int {
+    context.logger = Logger {}; // <- a logger with no write function
+    sys.log("x");
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.StructMarkedAsOpaqueAndThereforeNoStruct)]);
+
+        s.compileFails(
+            "context review: a {} Logger is rejected (opaque)",
+            """
+fn main(): int {
+    context.logger = {}; // <- a logger with no write function
+    sys.log("x");
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.StructMarkedAsOpaqueAndThereforeNoStruct)]);
+
+        s.compileFails(
+            "context review: a {} Logger as a field default is rejected (opaque)",
+            """
+struct Holder { l: Logger = {}; } // <- a logger with no write function
+
+fn main(): int {
+    context.logger = Holder {}.l;
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.StructMarkedAsOpaqueAndThereforeNoStruct)]);
+
+        s.compileFails(
+            "context review: an Allocator literal is rejected (opaque)",
+            """
+fn main(): int {
+    context.allocator = Allocator {}; // <- an allocator with no allocate function
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.StructMarkedAsOpaqueAndThereforeNoStruct)]);
+
+        s.compileFails(
+            "context review: json.parse<Logger> is rejected",
+            """
+fn main(): int {
+    let r = json.parse<Logger>("{}"); // <- would make a logger with no write function
+    if r is Logger { context.logger = r; }
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.StaticAssertFailedWithMessage)]);
+
+        s.compileFails(
+            "context review: json.parse of a struct with an Allocator field is rejected",
+            """
+struct Holder { a: Allocator; }
+
+fn main(): int {
+    let r = json.parse<Holder>(\"\"\"{"a": {}}\"\"\"); // <- would make an allocator with no functions
+    if r is Holder { context.allocator = r.a; }
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.StaticAssertFailedWithMessage)]);
+
+        // traverse.read builds values without their constructors, like json.parse.
+        let readFormat = """
+ref struct Cursor { stack: mut []int = []; }
+ref struct F {
+    skipAttribute: "p.skip" = "p.skip";
+    cur: mut Cursor;
+    fn beginReadStruct<T>() { this.cur.stack.push(0); }
+    fn nextField<T>(): int {
+        let top = this.cur.stack.length - 1;
+        let i = this.cur.stack[top];
+        if i >= T.fields.length { return -1; }
+        this.cur.stack[top] = i + 1;
+        return i;
+    }
+    fn endReadStruct<T>() { let x = this.cur.stack.pop(); }
+    fn failed(): bool { return false; }
+    fn readsPlain<T>(): bool { return true; }
+    fn readPlain<T>(memory: RawMemory, count: int) {}
+    fn missingField<T>(name: str) {}
+    fn duplicateField<T>(name: str) {}
+}
+""";
+        s.compileFails(
+            "context review: traverse.read of a Context is rejected",
+            readFormat + """
+fn main(): int {
+    let r = traverse.read<F, Context>(F { cur: Cursor {} }); // <- would make a Context without Context()
+    if r is Context { context = r; }
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.StaticAssertFailedWithMessage)]);
+
+        s.compileFails(
+            "context review: traverse.read of a struct with a Logger field is rejected",
+            readFormat + """
+struct Holder { l: Logger; }
+
+fn main(): int {
+    let r = traverse.read<F, Holder>(F { cur: Cursor {} }); // <- would make a logger with no write function
+    if r is Holder { context.logger = r.l; }
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.StaticAssertFailedWithMessage)]);
+
+        s.compileFails(
+            "context review: traverse.readStruct of a Context is rejected",
+            readFormat + """
+fn main(): int {
+    let r = traverse.readStruct<F, Context>(F { cur: Cursor {} }); // <- would make a Context without Context()
+    if r is Context { context = r; }
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.StaticAssertFailedWithMessage)]);
+
         // ── The reactive core's extern C entry is not reachable from Haze ───────
         // It reinterprets a cptr as a closure box and calls it: safe code
         // handing it any object would jump through that object's bytes.
@@ -445,12 +547,13 @@ fn main(): int {
 
         // ── What may be a clone / init body ─────────────────────────────────────
         s.compileFails(
-            "context review: an extern C function as the body of clone",
+            "context review: a C function as the body of clone",
             """
-extern C fn one(): int { return 1; }
+__c__("hzstd_int_t one(void) { return 1; }");
+extern C fn one(): int :: final;
 
 fn main(): int {
-    let n = context.clone(one); // <- an extern C function has no context to run under
+    let n = context.clone(one); // <- a C function has no context to run under
     return 0;
 }
 """,
@@ -461,16 +564,6 @@ fn main(): int {
             """
 fn main(): int {
     let n = context.clone((x: int) => { return x; }); // <- the body takes no parameters
-    return 0;
-}
-""",
-            [testsuite.mustHave(errorcodes.Code.NoSuitableConversionFound)]);
-
-        s.compileFails(
-            "context review: a lambda with a parameter as the body of Context.init",
-            """
-fn main(): int {
-    let n = Context.init(context, (x: int) => { return x; }); // <- the body takes no parameters
     return 0;
 }
 """,
@@ -496,24 +589,6 @@ fn main(): int {
 }
 """,
             [testsuite.mustHave(errorcodes.Code.NoSuitableConversionFound)]);
-
-        s.compileFails(
-            "context review: for over computeds in an extern C body",
-            """
-extern C fn entry(items: mut []rx.Computed<int>): int {
-    let n = 0;
-    for c in items { // <- reading each element evaluates a computed
-        n = n + 1;
-    }
-    return n;
-}
-
-fn main(): int {
-    let items: mut []rx.Computed<int> = [rx.computed(() => { return 1; })];
-    return entry(items);
-}
-""",
-            [testsuite.mustHave(errorcodes.Code.ContextNeededInExternCFunction)]);
 
         // ── Declarations named `context` (H7222), one position per case ─────────
         s.compileFailsWithModules(

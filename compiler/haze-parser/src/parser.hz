@@ -1583,14 +1583,16 @@ ref struct Parser {
     }
 
     // -----------------------------------------------------------------------
-    // requires blocks: `:: final, pure, noreturn, noreturn_if(expr)`
-    // Always written (the AST field is not optional).
+    // requires blocks: `:: final, pure, noreturn, noreturn_if(expr), context`
+    // Always written (the AST field is not optional). `context` is not a
+    // keyword: it is accepted here only.
     // -----------------------------------------------------------------------
 
     mut fn requiresBlock(): void :: final {
         let isFinal = false;
         let isPure = false;
         let isNoreturn = false;
+        let isContext = false;
         // The noreturn_if condition is written where it is parsed; the flags,
         // which come first, go in front of it once they are all known.
         let at = this.w.length();
@@ -1604,6 +1606,18 @@ ref struct Parser {
 
                 if k == TK.Final { this.advance(); isFinal = true; }
                 else if k == TK.Pure { this.advance(); isPure = true; }
+                else if k == TK.Ident {
+                    // Any other word is a mistake, named as the ANTLR builder
+                    // names it (Parser.ts, exitRequiresBlock).
+                    let word = this.text(this.cur());
+                    if word != "context" {
+                        this.errorAt(this.cur(), f"'{word}' is not a function requirement");
+                        if opened { this.accept(TK.RParen); }
+                        break;
+                    }
+                    this.advance();
+                    isContext = true;
+                }
                 else if k == TK.Noreturn { this.advance(); isNoreturn = true; }
                 else if k == TK.NoreturnIf {
                     this.advance();
@@ -1634,6 +1648,7 @@ ref struct Parser {
         this.w.boolValue(isFinal);
         this.w.keyBool("pure", isPure);
         this.w.keyBool("noreturn", isNoreturn);
+        this.w.keyBool("context", isContext);
         this.w.key("noreturnIf");
         if !hasNoreturnIf { this.w.nullValue(); }
         this.w.hoist(at, moved);
@@ -1641,7 +1656,14 @@ ref struct Parser {
     }
 
     // Structs and enums accept a requires block and ignore it.
-    mut fn discardRequiresBlock(): void :: final {
+    // The grammar allows a requires block after a struct's or enum's name, but
+    // requirements are a function's: nothing would read them there. Reported
+    // as the ANTLR builder reports it (Parser.ts, rejectTypeRequirements), then
+    // parsed past.
+    mut fn rejectRequiresBlock(what: str): void :: final {
+        if this.kind() == TK.DoubleColon {
+            this.errorAt(this.cur(), f"{what} takes no requirements");
+        }
         let at = this.w.length();
         this.requiresBlock();
         this.w.truncate(at);
@@ -1655,6 +1677,7 @@ ref struct Parser {
         this.w.boolValue(false);
         this.w.keyBool("pure", false);
         this.w.keyBool("noreturn", false);
+        this.w.keyBool("context", false);
         this.w.keyNull("noreturnIf");
         this.w.end();
     }
@@ -2900,7 +2923,7 @@ ref struct Parser {
         let nameTok = this.expect(TK.Ident);
         let genericsBase = this.genericParams();
         let genericsEnd = this.stack.length;
-        this.discardRequiresBlock();
+        this.rejectRequiresBlock("a struct");
 
         this.expect(TK.LCurly);
 
@@ -3210,7 +3233,7 @@ ref struct Parser {
         let isBitflag = this.accept(TK.Bitflag);
         let isUnscoped = this.accept(TK.Unscoped);
         let nameTok = this.expect(TK.Ident);
-        this.discardRequiresBlock();
+        this.rejectRequiresBlock("an enum");
 
         this.expect(TK.LCurly);
         this.w.node("EnumDefinition");

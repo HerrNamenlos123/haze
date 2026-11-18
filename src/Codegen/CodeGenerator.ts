@@ -190,11 +190,12 @@ class CodeGenerator {
         .writeLine("int32_t main(int argc, const char* argv[]) {")
         .pushIndent();
       this.out.function_definitions.writeLine("hzstd_initialize();");
-      // The root context (Axiom C209, C390): on main's stack, with the
-      // defaults `Context()` gives. Every Haze call chain starts from it.
-      this.out.function_definitions
-        .writeLine("hzstd_context_t __hz_root;")
-        .writeLine("hzstd_context_init(&__hz_root);");
+      // The root context (Axiom C209, C390, C504): on main's stack, the main
+      // thread's runtime data and the defaults `Context()` gives. Every Haze
+      // call chain starts from it.
+      this.out.function_definitions.writeLine(
+        "hzstd_context_t __hz_root = hzstd_context_for_current_thread();"
+      );
 
       const have = new Set<string>();
       for (const module of this.allModules) {

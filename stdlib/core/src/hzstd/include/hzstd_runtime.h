@@ -7,18 +7,33 @@
 #include "hzstd_source_location.h"
 #include "hzstd_string.h"
 
-// The default values of a context: what `Context()` gives (Axiom C398).
-static inline void hzstd_context_init(hzstd_context_t *ctx)
-{
-  ctx->dummy = NULL;
-}
+// ── The context (Axiom C468-C477, C500-C510, C567-C569) ─────────────────────
+//
+// The types are in hzstd_types.h. The settings of a new context: what
+// `Context()` gives (C398, C479): the heap allocator, a logger that writes to
+// stderr, and empty user boxes.
+hzstd_context_settings_t hzstd_context_settings_default(void);
 
-static inline hzstd_context_t hzstd_context_default(void)
-{
-  hzstd_context_t ctx;
-  hzstd_context_init(&ctx);
-  return ctx;
-}
+// Sets up the main thread and its task (id 1); called once by hzstd_initialize.
+void hzstd_initialize_main_thread(void);
+
+// The id for a thread Haze starts: process-unique, never reused, from 2 on.
+uint64_t hzstd_next_thread_id(void);
+
+// A context for the calling thread (C504): the runtime data of the thread and
+// the task running on it, with the default settings. The result is a value of
+// the caller's stack; pass its address to the `extern C` Haze function being
+// called, for that call only (C400, C401). Panics on a thread Haze does not
+// manage (C505). It is the one place the thread-local lookup happens (C502).
+hzstd_context_t hzstd_context_for_current_thread(void);
+
+// What `sys.threadId()` is (C477): the process-unique id of the context's
+// thread. `ctx` is a `hzstd_context_t *`, passed as `void *` so Haze can hand
+// over `sys.contextPtr()` directly.
+hzstd_int_t hzstd_thread_id(void *ctx);
+
+// What `sys.log` is: writes through the context's logger. `ctx` as above.
+void hzstd_log(void *ctx, hzstd_str_t text);
 
 // hzstd_stackframe_t, hzstd_panic_type_t, hzstd_stacktrace_t,
 // hzstd_panic_info_t, HZSTD_JMP_BUF/SETJMP/LONGJMP,

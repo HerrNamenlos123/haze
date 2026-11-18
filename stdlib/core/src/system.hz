@@ -342,3 +342,77 @@ namespace sys {
         return OutputPipe();
     }
 }
+namespace ffi {
+    // `ctx` is the raw context, `sys.contextPtr()`.
+    extern C noemit fn hzstd_thread_id(ctx: cptr): int :: final;
+    extern C noemit fn hzstd_log(ctx: cptr, text: str) :: final;
+}
+
+namespace sys {
+    // The raw context of the calling function, for handing to C: pass it as
+    // the first argument of an `extern C` function defined in Haze (C401), or
+    // to a C function that takes `hzstd_context_t *`. Valid only during the
+    // call that hands it over; C never keeps it (C400, C509). A function's
+    // context is its caller's (C209), so inside `context.clone(...)` it is the
+    // clone's.
+    //
+    // The ONE place allowed to name `__hz_ctx` in inline C: everything else
+    // goes through this function.
+    export fn contextPtr(): cptr {
+        __c__("return (void *)__hz_ctx;");
+    }
+
+    // The process-unique id of the thread this code runs on (C477); the main
+    // thread is 1, ids are never reused. Meant for logging and diagnostics: it
+    // costs a function call, not a lookup.
+    export fn threadId(): int {
+        return ffi.hzstd_thread_id(contextPtr());
+    }
+
+    // Writes one line through the logger of the current context (C470). Meant
+    // for messages about the running program; a library logs through this so
+    // the program decides where its output goes (the logger of its context). The
+    // default logger writes the text and a newline to stderr.
+    export fn log(text: str) {
+        ffi.hzstd_log(contextPtr(), text);
+    }
+
+    // A user box holding `value` (C569), for `context.userBox1` or
+    // `context.userBox2`: the way a program carries one value of its own type
+    // through every call below the place that sets it, without a parameter on
+    // each. Read it back with `userBoxValue`. The value is boxed in GC memory.
+    export fn makeUserBox<T>(value: T): UserBox {
+        do unsafe {
+            let box: ref Box<T> = { value: value };
+            let handle: cptr = uninitialized;
+            let fingerprint = T.fingerprint;
+            let typeName = T.prettyName;
+            let result: UserBox = uninitialized;
+            __c__("handle = box; result.value = handle; result.fingerprint = fingerprint; result.type_name = typeName;");
+            return result;
+        };
+    }
+
+    // The value of a user box made by `makeUserBox<T>`, or none when the box
+    // is empty (a context from `Context()` has two empty boxes). Panics when
+    // the box holds a value of another type. Meant to be called where the
+    // value is needed, not cached across calls: the box belongs to the context.
+    export fn userBoxValue<T>(userBox: UserBox): T | none {
+        do unsafe {
+            let handle: cptr = uninitialized;
+            let empty = false;
+            let fingerprint = 0;
+            let typeName = "";
+            __c__("handle = userBox.value; empty = userBox.value == NULL; fingerprint = userBox.fingerprint; typeName = userBox.type_name;");
+            if empty {
+                return none;
+            }
+            if fingerprint != T.fingerprint {
+                sys.panic(f"Invalid user box access. Value was stored as \"{typeName}\", but it is tried to be accessed as \"{T.prettyName}\"");
+            }
+            let typedBox: ref Box<T> = uninitialized;
+            __c__("typedBox = handle;");
+            return typedBox.value;
+        };
+    }
+}

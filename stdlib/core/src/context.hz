@@ -1,23 +1,44 @@
-// The hidden context (Axiom C209, C390-C406).
+// The hidden context (Axiom C209, C390-C406, C468-C477, C567-C569).
 //
 // Every Haze function receives the context of its caller; `context` names it,
-// like `this`. Haze sees a value with no visible fields: reading `context`
-// copies it, hidden fields included, and writing to it (a member, or the whole
-// value) goes through to the current one. No reference to it can be formed.
+// like `this`. In C the context holds hidden runtime data (the current task
+// and its thread) and the settings; in Haze `context` is only the settings, a
+// plain struct without methods (C473). Reading it copies the settings, writing
+// a member or the whole value goes through to the current context (C567), and
+// no reference to it can be formed. The runtime data is never assigned, only
+// derived (C475, C476): read it through `sys.threadId()` and friends.
 //
 // A context is made only by `Context()`, which gives the defaults, or by
-// copying one. `context.clone(() => { ... })` runs a closure under a copy of the
-// current context; `Context.init(c, () => { ... })` runs one under a context
-// set up from the value `c`. That is how C enters Haze: C calls an `extern C`
-// function, handing it a context by value, and the body calls `Context.init`.
+// copying one. `context.clone(() => { ... })` runs a closure under a copy of
+// the current context and scopes any change the closure makes to it (C397).
+// C enters Haze through an `extern C` function with a Haze body: it takes the
+// context as its first C parameter, which C must pass (C401), and its body
+// has `context` like every Haze function (C402). `sys.contextPtr()` hands the
+// raw context to C.
 //
-// The C side is `hzstd_context_t` in hzstd_types.h.
-export extern C noemit opaque struct hzstd_context_t {}
+// The C side is `hzstd_context_t` and `hzstd_context_settings_t` in
+// hzstd_types.h. The layout of the settings is the same in every program
+// (C568); Logger and UserBox have no visible fields, like Allocator. Logger is
+// opaque like Allocator: a zero one would hold no write function, and every
+// context is valid (C399), so loggers come only from the runtime.
+export extern C noemit opaque struct hzstd_logger_t {};
+export type Logger = hzstd_logger_t;
 
-export type Context = hzstd_context_t;
+export extern C noemit struct hzstd_user_box_t {};
+export type UserBox = hzstd_user_box_t;
+
+// Opaque: a context is made only by `Context()` or by copying one (C398).
+export extern C noemit opaque struct hzstd_context_settings_t {
+    allocator: Allocator;
+    logger: Logger;
+    userBox1: UserBox;
+    userBox2: UserBox;
+};
+
+export type Context = hzstd_context_settings_t;
 
 namespace ffi {
     // What `Context()` is: the compiler turns it into a call of this C
-    // function (static inline in hzstd_runtime.h), so it needs no context.
-    export extern C noemit fn hzstd_context_default(): Context :: final;
+    // function, so it needs no context.
+    export extern C noemit fn hzstd_context_settings_default(): Context :: final;
 }

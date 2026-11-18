@@ -2732,6 +2732,9 @@ static void hzstd_profiling_parse_elf_module_symbols(const char *path,
     return;
   }
   Elf64_Shdr *strtabShdr = &shdrs[symtabShdr->sh_link];
+  // Kept by value: `shdrs` is freed before the symbols are walked, so the
+  // walk must not read the section header through it.
+  const Elf64_Xword strtabSize = strtabShdr->sh_size;
 
   size_t symCount = symtabShdr->sh_size / sizeof(Elf64_Sym);
   Elf64_Sym *syms = malloc(symCount * sizeof(Elf64_Sym));
@@ -2764,7 +2767,7 @@ static void hzstd_profiling_parse_elf_module_symbols(const char *path,
     if (syms[i].st_value == 0) {
       continue;
     }
-    if (syms[i].st_name == 0 || syms[i].st_name >= strtabShdr->sh_size) {
+    if (syms[i].st_name == 0 || syms[i].st_name >= strtabSize) {
       continue;
     }
     // Each ELF string table entry is itself NUL-terminated (that's the
