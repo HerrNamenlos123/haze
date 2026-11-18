@@ -17,11 +17,12 @@ namespace cases_signal_stack {
         // A thread installs its own signal stack, runs hzstd's setup and ends.
         // A thread-exit destructor registered after hzstd's (glibc runs them
         // in key order, and hzstd's key was made at program start) sees which
-        // signal stack the thread has by then.
+        // signal stack the thread has by then, and then gives back the one the
+        // thread had before its own (ASan's, under ASan), as an owner must.
         s.run(
             "signal stack: a thread's own signal stack is back when the thread ends",
             """
-__c__("#include <pthread.h>\n#include <signal.h>\nvoid hzstd_setup_panic_handler(void);\nstatic char own_stack[65536];\nstatic void *during = NULL;\nstatic void *at_end = NULL;\nstatic pthread_key_t later_key;\nstatic void later_destructor(void *unused) { (void)unused; stack_t now; sigaltstack(NULL, &now); at_end = now.ss_sp; }\nstatic void *probe_thread(void *arg) { (void)arg; stack_t own = { .ss_sp = own_stack, .ss_size = sizeof(own_stack), .ss_flags = 0 }; sigaltstack(&own, NULL); hzstd_setup_panic_handler(); stack_t now; sigaltstack(NULL, &now); during = now.ss_sp; pthread_key_create(&later_key, later_destructor); pthread_setspecific(later_key, (void *)1); return NULL; }");
+__c__("#include <pthread.h>\n#include <signal.h>\nvoid hzstd_setup_panic_handler(void);\nstatic char own_stack[65536];\nstatic void *during = NULL;\nstatic void *at_end = NULL;\nstatic pthread_key_t later_key;\nstatic stack_t before_own;\nstatic void later_destructor(void *unused) { (void)unused; stack_t now; sigaltstack(NULL, &now); at_end = now.ss_sp; sigaltstack(&before_own, NULL); }\nstatic void *probe_thread(void *arg) { (void)arg; stack_t own = { .ss_sp = own_stack, .ss_size = sizeof(own_stack), .ss_flags = 0 }; sigaltstack(&own, &before_own); hzstd_setup_panic_handler(); stack_t now; sigaltstack(NULL, &now); during = now.ss_sp; pthread_key_create(&later_key, later_destructor); pthread_setspecific(later_key, (void *)1); return NULL; }");
 
 fn main(): int {
     let borrowed = false;

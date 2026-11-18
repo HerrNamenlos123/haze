@@ -44,6 +44,7 @@ and against which commit it was verified; re-check a note against the code befor
 - [Headless UI testing](headless-ui-testing-technique.md) - real Clay layout without GPU
 - [Hidden context](hidden-context-implemented.md) - runtime data and settings, clone, extern C bodies take the context, `:: context`, sys.contextPtr; as built on branch async-runtime
 - [Task-local storage](task-local-storage.md) - one block per module per task, index through the context; Lower/Codegen/hzstd pieces; second task in C for tests
+- [ASan and UBSan runs](sanitizer-runs.md) - the switch, ASAN_OPTIONS without fake stacks (Boehm GC), halting UBSan, signal stacks in tests
 - [Hit geometry](hit-geometry-rules.md) - clipping and per-pass boxes for hit testing
 - [hzstd scratch C strings](hzstd-scratch-cstr.md) - HZSTD_SCRATCH_CSTR, errno views, spawn blocks
 - [hzui id spaces](hzui-component-id-spaces.md) - negative component ids, loop keys
