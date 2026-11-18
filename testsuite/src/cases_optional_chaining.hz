@@ -201,7 +201,7 @@ true 1 0
 ref struct W { fn hover(): bool { return true; } v: int = 4; }
 type Ref = rx.ShallowReactive<W | null>;
 fn main(): int {
-    let r: Ref = rx.shallowReactive<W | null>(null);
+    let r: mut Ref = rx.shallowReactive<W | null>(null);
     let isHovered = rx.computed(() => r?.hover() ?? false);
     let v = rx.computed(() => r?.v ?? -1);
     let h: bool = isHovered; let vv: int = v;

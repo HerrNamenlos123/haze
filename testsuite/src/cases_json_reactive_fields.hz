@@ -25,8 +25,8 @@ namespace cases_json_reactive_fields {
             "json reactive fields: a reactive array and a reactive scalar parse back",
             """
 struct VaultFS {
-    entries: rx.Reactive<[]int>;
-    label: rx.Reactive<str>;
+    entries: mut rx.Reactive<[]int>;
+    label: mut rx.Reactive<str>;
     width: rx.ShallowReactive<real>;
 }
 

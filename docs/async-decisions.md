@@ -122,11 +122,21 @@ Run of 2026-11-17 (unattended, started 01:10 Vienna time on main 8fc71ae9).
 - **S0-18. Operators are checked where every method call is built** (`SemanticBuilder.callableExpr`):
   `a == b`, `a[i]`, `x as T`, `x := v` call the method without naming it. Found by lane S as a
   hole after its checks in member access; fixed test-first.
-- **S0-19. Reflection lists private fields but cannot reach them.** `T.fields` shows them; access
-  by name from outside is H7230. So the stdlib's generic walkers (json.stringify/parse, deep
-  `rx.reactive`, binfile, traverse) reject a struct with private fields at compile time instead of
-  silently skipping them (C419). Open for the user: whether serializers should be allowed in.
-  The metadata queries (`hasField`, `fieldDefault`, ...) answer for private fields unchecked, and
+- **S0-19. Serializers never reach inside an encapsulated struct** (user, 2026-11-18). A struct
+  with a private member, or an opaque one, is no plain data any more: its inside is its own code's
+  business, so free copying and serializing no longer hold. New reflection: `T.isFieldPrivate(name)`
+  (a field T lacks is H7161) and `T.isOpaque`. json writes such a struct only through its
+  `[[json.serialize]]` hook or with every private field `[[json.ignore]]`d, and reads one only
+  through its `[[json.parse]]` hook: field-wise construction sets fields from outside, an ignored
+  private one included (with its default), which H7230 forbids and the struct's invariants need
+  its own code for. traverse has no hooks, so it never walks one (`assertWalkable` in write, read,
+  describe, `readStruct`, `writeStruct`); one inside a plain struct is caught as well, since the
+  field walk (the alternative to copying plain memory) is compiled either way. Every rejection is one static assert naming
+  the field, not H7230 from inside the stdlib. This covers S1-12's special guards: Context, Logger
+  and Allocator are opaque, so json and traverse refuse them by the general rule (the special
+  guards are gone). Open (user): whether `private` should require `opaque`. Deep `rx.reactive` of
+  a struct with private fields is still rejected by H7230 (not a serializer; unchanged).
+  Reflection still lists private fields; the metadata queries answer for them unchecked, and
   compiler-generated member-wise operations (structural `==`, `default`) are not "outside".
 - **S0-20. `tasklocal` and `global` keywords** on module-level `let`/`const`, both parsers, kept in
   module interfaces. Until their storage exists: `tasklocal` is H7231, `global let` is H7231
@@ -156,11 +166,22 @@ Run of 2026-11-17 (unattended, started 01:10 Vienna time on main 8fc71ae9).
   array argument is H4001 (the ordinary rule for a `mut` parameter). The compiler's own `push`,
   `reserve`, `clear` (kept for builds without a standard library) are checked like the others.
 
-- **S0-11. Writing a reactive cell is unchanged.** `cell = v`, `cell++` and `this.cell := v`
-  write into the shared cell through its own runtime path (ReactiveWriteExpr), not into the data
-  holding the cell, so they are not checked like other writes. Whether writing a cell needs a `mut`
-  reference to it (the cell is a reference, C456, so C602 would say yes) is left open for the user:
-  enforcing it changes every component that keeps reactive state in a field.
+- **S0-11. Writing a reactive cell needs a `mut` reference to it** (user, 2026-11-18: "writes
+  always need mut"; first version left it open). A cell is a reference (C456): `cell := v`,
+  compound assignment, `++`, `--` and the deep array mutators (`push`, `pop`, `reserve`) change
+  the data it points to (`assertCellWritable`: H7225 through a plain reference, H7226 through
+  const data). `=` rebinds the place holding the cell, an ordinary store checked by
+  `assertWritable` (before, both returned early for every cell, so rebinding a captured cell or
+  one held by const data also went through). A deep reactive value is one value: its members and
+  elements carry the rights of the reference to the whole (`deepReactiveRights`, mut and const
+  alike), so a member of a `mut` cell is a `mut` cell (`rx.assign` recurses with them) and one of
+  a const cell is const (it was neither). A new cell is its creator's to write:
+  `rx.reactive` and `rx.shallowReactive` return `mut`; `rx.assign` takes `mut`. A field or
+  parameter whose cell is written is declared `mut`, like an array (S0-1). Writing a deep array
+  element (`a[i] := v`) stays H7082 as before (ledger); passing `a[i]` to a `mut` parameter
+  works through a `mut` array. Rejected: a write-time walk to the outermost cell without typing
+  the parts (nested cells could not be handed on as `mut`, so `rx.assign` and props would need
+  the whole value).
 - **S0-12. `mut T` on a generic parameter.** When `T` is bound to a value struct, `mut T` means
   nothing and is dropped (as `makeTypeUse` already does), so generic code can write `mut T` for the
   references `T` may stand for (json.hz builds its results in a `let result: mut T`). `mut`
@@ -229,7 +250,8 @@ Fixes from the adversarial review of stage 1 (3 confirmed findings, all fixed te
 
 - **S1-12. Logger and Allocator are opaque**, like Context (C399: a zero one has NULL function
   pointers; `context.logger = Logger {}` then crashed in `sys.log`). `json.parse` and
-  `traverse.readStruct` static-assert on Context, Logger and Allocator, nested ones included.
+  `traverse.readStruct` static-assert on Context, Logger and Allocator, nested ones included
+  (since S0-19's revision by the general rule: all three are opaque).
   Rejected: a NULL check in `hzstd_log` (it would make an invalid context look valid).
 - **S1-13. A declaration without a body has a signature scope** holding only `context`
   (`Collect.FunctionSymbol.signatureScope`; for a function with a body it is the function scope).
@@ -302,6 +324,17 @@ module's own task-locals, although they do not exist in the library the context 
   tasks); offsets fixed at link time (a library compiled elsewhere cannot know them); platform TLS
   (C207); a per-thread table indexed by task (one more load per access, and a task's values would
   live in the thread's table).
+
+## Tooling
+
+- **G-1. The parser-equivalence sweep reads what the commit and the run decide** (user,
+  2026-11-18: "fix the check"). Every `.hz` file git tracks, and with `--fresh-since <marker>`
+  the untracked ones written since (`scripts/parser-equivalence-files.ts`); the gate touches the
+  marker at its start and runs the sweep after the suite, so this run's case sources and the
+  interfaces it built are still swept. Before, it read every `.hz` file in the tree, so build
+  output an older compiler left behind (2026-11-17: stale transformed hzui files) decided the
+  verdict, which differed between checkouts. Rejected: skipping all gitignored files (loses the
+  run's own generated files, the only sweep of Export.ts output and of the cases' sources).
 
 ## Blocked
 

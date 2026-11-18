@@ -1,0 +1,192 @@
+// ============================================================================
+// Writing a reactive cell needs a `mut` reference to it (user, 2026-11-18:
+// "writes always need mut"; docs/async-decisions.md S0-11).
+//
+// A cell is a reference (Axiom C456): `cell := v`, `+=`, `++` and `--` change
+// the data it points to, so only a `mut` reference may (C601, C602), and
+// never one to const data (C596, C603). `=` rebinds a place to another cell,
+// an ordinary store into whatever holds the reference. A deep reactive value
+// is one value: its members and elements carry the rights of the reference
+// to the whole.
+// ============================================================================
+
+namespace cases_reactive_mut {
+
+    fn rejects(s: mut testsuite.Suite, name: str, code: errorcodes.Code, source: str) {
+        s.compileFails(f"reactive mut: {name}", source, [testsuite.exactCount(code, 1)]);
+    }
+
+    export fn register(s: mut testsuite.Suite) {
+        let nonMut = errorcodes.Code.WriteThroughNonMutReference;
+        let toConst = errorcodes.Code.WriteToConstData;
+        let capture = errorcodes.Code.WriteToByValueCapture;
+
+        // ── every write form through a plain reference ─────────────────────
+        rejects(s, ":= through a plain parameter", nonMut, """
+fn set(c: rx.Reactive<int>) { c := 1; } // <- a plain reference cannot write
+fn main(): int { set(rx.reactive<int>(0)); return 0; }
+""");
+        rejects(s, "+= through a plain parameter", nonMut, """
+fn add(c: rx.Reactive<int>) { c += 1; }
+fn main(): int { add(rx.reactive<int>(0)); return 0; }
+""");
+        rejects(s, "++ through a plain parameter", nonMut, """
+fn bump(c: rx.Reactive<int>) { c++; }
+fn main(): int { bump(rx.reactive<int>(0)); return 0; }
+""");
+        rejects(s, "prefix -- through a plain parameter", nonMut, """
+fn drop(c: rx.Reactive<int>) { --c; }
+fn main(): int { drop(rx.reactive<int>(0)); return 0; }
+""");
+        rejects(s, "a shallow cell through a plain parameter", nonMut, """
+fn set(c: rx.ShallowReactive<str>) { c := "x"; }
+fn main(): int { set(rx.shallowReactive<str>("a")); return 0; }
+""");
+        rejects(s, "a plain field written in a method", nonMut, """
+ref struct Counter {
+    n: rx.Reactive<int>;
+    fn bump() { this.n := this.n + 1; } // <- the field is a plain reference
+}
+fn main(): int { let c: mut Counter = Counter { n: rx.reactive<int>(0) }; c.bump(); return 0; }
+""");
+        rejects(s, "a captured plain cell written in a closure", nonMut, """
+fn f(c: rx.Reactive<int>) {
+    let g = () => { c := 1; };
+    g();
+}
+fn main(): int { f(rx.reactive<int>(0)); return 0; }
+""");
+        rejects(s, "rx.assign of a plain cell", errorcodes.Code.NoSuitableConversionFound, """
+fn f(c: rx.Reactive<int>) { rx.assign<int>(c, 3); }
+fn main(): int { f(rx.reactive<int>(0)); return 0; }
+""");
+
+        // ── const ─────────────────────────────────────────────────────────
+        rejects(s, "a mut field of a const holder", toConst, """
+ref struct Holder { n: mut rx.Reactive<int>; }
+fn f(h: const Holder) { h.n := 1; } // <- reached through const data
+fn main(): int { f(Holder { n: rx.reactive<int>(0) }); return 0; }
+""");
+        rejects(s, "a const parameter", toConst, """
+fn f(c: const rx.Reactive<int>) { c := 1; }
+fn main(): int { f(rx.reactive<int>(0)); return 0; }
+""");
+
+        // ── deep reactive values: the parts carry the whole's rights ───────
+        rejects(s, "a member of a deep value through a plain reference", nonMut, """
+struct P { x: int = 0; }
+fn f(s: rx.Reactive<P>) { s.x := 1; }
+fn main(): int { f(rx.reactive<P>(P {})); return 0; }
+""");
+        rejects(s, "a member of a deep value through a const reference", toConst, """
+struct P { x: int = 0; }
+fn f(s: const rx.Reactive<P>) { s.x := 1; }
+fn main(): int { f(rx.reactive<P>(P {})); return 0; }
+""");
+        rejects(s, "a nested member through a plain reference", nonMut, """
+struct In { v: int = 0; }
+struct P { inner: In = {}; }
+fn f(s: rx.Reactive<P>) { s.inner.v++; }
+fn main(): int { f(rx.reactive<P>(P {})); return 0; }
+""");
+        rejects(s, "an element cell of a plain deep array passed on as mut", errorcodes.Code.NoSuitableConversionFound, """
+fn set(c: mut rx.Reactive<int>) { c := 1; }
+fn f(a: rx.Reactive<[]int>) { set(a[0]); } // <- would hand out write access
+fn main(): int { f(rx.reactive<[]int>([1, 2])); return 0; }
+""");
+        rejects(s, "element cells of a plain deep array viewed as mut", errorcodes.Code.NoSuitableConversionFound, """
+fn f(a: rx.Reactive<[]int>) {
+    let cells: []mut rx.Reactive<int> = a; // <- the backing array, with write access
+    let c = cells[0];
+    c := 1;
+}
+fn main(): int { f(rx.reactive<[]int>([1, 2])); return 0; }
+""");
+        rejects(s, "push on a deep array through a plain reference", nonMut, """
+fn f(a: rx.Reactive<[]int>) { a.push(3); }
+fn main(): int { f(rx.reactive<[]int>([1, 2])); return 0; }
+""");
+        rejects(s, "pop on a deep array through a plain reference", nonMut, """
+fn f(a: rx.Reactive<[]int>) { let x = a.pop(); }
+fn main(): int { f(rx.reactive<[]int>([1, 2])); return 0; }
+""");
+        rejects(s, "reserve on a deep array through a plain reference", nonMut, """
+fn f(a: rx.Reactive<[]int>) { a.reserve(8); }
+fn main(): int { f(rx.reactive<[]int>([1, 2])); return 0; }
+""");
+        rejects(s, "a member cell of a plain deep value passed on as mut", errorcodes.Code.NoSuitableConversionFound, """
+struct P { x: int = 0; }
+fn set(c: mut rx.Reactive<int>) { c := 1; }
+fn f(s: rx.Reactive<P>) { set(s.x); } // <- would hand out write access
+fn main(): int { f(rx.reactive<P>(P {})); return 0; }
+""");
+
+        // ── rebinding is a store into the holder ───────────────────────────
+        rejects(s, "rebinding a field through a plain reference", nonMut, """
+ref struct Holder { n: mut rx.Reactive<int>; }
+fn f(h: Holder) { h.n = rx.reactive<int>(5); } // <- changes the holder
+fn main(): int { f(Holder { n: rx.reactive<int>(0) }); return 0; }
+""");
+        rejects(s, "rebinding a captured cell in a closure", capture, """
+fn main(): int {
+    let c = rx.reactive<int>(0);
+    let g = () => { c = rx.reactive<int>(5); }; // <- rebinds only the closure's copy
+    g();
+    return 0;
+}
+""");
+
+        // ── what stays allowed ─────────────────────────────────────────────
+        s.run(
+            "reactive mut: every write through mut references, deep parts included",
+            """
+struct In { v: int = 0; }
+struct P { x: int = 0; inner: In = {}; }
+ref struct Counter {
+    n: mut rx.Reactive<int>;
+    fn bump() { this.n := this.n + 1; } // a mut field, written in a plain method
+}
+fn set(c: mut rx.Reactive<int>, v: int) { c := v; }
+fn grow(a: mut rx.Reactive<[]int>) { a.push(7); set(a[0], a[0] + 10); a.reserve(4); }
+
+fn main(): int {
+    let c = rx.reactive<int>(1); // a fresh cell is the creator's to write
+    c := 2;
+    c += 3;
+    c++;
+    --c;
+    set(c, c + 1);
+    let seen: mut ref Box<int> = { value: 0 };
+    let sync: rx.WatchOptions = { scheduler: (job: rx.WatchJob): none => { job.run(); } };
+    let w = rx.watch(() => c, (v, old) => { seen.value = v; }, sync);
+    c := 40;
+    let closure = () => { c := c + 2; }; // a captured mut cell
+    closure();
+
+    let counter: mut Counter = Counter { n: rx.reactive<int>(0) };
+    counter.bump();
+    counter.bump();
+
+    let s = rx.reactive<P>(P { x: 1 });
+    s.x := 5;
+    s.inner.v++;
+    set(s.x, s.x + 1); // a member of a mut deep value is a mut cell
+    rx.assign<P>(s, P { x: 9, inner: In { v: 3 } });
+
+    let a = rx.reactive<[]int>([1, 2]);
+    grow(a);
+    let last = a.pop();
+
+    let shallow = rx.shallowReactive<str>("a");
+    shallow := "b";
+
+    let rebound = rx.reactive<int>(0);
+    rebound = rx.reactive<int>(8);
+
+    fmt.println(f"{c} {seen.value} {counter.n} {s.x} {s.inner.v} {a[0]} {a.length} {last} {shallow} {rebound}");
+    return 0;
+}
+""",
+            "42 42 2 9 3 11 2 7 b 8");
+    }
+}

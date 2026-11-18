@@ -70,20 +70,24 @@ namespace rx {
     // still work, but as plain, untracked mutations of the array underneath
     // the shell -- see resolveMemberAccessOnReactiveArray in Elaborate.ts,
     // which only intercepts the deep case for that reason.
-    export fn shallowReactive<T>(value: T): rx.ShallowReactive<T> {
+    // A new cell is its creator's to write: `mut` (writes need a `mut`
+    // reference to the cell, docs/async-decisions.md S0-11).
+    export fn shallowReactive<T>(value: T): mut rx.ShallowReactive<T> {
 
         if comptime T.category == meta.TypeCategory.ShallowReactive {
             return value;
         }
 
         return do unsafe {
-            let result: rx.ShallowReactive<T> = uninitialized;
+            let result: mut rx.ShallowReactive<T> = uninitialized;
             __c__(f"""result = HZSTD_REACTIVE_CELL_CREATE(__typeof__(result), {T.mangledName}, value);""");
             result
         };
     }
 
-    export fn reactive<T>(value: T): rx.Reactive<T> :: final {
+    // A new cell is its creator's to write: `mut` (S0-11). A value that is a
+    // cell already is handed back; only a `mut` one can come back as `mut`.
+    export fn reactive<T>(value: T): mut rx.Reactive<T> :: final {
 
         if comptime T.baseType.category == meta.TypeCategory.Reactive { 
             return value;
@@ -91,7 +95,7 @@ namespace rx {
 
         else if comptime T.baseType.category == meta.TypeCategory.DynamicArray {
             do unsafe {
-                let result: Reactive<T> = uninitialized;
+                let result: mut Reactive<T> = uninitialized;
                 __c__(f"result = hzstd_reactive_array_create_from_plain(value, sizeof({T.elementType.mangledName}));");
                 return result;
             };
@@ -99,7 +103,7 @@ namespace rx {
 
         else if comptime T.baseType.category == meta.TypeCategory.Struct {
             do unsafe {
-                let result: Reactive<T> = uninitialized;
+                let result: mut Reactive<T> = uninitialized;
                 // Build the Deep<T> ref struct on the stack with each field initialized as a reactive,
                 // then create the reactive cell from that complete struct. This avoids the double
                 // problem of using the wrong value_T (Cache* instead of Deep<T>) and trying to
@@ -120,7 +124,7 @@ namespace rx {
                 T.baseType.category == meta.TypeCategory.Enum
         {
             return do unsafe {
-                let result: rx.Reactive<T> = uninitialized;
+                let result: mut rx.Reactive<T> = uninitialized;
                 __c__(f"""result = HZSTD_REACTIVE_CELL_CREATE(__typeof__(result), {T.baseType.mangledName}, value);""");
                 result
             };
@@ -407,7 +411,7 @@ namespace rx {
     // nothing reading it re-runs (see hasChanged). An array or union is
     // written whole -- so a handle held INSIDE a union (`vault: VaultFS |
     // none`, VaultFS holding an rx.Reactive) is replaced along with it.
-    export fn assign<T>(target: rx.Reactive<T>, value: T): none :: final {
+    export fn assign<T>(target: mut rx.Reactive<T>, value: T): none :: final {
         if comptime T.baseType.category == meta.TypeCategory.Struct {
             for comptime field in T.fields {
                 assign(target.[field.name], value.[field.name]);

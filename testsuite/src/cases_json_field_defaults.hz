@@ -91,7 +91,7 @@ struct Cache {
     width: real = 200.0;
 }
 
-fn open(folders: rx.Reactive<[]str>, path: str) {
+fn open(folders: mut rx.Reactive<[]str>, path: str) {
     folders.push(path);
 }
 

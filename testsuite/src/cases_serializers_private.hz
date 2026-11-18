@@ -1,0 +1,195 @@
+// ============================================================================
+// Serializers and encapsulation (user, 2026-11-18; docs/async-decisions.md
+// S0-19). A struct with a private member, or an opaque one, is no plain data
+// any more: its inside is its own code's business, so a generic serializer
+// cannot copy it field by field. json writes such a struct only when every
+// private field is [[json.ignore]]d, or when the struct has its own
+// [[json.serialize]] hook; it reads one only through a [[json.parse]] hook
+// (field-wise construction would set private fields from outside, an ignored
+// one with its default included). traverse, which has no hooks, never walks
+// one. Every rejection is one static assert at compile time, never the
+// private-access error from inside the stdlib.
+// ============================================================================
+
+namespace cases_serializers_private {
+
+    fn rejects(s: mut testsuite.Suite, name: str, source: str) {
+        s.compileFails(f"serializers and private: {name}", source, [
+            testsuite.exactCount(errorcodes.Code.StaticAssertFailedWithMessage, 1),
+            testsuite.totalErrors(1),
+        ]);
+    }
+
+    export fn register(s: mut testsuite.Suite) {
+        // ── json ───────────────────────────────────────────────────────────
+        rejects(s, "json.stringify of a struct with a private field", """
+struct Account { name: str = ""; private pin: int = 0; }
+fn main(): int { let t = json.stringify<Account>(Account {}); return 0; }
+""");
+        rejects(s, "json.stringify of a private field nested in a public one", """
+struct Secret { private key: str = ""; }
+struct Outer { n: int = 0; secret: Secret = {}; }
+fn main(): int { let t = json.stringify<Outer>(Outer {}); return 0; }
+""");
+        rejects(s, "json.stringify of an opaque struct", """
+opaque struct Handle { id: int = 0; static fn make(): Handle { return Handle { id: 3 }; } }
+fn main(): int { let t = json.stringify<Handle>(Handle.make()); return 0; }
+""");
+        rejects(s, "json.parse of a struct with a private field", """
+struct Account { name: str = ""; private pin: int = 0; }
+fn main(): int { let r = json.parse<Account>("{}"); return 0; }
+""");
+        rejects(s, "json.parse of a struct whose private field is ignored", """
+struct Account { name: str = ""; [[json.ignore]] private pin: int = 0; }
+fn main(): int { let r = json.parse<Account>("{}"); return 0; }
+""");
+        rejects(s, "json.parse of an opaque struct", """
+opaque struct Handle { id: int = 0; }
+fn main(): int { let r = json.parse<Handle>("{}"); return 0; }
+""");
+        rejects(s, "json.parse of a private field inside an array element", """
+struct Secret { private key: str = ""; }
+ref struct Outer { items: []Secret = []; }
+fn main(): int { let r = json.parse<Outer>("{}"); return 0; }
+""");
+
+        // ── traverse (no hooks: never walks one) ───────────────────────────
+        let readFormat = """
+ref struct Cursor { stack: mut []int = []; }
+ref struct F {
+    skipAttribute: "p.skip" = "p.skip";
+    cur: mut Cursor;
+    fn beginReadStruct<T>() { this.cur.stack.push(0); }
+    fn nextField<T>(): int {
+        let top = this.cur.stack.length - 1;
+        let i = this.cur.stack[top];
+        if i >= T.fields.length { return -1; }
+        this.cur.stack[top] = i + 1;
+        return i;
+    }
+    fn endReadStruct<T>() { let x = this.cur.stack.pop(); }
+    fn failed(): bool { return false; }
+    fn readsPlain<T>(): bool { return false; }
+    fn readPlain<T>(memory: RawMemory, count: int) {}
+    fn missingField<T>(name: str) {}
+    fn duplicateField<T>(name: str) {}
+}
+""";
+        rejects(s, "traverse.read of a struct with a private field", readFormat + """
+struct Account { name: str = ""; private pin: int = 0; }
+fn main(): int { let r = traverse.read<F, Account>(F { cur: Cursor {} }); return 0; }
+""");
+        rejects(s, "traverse.read of a private field the format skips", readFormat + """
+struct Account { name: str = ""; [[p.skip]] private pin: int = 0; }
+fn main(): int { let r = traverse.read<F, Account>(F { cur: Cursor {} }); return 0; }
+""");
+        rejects(s, "traverse.read of an opaque struct", readFormat + """
+opaque struct Handle { id: int = 0; }
+fn main(): int { let r = traverse.read<F, Handle>(F { cur: Cursor {} }); return 0; }
+""");
+        let writeFormat = """
+ref struct W {
+    skipAttribute: "p.skip" = "p.skip";
+    out: mut ref Box<str> = { value: "" };
+    fn writesPlain<T>(): bool { return false; }
+    fn writePlain<T>(memory: RawMemory, count: int) {}
+    fn beginStruct<T>() { this.out.value = this.out.value + "{"; }
+    fn beginField<T>(name: str, index: int) { this.out.value = this.out.value + name + "="; }
+    fn endField<T>(name: str, index: int) {}
+    fn endStruct<T>() { this.out.value = this.out.value + "}"; }
+    fn writePrimitive<T>(value: T) { this.out.value = this.out.value + f"{value};"; }
+}
+""";
+        rejects(s, "traverse.write of a struct with a private field", writeFormat + """
+struct Account { name: str = "a"; private pin: int = 0; }
+fn main(): int { traverse.write<W, Account>(W {}, Account {}); return 0; }
+""");
+        // A format that copies plain data as bytes still never gets an opaque
+        // struct inside a plain one: the field walk is compiled either way.
+        let plainWriteFormat = """
+ref struct W {
+    skipAttribute: "p.skip" = "p.skip";
+    out: mut ref Box<str> = { value: "" };
+    fn writesPlain<T>(): bool { return true; }
+    fn writePlain<T>(memory: RawMemory, count: int) { this.out.value = this.out.value + "bytes;"; }
+    fn beginStruct<T>() { this.out.value = this.out.value + "{"; }
+    fn beginField<T>(name: str, index: int) { this.out.value = this.out.value + name + "="; }
+    fn endField<T>(name: str, index: int) {}
+    fn endStruct<T>() { this.out.value = this.out.value + "}"; }
+    fn writePrimitive<T>(value: T) { this.out.value = this.out.value + f"{value};"; }
+}
+""";
+        rejects(s, "traverse.write of a plain struct holding an opaque one, by a format that copies plain data", plainWriteFormat + """
+opaque struct Handle { id: int = 0; static fn make(): Handle { return Handle { id: 3 }; } }
+struct Pair { a: int = 1; h: Handle; }
+fn main(): int { traverse.write<W, Pair>(W {}, Pair { h: Handle.make() }); return 0; }
+""");
+        rejects(s, "traverse.write of an opaque struct", writeFormat + """
+opaque struct Handle { id: int = 0; static fn make(): Handle { return Handle { id: 3 }; } }
+fn main(): int { traverse.write<W, Handle>(W {}, Handle.make()); return 0; }
+""");
+
+        // ── what works ─────────────────────────────────────────────────────
+        s.run(
+            "serializers and private: an ignored private field is not written, a hook writes and reads it",
+            """
+struct Account {
+    name: str = "";
+    [[json.ignore]] private pin: int = 7;
+    fn pinOf(): int { return this.pin; }
+}
+
+[[json.serialize="toJson", json.parse="fromJson"]]
+ref struct Vault {
+    private secret: str = "";
+    static fn make(s: str): Vault { return Vault { secret: s }; }
+    fn reveal(): str { return this.secret; }
+    fn toJson(): json.Node {
+        return json.encodeToJsonNode<str>(this.secret) ?? sys.panic("encode");
+    }
+    static fn fromJson(node: json.Node): Result<Vault, json.Error> {
+        let r = json.parse<str>(node);
+        if !r { return r; }
+        return Vault.make(r);
+    }
+}
+
+fn main(): int {
+    let text = json.stringify<Account>(Account { name: "n" });
+    let vaultText = json.stringify<Vault>(Vault.make("s3"));
+    let back = json.parse<Vault>(vaultText);
+    let revealed = "failed";
+    if back is Vault { revealed = back.reveal(); }
+    fmt.println(f"{text} {vaultText} {revealed} {Account.isFieldPrivate("pin")} {Account.isFieldPrivate("name")} {Vault.isOpaque} {Account.isOpaque}");
+    return 0;
+}
+""",
+            """{"name":"n"} "s3" s3 true false false false""");
+
+        s.run(
+            "serializers and private: isOpaque and isFieldPrivate answer at compile time",
+            """
+opaque struct Handle { id: int = 0; }
+struct Mixed { a: int = 0; private b: int = 0; }
+fn main(): int {
+    const comptime opaqueHandle = Handle.isOpaque;
+    const comptime privateB = Mixed.isFieldPrivate("b");
+    static_assert(opaqueHandle && privateB && Mixed.isFieldPrivate("a") == false && Mixed.isOpaque == false, "reflection");
+    fmt.println("ok");
+    return 0;
+}
+""",
+            "ok");
+
+        s.compileFails(
+            "serializers and private: isFieldPrivate of a field that does not exist",
+            """
+struct Mixed { a: int = 0; }
+fn main(): int {
+    const comptime x = Mixed.isFieldPrivate("nope"); // <- no such field
+    return 0;
+}
+""",
+            [testsuite.exactCount(errorcodes.Code.StructDoesNotHaveFieldNamed, 1)]);
+    }
+}

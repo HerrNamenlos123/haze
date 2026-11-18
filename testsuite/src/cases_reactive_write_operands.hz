@@ -21,8 +21,8 @@ ref struct Loader {
 }
 
 ref struct Holder {
-    p: rx.Reactive<real>;
-    maybe: rx.Reactive<int> | none = none;
+    p: mut rx.Reactive<real>;
+    maybe: mut rx.Reactive<int> | none = none;
     loading: Loader | none = none;
 
     // The value is a method call on an `if let` binding.

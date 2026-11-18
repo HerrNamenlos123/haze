@@ -478,6 +478,19 @@ namespace json {
     }
 
     export fn parseJsonStruct<T>(allocator: Allocator, node: ffi.hzstd_json_node_t): Result<T, Error> {
+        // Reading builds the value field by field from outside: a private
+        // field (an ignored one too, which would be set to its default) can
+        // only be set by the struct's own code, so such a struct, and an
+        // opaque one, is read only through its [[json.parse]] hook (S0-19).
+        // (Context, Logger and Allocator are opaque: no JSON can make one.)
+        if comptime T.isOpaque {
+            static_assert(false, f"json.parse(): {T.prettyName} is opaque, so only its own code can make one; give it a [[json.parse]] hook");
+        }
+        for comptime field in T.fields {
+            if comptime T.isFieldPrivate(field.name) {
+                static_assert(false, f"json.parse(): field '{field.name}' of {T.prettyName} is private, so only its own code can set it; give {T.prettyName} a [[json.parse]] hook");
+            }
+        }
         if !ffi.hzstd_json_is_object(node) { 
             return Error { error: () => "JSON type mismatch: expected object" };
         }
@@ -559,15 +572,7 @@ namespace json {
     // again while it is still being elaborated -- which the compiler only
     // allows for a function whose signature is final.
     export fn parseJsonNodeFromFfi<T>(allocator: Allocator, node: ffi.hzstd_json_node_t): Result<T, Error> :: final {
-        if comptime T is Context || T is Logger || T is Allocator {
-            // These hold C function pointers, which no JSON text can name; a
-            // context is made only by Context() or by copying one (Axiom
-            // C398), and every context is valid (C399). Every nested value
-            // comes through here, so one anywhere inside T (a field, an
-            // element, a variant) is caught too.
-            static_assert(false, f"json.parse(): a {T.prettyName} cannot be parsed: it holds C function pointers");
-        }
-        else if comptime T.category == meta.TypeCategory.Literal {
+        if comptime T.category == meta.TypeCategory.Literal {
             if comptime T.baseType is str {
                 let resultValue = parseJsonNodeFromFfi<str>(allocator, node);
                 if !resultValue { return resultValue; }
@@ -865,6 +870,18 @@ namespace json {
     }
 
     export fn dumpJsonStruct<T>(allocator: Allocator, value: T): ffi.hzstd_json_node_t {
+        // A struct with a private member, or an opaque one, is no plain data:
+        // its inside is its own code's business (S0-19). It is written only
+        // through its own [[json.serialize]] hook, or with every private field
+        // [[json.ignore]]d. (Context, Logger and Allocator are opaque.)
+        if comptime T.isOpaque {
+            static_assert(false, f"json.stringify(): {T.prettyName} is opaque, so its inside is its own business; give it a [[json.serialize]] hook");
+        }
+        for comptime field in T.fields {
+            if comptime T.isFieldPrivate(field.name) && T.hasFieldAttribute(field.name, "json.ignore") == false {
+                static_assert(false, f"json.stringify(): field '{field.name}' of {T.prettyName} is private; mark it [[json.ignore]] or give {T.prettyName} a [[json.serialize]] hook");
+            }
+        }
         let obj = ffi.hzstd_json_create_object(allocator);
         for comptime field in T.fields {
             const comptime fieldName = field.name;
@@ -1040,7 +1057,7 @@ namespace json {
     }
 
     export ref struct CacheFile<T> {
-        data: rx.Reactive<T>;
+        data: mut rx.Reactive<T>;
         _args: CacheFileArgs;
         _path: str;
         _flushComputed: rx.Computed<none>;

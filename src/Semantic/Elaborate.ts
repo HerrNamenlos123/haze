@@ -11021,21 +11021,9 @@ export class SemanticElaborator {
     sourceloc: SourceLoc,
     write: "store" | "receiver"
   ) {
+    // A place holding a reactive cell is checked like any other: `cell =
+    // other` rebinds it. Writing INTO the cell is assertCellWritable's.
     let cur = this.sr.exprNodes.get(targetExprId);
-    // A reactive cell is written through its own runtime path
-    // (ReactiveWriteExpr), never as a place inside the data that holds it:
-    // `cell = v`, `cell++` and `this.cell := v` change the shared cell. Whether
-    // that needs a `mut` reference to the cell is not decided here
-    // (docs/async-decisions.md, S0-11).
-    const targetDef = this.sr.typeDefNodes.get(
-      this.sr.typeUseNodes.get(this.resolveAlias(cur.type)).type
-    );
-    if (
-      targetDef.variant === Semantic.ENode.ReactiveDatatype ||
-      targetDef.variant === Semantic.ENode.ShallowReactiveDatatype
-    ) {
-      return;
-    }
     // Whether the place is the variable itself, not a part of its value.
     let direct = true;
     while (true) {
@@ -11205,6 +11193,65 @@ export class SemanticElaborator {
     }
   }
 
+  // The struct whose fields a type has: the struct itself, or the clone of
+  // the struct a deep reactive value (Deep<T>) is made of, which keeps the
+  // original's members, their private flags and its opaque flag. Null for
+  // every other type.
+  structOrDeepClone(
+    typeDef: Semantic.TypeDefSymbol
+  ): Semantic.StructDatatypeDef | null {
+    if (typeDef.variant === Semantic.ENode.StructDatatype) {
+      return typeDef;
+    }
+    if (typeDef.variant === Semantic.ENode.DeepDatatype) {
+      const cloned = this.sr.typeDefNodes.get(
+        this.sr.typeUseNodes.get(this.resolveAlias(typeDef.clonedType)).type
+      );
+      assert(cloned.variant === Semantic.ENode.StructDatatype);
+      return cloned;
+    }
+    return null;
+  }
+
+  // A deep reactive value is one value: a member or element of it (itself a
+  // cell) has the rights of the reference to the whole, mut and const alike
+  // (S0-11, C603). `holder` is that reference: the cell a member is read out
+  // of, or the deep array cell an element is taken from.
+  deepReactiveRights(
+    reached: Semantic.TypeUseId,
+    holder: Semantic.TypeUseId
+  ): Semantic.TypeUseId {
+    const holderRights = this.sr.typeUseNodes.get(
+      this.resolveAlias(holder)
+    ).mutability;
+    if (holderRights === EDatatypeMutability.Const) {
+      return Conversion.constOf(this.sr, reached);
+    }
+    const use = this.sr.typeUseNodes.get(reached);
+    if (use.mutability === holderRights) {
+      return reached;
+    }
+    return makeTypeUse(
+      this.sr,
+      use.type,
+      holderRights,
+      use.storage,
+      use.sourceloc
+    )[1];
+  }
+
+  // Writing a reactive cell (`:=`, compound assignment, `++`, `--`, the deep
+  // array mutators) changes the data the cell reference points to, through its
+  // own runtime path (ReactiveWriteExpr): the reference must be `mut`, never
+  // const (S0-11). A member or element of a deep reactive value carries the
+  // whole value's rights (deepReactiveRights), so it is checked the same way.
+  assertCellWritable(cellExprId: Semantic.ExprId, sourceloc: SourceLoc) {
+    this.assertMutableReference(
+      this.sr.exprNodes.get(cellExprId).type,
+      sourceloc
+    );
+  }
+
   // Data changes through a reference only if the reference is `mut` (C601):
   // one without a modifier cannot change it (C602), and const data never
   // changes (C596).
@@ -11291,8 +11338,14 @@ export class SemanticElaborator {
 
     // `x := v` on a struct calls its `operator:=` with x as the receiver
     // (checked below, once the overload is known); x is never rebound. Every
-    // other assignment stores into x.
-    if (
+    // assignment but `=` writes into a reactive cell x. Every other
+    // assignment stores into x.
+    const lhsIsCell =
+      lhsType.variant === Semantic.ENode.ReactiveDatatype ||
+      lhsType.variant === Semantic.ENode.ShallowReactiveDatatype;
+    if (lhsIsCell && assignment.operation !== EAssignmentOperation.Rebind) {
+      this.assertCellWritable(targetExprId, assignment.sourceloc);
+    } else if (
       !(
         assignment.operation === EAssignmentOperation.Assign &&
         lhsType.variant === Semantic.ENode.StructDatatype
@@ -11766,11 +11819,18 @@ export class SemanticElaborator {
           )[1]
       );
     }
-    this.assertWritable(exprId, preIncr.sourceloc, "store");
     const typeUse = this.sr.typeUseNodes.get(
       this.sr.e.resolveAlias(exprNode.type)
     );
     const lhsTypeDef = this.sr.typeDefNodes.get(typeUse.type);
+    if (
+      lhsTypeDef.variant === Semantic.ENode.ReactiveDatatype ||
+      lhsTypeDef.variant === Semantic.ENode.ShallowReactiveDatatype
+    ) {
+      this.assertCellWritable(exprId, preIncr.sourceloc);
+    } else {
+      this.assertWritable(exprId, preIncr.sourceloc, "store");
+    }
 
     if (
       lhsTypeDef.variant === Semantic.ENode.ReactiveDatatype ||
@@ -11833,11 +11893,18 @@ export class SemanticElaborator {
           )[1]
       );
     }
-    this.assertWritable(exprId, postIncr.sourceloc, "store");
     const typeUse = this.sr.typeUseNodes.get(
       this.sr.e.resolveAlias(exprNode.type)
     );
     const lhsTypeDef = this.sr.typeDefNodes.get(typeUse.type);
+    if (
+      lhsTypeDef.variant === Semantic.ENode.ReactiveDatatype ||
+      lhsTypeDef.variant === Semantic.ENode.ShallowReactiveDatatype
+    ) {
+      this.assertCellWritable(exprId, postIncr.sourceloc);
+    } else {
+      this.assertWritable(exprId, postIncr.sourceloc, "store");
+    }
 
     if (
       lhsTypeDef.variant === Semantic.ENode.ReactiveDatatype ||
@@ -12834,10 +12901,18 @@ export class SemanticElaborator {
       if (member.private) {
         this.assertMemberAccessible(clonedTypeDef, name, sourceloc);
       }
+      // A member of a deep value read out of a cell has that cell's rights;
+      // one of a Deep<T> held directly (rx.reactive builds one) has the
+      // holder's.
+      const object = this.sr.exprNodes.get(exprId);
+      const holder =
+        object.variant === Semantic.ENode.ReactiveReadExpr
+          ? this.sr.exprNodes.get(object.value).type
+          : object.type;
       return this.sr.b.memberAccessRaw(
         exprId,
         name,
-        member.type,
+        this.deepReactiveRights(member.type, holder),
         false,
         sourceloc
       );
@@ -13118,6 +13193,14 @@ export class SemanticElaborator {
       if (name === "isValue") {
         return this.sr.b.literal(
           resolvedTypeUse.storage === EStorageClass.Value,
+          sourceloc
+        );
+      }
+      // An opaque struct keeps its inside to itself: generic code (the
+      // serializers) asks before walking it (S0-19).
+      if (name === "isOpaque") {
+        return this.sr.b.literal(
+          this.structOrDeepClone(resolvedTypeDef)?.opaque === true,
           sourceloc
         );
       }
@@ -15769,6 +15852,9 @@ export class SemanticElaborator {
       );
     }
 
+    // push, pop and reserve change the array the cell holds.
+    this.assertCellWritable(exprId, sourceloc);
+
     if (name === "push") {
       const suffix = Semantic.mangleTypeUse(this.sr, userElemTypeId).name;
       const funcname = `__hz_reactive_array_push_${suffix}`;
@@ -15953,6 +16039,7 @@ export class SemanticElaborator {
       memberName !== "hasField" &&
       memberName !== "hasFieldDefault" &&
       memberName !== "fieldDefault" &&
+      memberName !== "isFieldPrivate" &&
       memberName !== "hasFieldAttribute" &&
       memberName !== "isFieldAttributeOfType" &&
       memberName !== "getFieldAttribute" &&
@@ -16000,6 +16087,38 @@ export class SemanticElaborator {
           );
         });
       return this.sr.b.literal(hasField, callExpr.sourceloc);
+    }
+
+    // Whether a field is private (`T.isFieldPrivate("pin")`): only the
+    // struct's own code may reach it, so generic code that walks fields (the
+    // serializers) must not (S0-19). Asking it of a field T does not have is
+    // a mistake, not a "no".
+    if (memberName === "isFieldPrivate") {
+      this.assertParameterN(callExpr, 1, memberName);
+      const fieldName = this.evalCTFEStringArgument(
+        callExpr.arguments[0],
+        memberName,
+        callExpr.sourceloc
+      );
+      const struct = this.structOrDeepClone(resolvedTypeDef);
+      const member =
+        struct !== null
+          ? struct.members
+              .map((m) => this.sr.symbolNodes.get(m))
+              .find(
+                (m) =>
+                  m.variant === Semantic.ENode.VariableSymbol &&
+                  m.name === fieldName
+              )
+          : undefined;
+      if (member === undefined || member.variant !== Semantic.ENode.VariableSymbol) {
+        throw new CompilerError(
+          `'${Semantic.serializeTypeUse(this.sr, expr.type)}' does not have a field named '${fieldName}'`,
+          callExpr.sourceloc,
+          HazeErrorCode.StructDoesNotHaveFieldNamed
+        );
+      }
+      return this.sr.b.literal(member.private === true, callExpr.sourceloc);
     }
 
     // Whether a union has V among its members (`U.hasVariant<none>()`): the
@@ -21283,7 +21402,8 @@ export class SemanticElaborator {
       instanceIds: [],
       arguments: [indexId],
       calledExpr: callableId,
-      type: promotedElemTypeId,
+      // An element cell has the rights of the array cell it is taken from.
+      type: this.deepReactiveRights(promotedElemTypeId, expr.type),
       sourceloc: sourceloc,
       isTemporary: true,
       flow: expr.flow,
