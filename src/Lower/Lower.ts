@@ -20,6 +20,8 @@ import {
   type EUnaryOperation,
   UnaryOperationToString,
   EStorageClass,
+  EGlobalStorage,
+  EVariableMutability,
 } from "../shared/AST";
 import {
   type Brand,
@@ -152,6 +154,9 @@ export namespace Lowered {
     loweredFunctions: Map<Semantic.SymbolId, Lowered.FunctionId>;
     loweredPointers: Map<Lowered.TypeUseId, Lowered.TypeDefId>;
     loweredGlobalVariables: Lowered.StatementId[];
+    // The module's `tasklocal let` variables: the fields of its task-local
+    // block, with their initial values (docs/async-decisions.md TL-1).
+    loweredTaskLocals: Lowered.StatementId[];
     loweredGlobalVariableSymbols: Map<Semantic.SymbolId, Lowered.StatementId>;
 
     loweredUnionMappings: TagMapping[];
@@ -399,6 +404,9 @@ export namespace Lowered {
     variant: ENode.SymbolValueExpr;
     name: NameSet;
     type: TypeUseId;
+    // A `tasklocal let`: the name is its field in the module's task-local
+    // block, reached through the current context (HZSTD_TL_FIELD).
+    taskLocal?: true;
   };
 
   export type ExprAssignmentExpr = {
@@ -1007,6 +1015,18 @@ function requireContext(
 // parameter, which every function with a body has (Axiom C209, C402). `what`
 // names the construct that needs it; outside a function body it is an
 // internal error.
+// A `tasklocal let` lives in its module's task-local block; a `tasklocal
+// const` is a constant like `const` and gets none (TL-8).
+function isTaskLocalVariable(
+  definition: Semantic.GlobalVariableDefinitionSymbol,
+  variable: Semantic.VariableSymbol
+): boolean {
+  return (
+    definition.storage === EGlobalStorage.Task &&
+    variable.mutability !== EVariableMutability.Const
+  );
+}
+
 function currentContextPointer(
   lr: Lowered.Module,
   what: string,
@@ -1650,6 +1670,28 @@ export function lowerExpr(
           const mangled = Semantic.mangleSymbol(lr.sr, expr.symbol);
           mangledName = mangled.name;
           wasMangled = mangled.wasMangled;
+        }
+
+        if (globalVariableStatementId) {
+          const definition = lr.sr.symbolNodes.get(globalVariableStatementId);
+          assert(
+            definition.variant === Semantic.ENode.GlobalVariableDefinitionSymbol
+          );
+          if (isTaskLocalVariable(definition, symbol)) {
+            // A field of this module's block in the running task: reached
+            // through the context, so it exists only inside a function.
+            requireContext(lr, `The task-local variable '${name}'`, expr.sourceloc);
+            return Lowered.addExpr(lr, {
+              variant: Lowered.ENode.SymbolValueExpr,
+              name: {
+                prettyName: prettyName,
+                mangledName: mangledName,
+                wasMangled: wasMangled,
+              },
+              type: lowerTypeUse(lr, symbol.type),
+              taskLocal: true,
+            });
+          }
         }
 
         const captureOverride = lr.currentFunctionCaptureTypeMap.get(
@@ -5743,7 +5785,13 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
         flattened.length === 0,
         "Global variables cannot take multi line expressions, rewrite it as scope expression: "
       );
-      lr.loweredGlobalVariables.push(pId);
+      if (isTaskLocalVariable(symbol, variableSymbol)) {
+        // Hoisting would make the field a pointer; nothing hoists a global.
+        assert(!variableSymbol.requiresHoisting);
+        lr.loweredTaskLocals.push(pId);
+      } else {
+        lr.loweredGlobalVariables.push(pId);
+      }
       lr.loweredGlobalVariableSymbols.set(symbolId, pId);
       return;
     }
@@ -6042,6 +6090,7 @@ export function LowerModule(sr: Semantic.Context): Lowered.Module {
     loweredFunctions: new Map(),
     loweredPointers: new Map(),
     loweredGlobalVariables: [],
+    loweredTaskLocals: [],
     loweredGlobalVariableSymbols: new Map(),
 
     loweredUnionMappings: [],

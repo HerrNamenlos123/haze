@@ -384,6 +384,33 @@ body-less `extern C` declaration. (H7219 and H7220 are retired: every function w
 has a context.) Tests: `testsuite/src/cases_context.hz`,
 `cases_context_review.hz`, `cases_extern_c_function_types.hz`.
 
+## Task-local storage
+
+`tasklocal let x: T = v;` (module or namespace level) exists once per task (Axiom C200 to C202;
+design and decisions: `docs/async-decisions.md` TL-1 to TL-15). `tasklocal const` is a plain
+constant. Until tasks exist (stage 3) every thread runs one task.
+
+```
+hzstd_task_t        { void **tl_blocks; size_t tl_capacity; hzstd_thread_t *thread; ... }
+per module (Codegen, emitTaskLocalBlock, file-local):
+  typedef struct { T1 f1; T2 f2; } __hz_tl_block_t;
+  static const __hz_tl_block_t __hz_tl_initial = { .f1 = v1, .f2 = v2 };
+  static hzstd_tl_desc_t __hz_tl_desc = { ABI version, size, align, &initial, module, fingerprint };
+access              HZSTD_TL_FIELD(__hz_ctx, __hz_tl_desc, __hz_tl_block_t, f1)   (an lvalue)
+                    = ((__hz_tl_block_t *)hzstd_tl_block(__hz_ctx, &__hz_tl_desc))->f1
+```
+
+- `hzstd_tl_block` (hzstd_runtime.h) is two loads and two checks: the descriptor's index, then
+  `task->tl_blocks[index]`. The first access of a module in a task makes its block from the
+  initial image; the first in the process registers the module (`hzstd_tl_block_slow`,
+  hzstd_runtime.c), which gives it a process-wide index (from 1, never reused; the same module
+  name and fingerprint get their old index back for hot reload).
+- Generated code reads only `ctx->task`, `task->tl_blocks` and `task->tl_capacity`: those fields
+  stay first. A descriptor of another `HZSTD_TL_ABI_VERSION` panics, naming its module.
+- Only the declaring module's code reaches its task-locals (globals are not exported), so no
+  module depends on another's block layout. A `nocopy` type is rejected (H7234).
+- Tests: `testsuite/src/cases_tasklocal.hz` (a second task built in C included).
+
 ## Module System Architecture
 
 The compiler has a two-phase import/export system:

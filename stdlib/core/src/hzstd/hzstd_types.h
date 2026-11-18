@@ -613,6 +613,23 @@ struct hzstd_context_t {
   hzstd_context_settings_t settings;
 };
 
+// Task-local storage (docs/async-decisions.md TL-1 to TL-10). Every module with
+// `tasklocal` variables has one block per task: a C struct of them, laid out by
+// the compiler that built the module, found through the module's process-wide
+// index (never by offset, so a module another compiler built and modules loaded
+// later find theirs too). A module describes its block with a static
+// descriptor; `index` is 0 until hzstd registers it on first use.
+#define HZSTD_TL_ABI_VERSION 1u
+typedef struct hzstd_tl_desc_t {
+  uint32_t abi_version; // HZSTD_TL_ABI_VERSION of the compiler that built the module
+  uint32_t align;
+  size_t size;
+  const void *initial; // the block's initial image, `size` bytes (C518)
+  const char *module;  // names the module in a panic, and keys hot reload
+  uint64_t fingerprint; // the block's layout; with `module`, keys hot reload (TL-10)
+  _Atomic size_t index; // 0: not registered yet; never reused
+} hzstd_tl_desc_t;
+
 // Runtime structures; the task's state follows in the later stages. One thread
 // runs one task for now.
 struct hzstd_thread_t {
@@ -620,6 +637,11 @@ struct hzstd_thread_t {
   hzstd_task_t *current_task; // the task running on this thread
 };
 struct hzstd_task_t {
+  // The two fields generated code reads (TL-4): they stay first, in this
+  // order. tl_blocks[i] is the block of the module with index i, or NULL until
+  // that module's code first runs in this task; GC memory, scanned.
+  void **tl_blocks;
+  size_t tl_capacity;
   hzstd_thread_t *thread;
 };
 

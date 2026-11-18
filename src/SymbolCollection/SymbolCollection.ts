@@ -2314,10 +2314,11 @@ function collectSymbol(
 
 /**
  * `tasklocal` and `global` name where a global's storage lives
- * (docs/async-runtime.md, "Globals"). Only `global const` has storage today (a
- * process-wide C global, like every global); the rest are refused so that
- * nothing silently behaves like a plain global. The two H7231 refusals are the
- * only code to remove when their storage is built.
+ * (docs/async-runtime.md, "Globals"). `tasklocal` lives in its module's
+ * task-local block (docs/async-decisions.md TL-1 to TL-10; `tasklocal const` is
+ * a constant), `global const` is a process-wide C global, like every global
+ * today. `global let` is refused so that nothing silently behaves like a plain
+ * global; its H7231 refusal is the code to remove when atomic types exist.
  */
 function rejectUnavailableGlobalStorage(item: ASTGlobalVariableDefinition) {
   if (item.storage === EGlobalStorage.Thread) {
@@ -2339,11 +2340,7 @@ function rejectUnavailableGlobalStorage(item: ASTGlobalVariableDefinition) {
     );
   }
   if (item.storage === EGlobalStorage.Task) {
-    throw new CompilerError(
-      "task-local globals are not built yet",
-      item.sourceloc,
-      HazeErrorCode.StorageClassNotAvailable
-    );
+    return;
   }
   if (item.mutability !== EVariableMutability.Const) {
     throw new CompilerError(

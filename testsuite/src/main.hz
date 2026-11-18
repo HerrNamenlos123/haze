@@ -128,6 +128,7 @@ fn main(): int {
     cases_reactive_mut.register(suite);
     cases_serializers_private.register(suite);
     cases_signal_stack.register(suite);
+    cases_tasklocal.register(suite);
     cases_private_members.register(suite);
     cases_storage_keywords.register(suite);
 

@@ -1,0 +1,212 @@
+// ============================================================================
+// Task-local storage (Axiom C200 to C202, C207, C208, C285, C469, C518;
+// docs/async-decisions.md TL-1 to TL-10).
+//
+// `tasklocal let x: T = v;` exists once per task. Every module with task-local
+// variables has one block per task, a C struct of them, found through the
+// module's process-wide index: `ctx->task->tl_blocks[index]`, two loads and two
+// checks, made on first use from the module's initial image. So code reached
+// through a library that knows nothing of a module's task-locals still reaches
+// them: the context carries the task. `tasklocal const` is a constant (TL-8).
+// Until tasks exist (stage 3) every thread runs one task, the main thread's.
+// ============================================================================
+
+namespace cases_tasklocal {
+
+    export fn register(s: mut testsuite.Suite) {
+        s.run(
+            "tasklocal: read and written from functions, closures, clone and namespaces",
+            """
+struct Point { x: int = 0; y: int = 0; }
+ref struct Node { v: int = 0; }
+tasklocal let counter: int = 10;
+tasklocal let label: str = "start";
+tasklocal let point: Point = Point { x: 1, y: 2 };
+tasklocal let node: Node | none = none;
+namespace ns {
+    export tasklocal let depth: int = 3;
+}
+
+fn bump() { counter++; }
+fn rename(s: str) { label = s; }
+
+fn main(): int {
+    bump();
+    bump();
+    counter += 5;
+    rename("x");
+    point.x = 7;
+    node = Node { v: 4 };
+    let read = () => counter;
+    ns.depth = ns.depth + 1;
+    // A clone carries settings, never identity: the same task, the same storage.
+    let inClone = context.clone(() => {
+        counter = counter + 100;
+        return counter;
+    });
+    let v = 0;
+    if let n = node { v = n.v; }
+    fmt.println(f"{counter} {label} {point.x} {point.y} {v} {read()} {ns.depth} {inClone}");
+    return 0;
+}
+""",
+            "117 x 7 2 4 117 4 117");
+
+        s.run(
+            "tasklocal: initial values before any write, and tasklocal const",
+            """
+tasklocal let fresh: int = 42;
+tasklocal let name: str = "n";
+tasklocal const limit = 3;
+fn main(): int {
+    fmt.println(f"{fresh} {name} {limit}");
+    return 0;
+}
+""",
+            "42 n 3");
+
+        // The problem task-local storage solves: a library that knows nothing of
+        // the main module's task-locals calls back into it, and each module
+        // reaches its own.
+        s.runWithModules(
+            "tasklocal: a library calling back into the main module, each with its own task-locals",
+            [
+                testsuite.TestModule {
+                    name: "tlib",
+                    source: """
+tasklocal let libCount: int = 0;
+export fn callTwice(f: () => none) {
+    libCount++;
+    f();
+    libCount++;
+    f();
+}
+export fn libSeen(): int { return libCount; }
+""",
+                },
+            ],
+            """
+import tlib;
+tasklocal let mainCount: int = 100;
+fn main(): int {
+    tlib.callTwice(() => { mainCount++; });
+    fmt.println(f"{mainCount} {tlib.libSeen()}");
+    return 0;
+}
+""",
+            "102 2");
+
+        s.run(
+            "tasklocal: an extern C entry under a context C made for its thread",
+            """
+tasklocal let shared: int = 5;
+extern C fn entry(): int {
+    shared++;
+    return shared;
+}
+fn main(): int {
+    shared = 9;
+    let r = 0;
+    do unsafe { __c__("hzstd_context_t c = hzstd_context_for_current_thread(); r = entry(&c);"); };
+    fmt.println(f"{r} {shared}");
+    return 0;
+}
+""",
+            "10 10");
+
+        s.compileFails(
+            "tasklocal: a nocopy type is rejected",
+            """
+nocopy struct Handle { v: int = 0; }
+tasklocal let h: Handle = Handle {}; // <- a new task copies its parent's value (C285)
+fn main(): int { return 0; }
+""",
+            [testsuite.exactCount(errorcodes.Code.TaskLocalOfNocopyType, 1)]);
+
+        // Tasks do not exist before stage 3, but a second one can be built in
+        // C: a task struct with an empty table, under a copy of the context.
+        // Code running under it has its own value, starting from the initial
+        // one, and the main task's stays its own.
+        s.run(
+            "tasklocal: another task has its own value, from the initial one",
+            """
+tasklocal let counter: int = 1;
+extern C fn readCounter(): int { return counter; }
+extern C fn bumpCounter() { counter = counter + 10; }
+fn main(): int {
+    counter = 5;
+    let p = sys.contextPtr();
+    let inOther = 0;
+    do unsafe {
+        __c__("hzstd_context_t other = *(hzstd_context_t *)p; hzstd_task_t task = { .tl_blocks = NULL, .tl_capacity = 0, .thread = other.thread }; other.task = &task; bumpCounter(&other); inOther = readCounter(&other);");
+    };
+    fmt.println(f"{counter} {inOther}");
+    return 0;
+}
+""",
+            "5 11");
+
+        s.run(
+            "tasklocal: a task's table grows past its first capacity and keeps its blocks",
+            """
+__c__("static hzstd_int_t tl_values[40];\nstatic hzstd_tl_desc_t tl_many[40];\nstatic void tl_fill(void) { for (int i = 0; i < 40; i++) { tl_values[i] = 1000 + i; tl_many[i] = (hzstd_tl_desc_t) { .abi_version = HZSTD_TL_ABI_VERSION, .align = _Alignof(hzstd_int_t), .size = sizeof(hzstd_int_t), .initial = &tl_values[i], .module = \\"many\\", .fingerprint = (uint64_t)(100 + i) }; } }");
+fn main(): int {
+    let p = sys.contextPtr();
+    let ok = true;
+    do unsafe {
+        __c__("hzstd_context_t *c = (hzstd_context_t *)p; tl_fill(); for (int i = 0; i < 40; i++) { *(hzstd_int_t *)hzstd_tl_block(c, &tl_many[i]) += 1; }");
+        __c__("for (int i = 0; i < 40; i++) { if (*(hzstd_int_t *)hzstd_tl_block(c, &tl_many[i]) != 1001 + i) ok = false; } if (c->task->tl_capacity <= tl_many[39].index) ok = false;");
+    };
+    fmt.println(f"{ok}");
+    return 0;
+}
+""",
+            "true");
+
+        // The registry, from C: a module reloaded with the same name and layout
+        // gets its old index (and so its blocks) back; another layout gets a
+        // new one (TL-10). A block starts from the initial image.
+        s.run(
+            "tasklocal: the same module and layout share an index, another layout gets its own",
+            """
+__c__("static const hzstd_int_t tl_seven = 7;\nstatic hzstd_tl_desc_t tl_a = { .abi_version = HZSTD_TL_ABI_VERSION, .align = _Alignof(hzstd_int_t), .size = sizeof(hzstd_int_t), .initial = &tl_seven, .module = \\"reloaded\\", .fingerprint = 1 };\nstatic hzstd_tl_desc_t tl_b = { .abi_version = HZSTD_TL_ABI_VERSION, .align = _Alignof(hzstd_int_t), .size = sizeof(hzstd_int_t), .initial = &tl_seven, .module = \\"reloaded\\", .fingerprint = 1 };\nstatic hzstd_tl_desc_t tl_c = { .abi_version = HZSTD_TL_ABI_VERSION, .align = _Alignof(hzstd_int_t), .size = sizeof(hzstd_int_t), .initial = &tl_seven, .module = \\"reloaded\\", .fingerprint = 2 };");
+fn main(): int {
+    let p = sys.contextPtr();
+    let sameIndex = false;
+    let otherIndex = false;
+    let sameBlock = false;
+    let initial = 0;
+    do unsafe {
+        __c__("hzstd_context_t *c = (hzstd_context_t *)p; hzstd_int_t *a = hzstd_tl_block(c, &tl_a); hzstd_int_t *b = hzstd_tl_block(c, &tl_b); hzstd_tl_block(c, &tl_c);");
+        __c__("sameIndex = tl_a.index == tl_b.index && tl_a.index != 0; otherIndex = tl_c.index != tl_a.index && tl_c.index != 0; sameBlock = a == b; initial = *a;");
+    };
+    fmt.println(f"{sameIndex} {otherIndex} {sameBlock} {initial}");
+    return 0;
+}
+""",
+            "true true true 7");
+
+        // A library built by a compiler with another block layout must fail
+        // loudly, naming itself (TL-4, C419). The program runs itself again as
+        // a child, which registers such a descriptor.
+        s.run(
+            "tasklocal: a descriptor of another ABI version panics, naming its module",
+            """
+__c__("static const hzstd_int_t tl_zero = 0;\nstatic hzstd_tl_desc_t tl_old = { .abi_version = HZSTD_TL_ABI_VERSION + 1, .align = _Alignof(hzstd_int_t), .size = sizeof(hzstd_int_t), .initial = &tl_zero, .module = \\"oldlib\\", .fingerprint = 1 };");
+fn main(): int {
+    let args = sys.args();
+    if args.length > 1 && args[1] == "child" {
+        let p = sys.contextPtr();
+        do unsafe { __c__("hzstd_tl_block((hzstd_context_t *)p, &tl_old);"); };
+        fmt.println("registered");
+        return 0;
+    }
+    let r = process.runCaptured(args[0], ["child"]);
+    let named = r.stderrResult.contains("oldlib");
+    fmt.println(f"{r.exitCode} {named} {r.stdoutResult.length}");
+    return 0;
+}
+""",
+            "255 true 0");
+    }
+}

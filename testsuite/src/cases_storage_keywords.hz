@@ -6,10 +6,11 @@
 //   global let x: T = v;        global const x = v;
 //
 // at module or namespace level, after `export` / `extern` / `pub` and before
-// `let` / `const`. Both are reserved words. The storage of each is built later;
-// until then nothing may silently behave like a plain global:
+// `let` / `const`. Both are reserved words. What is not built yet is refused,
+// so nothing silently behaves like a plain global:
 //
-//   * `tasklocal` (let or const): H7231, task-local storage does not exist yet
+//   * `tasklocal let`: once per task (task-local storage, cases_tasklocal.hz);
+//     `tasklocal const` is a constant
 //   * `global let`: H7231, it must hold an atomic type and atomic types do not
 //     exist yet
 //   * `global const`: accepted, a process-wide C global like every global today
@@ -61,22 +62,22 @@ fn main(): int {
 """,
             "42 g 2 3 8 43 40");
 
-        // ── Rule 1: tasklocal ───────────────────────────────────────────────
-        unavailable(s, "storage keywords: tasklocal let", """
-tasklocal let counter: int = 0; // <- H7231
+        // ── Rule 1: tasklocal (built; what it does: cases_tasklocal.hz) ────
+        s.compileOk("storage keywords: tasklocal let", """
+tasklocal let counter: int = 0;
 
 fn main(): int { return 0; }
 """);
 
-        unavailable(s, "storage keywords: tasklocal const", """
-tasklocal const limit = 3; // <- H7231
+        s.compileOk("storage keywords: tasklocal const", """
+tasklocal const limit = 3;
 
 fn main(): int { return 0; }
 """);
 
-        unavailable(s, "storage keywords: tasklocal in a namespace, exported", """
+        s.compileOk("storage keywords: tasklocal in a namespace, exported", """
 namespace n {
-    export tasklocal let counter: int = 0; // <- H7231
+    export tasklocal let counter: int = 0;
 }
 
 fn main(): int { return 0; }
@@ -98,8 +99,8 @@ fn main(): int { return 0; }
 """);
 
         // A global nobody uses is still diagnosed: the declaration is the error.
-        unavailable(s, "storage keywords: an unused tasklocal is still rejected", """
-tasklocal const unused = 1; // <- H7231
+        unavailable(s, "storage keywords: an unused global let is still rejected", """
+global let unused: int = 1; // <- H7231
 
 fn main(): int {
     return 7;

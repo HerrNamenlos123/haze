@@ -119,22 +119,29 @@ void hzstd_assert_fmt_n(bool condition, int skip_n_frames, const char *fmt, ...)
   }
 }
 
+// Both entry points format through this one. hzstd_panic_fmt used to hand its
+// va_list on to hzstd_panic_fmt_n as if it were the first argument, which
+// garbled every message it formatted. Not inlined: it is one of the frames the
+// stack trace hides (skip_n_frames + 1).
+__attribute__((noinline)) static _Noreturn void hzstd_panic_vfmt_n(int skip_n_frames, const char *fmt, va_list args)
+{
+  char buf[1024];
+  vsnprintf(buf, sizeof(buf), fmt, args);
+  hzstd_panic_str_n(HZSTD_STRING_FROM_CSTR(buf), skip_n_frames + 1);
+}
+
 _Noreturn void hzstd_panic_fmt(const char *fmt, ...)
 {
   va_list args;
   va_start(args, fmt);
-  hzstd_panic_fmt_n(1, fmt, args);
-  va_end(args);
+  hzstd_panic_vfmt_n(1, fmt, args);
 }
 
 _Noreturn void hzstd_panic_fmt_n(int skip_n_frames, const char *fmt, ...)
 {
-  char buf[1024];
   va_list args;
   va_start(args, fmt);
-  vsnprintf(buf, sizeof(buf), fmt, args);
-  va_end(args);
-  hzstd_panic_str_n(HZSTD_STRING_FROM_CSTR(buf), skip_n_frames + 1);
+  hzstd_panic_vfmt_n(skip_n_frames + 1, fmt, args);
 }
 
 _Noreturn void hzstd_panic(hzstd_ccstr_t msg)
@@ -1074,6 +1081,93 @@ hzstd_context_settings_t hzstd_context_settings_default(void)
     .userBox1 = { 0 },
     .userBox2 = { 0 },
   };
+}
+
+// ── Task-local storage (docs/async-decisions.md TL-1 to TL-10) ───────────────
+//
+// The registry gives every module descriptor a process-wide index, starting at
+// 1 (slot 0 is never filled, so an unregistered descriptor always takes the
+// slow path), never reused. A descriptor with the module name and layout
+// fingerprint of one registered before (the same module, reloaded) gets that
+// one's index, and so the blocks tasks already have (TL-10). Registration is
+// rare (once per module), so a spin lock is all it needs; nothing else in
+// hzstd locks yet.
+static atomic_flag g_tl_registry_lock = ATOMIC_FLAG_INIT;
+static hzstd_tl_desc_t **g_tl_registry = NULL; // [index] = first descriptor of that index
+static size_t g_tl_registry_count = 0;         // the highest index handed out
+static size_t g_tl_registry_capacity = 0;
+
+static size_t hzstd_tl_register(hzstd_tl_desc_t *desc)
+{
+  while (atomic_flag_test_and_set_explicit(&g_tl_registry_lock, memory_order_acquire)) {
+  }
+  size_t index = atomic_load_explicit(&desc->index, memory_order_relaxed);
+  if (index == 0) {
+    for (size_t i = 1; i <= g_tl_registry_count; i++) {
+      hzstd_tl_desc_t *known = g_tl_registry[i];
+      if (known->fingerprint == desc->fingerprint && strcmp(known->module, desc->module) == 0) {
+        index = i;
+        break;
+      }
+    }
+    if (index == 0) {
+      index = ++g_tl_registry_count;
+      if (index >= g_tl_registry_capacity) {
+        size_t capacity = g_tl_registry_capacity == 0 ? 16 : g_tl_registry_capacity * 2;
+        // Descriptors are static data, never collected: plain memory.
+        hzstd_tl_desc_t **grown = realloc(g_tl_registry, capacity * sizeof(*grown));
+        if (grown == NULL) {
+          hzstd_panic("Out of memory registering a module's task-local storage");
+        }
+        g_tl_registry = grown;
+        g_tl_registry_capacity = capacity;
+      }
+      g_tl_registry[index] = desc;
+    }
+    atomic_store_explicit(&desc->index, index, memory_order_release);
+  }
+  atomic_flag_clear_explicit(&g_tl_registry_lock, memory_order_release);
+  return index;
+}
+
+void *hzstd_tl_block_slow(hzstd_context_t *ctx, hzstd_tl_desc_t *desc)
+{
+  // A library built by a compiler with another block ABI cannot be read
+  // correctly: fail loudly, naming it (TL-4, C419).
+  if (desc->abi_version != HZSTD_TL_ABI_VERSION) {
+    hzstd_panic_fmt("Module '%s' was built by a compiler whose task-local storage is incompatible with this program's runtime (version %u, the runtime's is %u): rebuild it with the same compiler",
+                    desc->module, (unsigned)desc->abi_version, (unsigned)HZSTD_TL_ABI_VERSION);
+  }
+  // GC memory is aligned for every scalar type; a block that needs more
+  // would be misaligned.
+  if (desc->align > _Alignof(max_align_t)) {
+    hzstd_panic_fmt("Module '%s' has a task-local variable aligned to %u bytes, more than task-local storage supports", desc->module, (unsigned)desc->align);
+  }
+  size_t index = atomic_load_explicit(&desc->index, memory_order_acquire);
+  if (index == 0) {
+    index = hzstd_tl_register(desc);
+  }
+  hzstd_task_t *task = ctx->task;
+  if (index >= task->tl_capacity) {
+    size_t capacity = task->tl_capacity == 0 ? 8 : task->tl_capacity;
+    while (capacity <= index) {
+      capacity *= 2;
+    }
+    void **grown = hzstd_heap_allocate(capacity * sizeof(*grown), "hzstd task-local blocks");
+    if (task->tl_capacity > 0) {
+      memcpy(grown, task->tl_blocks, task->tl_capacity * sizeof(*grown));
+    }
+    task->tl_blocks = grown;
+    task->tl_capacity = capacity;
+  }
+  void *block = task->tl_blocks[index];
+  if (block == NULL) {
+    // Scanned: task-local variables hold references like any other value.
+    block = hzstd_heap_allocate(desc->size == 0 ? 1 : desc->size, desc->module);
+    memcpy(block, desc->initial, desc->size);
+    task->tl_blocks[index] = block;
+  }
+  return block;
 }
 
 hzstd_context_t hzstd_context_for_current_thread(void)

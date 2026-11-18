@@ -289,6 +289,7 @@ export enum HazeErrorCode {
   StorageClassNotAvailable = 7231, // This storage class is not available yet (see the message)
   StorageClassCombination = 7232, // 'tasklocal' / 'global' cannot be combined with ''
   ContextRequirementOutsideExternCDeclaration = 7233, // ':: context' is only for an 'extern C' function without a body
+  TaskLocalOfNocopyType = 7234, // A 'tasklocal' variable cannot hold a nocopy type: a new task copies its parent's value
   ThisDistroPackageManagerNotSupportedYetPlease = 8001, // This Distro/Package Manager is not supported yet, please report
   DeadCodeDetectedAndStripped = 9001, // Dead code detected and stripped
   EmbeddedFileSizeMBExceeds50MB = 9002, // Embedded file size ( MB) exceeds 50 MB:

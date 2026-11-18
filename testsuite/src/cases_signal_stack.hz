@@ -35,5 +35,25 @@ fn main(): int {
 }
 """,
             "true true");
+
+        // hzstd_panic_fmt formats its arguments (it handed its va_list on as
+        // if it were the first argument, so every message came out garbled;
+        // found by the task-local ABI panic, 2026-11-18).
+        s.run(
+            "runtime: hzstd_panic_fmt prints the arguments it is given",
+            """
+fn main(): int {
+    let args = sys.args();
+    if args.length > 1 && args[1] == "child" {
+        do unsafe { __c__("hzstd_panic_fmt(\\"value %d and %s\\", 42, \\"forty-two\\");"); };
+        return 0;
+    }
+    let r = process.runCaptured(args[0], ["child"]);
+    let formatted = r.stderrResult.contains("value 42 and forty-two");
+    fmt.println(f"{r.exitCode} {formatted}");
+    return 0;
+}
+""",
+            "255 true");
     }
 }

@@ -17,6 +17,7 @@ import {
   EUnaryOperation,
   EVariableMutability,
   EStorageClass,
+  EGlobalStorage,
 } from "../shared/AST";
 import { getModuleGlobalNamespaceName } from "../shared/Config";
 import { mapOutputPath } from "../shared/OutputPaths";
@@ -5811,6 +5812,20 @@ export class SemanticElaborator {
     if (global) {
       assert(variable.comptimeValue);
       assert(variableSymbol.globalStorage !== null);
+      // A new task starts with a copy of its parent's task-local values
+      // (C285): a nocopy value would have two owners (TL-9).
+      if (
+        variableSymbol.globalStorage === EGlobalStorage.Task &&
+        variableSymbol.mutability !== EVariableMutability.Const &&
+        type !== null &&
+        Conversion.isNocopyUse(this.sr, type)
+      ) {
+        throw new CompilerError(
+          `'${variable.name}' cannot be task-local: its type is nocopy, and a new task starts with a copy of its parent's task-local values`,
+          variableSymbol.sourceloc,
+          HazeErrorCode.TaskLocalOfNocopyType
+        );
+      }
       const [_, defSymId] = this.sr.b.addSymbol(this.sr, {
         variant: Semantic.ENode.GlobalVariableDefinitionSymbol,
         comptime: variable.comptime,

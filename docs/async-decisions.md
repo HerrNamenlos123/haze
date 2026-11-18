@@ -325,6 +325,34 @@ module's own task-locals, although they do not exist in the library the context 
   (C207); a per-thread table indexed by task (one more load per access, and a task's values would
   live in the thread's table).
 
+As built (2026-11-18, the user's go "task-local storage and stage 2"):
+
+- **TL-11. The compiler builds one block per module.** `tasklocal let` variables are the fields
+  of a file-local C struct `__hz_tl_block_t`, their initializers its initial image
+  `__hz_tl_initial` (C constant expressions, like every global's), and `__hz_tl_desc` describes
+  it: module (its mangled namespace segment), size, alignment, and a layout fingerprint (FNV-1a
+  of the field names and C types, mixed with the block's size and alignment). An access is the
+  lvalue `HZSTD_TL_FIELD(__hz_ctx, __hz_tl_desc, __hz_tl_block_t, field)` (Lower marks the
+  SymbolValueExpr `taskLocal`), so assignment, `++` and compound assignment work as on any
+  variable; outside a function there is no context, which is an error (requireContext).
+- **TL-12. Only the declaring module reaches its task-locals**: module globals are not part of
+  module interfaces (Export.ts has no case for them), so a library never needs another module's
+  block layout. The block is file-local. If globals are ever exported, an importer reaches the
+  exporter's task-local through a function the exporter generates, never through its layout.
+- **TL-13. The fast path is a static inline function in hzstd_runtime.h** (`hzstd_tl_block`),
+  the slow path and the registry in hzstd_runtime.c. Registration takes a spin lock
+  (`atomic_flag`): it happens once per module, and hzstd has no lock yet (stage 4). Blocks and the
+  table are `hzstd_heap_allocate`d (GC, scanned, seen by the allocation profiler, typed by the
+  module's name). A block aligned beyond `max_align_t` panics.
+- **TL-14. Copying the parent's blocks at spawn (TL-6) is built with spawning (stage 3)**: until
+  tasks exist nothing spawns. A second task is testable already: a task struct with an empty table
+  under a copy of the context starts from the initial values (cases_tasklocal.hz).
+- **TL-15. `__rx_activeWatcher` moves into the task with stage 2** (TL-7), where the rest of the
+  reactive tracking state moves.
+- Found and fixed on the way: `hzstd_panic_fmt` handed its `va_list` on as the first argument of
+  `hzstd_panic_fmt_n`, so every message it formatted was garbage (the task-local ABI panic named
+  module '' and version 389384704). Both now format through one `va_list` function.
+
 ## Tooling
 
 - **G-1. The parser-equivalence sweep reads what the commit and the run decide** (user,
@@ -351,6 +379,13 @@ context and returning it as `extern C (name: ccstr) -> cptr` is H4001; glad call
 context, so it has to become a C function (found by reading, not built). They wait for the user's migration
 decision (plan, stage 1). Every C entry they have becomes an `extern C` function with a Haze body
 called with the context pointer.
+
+**After the stage 0 follow-ups of 2026-11-18:** code outside stdlib/core that writes a reactive
+cell (`:=`, `+=`, `++`, `--`, `push`/`pop`/`reserve` on a deep array) through a field, parameter or
+variable not declared `mut` (S0-11: declare it `mut rx.Reactive<T>`; cells from `rx.reactive` are
+`mut`), and every `json.stringify`/`json.parse`/traverse use on a struct with private fields or an
+opaque struct without hooks (S0-19). Not counted: those modules do not compile on the branch for
+the reasons below anyway.
 
 **After stage 0 (S0-1, writes need `mut`):** everything outside stdlib/core that changes data
 through a plain reference. A static scan (2026-11-17) counts at least 672 typed array variables

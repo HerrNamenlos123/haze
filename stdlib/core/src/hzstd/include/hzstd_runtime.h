@@ -3,6 +3,7 @@
 #define HZSTD_RUNTIME_H
 
 #include "../hzstd_types.h"
+#include <stdatomic.h>
 #include "hzstd_reactive.h"
 #include "hzstd_source_location.h"
 #include "hzstd_string.h"
@@ -26,6 +27,25 @@ uint64_t hzstd_next_thread_id(void);
 // called, for that call only (C400, C401). Panics on a thread Haze does not
 // manage (C505). It is the one place the thread-local lookup happens (C502).
 hzstd_context_t hzstd_context_for_current_thread(void);
+
+// A module's task-local block in the task `ctx` runs: two loads and two checks
+// inline (TL-3); the first access of a module in a task makes the block from
+// its initial image (TL-5), the first in the process registers the module.
+void *hzstd_tl_block_slow(hzstd_context_t *ctx, hzstd_tl_desc_t *desc);
+static inline void *hzstd_tl_block(hzstd_context_t *ctx, hzstd_tl_desc_t *desc)
+{
+  size_t index = atomic_load_explicit(&desc->index, memory_order_relaxed);
+  hzstd_task_t *task = ctx->task;
+  void *block;
+  if (index < task->tl_capacity && (block = task->tl_blocks[index]) != NULL) {
+    return block;
+  }
+  return hzstd_tl_block_slow(ctx, desc);
+}
+
+// A task-local variable as an lvalue: the field of its module's block.
+#define HZSTD_TL_FIELD(ctx, desc, block_type, field) \
+  (((block_type *)hzstd_tl_block((ctx), &(desc)))->field)
 
 // What `sys.threadId()` is (C477): the process-unique id of the context's
 // thread. `ctx` is a `hzstd_context_t *`, passed as `void *` so Haze can hand
