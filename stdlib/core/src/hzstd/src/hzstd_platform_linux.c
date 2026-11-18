@@ -764,6 +764,34 @@ static void hzstd_panic_prewarm_unwind_cache(void)
 
 // ── hzstd_setup_panic_handler ─────────────────────────────────────────────────
 
+// A thread's alternate signal stack belongs to whoever set it up before hzstd
+// ran on the thread (the AddressSanitizer runtime sets one up for every thread
+// and, when the thread ends, frees whatever it finds installed). hzstd borrows
+// the thread's for its panic handler and hands the previous one back when the
+// thread ends: the same ownership rule as for the SIGSEGV handler below, which
+// is only installed when nobody else owns the signal. Before, hzstd's buffer
+// stayed installed past the thread's end (it lives in the thread's TLS), and
+// ASan's teardown failed unmapping it on every thread end.
+static pthread_key_t g_altstack_return_key;
+static pthread_once_t g_altstack_return_key_once = PTHREAD_ONCE_INIT;
+static thread_local stack_t t_previous_altstack;
+static thread_local bool t_altstack_borrowed = false;
+
+static void hzstd_return_altstack(void *unused)
+{
+  (void)unused;
+  if (sigaltstack(&t_previous_altstack, NULL) != 0) {
+    hzstd_panic("Failed to hand the thread's previous signal stack back at thread end");
+  }
+}
+
+static void hzstd_create_altstack_return_key(void)
+{
+  if (pthread_key_create(&g_altstack_return_key, hzstd_return_altstack) != 0) {
+    hzstd_panic("Failed to create the key that hands signal stacks back");
+  }
+}
+
 void hzstd_setup_panic_handler(void)
 {
   // Alt-stack: required so the SIGSEGV handler can run even after a stack
@@ -847,8 +875,20 @@ void hzstd_setup_panic_handler(void)
   ss.ss_sp = altstack_buf;
   ss.ss_size = sizeof(altstack_buf);
   ss.ss_flags = 0;
-  if (sigaltstack(&ss, NULL) != 0) {
+  // Remember the thread's own signal stack once, before the first borrow;
+  // a later call on the same thread only reinstalls hzstd's.
+  stack_t previous;
+  if (sigaltstack(&ss, &previous) != 0) {
     hzstd_panic("Failed to setup sigaltstack for the panic handler");
+  }
+  if (!t_altstack_borrowed) {
+    t_altstack_borrowed = true;
+    t_previous_altstack = previous;
+    pthread_once(&g_altstack_return_key_once, hzstd_create_altstack_return_key);
+    // Any non-NULL value: the key's destructor runs only for those.
+    if (pthread_setspecific(g_altstack_return_key, &t_previous_altstack) != 0) {
+      hzstd_panic("Failed to arrange for the signal stack to be handed back");
+    }
   }
 
   // Tell BDWGC about this thread's altstack too. Without this, if a

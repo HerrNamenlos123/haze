@@ -1,0 +1,39 @@
+// ============================================================================
+// hzstd borrows a thread's signal stack and hands it back (2026-11-18).
+//
+// hzstd_setup_panic_handler installs its own alternate signal stack on every
+// thread it runs on. The stack the thread had before belongs to someone else
+// (the AddressSanitizer runtime sets one up for every thread, and frees what it
+// finds installed when the thread ends): hzstd gives it back when the thread
+// ends, the same ownership rule as for the SIGSEGV handler, which hzstd only
+// installs when nobody else owns the signal. Before, hzstd's buffer stayed
+// installed, and ASan's teardown tried to unmap it (it lives in the thread's
+// TLS), failing every thread end under ASan.
+// ============================================================================
+
+namespace cases_signal_stack {
+
+    export fn register(s: mut testsuite.Suite) {
+        // A thread installs its own signal stack, runs hzstd's setup and ends.
+        // A thread-exit destructor registered after hzstd's (glibc runs them
+        // in key order, and hzstd's key was made at program start) sees which
+        // signal stack the thread has by then.
+        s.run(
+            "signal stack: a thread's own signal stack is back when the thread ends",
+            """
+__c__("#include <pthread.h>\n#include <signal.h>\nvoid hzstd_setup_panic_handler(void);\nstatic char own_stack[65536];\nstatic void *during = NULL;\nstatic void *at_end = NULL;\nstatic pthread_key_t later_key;\nstatic void later_destructor(void *unused) { (void)unused; stack_t now; sigaltstack(NULL, &now); at_end = now.ss_sp; }\nstatic void *probe_thread(void *arg) { (void)arg; stack_t own = { .ss_sp = own_stack, .ss_size = sizeof(own_stack), .ss_flags = 0 }; sigaltstack(&own, NULL); hzstd_setup_panic_handler(); stack_t now; sigaltstack(NULL, &now); during = now.ss_sp; pthread_key_create(&later_key, later_destructor); pthread_setspecific(later_key, (void *)1); return NULL; }");
+
+fn main(): int {
+    let borrowed = false;
+    let returned = false;
+    do unsafe {
+        __c__("pthread_t t; pthread_create(&t, NULL, probe_thread, NULL); pthread_join(t, NULL);");
+        __c__("borrowed = during != (void *)own_stack; returned = at_end == (void *)own_stack;");
+    };
+    fmt.println(f"{borrowed} {returned}");
+    return 0;
+}
+""",
+            "true true");
+    }
+}
