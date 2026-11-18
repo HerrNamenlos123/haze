@@ -408,10 +408,15 @@ hzstd_fs_error_t hzstd_write_file_text(hzstd_allocator_t allocator, hzstd_str_t 
 // over `path`. Every failure removes `<path>.saving` and leaves `path` as it
 // was: unlike hzstd_fs_move, nothing here ever falls back to copying over the
 // destination, which would write it in place.
+//
+// On Linux the renamed file is a new file, so it takes over the permission
+// bits of the file it replaces (not setuid, setgid or sticky: the content is
+// new); a new file gets the default ones, and with `privateFile` it is 0600
+// either way. On Windows a file has its folder's permissions.
 #if defined(HAZE_PLATFORM_WIN32)
 static inline hzstd_str_t hzstd_fs_windows_error(DWORD err);
 #endif
-hzstd_fs_error_t hzstd_replace_file_text(hzstd_str_t path, hzstd_str_t input)
+hzstd_fs_error_t hzstd_replace_file_text(hzstd_str_t path, hzstd_str_t input, hzstd_bool_t privateFile)
 {
   HZSTD_SCRATCH_CSTR(target, path);
   size_t targetLength = target ? strlen(target) : 0;
@@ -423,12 +428,53 @@ hzstd_fs_error_t hzstd_replace_file_text(hzstd_str_t path, hzstd_str_t input)
   memcpy(partial + targetLength, ".saving", sizeof(".saving"));
 
   hzstd_mkdir_recursive(hzstd_fs_parent_dir(target));
+#if defined(HAZE_PLATFORM_WIN32)
+  (void)privateFile;
   FILE* f = fopen(partial, "wb");
   if (!f) {
     int err = errno;
     free(partial);
     return (hzstd_fs_error_t) { .code = hzstd_fs_error_from_errno(err), .message = hzstd_fs_errno_message(err) };
   }
+#else
+  int setMode = 0;
+  mode_t bits = 0;
+  if (privateFile) {
+    setMode = 1;
+    bits = 0600;
+  } else {
+    struct stat replaced;
+    if (stat(target, &replaced) == 0) {
+      setMode = 1;
+      bits = replaced.st_mode & 0777;
+    }
+  }
+  // A `<path>.saving` left by an interrupted replace would keep its own
+  // permissions through a truncating open: the new one starts from nothing.
+  unlink(partial);
+  int fd = open(partial, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, privateFile ? 0600 : 0666);
+  if (fd < 0) {
+    int err = errno;
+    free(partial);
+    return (hzstd_fs_error_t) { .code = hzstd_fs_error_from_errno(err), .message = hzstd_fs_errno_message(err) };
+  }
+  // fchmod, unlike open's mode, is not cut by the umask.
+  if (setMode && fchmod(fd, bits) != 0) {
+    int err = errno;
+    close(fd);
+    unlink(partial);
+    free(partial);
+    return (hzstd_fs_error_t) { .code = hzstd_fs_error_from_errno(err), .message = hzstd_fs_errno_message(err) };
+  }
+  FILE* f = fdopen(fd, "wb");
+  if (!f) {
+    int err = errno;
+    close(fd);
+    unlink(partial);
+    free(partial);
+    return (hzstd_fs_error_t) { .code = hzstd_fs_error_from_errno(err), .message = hzstd_fs_errno_message(err) };
+  }
+#endif
   int failed = 0;
   int err = 0;
   if (input.length > 0 && fwrite(input.data, 1, input.length, f) < input.length) {
@@ -1484,7 +1530,11 @@ hzstd_write_file_binary(hzstd_allocator_t allocator, hzstd_str_t path, void* buf
   };
 }
 
-hzstd_fs_error_t hzstd_mkdir_recursive(hzstd_str_t path)
+// Makes the folder `path` and every missing folder above it. The folders
+// above get the default permissions; with `privateLeaf`, `path` itself, when
+// it is made here, is 0700 on Linux (on Windows it has its parent's). A
+// folder already there keeps its permissions.
+static hzstd_fs_error_t hzstd_mkdir_recursive_leaf(hzstd_str_t path, int privateLeaf)
 {
   if (path.data == NULL || path.length == 0) {
     return (hzstd_fs_error_t) {
@@ -1557,7 +1607,13 @@ hzstd_fs_error_t hzstd_mkdir_recursive(hzstd_str_t path)
       };
     }
 
-    if (MKDIR(tmp) != 0 && errno != EEXIST) {
+#if defined(HAZE_PLATFORM_WIN32)
+    (void)privateLeaf;
+    int made = MKDIR(tmp);
+#else
+    int made = privateLeaf ? mkdir(tmp, 0700) : MKDIR(tmp);
+#endif
+    if (made != 0 && errno != EEXIST) {
       int err = errno;
       return (hzstd_fs_error_t) {
         .code = hzstd_fs_error_from_errno(err),
@@ -1576,6 +1632,16 @@ hzstd_fs_error_t hzstd_mkdir_recursive(hzstd_str_t path)
     .code = hzstd_fs_error_code_none,
     .message = HZSTD_STRING(NULL, 0),
   };
+}
+
+hzstd_fs_error_t hzstd_mkdir_recursive(hzstd_str_t path)
+{
+  return hzstd_mkdir_recursive_leaf(path, 0);
+}
+
+hzstd_fs_error_t hzstd_create_private_directory(hzstd_str_t path)
+{
+  return hzstd_mkdir_recursive_leaf(path, 1);
 }
 
 hzstd_fs_exists_result_t hzstd_fs_exists(hzstd_str_t path)

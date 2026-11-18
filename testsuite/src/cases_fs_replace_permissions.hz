@@ -1,0 +1,156 @@
+// ============================================================================
+// fs.replaceText, replaceBinary and replacePrivateText keep or set a file's
+// permissions; fs.createPrivateDirectory.
+//
+// Bug (2026-11-18): on Linux the replace wrote `<path>.saving` with the
+// default permissions and renamed it over the file, so every replaced file
+// came out 0644: Claude Code's 0600 ~/.claude.json, which
+// claude-account-switcher rewrites, and the switcher's tokens with it. A
+// `.saving` left by an interrupted replace gave the new file its own
+// permissions. The permissions are read and set with stat and chmod.
+// ============================================================================
+
+namespace cases_fs_replace_permissions {
+
+    export fn register(s: mut testsuite.Suite) {
+        let expected = sys.isWin32() ? "no POSIX permissions" : """
+new: ok like writeText true one
+over 640: ok 640 two
+over 664: ok 664 three
+over 755: ok 755 four
+binary over 600: ok 600 five
+over 4750: ok 750
+leftover 777: ok like writeText true seven gone
+private new: ok 600 s1
+private over 644: ok 600 s2
+private over 664: ok 600 s3
+replaceText keeps it private: ok 600 s4
+private folder: ok 700 above like createDirectory true
+private folder again: ok 700
+private folder already there: ok 755
+private folder over a file: NotAFile NotAFile
+""";
+        s.run(
+            "fs: replace keeps permissions, private files and folders",
+            """
+fn describe(result: Result<none, fs.Error>): str {
+    if result {
+        return "ok";
+    }
+    if result == fs.Error.NotAFile { return "NotAFile"; }
+    return f"error {result}";
+}
+
+fn workPath(name: str): str {
+    let dir = env.get("HAZE_TEST_WORKDIR");
+    if dir is str {
+        return f"{dir}/{name}";
+    }
+    return f"/tmp/{name}";
+}
+
+// The permission bits of `path` in octal, as stat prints them.
+fn mode(path: str): str {
+    let r = process.runCaptured("stat", ["-c", "%a", path]);
+    if r.exitCode != 0 {
+        return "gone";
+    }
+    return r.stdoutResult.trim();
+}
+
+fn setMode(path: str, bits: str) {
+    let r = process.runCaptured("chmod", [bits, path]);
+    assert(r.exitCode == 0, "chmod failed");
+}
+
+fn content(path: str): str {
+    let text = fs.readText(path);
+    if text {
+        let read: str = text;
+        return read;
+    }
+    return "unreadable";
+}
+
+fn fresh(path: str): str {
+    fs.removeFile(path);
+    return path;
+}
+
+fn main(): int {
+    if sys.isWin32() {
+        // A file there has its folder's permissions: nothing to keep.
+        fmt.println("no POSIX permissions");
+        return 0;
+    }
+    let dir = workPath("fs_replace_permissions");
+    fs.createDirectory(dir);
+
+    // A new file gets the permissions writeText gives one (the umask's).
+    let reference = fresh(f"{dir}/reference.txt");
+    fs.writeText(reference, "x");
+    let created = fresh(f"{dir}/created.txt");
+    fmt.println(f"new: {describe(fs.replaceText(created, "one"))} like writeText {mode(created) == mode(reference)} {content(created)}");
+
+    // A replaced file keeps its permissions, also bits the umask would take.
+    let group = fresh(f"{dir}/group.txt");
+    fs.writeText(group, "old");
+    setMode(group, "640");
+    fmt.println(f"over 640: {describe(fs.replaceText(group, "two"))} {mode(group)} {content(group)}");
+    let shared = fresh(f"{dir}/shared.txt");
+    fs.writeText(shared, "old");
+    setMode(shared, "664");
+    fmt.println(f"over 664: {describe(fs.replaceText(shared, "three"))} {mode(shared)} {content(shared)}");
+    let script = fresh(f"{dir}/script.sh");
+    fs.writeText(script, "old");
+    setMode(script, "755");
+    fmt.println(f"over 755: {describe(fs.replaceText(script, "four"))} {mode(script)} {content(script)}");
+    let owner = fresh(f"{dir}/owner.bin");
+    fs.writeText(owner, "old");
+    setMode(owner, "600");
+    fmt.println(f"binary over 600: {describe(fs.replaceBinary(owner, Bytes("five")))} {mode(owner)} {content(owner)}");
+
+    // Special bits are not carried over: the content is new.
+    let special = fresh(f"{dir}/special.txt");
+    fs.writeText(special, "old");
+    setMode(special, "4750");
+    fmt.println(f"over 4750: {describe(fs.replaceText(special, "six"))} {mode(special)}");
+
+    // What an interrupted replace left behind does not give the new file
+    // its permissions.
+    let leftover = fresh(f"{dir}/leftover.txt");
+    let partial = f"{leftover}.saving";
+    fs.writeText(partial, "half");
+    setMode(partial, "777");
+    fmt.println(f"leftover 777: {describe(fs.replaceText(leftover, "seven"))} like writeText {mode(leftover) == mode(reference)} {content(leftover)} {mode(partial)}");
+    // A private file is 0600, new or over one that others could read.
+    let secret = fresh(f"{dir}/secret.token");
+    fmt.println(f"private new: {describe(fs.replacePrivateText(secret, "s1"))} {mode(secret)} {content(secret)}");
+    setMode(secret, "644");
+    fmt.println(f"private over 644: {describe(fs.replacePrivateText(secret, "s2"))} {mode(secret)} {content(secret)}");
+    setMode(secret, "664");
+    fmt.println(f"private over 664: {describe(fs.replacePrivateText(secret, "s3"))} {mode(secret)} {content(secret)}");
+    fmt.println(f"replaceText keeps it private: {describe(fs.replaceText(secret, "s4"))} {mode(secret)} {content(secret)}");
+
+    // A private folder made here is 0700; the folders above it it makes
+    // get what createDirectory gives one; one already there keeps its own.
+    let plainDir = f"{dir}/plain-dir";
+    fs.removeEmptyDirectory(plainDir);
+    fs.createDirectory(plainDir);
+    let outer = f"{dir}/private-outer";
+    let inner = f"{outer}/inner";
+    fs.removeEmptyDirectory(inner);
+    fs.removeEmptyDirectory(outer);
+    fmt.println(f"private folder: {describe(fs.createPrivateDirectory(inner))} {mode(inner)} above like createDirectory {mode(outer) == mode(plainDir)}");
+    fmt.println(f"private folder again: {describe(fs.createPrivateDirectory(inner))} {mode(inner)}");
+    setMode(inner, "755");
+    fmt.println(f"private folder already there: {describe(fs.createPrivateDirectory(inner))} {mode(inner)}");
+    let notFolder = f"{dir}/not-a-folder.txt";
+    fs.writeText(notFolder, "x");
+    fmt.println(f"private folder over a file: {describe(fs.createPrivateDirectory(notFolder))} {describe(fs.createDirectory(notFolder))}");
+    return 0;
+}
+""",
+            expected);
+    }
+}

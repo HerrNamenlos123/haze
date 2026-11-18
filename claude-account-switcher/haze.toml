@@ -1,7 +1,7 @@
 name = "claude-account-switcher"
 id = "CasW1n8k"
 version = "1.0.0"
-description = "Switches every running Claude Code session to another Claude account with one click on the tray icon"
+description = "Switches every running Claude Code session to another Claude account from the tray"
 license = "MIT"
 authors = ["HerrNamenlos123"]
 type = "exe"
@@ -11,6 +11,50 @@ appId = "io.github.hazelang.ClaudeAccountSwitcher"
 displayName = "Claude Account Switcher"
 icon = "../resources/haze-logo.png"
 categories = ["Utility"]
+
+[scripts.linux]
+# Release build, installed for the current user: the program onto PATH (where
+# app.installedExecutable looks first), its desktop entry and icon where the
+# desktop finds them. `install` replaces files rather than writing into them,
+# so this works while the program runs (the running copy goes on until it is
+# quit). The program itself keeps its login entry, its GNOME Shell extension
+# (the tray icon) and Claude Code's setting when it starts.
+install = '''
+haze build --release &&
+install -Dm755 __haze__/claude-account-switcher/bin/claude-account-switcher ~/.local/bin/claude-account-switcher &&
+install -Dm644 __haze__/claude-account-switcher/bin/io.github.hazelang.ClaudeAccountSwitcher.desktop ~/.local/share/applications/io.github.hazelang.ClaudeAccountSwitcher.desktop &&
+install -Dm644 __haze__/claude-account-switcher/bin/io.github.hazelang.ClaudeAccountSwitcher.png ~/.local/share/icons/hicolor/512x512/apps/io.github.hazelang.ClaudeAccountSwitcher.png &&
+gtk-update-icon-cache -f -t ~/.local/share/icons/hicolor
+'''
+# Removes what `install` put in place for the current user. What the program
+# keeps for the user (its state folder with the tokens, its login entry and
+# GNOME Shell extension, Claude Code's setting) stays: see the README.
+uninstall = '''
+rm -f ~/.local/bin/claude-account-switcher ~/.local/share/applications/io.github.hazelang.ClaudeAccountSwitcher.desktop ~/.local/share/icons/hicolor/512x512/apps/io.github.hazelang.ClaudeAccountSwitcher.png &&
+if [ -d ~/.local/share/icons/hicolor ]; then gtk-update-icon-cache -f -t ~/.local/share/icons/hicolor; fi
+'''
+# The same release build, installed for every user of this machine (asks for
+# sudo): the program into /usr/local/bin, on every user's PATH and where
+# app.installedExecutable looks next, the desktop entry and icon under
+# /usr/local/share, which every user's desktop searches. umask 022 keeps what
+# sudo creates readable by everyone. This user's own copies from `install`
+# are removed (`uninstall`): they would come first. Each user starts it once
+# from the app grid; from then on it starts at their login.
+install-machine = '''
+umask 022 &&
+haze build --release &&
+sudo install -Dm755 __haze__/claude-account-switcher/bin/claude-account-switcher /usr/local/bin/claude-account-switcher &&
+sudo install -Dm644 __haze__/claude-account-switcher/bin/io.github.hazelang.ClaudeAccountSwitcher.desktop /usr/local/share/applications/io.github.hazelang.ClaudeAccountSwitcher.desktop &&
+sudo install -Dm644 __haze__/claude-account-switcher/bin/io.github.hazelang.ClaudeAccountSwitcher.png /usr/local/share/icons/hicolor/512x512/apps/io.github.hazelang.ClaudeAccountSwitcher.png &&
+sudo gtk-update-icon-cache -f -t /usr/local/share/icons/hicolor &&
+haze uninstall
+'''
+# Removes what `install-machine` put in place, for every user (asks for sudo).
+# What the program keeps for each user stays: see the README.
+uninstall-machine = '''
+sudo rm -f /usr/local/bin/claude-account-switcher /usr/local/share/applications/io.github.hazelang.ClaudeAccountSwitcher.desktop /usr/local/share/icons/hicolor/512x512/apps/io.github.hazelang.ClaudeAccountSwitcher.png &&
+if [ -d /usr/local/share/icons/hicolor ]; then sudo gtk-update-icon-cache -f -t /usr/local/share/icons/hicolor; fi
+'''
 
 [scripts.win32]
 # Release build, installed for the current user where the login entry looks for

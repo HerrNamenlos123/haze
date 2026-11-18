@@ -21,7 +21,7 @@ hzstd_fs_error_t hzstd_create_file_text(hzstd_allocator_t allocator, hzstd_str_t
 hzstd_fs_error_t hzstd_remove_file(hzstd_str_t path);
 // Replaces the file at `path` with `input` in one step that survives a crash or
 // a power cut: old content or new, never neither. See its definition.
-hzstd_fs_error_t hzstd_replace_file_text(hzstd_str_t path, hzstd_str_t input);
+hzstd_fs_error_t hzstd_replace_file_text(hzstd_str_t path, hzstd_str_t input, hzstd_bool_t privateFile);
 // Moves a file or folder to the desktop's trash (the freedesktop.org trash on
 // Linux, the Recycle Bin on Windows). Never deletes it: when no trash can take
 // it, an error, and it stays where it is.
@@ -78,6 +78,7 @@ hzstd_fs_error_t hzstd_file_read_some(
     hzstd_allocator_t allocator, void* handle, void* dest, hzstd_int_t max_bytes, void* out_read);
 
 hzstd_fs_error_t hzstd_mkdir_recursive(hzstd_str_t path);
+hzstd_fs_error_t hzstd_create_private_directory(hzstd_str_t path);
 
 hzstd_fs_exists_result_t hzstd_fs_exists(hzstd_str_t path);
 

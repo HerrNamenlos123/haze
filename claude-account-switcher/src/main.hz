@@ -23,10 +23,25 @@ ref struct OpenPicker {
     kind: claude_account_switcher_ui.PickKind = claude_account_switcher_ui.PickKind.Icon;
 }
 
-// What the tray icon shows, to change it only when that changes.
-ref struct TrayShows {
-    account: str = "";
-    iconVersion: int = -1;
+// What other launches asked of this one (through single_instance), taken by
+// the main loop: `claude-account-switcher` opens the window, `--next`
+// switches to the next account, `--quit` quits.
+ref struct Requests {
+    show: bool = false;
+    next: bool = false;
+    quit: bool = false;
+}
+
+// The tray: on Windows the program's own icon and menu; on GNOME the
+// program's extension, which shows share/tray.json (ui/src/tray_state.hz).
+// `shown` is what it was last made to show, to change it only when that
+// changes; `menuSwitch` and `menuQuit` are the Windows menu's entries.
+ref struct Tray {
+    icon: sdl.Tray | none = none;
+    menuSwitch: int = -1;
+    menuQuit: int = -1;
+    file: str | none = none;
+    shown: str = "";
 }
 
 // What Claude Code's settings were last made to say: -1 not yet (or the last
@@ -55,11 +70,7 @@ fn claudeSettingsPath(): str | none {
 // runs ever becomes what every Claude session depends on.
 fn installedHelperCommand(): str | none {
     if let installed = app.installedExecutable(programName) {
-        if let present = fs.exists(installed) {
-            if present {
-                return claude_account_switcher_ui.helperCommand(installed);
-            }
-        }
+        return claude_account_switcher_ui.helperCommand(installed);
     }
     return none;
 }
@@ -110,27 +121,110 @@ fn toUIKeyEdges(a: app.App, out: mut []ui_components.KeyEdge): []ui_components.K
     return result;
 }
 
-fn launchedInBackground(args: []str): bool {
+fn hasArg(args: []str, name: str): bool {
     for arg in args {
-        if arg == "--background" {
+        if arg == name {
             return true;
         }
     }
     return false;
 }
 
-// The login entry names the installed program (see install.ps1), never a
-// build that happens to run: a build folder can be gone or rebuilt by then.
+// The login entry names the installed program (install-windows.ps1, the
+// [scripts.linux] installs), never a build that happens to run: a build
+// folder can be gone or rebuilt by then.
 fn applyAutostart() {
     if let installed = app.installedExecutable(programName) {
-        if let present = fs.exists(installed) {
-            if present {
-                autostart.enable(programName, installed, "--background");
-                return;
-            }
-        }
+        autostart.enable(programName, installed, "--background");
+        return;
     }
     autostart.disable(programName);
+}
+
+// ── GNOME Shell ──────────────────────────────────────────────────────
+
+// GNOME Shell's folder for this user's extensions (where its
+// global.userdatadir is: XDG_DATA_HOME, or ~/.local/share).
+fn gnomeExtensionsDirectory(): str | none {
+    if let dir = env.get("XDG_DATA_HOME") {
+        if dir.startsWith("/") {
+            return f"{dir}/gnome-shell/extensions";
+        }
+    }
+    if let home = env.get("HOME") {
+        if home.length > 0 {
+            return f"{home}/.local/share/gnome-shell/extensions";
+        }
+    }
+    return none;
+}
+
+fn runsInGnome(): bool {
+    if let desktop = env.get("XDG_CURRENT_DESKTOP") {
+        return desktop.contains("GNOME");
+    }
+    return false;
+}
+
+fn gsettingsList(key: str): Result<[]str, str> {
+    let r = process.runCaptured("gsettings", ["get", "org.gnome.shell", key]);
+    if r.exitCode != 0 {
+        return Result<[]str, str>.Err(f"gsettings get org.gnome.shell {key} failed ({r.exitCode}): {r.stderrResult.trim()}");
+    }
+    return claude_account_switcher_ui.parseStringList(r.stdoutResult);
+}
+
+fn gsettingsSetList(key: str, items: []str): Result<none, str> {
+    let r = process.runCaptured("gsettings", ["set", "org.gnome.shell", key, claude_account_switcher_ui.printStringList(items)]);
+    if r.exitCode != 0 {
+        return Result<none, str>.Err(f"gsettings set org.gnome.shell {key} failed ({r.exitCode}): {r.stderrResult.trim()}");
+    }
+    return Result<none, str>.Ok(none);
+}
+
+// The tray icon on GNOME is this program's extension: written for this user
+// from the copy built in (when it differs) and turned on, as the login entry
+// is. GNOME Shell loads it at the next login; until then the window says so.
+fn installGnomeExtension(stateDir: str): Result<claude_account_switcher_ui.ExtensionInstall, str> {
+    let dir = gnomeExtensionsDirectory();
+    if !dir {
+        return Result<claude_account_switcher_ui.ExtensionInstall, str>.Err("No folder for GNOME Shell extensions (HOME is not set)");
+    }
+    let files = claude_account_switcher_ui.extensionFiles(
+        embed.text("gnome-shell-extension/metadata.json"),
+        embed.text("gnome-shell-extension/extension.js"),
+        stateDir);
+    let installed = claude_account_switcher_ui.installExtension(dir as str, files);
+    if !installed {
+        return installed;
+    }
+    let uuid = claude_account_switcher_ui.extensionUuid();
+    let enabled = gsettingsList("enabled-extensions");
+    if !enabled {
+        return Result<claude_account_switcher_ui.ExtensionInstall, str>.Err(f"{enabled}");
+    }
+    let enabledNow: []str = enabled;
+    let wantEnabled = claude_account_switcher_ui.withItem(enabledNow, uuid);
+    if wantEnabled.length != enabledNow.length {
+        let set = gsettingsSetList("enabled-extensions", wantEnabled);
+        if !set {
+            return Result<claude_account_switcher_ui.ExtensionInstall, str>.Err(f"{set}");
+        }
+    }
+    // disabled-extensions wins over enabled-extensions.
+    let disabled = gsettingsList("disabled-extensions");
+    if !disabled {
+        return Result<claude_account_switcher_ui.ExtensionInstall, str>.Err(f"{disabled}");
+    }
+    let disabledNow: []str = disabled;
+    let wantDisabled = claude_account_switcher_ui.withoutItem(disabledNow, uuid);
+    if wantDisabled.length != disabledNow.length {
+        let set = gsettingsSetList("disabled-extensions", wantDisabled);
+        if !set {
+            return Result<claude_account_switcher_ui.ExtensionInstall, str>.Err(f"{set}");
+        }
+    }
+    return installed;
 }
 
 // Claude Code's credential command (apiKeyHelper): the active account's token
@@ -157,15 +251,28 @@ fn main(): int {
         }
     }
     attempt {
-        let stackref activateRequested = Box<bool>(false);
+        let requests = Requests {};
         let si = single_instance.init<Activation>({ appId: programName }, (activation) => {
-            activateRequested.value = !launchedInBackground(activation.args);
+            if hasArg(activation.args, "--quit") {
+                requests.quit = true;
+            } else if hasArg(activation.args, "--next") {
+                requests.next = true;
+            } else if !hasArg(activation.args, "--background") {
+                requests.show = true;
+            }
             return 0;
         });
         if si.status == single_instance.Status.Error { return 1; }
         if si.status == single_instance.Status.Secondary {
             return si.send({ args: sys.args() }).exitCode;
         }
+        // Nothing runs that could quit.
+        if hasArg(sys.args(), "--quit") {
+            si.release();
+            return 0;
+        }
+        // Started to switch: switches once it runs, in the background.
+        requests.next = hasArg(sys.args(), "--next");
 
         // The [app] appId of haze.toml (a test of claude_usage checks), so
         // shareDir is `<stateDir>/share`.
@@ -188,6 +295,25 @@ fn main(): int {
         claude_account_switcher_ui.openSwitcher(stateDir as str, shareDir as str, claude_usage.claudeConfigPath(), claude_usage.TrackerSettings {}, pick)?!;
         applyAutostart();
 
+        // On GNOME the tray icon is the installed program's extension, which
+        // shows share/tray.json: written before any window opens, so that the
+        // icon is there to put the window at.
+        let tray = Tray {};
+        let executable = "";
+        if let installed = app.installedExecutable(programName) {
+            executable = installed;
+            if sys.isLinux() && runsInGnome() {
+                tray.file = f"{shareDir as str}/tray.json";
+                let extension = installGnomeExtension(stateDir as str);
+                if extension {
+                    let install: claude_account_switcher_ui.ExtensionInstall = extension;
+                    claude_account_switcher_ui.switcher().showExtensionNotice(install);
+                } else {
+                    fmt.println(f"Claude Account Switcher: the tray icon's GNOME Shell extension: {extension}");
+                }
+            }
+        }
+
         let a = app.App({
             title: "Claude Account Switcher",
             nativeTitlebar: false,
@@ -206,30 +332,51 @@ fn main(): int {
         let logo = image.decode(embed.binary("../resources/haze-logo.png"), 4);
         if !logo { raise "The program's icon could not be decoded"; }
         let defaultIcon = claude_account_switcher_ui.normalizedIcon(logo);
-        let tray = sdl.createTray(defaultIcon.pixels, defaultIcon.width, defaultIcon.height, "Claude Account Switcher")?!;
+        // On Windows the program's own tray icon. A left click opens the
+        // window, a right click the menu: switch to the next account, quit.
+        if sys.isWin32() {
+            let icon = sdl.createTray(defaultIcon.pixels, defaultIcon.width, defaultIcon.height, "Claude Account Switcher")?!;
+            tray.menuSwitch = icon.addEntry("Switch account");
+            icon.addSeparator();
+            tray.menuQuit = icon.addEntry("Quit");
+            tray.icon = icon;
+        }
 
-        // The icon and tooltip of the active account, or the program's own
-        // while none is active.
-        let trayShows = TrayShows {};
+        // The active account's icon and name, or the program's own while none
+        // is active, and the account the switch entry makes active.
         let updateTray = () => {
             let s = claude_account_switcher_ui.switcher();
-            let version = rx.get(s.iconVersion);
-            let activeId = "";
-            if let id = rx.get(s.active) { activeId = id; }
-            if activeId == trayShows.account && version == trayShows.iconVersion { return; }
-            trayShows.account = activeId;
-            trayShows.iconVersion = version;
-            if let account = s.activeAccount() {
-                if let icon = s.iconOf(account.id) {
-                    tray.setIcon(icon.pixels, icon.width, icon.height);
-                } else {
-                    tray.setIcon(defaultIcon.pixels, defaultIcon.width, defaultIcon.height);
+            let state = claude_account_switcher_ui.trayStateOf(s, executable);
+            let shows = f"{rx.get(s.iconVersion)} {json.stringify(state)}";
+            if shows == tray.shown { return; }
+            if let file = tray.file {
+                let written = fs.replaceText(file, json.stringify(state));
+                if !written {
+                    // Not remembered as shown: the next pass writes again.
+                    fmt.println(f"Claude Account Switcher: {file} could not be written: {written}");
+                    return;
                 }
-                tray.setTooltip(f"Claude: {account.name}");
-                return;
             }
-            tray.setIcon(defaultIcon.pixels, defaultIcon.width, defaultIcon.height);
-            tray.setTooltip("Claude Account Switcher");
+            tray.shown = shows;
+            if let icon = tray.icon {
+                let picture = defaultIcon;
+                let tooltip = "Claude Account Switcher";
+                if let account = s.activeAccount() {
+                    if let own = s.iconOf(account.id) {
+                        picture = own;
+                    }
+                    tooltip = f"Claude: {account.name}";
+                }
+                icon.setIcon(picture.pixels, picture.width, picture.height);
+                icon.setTooltip(tooltip);
+                if let next = state.next {
+                    icon.setEntryLabel(tray.menuSwitch, f"Switch to {next}");
+                    icon.setEntryEnabled(tray.menuSwitch, true);
+                } else {
+                    icon.setEntryLabel(tray.menuSwitch, "Switch account");
+                    icon.setEntryEnabled(tray.menuSwitch, false);
+                }
+            }
         };
         updateTray();
 
@@ -329,25 +476,42 @@ fn main(): int {
         });
 
         // Opens the window at the tray icon on the accounts, read again, and
-        // the usage as of now.
+        // the usage as of now. On GNOME the extension puts it at the icon: a
+        // Wayland program cannot place its own window.
         let show = () => {
             activation := rx.get(activation) + 1;
             claude_account_switcher_ui.switcher().usageWindowOpened(time.wallClockMs(), time.now());
-            a.window.moveToTray(tray);
+            if let icon = tray.icon {
+                a.window.moveToTray(icon);
+            }
             a.show();
         };
+        // The menu's switch entry, and `--next`: nothing to switch to (no
+        // account has a token here), or the switch failed: the window shows
+        // what to do.
+        let switchToNext = () => {
+            if !claude_account_switcher_ui.switcher().switchToNext() && !a.isVisible() {
+                show();
+            }
+        };
 
-        let background = launchedInBackground(sys.args());
-        if !background {
+        if !hasArg(sys.args(), "--background") && !requests.next {
             show();
         }
 
         let hiddenAt = 0.0;
         while let frame = a.nextFrame() {
             si.poll();
-            if activateRequested.value {
-                activateRequested.value = false;
+            if requests.show {
+                requests.show = false;
                 show();
+            }
+            if requests.next {
+                requests.next = false;
+                switchToNext();
+            }
+            if requests.quit {
+                quitApp();
             }
             // The picker takes the focus: losing it to the picker is not the
             // user leaving the window.
@@ -367,18 +531,20 @@ fn main(): int {
                     if a.isVisible() { a.show(); }
                 }
             }
-            while let click = tray.takeIconClick() {
-                if click == sdl.TrayClick.Left {
-                    // Nothing to switch to (no account has a token here), or
-                    // the switch failed: the window shows what to do.
-                    if !claude_account_switcher_ui.switcher().switchToNext() && !a.isVisible() {
+            if let icon = tray.icon {
+                while let click = icon.takeIconClick() {
+                    // A click on the icon while the window is open first takes
+                    // the focus away and hides it: that click closes it. A
+                    // right click opens the menu, which SDL shows itself.
+                    if click == sdl.TrayClick.Left && !a.isVisible() && sdl.getTime() - hiddenAt > 0.3 {
                         show();
                     }
-                } else if click == sdl.TrayClick.Right {
-                    // A click on the icon while the window is open first takes
-                    // the focus away and hides it: that click closes it.
-                    if !a.isVisible() && sdl.getTime() - hiddenAt > 0.3 {
-                        show();
+                }
+                if let chosen = icon.takeClicked() {
+                    if chosen == tray.menuSwitch {
+                        switchToNext();
+                    } else if chosen == tray.menuQuit {
+                        quitApp();
                     }
                 }
             }
@@ -408,7 +574,16 @@ fn main(): int {
 
         // Takes the cache entry away: nobody keeps those numbers current now.
         claude_account_switcher_ui.switcher().usage.shutdown();
-        tray.destroy();
+        if let icon = tray.icon {
+            icon.destroy();
+        }
+        // No tray.json: the extension shows no icon while nothing runs.
+        if let file = tray.file {
+            let removed = fs.removeFile(file);
+            if !removed && removed != fs.Error.NotFound {
+                fmt.println(f"Claude Account Switcher: {file} could not be removed: {removed}");
+            }
+        }
         si.release();
         a.destroy();
         return 0;

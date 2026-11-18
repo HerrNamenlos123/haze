@@ -1,6 +1,6 @@
 @export
 
-from ui_widgets import ButtonComponent, ScrollView, ScrollViewComponent, ScrollViewSlotContent, DropdownComponent, DropdownItem, DropdownStyle
+from ui_widgets import ButtonComponent, ScrollView, ScrollViewComponent, ScrollViewSlotContent, DropdownComponent, DropdownItem, DropdownStyle, FloatingPanelComponent, FloatingPanelSlotBody, PanelPosition
 
 // The whole window. Until the profile repo is chosen it asks for nothing
 // else; after that it shows the accounts, the add form and the settings.
@@ -166,6 +166,20 @@ let quit = () => {
     emits.quit();
 };
 
+// After the program installed or updated its GNOME Shell extension (the
+// tray icon there), which the shell loads only at the next login.
+let noticeShown = computed((): bool => rx.get(switcher().extensionNotice) != ExtensionInstall.Unchanged);
+let noticeText = computed((): str => {
+    if rx.get(switcher().extensionNotice) == ExtensionInstall.Updated {
+        return "Tray icon updated. Log out and back in to load it.";
+    }
+    return "Tray icon installed. Log out and back in to see it.";
+});
+
+let dismissNotice = () => {
+    switcher().dismissExtensionNotice();
+};
+
 let keyPressed = (event: KeyboardEvent) => {
     if event.key == Key.Escape {
         event.stopPropagation();
@@ -221,3 +235,17 @@ div if=[switcher().hasClaudeSettingsProblem()] [row w-grow h-fit gap-[10]px item
 // Last in the tree, as Dropdown asks: hit-testing goes by tree order.
 Dropdown [] open=[rx.get(menuOpen)] items=[rx.get(menuItems)] offsetX=[rx.get(menuX)] offsetY=[rx.get(menuY)]
     minWidth=[MENU_WIDTH] style=[menuStyle] @select=pickMenu @dismiss=closeMenu {}
+// Over everything, until OK: a click elsewhere does not dismiss it.
+FloatingPanel if=[rx.get(noticeShown)] [] position=[PanelPosition.Center]
+    backgroundColor=[raised] radius=[radiusFloat]
+{
+    #body {
+        div [col w-[260]px h-fit gap-[12]px p-[14]px border-[1] border-color-[borderStrong] rounded-[radiusFloat]] {
+            text [text-color-[text1]] [rx.get(noticeText)]
+            div [row w-grow h-fit justify-end] {
+                Button [] label="OK" bg=[accent] bgHover=[accentHover] bgActive=[accentPressed] textColor=[accentInk]
+                    paddingX=[14] paddingY=[4] rounded=[radiusControl] focusRing=[0] @click=dismissNotice {}
+            }
+        }
+    }
+}

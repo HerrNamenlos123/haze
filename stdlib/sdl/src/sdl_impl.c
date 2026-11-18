@@ -1128,6 +1128,15 @@ bool haze_sdl_init(bool platform_decorations) {
   SDL_SetHint(SDL_HINT_MOUSE_FOCUS_CLICKTHROUGH, "1");
   SDL_SetHintWithPriority(SDL_HINT_VIDEO_ALLOW_SCREENSAVER, "1",
                           SDL_HINT_OVERRIDE);
+  /* A window closed by the window manager is that window's close
+     (SDL_EVENT_WINDOW_CLOSE_REQUESTED, its should-close below), never the
+     program being asked to quit. SDL also sends SDL_EVENT_QUIT when the last
+     visible window is closed while no tray is up, which ended a program that
+     hides its window on close (AppOptions.hideOnClose) the moment the window
+     manager closed it. SDL_EVENT_QUIT stays what the system sends: SIGINT,
+     SIGTERM, the end of the session. */
+  SDL_SetHintWithPriority(SDL_HINT_QUIT_ON_LAST_WINDOW_CLOSE, "0",
+                          SDL_HINT_OVERRIDE);
   return SDL_Init(SDL_INIT_VIDEO);
 }
 
@@ -2260,6 +2269,43 @@ hzstd_int_t haze_sdl_addTrayEntry(SDL_Tray *tray, hzstd_str_t label) {
   SDL_SetTrayEntryCallback(entry, haze_sdl_tray_entry_clicked,
                            (void *)(intptr_t)index);
   return index;
+}
+
+/* Separators take an index too, so an entry's index stays its position. */
+void haze_sdl_addTraySeparator(SDL_Tray *tray) {
+  SDL_InsertTrayEntryAt(SDL_GetTrayMenu(tray), -1, NULL, 0);
+}
+
+/* Null when the menu has no entry `index`: the Haze side panics then. */
+static SDL_TrayEntry *haze_sdl_tray_entry_at(SDL_Tray *tray,
+                                             hzstd_int_t index) {
+  int count = 0;
+  const SDL_TrayEntry **entries =
+      SDL_GetTrayEntries(SDL_GetTrayMenu(tray), &count);
+  if (index < 0 || index >= count) {
+    return NULL;
+  }
+  return (SDL_TrayEntry *)entries[index];
+}
+
+bool haze_sdl_setTrayEntryLabel(SDL_Tray *tray, hzstd_int_t index,
+                                hzstd_str_t label) {
+  SDL_TrayEntry *entry = haze_sdl_tray_entry_at(tray, index);
+  if (!entry) {
+    return false;
+  }
+  SDL_SetTrayEntryLabel(entry, HZSTD_CSTR(label));
+  return true;
+}
+
+bool haze_sdl_setTrayEntryEnabled(SDL_Tray *tray, hzstd_int_t index,
+                                  bool enabled) {
+  SDL_TrayEntry *entry = haze_sdl_tray_entry_at(tray, index);
+  if (!entry) {
+    return false;
+  }
+  SDL_SetTrayEntryEnabled(entry, enabled);
+  return true;
 }
 
 hzstd_int_t haze_sdl_takeTrayClick(void) {
