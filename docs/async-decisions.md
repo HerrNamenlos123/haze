@@ -553,8 +553,10 @@ Runtime: `stdlib/core/src/hzstd/src/hzstd_sched.c`; Haze API: `stdlib/core/src/t
   frames moved the overflow past the restart). In that window the fault handler and
   `hzstd_panic_with_stacktrace` write a fixed message (`write(2)`) and `_exit(255)` (or the exit
   status of a graceful exit that started); no recovery, since the lock stays held. Linux only.
-  Tests: a recursion that collects whenever less than 24 KiB of stack is left; a panic between a
-  collection's start and end events (called by hand).
+  The window opens first thing in the collector's event hook and closes last thing (the hook's
+  own clock read overflowed before the window was open, under ASan). Tests: a recursion that
+  collects whenever less than 24 KiB of stack is left; a panic between a collection's start and
+  end events (called by hand); a recursion that runs the hook at every level near the guard.
 - Review finding "a finished task can be collected before its stack is returned" is S3-22,
   fixed in part 2 before the report arrived (the review read part 1).
 - Tests added for gaps the review named: a 30 ms run warns (the 10 ms limit, not a later one),
@@ -589,6 +591,16 @@ Runtime: `stdlib/core/src/hzstd/src/hzstd_sched.c`; Haze API: `stdlib/core/src/t
   behaviour; nothing here decides C454.
 
 ## What no longer compiles on this branch
+
+**After stage 3:** nothing more stops compiling (no code outside stdlib/core named
+`os_sleep_ns` or `hzstd_reserve_panic_recovery_frames`; a C function named `yieldAfter` would
+now collide). What changed in behaviour, for every program: `time.sleep` suspends only the
+calling task; a task that runs more than 10 ms of CPU without switching prints a stall warning,
+and a collection over 10 ms a pause report, to stderr (also the testsuite runner, the native
+parser, any long computation on the main thread); C that asks for a context while no task runs
+(`hzstd_context_for_current_thread()` from an `atexit` handler, from the scheduler between
+tasks) panics; `main` returning no longer ends the program while other tasks keep its thread
+alive.
 
 **After stage 1:** everything that uses `Context.init` or a context by value at a C boundary:
 stdlib/sdl, stdlib/ui_layout, stdlib/wgpu, stdlib/single_instance,

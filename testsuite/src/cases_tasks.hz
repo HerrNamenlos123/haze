@@ -787,6 +787,34 @@ fn main(): int {
 """,
             "255 true");
 
+        // The window opens before the collector's event hook does anything
+        // (under ASan the stack ran out inside the hook itself, before it
+        // had marked the thread as collecting, and the report then waited
+        // for the collector's lock; 2026-11-20). Each level runs the hook,
+        // the deepest call, until the stack is gone.
+        s.run(
+            "tasks: a stack overflow inside the collector's event hook is reported directly",
+            """
+__c__("#include <gc/gc.h>\nstatic hzstd_int_t stack_left(void) { const fiber_stack *s = hzstd_current_task_stack(); char here; return (hzstd_int_t)(&here - (char *)s->limit); }\nstatic void gc_events(void) { GC_on_collection_event_proc p = GC_get_on_collection_event(); p(GC_EVENT_START); p(GC_EVENT_END); }");
+fn deep(n: int): int :: final {
+    let left = 0;
+    do unsafe { __c__("left = stack_left(); if (left < 16000) gc_events();"); };
+    let pad: [4]int = [n, n, n, n];
+    return deep(n + 1) + pad[n % 4] - n;
+}
+fn main(): int {
+    let args = sys.args();
+    if args.length > 1 && args[1] == "child" {
+        fmt.println(f"{deep(0)}");
+        return 0;
+    }
+    let r = process.runCaptured("timeout", ["30", args[0], "child"]);
+    fmt.println(f"{r.exitCode} {r.stderrResult.contains("Stack overflow while this thread was running a garbage collection")}");
+    return 0;
+}
+""",
+            "255 true");
+
         // The stall trace is taken while the task holds a lock an unwinder
         // needs (glibc's loader lock, inside dl_iterate_phdr: the profiler
         // parses symbol tables there): it must neither deadlock nor lose

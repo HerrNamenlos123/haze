@@ -942,12 +942,19 @@ bool hzstd_this_thread_is_collecting(void)
 
 static void GC_CALLBACK hzstd_gc_event(GC_EventType event)
 {
-  if (event == GC_EVENT_PRE_STOP_WORLD) {
+  // The windows open first thing and close last thing: the collector holds
+  // its lock already, and anything in between can fail (under ASan the stack
+  // ran out in this hook's own clock read, before the window was open).
+  if (event == GC_EVENT_START) {
+    t_hzstd_collecting = true;
+  }
+  else if (event == GC_EVENT_PRE_STOP_WORLD) {
     t_hzstd_stopped_the_world = true;
+  }
+  if (event == GC_EVENT_PRE_STOP_WORLD) {
     t_hzstd_gc_stop_start = hzstd_clock_seconds(CLOCK_MONOTONIC);
   }
   else if (event == GC_EVENT_POST_START_WORLD) {
-    t_hzstd_stopped_the_world = false;
     t_hzstd_gc_stopped += hzstd_clock_seconds(CLOCK_MONOTONIC) - t_hzstd_gc_stop_start;
   }
   if (event == GC_EVENT_START || event == GC_EVENT_END) {
@@ -955,7 +962,6 @@ static void GC_CALLBACK hzstd_gc_event(GC_EventType event)
     if (thread != NULL && thread->sched != NULL) {
       double now = hzstd_clock_seconds(CLOCK_THREAD_CPUTIME_ID);
       if (event == GC_EVENT_START) {
-        t_hzstd_collecting = true;
         t_hzstd_gc_start = now;
         t_hzstd_gc_wall_start = hzstd_clock_seconds(CLOCK_MONOTONIC);
         t_hzstd_gc_stopped = 0;
@@ -970,12 +976,17 @@ static void GC_CALLBACK hzstd_gc_event(GC_EventType event)
         double total = atomic_load(&thread->sched->gc_cpu);
         atomic_store(&thread->sched->gc_cpu, total + (now - t_hzstd_gc_start));
         atomic_store(&thread->sched->gc_since, 0.0);
-        t_hzstd_collecting = false;
       }
     }
   }
   if (g_hzstd_previous_collection_event != NULL) {
     g_hzstd_previous_collection_event(event);
+  }
+  if (event == GC_EVENT_END) {
+    t_hzstd_collecting = false;
+  }
+  else if (event == GC_EVENT_POST_START_WORLD) {
+    t_hzstd_stopped_the_world = false;
   }
 }
 #endif
