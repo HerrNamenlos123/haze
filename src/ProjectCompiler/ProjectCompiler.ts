@@ -925,6 +925,7 @@ export class ProjectCompiler {
         libunwind: HAZE_CACHE + "/libunwind",
         cmakeToolchain: HAZE_CACHE + "/cmake-toolchain",
         bdwgc: HAZE_CACHE + "/bdgwc",
+        libuv: HAZE_CACHE + "/libuv",
         regexEngine: HAZE_CACHE + "/regex-engine",
         // -v2: the tool gained a --server mode and a batch request. An
         // install still holding the old binary must rebuild, or the compiler
@@ -1149,6 +1150,35 @@ export class ProjectCompiler {
         execInherit("cmake --build build --target=install", builddir);
         this.markStepDone(MARKERS.bdwgc);
         console.info("Retrieving and building bdwgc... Done");
+      }
+
+      // libuv, unmodified upstream (docs/async-runtime.md section 5): each
+      // thread's event loop. Pinned to the commit of tag v1.51.0.
+      if (!this.isStepDone(MARKERS.libuv)) {
+        const builddir = `${HAZE_TMP_DIR}/libuv-builddir`;
+        const outdir = `${HAZE_GLOBAL_DIR}/haze-libuv`;
+        const commitHash = "5152db2cbfeb5582e9c27c5ea1dba2cd9e10759b";
+        console.info("Retrieving and building libuv...");
+        if (existsSync(builddir)) {
+          const { rmSync } = await import("node:fs");
+          rmSync(builddir, { recursive: true, force: true });
+        }
+        if (existsSync(outdir)) {
+          const { rmSync } = await import("node:fs");
+          rmSync(outdir, { recursive: true, force: true });
+        }
+        mkdirSync(builddir);
+        execInherit(
+          `git clone https://github.com/libuv/libuv.git "${builddir}" && cd "${builddir}" && git -c advice.detachedHead=false checkout ${commitHash}`
+        );
+        execInherit(
+          `cmake . -B build -G Ninja -DCMAKE_C_COMPILER="${HAZE_C_COMPILER}" -DCMAKE_BUILD_TYPE=RelWithDebInfo -DLIBUV_BUILD_SHARED=OFF -DLIBUV_BUILD_TESTS=OFF -DLIBUV_BUILD_BENCH=OFF -DCMAKE_INSTALL_PREFIX="${outdir}" -DCMAKE_INSTALL_LIBDIR=lib -DCMAKE_POSITION_INDEPENDENT_CODE=ON`,
+          builddir
+        );
+        execInherit("cmake --build build -j", builddir);
+        execInherit("cmake --build build --target=install", builddir);
+        this.markStepDone(MARKERS.libuv);
+        console.info("Retrieving and building libuv... Done");
       }
 
       if (!this.isStepDone(MARKERS.regexEngine)) {

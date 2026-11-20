@@ -485,6 +485,37 @@ Runtime: `stdlib/core/src/hzstd/src/hzstd_sched.c`; Haze API: `stdlib/core/src/t
   before, nobody read the pipe, so a Haze program writing to stderr (the stall warning) would
   eventually block in a full pipe.
 
+- **S3-17. libuv v1.51.0** (commit 5152db2cbfeb5582e9c27c5ea1dba2cd9e10759b), fetched and built
+  like BDWGC (ProjectCompiler.ts: clone, checkout of the commit, CMake, static, tests and
+  benchmarks off), installed with `CMAKE_INSTALL_LIBDIR=lib` so the path is the same on every
+  distribution, linked as `haze-libuv/lib/libuv.a` (Windows: `libuv.lib` plus the system
+  libraries libuv's CMakeLists names; not built on Windows yet). `uv.h` is the first include of
+  the unity build: on Windows it brings winsock2.h, which must precede windows.h.
+- **S3-18. The loop: batch, then poll.** Each pass runs every task that was ready when the pass
+  began once, then `uv_run(NOWAIT)` if tasks are ready and libuv has work, `uv_run(ONCE)` if no
+  task is ready, and the deadlock panic if libuv has nothing either. So a task that keeps
+  yielding never starves timers (C243); a yield costs a non-blocking poll while libuv has work.
+- **S3-19. `time.sleep` is a libuv timer.** Whole milliseconds, rounded up; 0 or less is a 0 ms
+  timer (the others and the loop run once). The timer is uncollectable GC memory from init to its
+  close callback (section 8.2); the task is readied in the close callback, so nothing of it is in
+  libuv when it resumes. `uv_update_time` before the start: the loop's clock is the one of its
+  last turn, and a task may have run long since (a test with a task that keeps the loop turning
+  shows the difference). Killing a sleeping task closes its timer. Once a thread's tasks are
+  gone its loop must hold no work (every handle belongs to a task): a fatal error otherwise.
+- **S3-20. `os_sleep_ns` is `hzstd_os_thread_block_ns`**, C only (the profiler's reader thread
+  uses it); nothing in Haze can block the thread (contract section 2).
+- **S3-21. `sys.exit(status)`**: 0 to 255, anything else panics (C576). The first status is
+  final (a later uncaught panic is printed and exits with it); the calling task stops there, the
+  thread stops every other task where it is suspended (killed, never resumed), the thread's last
+  task (the profiling end) runs, and the process ends with the status (C521, C585 to C587).
+  **`sys.abort()`**: `_exit(134)` (the status a shell reports for SIGABRT) without handlers,
+  flushing or a core dump (C547, C574). Not yet tested: the status of a panic after an exit
+  started (nothing can panic after it in one thread).
+- **S3-22. A finished task is reachable from its scheduler before it leaves the registry** (the
+  trampoline sets `s->ended` first): its own stack is not scanned once it has left, so a
+  collection another thread runs in between (the profiler's reader allocates) could have freed
+  it. Found by reading the code, not reproduced (the window is a few instructions wide).
+
 ## Tooling
 
 - **G-1. The parser-equivalence sweep reads what the commit and the run decide** (user,

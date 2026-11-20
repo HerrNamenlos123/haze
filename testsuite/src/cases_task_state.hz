@@ -2,10 +2,10 @@
 // State that follows the call stack belongs to the task (Axiom C598, C377,
 // C261, C280; docs/async-implementation-plan.md stage 2).
 //
-// Tasks are built in stage 3, but a second task can be built in C already: a
-// task struct under a copy of the context. Where hzstd has no context (the
-// panic path) it asks the thread which task runs, so a case that panics in the
-// second task also switches the thread to it, as the scheduler will.
+// A second task can be built in C: a task struct under a copy of the context.
+// Where hzstd has no context (the panic path) it asks the thread which task
+// runs, so a case that panics in the second task also switches the thread to
+// it, as the scheduler does.
 // ============================================================================
 
 namespace cases_task_state {

@@ -201,42 +201,32 @@ constrain the choice:
   stack under `fiber_exit`'s unwind info: on Linux its CFI describes the new frame; on Windows an
   asynchronous sampler stopping exactly there gets one wrong frame. Nothing can fault there.
 
-## Integration checklist (open, 2026-10-20)
+## Integration checklist (state 2026-11-20, branch async-runtime)
 
-The library is done and tested on its own; nothing in hzstd uses it yet. In order:
+hzstd uses the library since stage 3 of `docs/async-implementation-plan.md`
+(`stdlib/core/src/hzstd/src/hzstd_sched.c`; decisions S3-* in `docs/async-decisions.md`).
 
 1. **Windows x64: done** (a23e0f60). `--deep` passes on a real Windows x64 machine: 85 checks,
-   39 of them mutants. fiber.h needed no change; the fixes were in the runner and the tests.
-   Still open there: the check "compiles inside Haze's generated stdlib module" is NOT RUN until a
-   Haze program is built in that checkout (its `__haze__` stdlib was stale). Windows ARM64 has never
-   run (it needs an ARM64 Windows machine, same command).
-2. **Compile it into hzstd:** `#define FIBER_IMPLEMENTATION` + `#include "../fiber/fiber.h"` in
-   `stdlib/core/src/hzstd/hzstd_main.c`. The compiler already passes `FIBER_TARGET_*`; the
-   implementation is proven to compile inside the generated stdlib with Haze's flags.
-3. **Compiler flags** (`src/ModuleCompiler/ModuleCompiler.ts`): add `-fstack-clash-protection`
-   for Linux C compiles (x86-64 and AArch64), or frames larger than the guard skip it. Never add
+   39 of them mutants. Still open there: the check "compiles inside Haze's generated stdlib
+   module" is NOT RUN until a Haze program is built in that checkout. Windows ARM64 has never run
+   (it needs an ARM64 Windows machine, same command).
+2. **Compiled into hzstd: done** (`hzstd_main.c`).
+3. **Compiler flags: done** on Linux: `-fstack-clash-protection` (ModuleCompiler.ts). Never add
    `-fcf-protection=return|full`, `-mbranch-protection=standard` (GCS) or `-fsanitize=thread`: the
    build stops on them.
-4. **Fault handling** (`hzstd_platform_linux.c`, `hzstd_platform_win32.c`), per "Overflow
-   handling" above:
-   * classify with `fiber_stack_guard_contains` (Linux), and `EXCEPTION_STACK_OVERFLOW` or an
-     access violation in the guard (Windows);
-   * update the per-thread "current task" pointer on the resumed side of `fiber_switch`;
-   * longjmp to the task's own recovery frame;
-   * on Windows move `_resetstkoflw()` from inside the VEH to after the longjmp.
-5. **GC glue** (BDWGC): port `tests/gc_test.c`. That means:
-   * Linux: the sp corrector, plus the chained push hook that finds the running task by address;
-   * Windows: `GetThreadContext` for other threads' sp, and a filter for the "pushing everything"
-     warning;
-   * registry changes under `GC_call_with_alloc_lock`;
-   * also push the interrupted task stack while a thread sits in its SIGSEGV handler (BDWGC then
-     scans only the altstack; its own FIXME).
-6. **ASan:** threads with their own `sigaltstack` must uninstall it (`SS_DISABLE`) before
-   exiting, or ASan's thread teardown aborts (`hzstd_platform_linux.c`, `altstack_buf`).
-7. **Scheduler, libuv, per-task runtime state:** the next design step (`docs/async-runtime.md`,
-   Axiom S3/S4). That covers recovery frames, the stackref table, reactive state and panic state.
-   Pick stack sizes: 8 MiB usable and a 64 KiB guard are proposed. Pool stacks, and
-   `fiber_stack_trim` them in `hzstd_release_idle_memory`.
+4. **Fault handling:** Linux done: `fiber_stack_guard_contains` on the running task's stack
+   classifies a stack overflow, the current task is set on the resumed side of every switch, and
+   the panic longjmps to the task's own recovery frame. **Open on Windows** (never built or run
+   there): an access violation in the guard as an overflow, and moving `_resetstkoflw()` from
+   inside the VEH to after the longjmp.
+5. **GC glue: done**, ported from `tests/gc_test.c` (sp corrector, chained push hook that finds the
+   running task by address, registry under `GC_call_with_alloc_lock`, the Windows
+   `GetThreadContext` variant and warning filter). The interrupted stack of a thread in its fault
+   handler is pushed from the sp the handler records first thing.
+6. **ASan: done** (stage 2: hzstd gives back the signal stack it displaced when a thread ends).
+7. **Scheduler, libuv, per-task state: done** for one thread: 8 MiB stacks with 64 KiB guards from
+   a pool of 16 per thread, trimmed to 64 KiB when returned. Not yet: trimming the pool in
+   `hzstd_release_idle_memory`.
 8. **Optional (Windows):** unhandled SEH exceptions in tasks skip `SetUnhandledExceptionFilter`.
    hzstd's VEH is unaffected.
 9. **Toolchain for ARM64 hosts** (`src/ProjectCompiler/ProjectCompiler.ts`):

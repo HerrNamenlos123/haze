@@ -111,7 +111,10 @@ int hzstd_process_join(void *proc);
 /* Releases the handle and any remaining OS resources. Call after hzstd_process_join. */
 void hzstd_process_release(void *proc);
 
-void os_sleep_ns(uint64_t nanoseconds);
+/* Blocks the whole OS thread for `nanoseconds`: C only, for hzstd's own
+   helper threads (the profiler's reader). Never Haze's sleep, which
+   suspends only the calling task (time.sleep, hzstd_task_sleep_ms). */
+void hzstd_os_thread_block_ns(uint64_t nanoseconds);
 double hzstd_time_now(void);
 /* Milliseconds since 1970-01-01 00:00 UTC, from the system clock (it can jump). */
 hzstd_int_t hzstd_time_wall_ms(void);

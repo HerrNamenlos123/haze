@@ -1,5 +1,5 @@
 namespace ffi {
-    extern C fn os_sleep_ns(nanoseconds: u64): void :: final;
+    extern C noemit fn hzstd_task_sleep_ms(ctx: cptr, milliseconds: u64) :: final;
     extern C fn hzstd_time_now(): real :: final;
     extern C fn hzstd_time_wall_ms(): int :: final;
 }
@@ -65,10 +65,16 @@ namespace time {
         return value < 0 ? "-" + digits : digits;
     }
 
+    // Suspends the calling task for `seconds` (C301): every other task on
+    // the thread runs meanwhile. In whole milliseconds, rounded up (the
+    // event loop's timers); `0` or less lets the other ready tasks and the
+    // event loop run once, like sys.yield.
     export fn sleep(seconds: real) {
-        let nanoseconds = seconds * 1000000000.0;
-        let ns_u64: u64 = 0;
-        __c__("ns_u64 = nanoseconds;");
-        ffi.os_sleep_ns(ns_u64);
+        let milliseconds = seconds * 1000.0;
+        let ms: u64 = 0;
+        if milliseconds > 0.0 {
+            __c__("ms = (uint64_t)milliseconds; if ((double)ms < milliseconds) ms++;");
+        }
+        ffi.hzstd_task_sleep_ms(sys.contextPtr(), ms);
     }
 }

@@ -389,7 +389,9 @@ static DWORD WINAPI hzstd_panic_handler_thread(LPVOID _)
         hzstd_print_panic_report(&panic_info_storage);
         fflush(stdout);
         fflush(stderr);
-        _exit(-1);
+        // After a graceful exit started, its status is final (contract
+        // section 2): the panic is printed and changes nothing.
+        _exit(hzstd_exit_status() >= 0 ? hzstd_exit_status() : -1);
       }
     }
   }
@@ -586,7 +588,7 @@ hzstd_int_t hzstd_time_wall_ms(void)
   return (hzstd_int_t)(ticks.QuadPart / 10000ULL) - (hzstd_int_t)11644473600000LL;
 }
 
-void os_sleep_ns(uint64_t ns)
+void hzstd_os_thread_block_ns(uint64_t ns)
 {
   HANDLE timer = CreateWaitableTimer(NULL, TRUE, NULL);
   LARGE_INTEGER li;

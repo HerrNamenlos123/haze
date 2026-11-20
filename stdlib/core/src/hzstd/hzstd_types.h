@@ -745,6 +745,7 @@ struct hzstd_task_t {
   hzstd_context_settings_t settings; // the context it starts with (C406)
   hzstd_future_core_t *future;       // ends when the task ends
   hzstd_future_core_t *waiting_on;   // the future it waits for, if suspended in a join
+  void *sleep_timer;                 // its uv_timer_t, if suspended in time.sleep
 };
 
 // ── Meta ─────────────────────────────────────────────────────────────────────

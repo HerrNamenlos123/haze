@@ -27,6 +27,7 @@
 // lock, a handful of times per task lifetime.
 
 #include <gc/gc_mark.h> // the push hook and GC_push_all_eager
+#include <uv.h>
 
 #if !FIBER__WINDOWS
 #include <pthread.h>
@@ -42,6 +43,8 @@
 
 struct hzstd_sched_t {
   hzstd_thread_t *thread;
+  // The thread's event loop (section 5.1): libuv callbacks only ready tasks.
+  uv_loop_t loop;
   fiber_ctx native; // the scheduler's own context while a task runs
   char *native_lo;  // the thread's own stack, [native_lo, native_hi)
   char *native_hi;
@@ -77,6 +80,7 @@ struct hzstd_sched_t {
   hzstd_task_t *ready_tail;
   hzstd_task_t *live;       // every unfinished task (the registry)
   size_t pending;           // unfinished tasks that keep the thread alive
+  bool exiting;             // sys.exit ran on this thread: no task runs any more
   hzstd_task_t *ended;      // the task that just ended; its stack goes back to the pool
   fiber_stack pool[HZSTD_TASK_STACK_POOL];
   size_t pool_len;
@@ -113,6 +117,7 @@ typedef struct {
 
 static void hzstd_task_trampoline(void *transfer, void *user);
 static void hzstd_watchdog_switch_in(hzstd_sched_t *s);
+static void hzstd_sleep_cancel(hzstd_task_t *t);
 static void hzstd_watchdog_switch_out(hzstd_sched_t *s);
 
 static void *GC_CALLBACK hzstd_registry_apply(void *p)
@@ -445,8 +450,12 @@ static void hzstd_task_trampoline(void *transfer, void *user)
   t->state = HZSTD_TASK_RUNNING;
   hzstd_context_t ctx = { .task = t, .thread = t->thread, .settings = t->settings };
   t->entry(&ctx, t->entry_arg);
+  // Reachable from the scheduler before it leaves the registry: this stack is
+  // not scanned any more once it has, and a collection another thread runs
+  // could otherwise free the task in between. The scheduler gives the stack
+  // back once it no longer runs on it.
+  s->ended = t;
   hzstd_task_end(s, t);
-  s->ended = t; // the scheduler gives the stack back once it no longer runs on it
   fiber_exit(&s->native, NULL);
 }
 
@@ -553,6 +562,9 @@ static void hzstd_task_kill(hzstd_sched_t *s, hzstd_task_t *t)
     }
     t->waiting_on = NULL;
   }
+  if (t->sleep_timer != NULL) {
+    hzstd_sleep_cancel(t);
+  }
   hzstd_context_t ctx = { .task = t, .thread = s->thread };
   hzstd_stackref_unwind_to(&ctx, 0);
   hzstd_task_end(s, t);
@@ -564,27 +576,112 @@ static void hzstd_task_kill(hzstd_sched_t *s, hzstd_task_t *t)
   }
 }
 
+// The scheduler loop (section 5.1). Every task that is ready now runs once,
+// then the event loop gets its turn: without waiting while tasks are ready,
+// waiting for the next event when none is (C243: a yield always goes back to
+// the event loop, so a task that keeps yielding never starves timers).
 static void hzstd_sched_loop(hzstd_sched_t *s)
 {
   for (;;) {
+    hzstd_task_t *last = s->ready_tail;
     hzstd_task_t *t;
-    while (s->pending > 0 && (t = hzstd_ready_pop(s)) != NULL) {
+    while (last != NULL && s->pending > 0 && !s->exiting && (t = hzstd_ready_pop(s)) != NULL) {
       hzstd_sched_run_task(s, t);
+      if (t == last) {
+        break;
+      }
     }
-    if (s->pending == 0) {
+    if (s->pending == 0 || s->exiting) {
       break;
     }
-    // Every task that keeps the thread alive waits, and nothing that could
-    // ready one exists yet (no timers, no I/O, no other thread): it never
-    // would.
-    hzstd_panic("deadlock: every task on this thread is waiting, and nothing can ever wake one");
+    if (s->ready_head != NULL) {
+      if (uv_loop_alive(&s->loop)) {
+        uv_run(&s->loop, UV_RUN_NOWAIT);
+      }
+    }
+    else if (uv_loop_alive(&s->loop)) {
+      uv_run(&s->loop, UV_RUN_ONCE);
+    }
+    else {
+      // Every task that keeps the thread alive waits, and nothing that could
+      // ready one is left (no timer, no I/O; no other thread exists yet): it
+      // never would.
+      hzstd_panic("deadlock: every task on this thread is waiting, and nothing can ever wake one");
+    }
   }
-  // Only background tasks are left (C435): killed, never resumed (C437).
+  // Only background tasks are left (C435), or sys.exit stopped the thread
+  // (C586): killed, never resumed (C437).
   while (s->live != NULL) {
     hzstd_task_kill(s, s->live);
   }
   s->ready_head = NULL;
   s->ready_tail = NULL;
+  // The closes of the killed tasks' timers. Every handle belongs to a task,
+  // and the thread's tasks are gone.
+  uv_run(&s->loop, UV_RUN_NOWAIT);
+  if (uv_loop_alive(&s->loop)) {
+    hzstd_panic("a thread's event loop still holds work after its last task ended");
+  }
+}
+
+// ── Sleeping (section 5.1: start the request, suspend, the callback readies) ─
+//
+// A timer is a libuv handle: it lives in uncollectable memory from its init
+// until its close callback (section 8.2, rule 1), so its `data`, the task,
+// stays alive while libuv holds it. The task resumes only once the timer is
+// closed, so nothing of it is left in libuv when it runs again. Killing a
+// sleeping task closes its timer, whose close then readies nobody.
+
+static void hzstd_sleep_closed(uv_handle_t *handle)
+{
+  hzstd_task_t *t = handle->data;
+  GC_FREE(handle);
+  if (t != NULL) {
+    t->sleep_timer = NULL;
+    t->state = HZSTD_TASK_READY;
+    hzstd_ready_push(t->thread->sched, t);
+  }
+}
+
+static void hzstd_sleep_fired(uv_timer_t *timer)
+{
+  uv_close((uv_handle_t *)timer, hzstd_sleep_closed);
+}
+
+void hzstd_task_sleep_ms(hzstd_context_t *ctx, uint64_t ms)
+{
+  hzstd_task_t *t = ctx->task;
+  hzstd_sched_t *s = ctx->thread->sched;
+  uv_timer_t *timer = GC_MALLOC_UNCOLLECTABLE(sizeof(uv_timer_t));
+  if (timer == NULL) {
+    hzstd_panic("Out of memory starting a timer");
+  }
+  int rc = uv_timer_init(&s->loop, timer);
+  if (rc != 0) {
+    hzstd_panic_fmt("A timer could not be made: %s", uv_strerror(rc));
+  }
+  timer->data = t;
+  // The loop's clock is the one of its last turn; a task may have run long
+  // since.
+  uv_update_time(&s->loop);
+  rc = uv_timer_start(timer, hzstd_sleep_fired, ms, 0);
+  if (rc != 0) {
+    hzstd_panic_fmt("A timer could not be started: %s", uv_strerror(rc));
+  }
+  t->sleep_timer = timer;
+  t->state = HZSTD_TASK_SUSPENDED;
+  hzstd_task_suspend(ctx);
+}
+
+static void hzstd_sleep_cancel(hzstd_task_t *t)
+{
+  uv_timer_t *timer = t->sleep_timer;
+  t->sleep_timer = NULL;
+  timer->data = NULL;
+  if (!uv_is_closing((uv_handle_t *)timer)) {
+    uv_timer_stop(timer);
+    uv_close((uv_handle_t *)timer, hzstd_sleep_closed);
+  }
 }
 
 // ── The stall watchdog (docs/async-runtime.md section 10) ───────────────────
@@ -788,6 +885,10 @@ static void hzstd_sched_init_thread(hzstd_thread_t *thread)
   }
   memset(s, 0, sizeof(*s));
   s->thread = thread;
+  int rc = uv_loop_init(&s->loop);
+  if (rc != 0) {
+    hzstd_panic_fmt("Could not create the thread's event loop: %s", uv_strerror(rc));
+  }
 #if FIBER__WINDOWS
   ULONG_PTR lo, hi;
   GetCurrentThreadStackLimits(&lo, &hi);
@@ -859,6 +960,42 @@ const fiber_stack *hzstd_current_task_stack(void)
   return (task == NULL || task->stack.top == NULL) ? NULL : &task->stack;
 }
 
+// ── Ending the process (C521, C574, C576, C585 to C587) ─────────────────────
+//
+// sys.exit(n) is a graceful exit: the status is recorded once and is final
+// (a later uncaught panic is printed but exits with it), the calling task
+// stops there, and its thread's scheduler stops every other task at its
+// suspension (they are all suspended or ready, C218): killed, never resumed.
+// Then the thread's last task runs (the profiling end hook) and the process
+// ends with the status. Threads are never interrupted from outside (C585);
+// other threads, once they exist, stop at their next suspension too.
+
+static _Atomic int g_hzstd_exit_status = -1; // -1: no graceful exit started
+
+int hzstd_exit_status(void)
+{
+  return atomic_load(&g_hzstd_exit_status);
+}
+
+_Noreturn void hzstd_task_exit(hzstd_context_t *ctx, hzstd_int_t status)
+{
+  if (status < 0 || status > 255) {
+    hzstd_panic_fmt_n(1, "sys.exit: the exit status must be between 0 and 255, not %lld", (long long)status);
+  }
+  int expected = -1;
+  atomic_compare_exchange_strong(&g_hzstd_exit_status, &expected, (int)status);
+  hzstd_sched_t *s = ctx->thread->sched;
+  s->exiting = true;
+  ctx->task->state = HZSTD_TASK_SUSPENDED; // readied by nothing: killed with the rest
+  hzstd_task_suspend(ctx);
+  hzstd_panic("a task resumed after sys.exit");
+}
+
+_Noreturn void hzstd_abort(void)
+{
+  _exit(134); // what a shell reports for SIGABRT; no handlers, no flushing (C547)
+}
+
 // ── main (section 5.3) ───────────────────────────────────────────────────────
 
 typedef struct {
@@ -893,8 +1030,11 @@ int32_t hzstd_sched_run_main(int32_t (*main_fn)(hzstd_context_t *ctx), void (*en
   hzstd_sched_spawn(s, NULL, hzstd_context_settings_default(), hzstd_main_task_entry, &call, false, NULL);
   hzstd_sched_loop(s);
   if (end_fn != NULL) {
+    // The thread's last task, also after sys.exit (a graceful exit).
+    s->exiting = false;
     hzstd_sched_spawn(s, NULL, hzstd_context_settings_default(), hzstd_main_end_entry, &call, false, NULL);
     hzstd_sched_loop(s);
   }
-  return call.exit_code;
+  int status = hzstd_exit_status();
+  return status >= 0 ? status : call.exit_code;
 }

@@ -134,6 +134,8 @@ namespace task {
 
 namespace ffi {
     extern C noemit fn hzstd_time_since_task_switch(ctx: cptr): real :: final;
+    extern C noemit fn hzstd_task_exit(ctx: cptr, status: int) :: final, noreturn;
+    extern C noemit fn hzstd_abort() :: final, noreturn;
 }
 
 namespace sys {
@@ -150,6 +152,24 @@ namespace sys {
     // (one load and one compare, inline, no clock read; hzstd_runtime.h).
     // The time is CPU time, measured every 5 ms (so is its precision).
     export extern C noemit fn yieldAfter(seconds: real) :: final, context;
+
+    // Ends the program gracefully with `status`, 0 to 255 (anything else
+    // panics, C576): this task stops here, every other task stops where it
+    // is suspended and never runs again, the runtime's own end of the thread
+    // runs, and the program exits with `status` (C521, C585 to C587). Meant
+    // for ending a program from anywhere in it; returning from `main` is the
+    // ordinary way. The first status is final: a later uncaught panic is
+    // printed but exits with it.
+    export fn exit(status: int) :: noreturn, final {
+        ffi.hzstd_task_exit(contextPtr(), status);
+    }
+
+    // Ends the program at once, with status 134; nothing else runs, nothing
+    // is cleaned up or flushed (C547, C574). Meant for states where going
+    // on would do harm.
+    export fn abort() :: noreturn, final {
+        ffi.hzstd_abort();
+    }
 
     // Seconds the current task has run since its last switch (C589): CPU
     // time, measured every 5 ms (so is its precision). Meant for code that

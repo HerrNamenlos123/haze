@@ -31,6 +31,9 @@ int32_t hzstd_sched_run_main(int32_t (*main_fn)(hzstd_context_t *ctx), void (*en
 void hzstd_task_spawn(hzstd_context_t *ctx, hzstd_task_entry_t entry, void *arg, bool background, hzstd_future_core_t *future);
 // Lets every task that is ready run first (C243).
 void hzstd_task_yield(hzstd_context_t *ctx);
+// Suspends the calling task for `ms` milliseconds of the thread's event loop
+// (time.sleep, C301): a libuv timer readies it.
+void hzstd_task_sleep_ms(hzstd_context_t *ctx, uint64_t ms);
 // A future's shared core: its state and the tasks waiting for it.
 hzstd_future_core_t *hzstd_future_core_new(void);
 hzstd_int_t hzstd_future_state(hzstd_future_core_t *core);
@@ -53,6 +56,15 @@ static inline void yieldAfter(hzstd_context_t *ctx, hzstd_real_t seconds)
     hzstd_task_yield(ctx);
   }
 }
+// sys.exit: a graceful exit with `status` (0 to 255, else it panics): this
+// task stops here, its thread stops every other task at its suspension, the
+// thread's last task runs, then the process ends with `status` (C521, C576,
+// C586). The first status is final.
+_Noreturn void hzstd_task_exit(hzstd_context_t *ctx, hzstd_int_t status);
+// The status of a graceful exit that has started, or -1.
+int hzstd_exit_status(void);
+// sys.abort: ends the process at once, status 134, no cleanup (C547, C574).
+_Noreturn void hzstd_abort(void);
 // sys.timeSinceTaskSwitch: the same measurement, in seconds.
 hzstd_real_t hzstd_time_since_task_switch(hzstd_context_t *ctx);
 

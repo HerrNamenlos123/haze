@@ -526,7 +526,9 @@ static void *hzstd_panic_handler_thread(void *_)
         hzstd_print_panic_report(&panic_info_storage);
         fflush(stdout);
         fflush(stderr);
-        _exit(-1);
+        // After a graceful exit started, its status is final (contract
+        // section 2): the panic is printed and changes nothing.
+        _exit(hzstd_exit_status() >= 0 ? hzstd_exit_status() : -1);
       }
     }
   }
@@ -991,7 +993,7 @@ hzstd_int_t hzstd_time_wall_ms(void)
   return (hzstd_int_t)ts.tv_sec * 1000 + (hzstd_int_t)(ts.tv_nsec / 1000000);
 }
 
-void os_sleep_ns(uint64_t ns)
+void hzstd_os_thread_block_ns(uint64_t ns)
 {
   struct timespec ts;
   ts.tv_sec = ns / 1000000000;

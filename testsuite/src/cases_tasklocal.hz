@@ -8,7 +8,8 @@
 // checks, made on first use from the module's initial image. So code reached
 // through a library that knows nothing of a module's task-locals still reaches
 // them: the context carries the task. `tasklocal const` is a constant (TL-8).
-// Until tasks exist (stage 3) every thread runs one task, the main thread's.
+// A spawned task starts with copies of its creator's values (TL-6,
+// cases_tasks.hz).
 // ============================================================================
 
 namespace cases_tasklocal {
@@ -158,8 +159,8 @@ fn main(): int { return 0; }
 """,
             [testsuite.exactCount(errorcodes.Code.TaskLocalOfNocopyType, 1)]);
 
-        // Tasks do not exist before stage 3, but a second one can be built in
-        // C: a task struct with an empty table, under a copy of the context.
+        // A second task built in C: a task struct with an empty table, under
+        // a copy of the context.
         // Code running under it has its own value, starting from the initial
         // one, and the main task's stays its own.
         s.run(

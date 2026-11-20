@@ -1721,7 +1721,7 @@ static DWORD WINAPI hzstd_profiling_scheduler_thread(LPVOID _context)
   hzstd_setup_panic_handler();
   while (!atomic_load(&context->stop_scheduler)) {
     uint64_t interval_ns = 1000000000ull / context->sampling_rate_hz;
-    os_sleep_ns(interval_ns);
+    hzstd_os_thread_block_ns(interval_ns);
     hzstd_profiling_invoke_sampling(context);
     // This thread is never suspended for sampling, so growing `samples` here is
     // always safe.

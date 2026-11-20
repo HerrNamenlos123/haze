@@ -517,6 +517,175 @@ fn main(): int {
 """,
             "true true");
 
+        // C301: time.sleep suspends the calling task only; the others run,
+        // and the sleeps end in the order of their deadlines.
+        s.run(
+            "tasks: time.sleep suspends only the calling task",
+            """
+fn main(): int {
+    let log: mut []str = [];
+    let start = time.now();
+    let slow = task.spawn(() => { time.sleep(0.05); log.push("slow"); return 0; });
+    let fast = task.spawn(() => { time.sleep(0.01); log.push("fast"); return 0; });
+    let counter = task.spawn(() => {
+        let n = 0;
+        while !slow.isDone() { n++; sys.yield(); }
+        return n;
+    });
+    let a = slow.join();
+    let b = fast.join();
+    let c = counter.join();
+    let elapsed = time.now() - start;
+    let spins = 0;
+    if c is int { spins = c; }
+    fmt.println(f"{log[0]} {log[1]} {spins > 10} {elapsed >= 0.045}");
+    return 0;
+}
+""",
+            "fast slow true true");
+
+        // The event loop's clock is the one of its last turn: a sleep that
+        // follows a long run must still last as long as asked, also while
+        // another task keeps the loop turning without waiting.
+        s.run(
+            "tasks: a sleep after a long run lasts as long as asked",
+            """
+fn main(): int {
+    let done: mut []int = [];
+    time.sleep(0.001);
+    let spinner = task.spawn(() => {
+        while done.length == 0 { sys.yield(); }
+    });
+    let spinStart = time.now();
+    while time.now() - spinStart < 0.06 {}
+    let start = time.now();
+    time.sleep(0.04);
+    let slept = time.now() - start;
+    done.push(1);
+    let r = spinner.join();
+    fmt.println(f"{slept >= 0.035}");
+    return 0;
+}
+""",
+            "true");
+
+        s.run(
+            "tasks: a sleeping task keeps its thread alive, a sleeping background task does not",
+            """
+fn main(): int {
+    let args = sys.args();
+    if args.length > 1 && args[1] == "child" {
+        let bg = task.spawn(() => {
+            time.sleep(30.0);
+            fmt.println("background woke");
+        }, { background: true });
+        let fg = task.spawn(() => {
+            time.sleep(0.02);
+            fmt.println("woke");
+        });
+        return 0;
+    }
+    let start = time.now();
+    let r = process.runCaptured(args[0], ["child"]);
+    let took = time.now() - start;
+    fmt.println(f"{r.stdoutResult.trim()} {r.exitCode} {took < 10.0}");
+    return 0;
+}
+""",
+            "woke 0 true");
+
+        s.run(
+            "tasks: time.sleep(0) lets the other ready tasks run first",
+            """
+fn main(): int {
+    let log: mut []str = [];
+    let other = task.spawn(() => { log.push("other"); });
+    time.sleep(0.0);
+    log.push("main");
+    let r = other.join();
+    fmt.println(f"{log[0]} {log[1]}");
+    return 0;
+}
+""",
+            "other main");
+
+        // C521, C574, C585 to C587: sys.exit stops every task at its
+        // suspension, none is resumed, and the program ends with the status.
+        s.run(
+            "tasks: sys.exit ends the program with its status, stopping every task",
+            """
+fn main(): int {
+    let args = sys.args();
+    if args.length > 1 && args[1] == "child" {
+        let sleeper = task.spawn(() => {
+            time.sleep(0.02);
+            fmt.println("sleeper woke");
+        });
+        let waiter = task.spawn(() => {
+            let never = Future<int>();
+            let r = never.join();
+            fmt.println("waiter woke");
+        });
+        let exiter = task.spawn(() => {
+            fmt.println("exiting");
+            if args.length > 1 { sys.exit(7); }
+            fmt.println("after exit");
+        });
+        let r = exiter.join();
+        fmt.println("main resumed");
+        return 0;
+    }
+    let r = process.runCaptured(args[0], ["child"]);
+    fmt.println(f"{r.exitCode} {r.stdoutResult.trim()}");
+    return 0;
+}
+""",
+            "7 exiting");
+
+        s.run(
+            "tasks: sys.exit with a status outside 0 to 255 panics",
+            """
+fn main(): int {
+    let args = sys.args();
+    if args.length > 1 {
+        if args[1] == "high" { sys.exit(256); }
+        sys.exit(-1);
+    }
+    let high = process.runCaptured(args[0], ["high"]);
+    let low = process.runCaptured(args[0], ["low"]);
+    fmt.println(f"{high.exitCode} {high.stderrResult.contains("between 0 and 255")} {low.exitCode}");
+    return 0;
+}
+""",
+            "255 true 255");
+
+        s.runExitCode(
+            "tasks: sys.exit(0) from main",
+            """
+fn main(): int {
+    sys.exit(0);
+    return 9;
+}
+""",
+            0);
+
+        // C547: at once, nothing else runs.
+        s.run(
+            "tasks: sys.abort ends the program at once",
+            """
+fn main(): int {
+    let args = sys.args();
+    if args.length > 1 && args[1] == "child" {
+        let other = task.spawn(() => { fmt.println("other ran"); });
+        sys.abort();
+    }
+    let r = process.runCaptured(args[0], ["child"]);
+    fmt.println(f"{r.exitCode} {r.stdoutResult.length}");
+    return 0;
+}
+""",
+            "134 0");
+
         s.run(
             "tasks: yielding with nothing else ready goes on at once",
             """

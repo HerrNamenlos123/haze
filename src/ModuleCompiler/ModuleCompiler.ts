@@ -2264,6 +2264,14 @@ export class ModuleCompiler {
     linkerFlags.addAll("-lgc");
     // linkerFlags.addWin32(`"${HAZE_GLOBAL_DIR}/haze-bdwgc/lib/gc.lib"`);
 
+    // The event loop of every thread's scheduler (hzstd_sched.c), static.
+    includeDirs.addAll(`${HAZE_GLOBAL_DIR}/haze-libuv/include`);
+    linkerFlags.addLinux(`"${HAZE_GLOBAL_DIR}/haze-libuv/lib/libuv.a"`);
+    linkerFlags.addWin32(`"${HAZE_GLOBAL_DIR}/haze-libuv/lib/libuv.lib"`);
+    for (const lib of ["ws2_32", "iphlpapi", "userenv", "psapi", "dbghelp", "ole32", "shell32"]) {
+      linkerFlags.addWin32(`-l${lib}`);
+    }
+
     includeDirs.addAll(`${HAZE_GLOBAL_DIR}/pcre2/include`);
     linkerFlags.addAll(`-L"${HAZE_GLOBAL_DIR}/pcre2/lib64/"`);
     linkerFlags.addAll(`-L"${HAZE_GLOBAL_DIR}/pcre2/lib/"`);

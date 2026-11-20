@@ -384,11 +384,21 @@ body-less `extern C` declaration. (H7219 and H7220 are retired: every function w
 has a context.) Tests: `testsuite/src/cases_context.hz`,
 `cases_context_review.hz`, `cases_extern_c_function_types.hz`.
 
+## Tasks and the scheduler
+
+Every piece of Haze code runs in a task, `main` too: the generated C `main` runs
+`hzstd_sched_run_main`. One scheduler per thread (`stdlib/core/src/hzstd/src/hzstd_sched.c`) runs
+ready tasks first come first served, then its libuv loop; a spawned task starts when its spawner
+suspends. API: `stdlib/core/src/task.hz` (`task.spawn`, `Future<T>`, `TaskError`, `sys.yield`,
+`sys.yieldAfter`, `sys.timeSinceTaskSwitch`, `sys.exit`, `sys.abort`), `time.sleep` suspends.
+Mechanism and traps: `docs/agent-notes/tasks-and-scheduler.md`; decisions
+`docs/async-decisions.md` S3-*. Tests: `testsuite/src/cases_tasks.hz`.
+
 ## Task-local storage
 
 `tasklocal let x: T = v;` (module or namespace level) exists once per task (Axiom C200 to C202;
 design and decisions: `docs/async-decisions.md` TL-1 to TL-15). `tasklocal const` is a plain
-constant. Until tasks exist (stage 3) every thread runs one task.
+constant. A new task starts with copies of its creator's blocks, taken at the spawn (TL-6).
 
 ```
 hzstd_task_t        { void **tl_blocks; size_t tl_capacity; hzstd_thread_t *thread; ... }

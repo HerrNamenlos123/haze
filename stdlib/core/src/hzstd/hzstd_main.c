@@ -1,4 +1,8 @@
 
+// libuv first: on Windows uv.h brings winsock2.h, which must come before any
+// windows.h (fiber.h's implementation and the platform file include it).
+#include <uv.h>
+
 #include "include/hzstd.h"
 
 // The stack switching library's implementation (stdlib/core/src/fiber/README.md).
