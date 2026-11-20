@@ -1,0 +1,186 @@
+// Which pages haze-notes' PDF export (src/pdfexport.hz) writes. A page with
+// nothing on it is left out, as the web app's export did, except the first:
+// a note with no shapes at all once exported a PDF of zero pages, which is no
+// valid PDF. The first page is always there, blank or not, and a note without
+// any page exports one blank page of its size.
+//
+// The notes are saved as .hznote files and exported by the app itself
+// (`haze-notes export-pdf`, the same PdfExport the Export button runs): a
+// test program that builds PdfExport in fails to compile (H7015 on
+// LinearMap<Bytes, pdf.Image>.toJson, docs/agent-notes/
+// order-dependent-struct-method-elaboration.md).
+//
+// Run from the repo root, after building the app with the dev compiler
+// (NODE_ENV=development bun run src/main.ts build --dir haze-notes --quiet,
+// which writes the repo root's __haze__/haze-notes, not haze-notes/__haze__):
+// TMPDIR=<scratch> haze-notes/tests/run-test.sh haze-notes/tests/pdf-export-tests.hz persistence.hz hznote.hz documents.hz tiles.hz -- __haze__/haze-notes/bin/haze-notes
+
+ref struct State {
+    checks: int = 0;
+    failures: int = 0;
+
+    mut fn check(name: str, ok: bool) {
+        this.checks = this.checks + 1;
+        if !ok {
+            this.failures = this.failures + 1;
+            fmt.println(f"FAIL: {name}");
+        }
+    }
+}
+
+// Where the exported files go.
+fn outputDir(): str {
+    if let tmp = env.get("TMPDIR") {
+        return f"{tmp}/haze-notes-pdf-export-tests";
+    }
+    if let tmp = env.get("TEMP") {
+        return f"{tmp}/haze-notes-pdf-export-tests";
+    }
+    return "/tmp/haze-notes-pdf-export-tests";
+}
+
+// The A4 document the web app makes, with these pages.
+fn documentOf(pages: [][]Shape): DocumentFile {
+    let list: []Page = [];
+    for shapes in pages {
+        list.push(Page { shapes: shapes });
+    }
+    return DocumentFile {
+        data: DocumentBody {
+            pageColor: "#ffffff",
+            gridColor: "#5252524f",
+            gridType: "lines",
+            pages: list,
+            pageWidthMm: 210.0,
+            pageHeightMm: 297.0,
+            currentPageIndex: 0,
+        },
+    };
+}
+
+fn blank(): []Shape {
+    let shapes: []Shape = [];
+    return shapes;
+}
+
+fn stroked(): []Shape {
+    let points: []Point = [
+        Point { x: 20.0, y: 30.0, pressure: 0.5 },
+        Point { x: 30.0, y: 32.0, pressure: 0.5 },
+        Point { x: 40.0, y: 29.0, pressure: 0.5 },
+    ];
+    let shapes: []Shape = [LineShape { variant: "Line", points: points, penColor: "#000000", penThickness: 0.5 }];
+    return shapes;
+}
+
+// How often `needle` is in `text`.
+fn occurrences(text: str, needle: str): int {
+    let n = 0;
+    let i = 0;
+    while i + needle.length <= text.length {
+        if text.slice(i, i + needle.length) == needle {
+            n += 1;
+            i += needle.length;
+        } else {
+            i += 1;
+        }
+    }
+    return n;
+}
+
+// The number in the page tree's `/Count N >>`, or -1 without one.
+fn pageTreeCount(text: str): int {
+    let key = "/Type /Pages /Kids [";
+    let i = 0;
+    while i + key.length <= text.length && text.slice(i, i + key.length) != key {
+        i += 1;
+    }
+    if i + key.length > text.length {
+        return -1;
+    }
+    let count = "/Count ";
+    while i + count.length <= text.length && text.slice(i, i + count.length) != count {
+        i += 1;
+    }
+    if i + count.length > text.length {
+        return -1;
+    }
+    i += count.length;
+    let value = 0;
+    let digits = 0;
+    while i < text.length && text[i] >= b"0" && text[i] <= b"9" {
+        value = value * 10 + (text[i] as int - 48);
+        digits += 1;
+        i += 1;
+    }
+    return digits > 0 ? value : -1;
+}
+
+// Saves `pages` as a note, exports it with the app at `app`, and checks that
+// the PDF has `expected` pages, each an A4 sheet with the paper drawn on it,
+// and that it is a whole file.
+fn checkExport(state: mut State, app: str, name: str, pages: [][]Shape, expected: int) {
+    let note = f"{outputDir()}/{name}.hznote";
+    let path = f"{outputDir()}/{name}.pdf";
+    fs.removeFile(path);
+    let save = DocumentSave(note, documentOf(pages));
+    save.finish();
+    state.check(f"{name}: note saved", !save.failed && save.started());
+    let run = process.runCaptured(app, { "export-pdf", note, path });
+    state.check(f"{name}: exported (exit {run.exitCode}: {run.stdoutResult}{run.stderrResult})", run.exitCode == 0);
+    state.check(f"{name}: nothing left beside it", !fs.statFile(f"{path}.exporting"));
+    let read = fs.readText(path);
+    state.check(f"{name}: file readable", read ? true : false);
+    if !read {
+        return;
+    }
+    let text: str = read;
+    state.check(f"{name}: a PDF", text.startsWith("%PDF-"));
+    state.check(f"{name}: complete", text.endsWith("%%EOF\n"));
+    let written = occurrences(text, "/Type /Page /Parent");
+    state.check(f"{name}: {expected} page objects (got {written})", written == expected);
+    let counted = pageTreeCount(text);
+    state.check(f"{name}: page tree counts {expected} (got {counted})", counted == expected);
+    let a4 = occurrences(text, "/MediaBox [0 0 595.2755905");
+    state.check(f"{name}: every page A4 (got {a4} of {written})", a4 == written);
+    let papered = occurrences(text, "/Resources << /XObject <<");
+    state.check(f"{name}: the paper on every page (got {papered} of {written})", papered == written);
+}
+
+fn main(): int {
+    let args = sys.args();
+    if args.length != 2 {
+        fmt.println("Usage: pdf-export-tests <haze-notes binary>");
+        return 2;
+    }
+    let app = args[1];
+    let state = State {};
+    fs.createDirectory(outputDir());
+
+    // Nothing on any page: the first page alone, blank -- never zero pages.
+    fmt.println("case: blank notes");
+    let noPages: [][]Shape = [];
+    checkExport(state, app, "no-pages", noPages, 1);
+    checkExport(state, app, "one-blank-page", [blank()], 1);
+    checkExport(state, app, "three-blank-pages", [blank(), blank(), blank()], 1);
+
+    // Pages with shapes, and the blank pages after the first left out.
+    fmt.println("case: notes with shapes");
+    checkExport(state, app, "stroke", [stroked()], 1);
+    checkExport(state, app, "stroke-blank", [stroked(), blank()], 1);
+    checkExport(state, app, "stroke-blank-stroke-blank", [stroked(), blank(), stroked(), blank()], 2);
+    checkExport(state, app, "stroke-stroke", [stroked(), stroked()], 2);
+
+    // A blank first page is kept before the pages with shapes.
+    fmt.println("case: blank first page");
+    checkExport(state, app, "blank-stroke", [blank(), stroked()], 2);
+    checkExport(state, app, "blank-blank-stroke", [blank(), blank(), stroked()], 2);
+    checkExport(state, app, "blank-stroke-blank-stroke", [blank(), stroked(), blank(), stroked()], 3);
+
+    if state.failures > 0 {
+        fmt.println(f"{state.failures} of {state.checks} checks FAILED");
+        return 1;
+    }
+    fmt.println(f"all {state.checks} checks passed");
+    return 0;
+}
