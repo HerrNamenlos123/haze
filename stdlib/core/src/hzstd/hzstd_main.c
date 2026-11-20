@@ -1,6 +1,10 @@
 
 #include "include/hzstd.h"
 
+// The stack switching library's implementation (stdlib/core/src/fiber/README.md).
+#define FIBER_IMPLEMENTATION
+#include "../fiber/fiber.h"
+
 #include "src/hzstd_array.c"
 #include "src/hzstd_demangle.c"
 #include "src/hzstd_dtoa.c"
@@ -11,6 +15,7 @@
 #include "src/hzstd_reactive.c"
 #include "src/hzstd_regex.c"
 #include "src/hzstd_runtime.c"
+#include "src/hzstd_sched.c"
 #include "src/hzstd_string.c"
 #include "src/hzstd_utils.c"
 #include "src/json/hzstd_json.c"
@@ -28,8 +33,5 @@ void hzstd_initialize() {
   hzstd_initialize_platform();
   hzstd_setup_panic_handler();
   hzstd_initialize_main_thread();
-  // The main task's recovery-frame stack is sized once here (64 frames)
-  // so no `attempt` ever grows it in practice.
-  hzstd_context_t root = hzstd_context_for_current_thread();
-  hzstd_reserve_panic_recovery_frames(&root);
+  hzstd_sched_initialize_main_thread();
 }

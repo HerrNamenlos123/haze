@@ -30,7 +30,6 @@ CLONABLE: 'clonable';
 REQUIRES: 'requires';
 UNSAFE: 'unsafe';
 DO: 'do';
-YIELD: 'yield';
 RAISE: 'raise';
 EMIT: 'emit';
 REF: 'ref';

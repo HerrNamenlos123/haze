@@ -508,8 +508,11 @@ struct hzstd_profiling_context_t {
 // register/stack SNAPSHOT belonging to a different thread, where following
 // live pointers is not an option (see hzstd_profiling_unwind_perf_sample).
 
-// This thread's stack bounds, [low, high). Queried lazily on first use and
-// cached per-thread: allocations come from any thread (unlike
+// This thread's own stack's bounds, [low, high), for allocations made on it
+// (outside any task: code of threads Haze does not run tasks on); an
+// allocation in a task walks that task's stack (hzstd_current_task_stack).
+// Queried lazily on first use and cached per-thread: allocations come from
+// any thread (unlike
 // g_hzstd_perf_stack_low/high above, which describe only the one profiled
 // thread), and pthread_getattr_np is far too expensive to call per
 // allocation. Zero means "not resolved yet"; low==high==1 is the sentinel
@@ -554,11 +557,21 @@ hzstd_memory_instrumentation_capture_stack(hzstd_memory_instrumentation_raw_fram
 {
   out->depth = 0;
 
-  if (hz_fp_stack_low == 0) {
-    hzstd_fp_resolve_stack_bounds();
+  // The stack this code runs on: the running task's, or the thread's own.
+  uintptr_t lo;
+  uintptr_t hi;
+  const fiber_stack *task_stack = hzstd_current_task_stack();
+  if (task_stack != NULL) {
+    lo = (uintptr_t)task_stack->limit;
+    hi = (uintptr_t)task_stack->top;
   }
-  uintptr_t lo = hz_fp_stack_low;
-  uintptr_t hi = hz_fp_stack_high;
+  else {
+    if (hz_fp_stack_low == 0) {
+      hzstd_fp_resolve_stack_bounds();
+    }
+    lo = hz_fp_stack_low;
+    hi = hz_fp_stack_high;
+  }
 
   // Frame numbering, and why skip_n_frames needs adjusting.
   //

@@ -15,8 +15,46 @@
 // stderr, and empty user boxes.
 hzstd_context_settings_t hzstd_context_settings_default(void);
 
-// Sets up the main thread and its task (id 1); called once by hzstd_initialize.
+// Sets up the main thread (id 1); called once by hzstd_initialize.
 void hzstd_initialize_main_thread(void);
+
+// ── Tasks (hzstd_sched.c; docs/async-runtime.md sections 5 and 7) ──────────
+
+// The generated `main`: runs `main_fn` as the main thread's first task and the
+// thread's scheduler until no task keeps the thread alive, then `end_fn` (if
+// not NULL) as one more task; returns what `main_fn` returned.
+int32_t hzstd_sched_run_main(int32_t (*main_fn)(hzstd_context_t *ctx), void (*end_fn)(hzstd_context_t *ctx));
+// A new task on the thread of `ctx`, running entry(its context, arg) with a
+// copy of the context's settings and of the task's task-local values; it
+// starts when the spawner suspends (C384). `future` (or NULL) is settled as
+// killed or never ran if the task is killed; the entry completes it otherwise.
+void hzstd_task_spawn(hzstd_context_t *ctx, hzstd_task_entry_t entry, void *arg, bool background, hzstd_future_core_t *future);
+// Lets every task that is ready run first (C243).
+void hzstd_task_yield(hzstd_context_t *ctx);
+// A future's shared core: its state and the tasks waiting for it.
+hzstd_future_core_t *hzstd_future_core_new(void);
+hzstd_int_t hzstd_future_state(hzstd_future_core_t *core);
+// Settles a pending future with its value; panics if it is settled (C444).
+void hzstd_future_complete(hzstd_context_t *ctx, hzstd_future_core_t *core);
+// Suspends the calling task until the future is settled; returns its state.
+hzstd_int_t hzstd_future_wait(hzstd_context_t *ctx, hzstd_future_core_t *core);
+// For the fault handler: where it interrupted (NULL clears it), and the stack
+// of the running task (NULL if none). Both async-signal-safe.
+void hzstd_sched_note_interrupted_sp(void *sp);
+const fiber_stack *hzstd_current_task_stack(void);
+
+// sys.yieldAfter (docs/async-runtime.md section 2), called inline by
+// generated code under its Haze name: one load and one compare, no clock
+// read, no call, unless the task has run longer than `seconds` since its last
+// switch (as the stall watchdog measured it, 5 ms precision); then it yields.
+static inline void yieldAfter(hzstd_context_t *ctx, hzstd_real_t seconds)
+{
+  if (__builtin_expect(atomic_load_explicit(&ctx->thread->running_for, memory_order_relaxed) > seconds, 0)) {
+    hzstd_task_yield(ctx);
+  }
+}
+// sys.timeSinceTaskSwitch: the same measurement, in seconds.
+hzstd_real_t hzstd_time_since_task_switch(hzstd_context_t *ctx);
 
 // The id for a thread Haze starts: process-unique, never reused, from 2 on.
 uint64_t hzstd_next_thread_id(void);
@@ -76,7 +114,6 @@ int hzstd_panic_recovery_frame_count(void);
 // `frame` is the caller's stack storage (see HAZE_ATTEMPT); nothing is allocated.
 hzstd_panic_recovery_frame_t *hzstd_push_panic_recovery_frame(hzstd_context_t *ctx, hzstd_panic_recovery_frame_t *frame);
 // Pre-sizes this thread's frame stack (64 frames); called at startup for the main thread.
-void hzstd_reserve_panic_recovery_frames(hzstd_context_t *ctx);
 hzstd_panic_recovery_frame_t *hzstd_pop_panic_recovery_frame(hzstd_context_t *ctx);
 hzstd_panic_recovery_frame_t *hzstd_get_current_panic_recovery_frame(void);
 

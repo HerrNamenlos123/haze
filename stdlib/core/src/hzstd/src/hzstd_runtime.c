@@ -815,11 +815,6 @@ static hzstd_dynamic_array_t *hzstd_task_recovery_frames(hzstd_task_t *task)
   return task->recovery_frames;
 }
 
-void hzstd_reserve_panic_recovery_frames(hzstd_context_t *ctx)
-{
-  hzstd_task_recovery_frames(ctx->task);
-}
-
 hzstd_panic_recovery_frame_t *hzstd_push_panic_recovery_frame(hzstd_context_t *ctx, hzstd_panic_recovery_frame_t *frame)
 {
   hzstd_dynamic_array_t *frames = hzstd_task_recovery_frames(ctx->task);
@@ -1068,10 +1063,9 @@ _Noreturn void hzstd_panic_bad_stackref(hzstd_thread_t *thread, hzstd_stackref_t
 // ── The context: threads, tasks, creating one from C ─────────────────────────
 //
 // Axiom C468-C477, C500-C510, C567-C569. The types are in hzstd_types.h.
-// One thread runs one task for now: the main thread's structs are static,
-// set up by hzstd_initialize_main_thread.
+// The main thread's struct is static, set up by hzstd_initialize_main_thread;
+// its tasks, `main` first, are the scheduler's (hzstd_sched.c).
 
-static hzstd_task_t g_main_task;
 static hzstd_thread_t g_main_thread;
 
 // Ids of the threads Haze starts later; the main thread is 1. Never reused.
@@ -1090,8 +1084,7 @@ uint64_t hzstd_next_thread_id(void)
 
 void hzstd_initialize_main_thread(void)
 {
-  g_main_thread = (hzstd_thread_t) { .id = 1, .current_task = &g_main_task, .stackrefs = hzstd_gen_table_new() };
-  g_main_task = (hzstd_task_t) { .thread = &g_main_thread };
+  g_main_thread = (hzstd_thread_t) { .id = 1, .current_task = NULL, .stackrefs = hzstd_gen_table_new() };
   hzstd_current_thread = &g_main_thread;
 }
 
@@ -1204,6 +1197,10 @@ hzstd_context_t hzstd_context_for_current_thread(void)
   hzstd_thread_t *thread = hzstd_current_thread;
   if (thread == NULL) {
     hzstd_panic("a Haze context was created on a thread Haze does not manage");
+  }
+  // Haze code runs only in tasks (C216): the scheduler between them runs none.
+  if (thread->current_task == NULL) {
+    hzstd_panic("a Haze context was created on a thread that runs no task right now");
   }
   return (hzstd_context_t) {
     .task = thread->current_task,

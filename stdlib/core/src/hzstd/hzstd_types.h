@@ -19,6 +19,9 @@
 #include <stddef.h>
 #include <stdint.h>
 
+// Task stacks and the switch between them (stdlib/core/src/fiber/README.md).
+#include "../fiber/fiber.h"
+
 // ── Scalars ──────────────────────────────────────────────────────────────────
 
 typedef bool hzstd_bool_t;
@@ -673,12 +676,42 @@ typedef struct {
 // thread's id in the high 32 (thread ids are never reused, at most 2^32 - 1).
 #define HZSTD_STACKREF_THREAD_SHIFT 32
 
-// Runtime structures. One thread runs one task until tasks exist (stage 3).
+// Runtime structures (docs/async-runtime.md sections 5 and 7). Every thread
+// Haze manages runs a scheduler on its own stack, and every piece of Haze code
+// runs in a task on that thread (C216, C220).
+typedef struct hzstd_sched_t hzstd_sched_t;
+// A future's state (Future<T> in stdlib/core/src/task.hz reads it as an int).
+typedef enum {
+  HZSTD_FUTURE_PENDING = 0,
+  HZSTD_FUTURE_VALUE = 1,     // completed with a value
+  HZSTD_FUTURE_KILLED = 2,    // its task was killed after it started (C438)
+  HZSTD_FUTURE_NEVER_RAN = 3, // its task was killed before it started (C561)
+} hzstd_future_state_t;
+typedef struct hzstd_future_core_t hzstd_future_core_t;
 struct hzstd_thread_t {
   uint64_t id; // process-unique, never reused; the main thread is 1
-  hzstd_task_t *current_task; // the task running on this thread
+  // The task running on this thread, NULL while the scheduler runs. Set on the
+  // resumed side of every switch (stdlib/core/src/fiber/README.md).
+  hzstd_task_t *current_task;
   hzstd_gen_table_t stackrefs;
+  hzstd_sched_t *sched; // the thread's scheduler (hzstd_sched.c)
+  // Seconds of CPU time the running task has run since its last switch, as
+  // the stall watchdog last measured it (5 ms precision, never more than the
+  // truth); 0 again at every switch. sys.yieldAfter reads it inline.
+  _Atomic double running_for;
 };
+
+// What a task runs: an `extern C` function defined in Haze (so it returns
+// hzstd_none_t) or one of hzstd's own, with the task's context.
+typedef hzstd_none_t (*hzstd_task_entry_t)(hzstd_context_t *ctx, void *arg);
+
+typedef enum {
+  HZSTD_TASK_NEW,       // spawned, never ran; in the ready queue
+  HZSTD_TASK_READY,     // ran before; in the ready queue
+  HZSTD_TASK_RUNNING,   // the thread's current task
+  HZSTD_TASK_SUSPENDED, // waits for something to ready it
+  HZSTD_TASK_DONE,      // returned or was killed; gone from the registry
+} hzstd_task_state_t;
 struct hzstd_task_t {
   // The two fields generated code reads (TL-4): they stay first, in this
   // order. tl_blocks[i] is the block of the module with index i, or NULL until
@@ -699,6 +732,19 @@ struct hzstd_task_t {
   uint32_t *held_slots;
   size_t held_len;
   size_t held_cap;
+  // Scheduling (hzstd_sched.c), hzstd's own:
+  fiber_ctx fiber;    // the suspended context; its sp is NULL while the task runs
+  fiber_stack stack;  // all zero until the task first runs (it gets one then)
+  hzstd_task_state_t state;
+  bool background;    // does not keep its thread alive (C304, C435)
+  hzstd_task_t *next_ready;  // the ready queue, or a future's waiters
+  hzstd_task_t *prev_live;   // the scheduler's registry of unfinished tasks
+  hzstd_task_t *next_live;
+  hzstd_task_entry_t entry;
+  void *entry_arg;
+  hzstd_context_settings_t settings; // the context it starts with (C406)
+  hzstd_future_core_t *future;       // ends when the task ends
+  hzstd_future_core_t *waiting_on;   // the future it waits for, if suspended in a join
 };
 
 // ── Meta ─────────────────────────────────────────────────────────────────────

@@ -1,0 +1,535 @@
+// ============================================================================
+// Tasks and the scheduler (stage 3 of docs/async-implementation-plan.md;
+// docs/async-runtime.md sections 2, 5, 7 to 9).
+//
+// Every piece of Haze code runs in a task, `main` too. A spawned task joins
+// the ready queue and starts when its spawner suspends (C384); ready tasks
+// run first come first served (C246). A thread ends when no task that keeps
+// it alive is left (C236); background tasks are then killed, never resumed
+// (C435, C437), and their futures report it (C438, C561).
+// ============================================================================
+
+namespace cases_tasks {
+
+    export fn register(s: mut testsuite.Suite) {
+        s.run(
+            "tasks: a spawned task starts only when its spawner suspends",
+            """
+fn main(): int {
+    let log: mut []str = [];
+    let a = task.spawn(() => {
+        log.push("a");
+        return 1;
+    });
+    log.push("spawned");
+    log.push("still main");
+    let r = a.join();
+    log.push("joined");
+    let v = 0;
+    if r is int { v = r; }
+    fmt.println(f"{log[0]} {log[1]} {log[2]} {log[3]} {v}");
+    return 0;
+}
+""",
+            "spawned still main a joined 1");
+
+        // Ties: tasks that became ready by the same event run in the order
+        // they started waiting; yielding puts a task behind every ready one.
+        s.run(
+            "tasks: ready tasks run in the order they became ready",
+            """
+fn main(): int {
+    let log: mut []str = [];
+    let gate = Future<int>();
+    let names: []str = ["x", "y", "z"];
+    let waiters: mut []Future<none> = [];
+    for name in names {
+        let n = name;
+        waiters.push(task.spawn(() => {
+            let g = gate.join();
+            log.push(n);
+            sys.yield();
+            log.push(n + "2");
+        }));
+    }
+    let opener = task.spawn(() => {
+        log.push("open");
+        gate.complete(5);
+        log.push("opened");
+    });
+    for w in waiters { let r = w.join(); }
+    let o = opener.join();
+    let line = "";
+    for entry in log { line = line + entry + " "; }
+    fmt.println(line);
+    return 0;
+}
+""",
+            "open opened x y z x2 y2 z2 ");
+
+        s.run(
+            "tasks: join gives the value, isDone tells whether it is there",
+            """
+fn main(): int {
+    let f = task.spawn(() => { return "text"; });
+    let before = f.isDone();
+    let r = f.join();
+    let after = f.isDone();
+    let made = Future<int>();
+    let madeBefore = made.isDone();
+    made.complete(7);
+    let m = made.join();
+    let t = "";
+    if r is str { t = r; }
+    let mv = 0;
+    if m is int { mv = m; }
+    fmt.println(f"{before} {t} {after} {madeBefore} {mv} {made.isDone()}");
+    return 0;
+}
+""",
+            "false text true false 7 true");
+
+        s.run(
+            "tasks: a future made by code wakes every task joining it",
+            """
+fn main(): int {
+    let shared = Future<int>();
+    let a = task.spawn(() => {
+        let r = shared.join();
+        if r is int { return r + 1; }
+        return 0;
+    });
+    let b = task.spawn(() => {
+        let r = shared.join();
+        if r is int { return r + 2; }
+        return 0;
+    });
+    sys.yield();
+    let early = a.isDone() || b.isDone();
+    shared.complete(10);
+    let ra = a.join();
+    let rb = b.join();
+    let sum = 0;
+    if ra is int { sum += ra; }
+    if rb is int { sum += rb; }
+    fmt.println(f"{early} {sum}");
+    return 0;
+}
+""",
+            "false 23");
+
+        s.run(
+            "tasks: a recovered second complete keeps the first value",
+            """
+fn main(): int {
+    let f = Future<int>();
+    f.complete(1);
+    let again = attempt { f.complete(2); 0 } recover e { 1 };
+    let r = f.join();
+    let v = 0;
+    if r is int { v = r; }
+    fmt.println(f"{again} {v}");
+    return 0;
+}
+""",
+            "1 1");
+
+        // C444: in a child process, since the panic ends it.
+        s.run(
+            "tasks: completing a future twice panics",
+            """
+fn main(): int {
+    let args = sys.args();
+    if args.length > 1 && args[1] == "child" {
+        let f = Future<int>();
+        f.complete(1);
+        f.complete(2);
+        fmt.println("not reached");
+        return 0;
+    }
+    let r = process.runCaptured(args[0], ["child"]);
+    fmt.println(f"{r.exitCode} {r.stderrResult.contains("completed twice")} {r.stdoutResult.length}");
+    return 0;
+}
+""",
+            "255 true 0");
+
+        // C406, C285, TL-6: a new task starts with a copy of its creator's
+        // context and task-local values, taken when it is spawned.
+        s.run(
+            "tasks: a new task copies its creator's context and task-local values",
+            """
+tasklocal let counter: int = 1;
+tasklocal let untouched: int = 50;
+fn held(): int {
+    let v = sys.userBoxValue<int>(context.userBox1);
+    if v is int { return v; }
+    return 0;
+}
+fn setHeld(n: int) {
+    context.userBox1 = sys.makeUserBox(n);
+}
+fn main(): int {
+    counter = 7;
+    setHeld(3);
+    let child = task.spawn(() => {
+        let seen = f"{counter} {held()} {untouched}";
+        counter = 100;
+        setHeld(4);
+        return seen;
+    });
+    counter = 8;
+    setHeld(5);
+    let r = child.join();
+    let seen = "";
+    if r is str { seen = r; }
+    fmt.println(f"{seen} | {counter} {held()}");
+    return 0;
+}
+""",
+            "7 3 50 | 8 5");
+
+        // C536: every task's stack is scanned while it is suspended, and the
+        // running one's while it runs.
+        s.run(
+            "tasks: thousands of suspended tasks keep their objects through collections",
+            """
+ref struct Cell { v: int = 0; next: Cell | none = none; }
+fn chain(n: int, base: int): Cell {
+    let head = Cell { v: base };
+    let cur = head;
+    for (let i = 1; i < n; i++) {
+        let c = Cell { v: base + i };
+        cur.next = c;
+        cur = c;
+    }
+    return head;
+}
+fn sumChain(c: Cell): int {
+    let s = 0;
+    let cur: Cell | none = c;
+    while cur is Cell {
+        s += cur.v;
+        cur = cur.next;
+    }
+    return s;
+}
+fn main(): int {
+    let futures: mut []Future<int> = [];
+    for (let i = 0; i < 3000; i++) {
+        let k = i;
+        futures.push(task.spawn(() => {
+            let c = chain(10, k);
+            sys.yield();
+            if k % 300 == 0 { sys.forceGc(); }
+            let garbage = chain(30, 0);
+            sys.yield();
+            return sumChain(c) - 10 * k - 45;
+        }));
+    }
+    let wrong = 0;
+    for f in futures {
+        let r = f.join();
+        if r is int { if r != 0 { wrong++; } } else { wrong++; }
+    }
+    fmt.println(f"{futures.length} {wrong}");
+    return 0;
+}
+""",
+            "3000 0");
+
+        // C383: a guard hit is reported as a stack overflow and recovered in
+        // the task, which goes on running.
+        s.run(
+            "tasks: a stack overflow in a task is recovered there",
+            """
+fn deep(n: int): int :: final {
+    if n == 0 { return 0; }
+    let pad: [4]int = [n, n, n, n];
+    return deep(n - 1) + pad[n % 4] - n + 1;
+}
+fn main(): int {
+    let f = task.spawn(() => {
+        let message = "";
+        let r = attempt { deep(1000000000) } recover e {
+            message = e.message;
+            -1
+        };
+        return f"{r} {message.contains("Stack overflow")} {deep(1000)}";
+    });
+    let r = f.join();
+    if r is str { fmt.println(r); }
+    let again = attempt { deep(1000000000) } recover e { -2 };
+    fmt.println(f"{again}");
+    return 0;
+}
+""",
+            "-1 true 1000\n-2");
+
+        s.run(
+            "tasks: an uncaught stack overflow ends the program with a stack trace",
+            """
+fn deep(n: int): int :: final {
+    if n == 0 { return 0; }
+    let pad: [4]int = [n, n, n, n];
+    return deep(n - 1) + pad[n % 4] - n + 1;
+}
+fn main(): int {
+    let args = sys.args();
+    if args.length > 1 && args[1] == "child" {
+        fmt.println(f"{deep(1000000000)}");
+        return 0;
+    }
+    let r = process.runCaptured(args[0], ["child"]);
+    fmt.println(f"{r.exitCode} {r.stderrResult.contains("Stack overflow")} {r.stderrResult.contains("deep")} {r.stdoutResult.length}");
+    return 0;
+}
+""",
+            "255 true true 0");
+
+        // C236, C435, C437: main returns, the background task is still
+        // suspended; it is killed and never runs again, and the program ends
+        // with main's status.
+        s.runExitCode(
+            "tasks: a background task does not keep its thread alive",
+            """
+fn main(): int {
+    let bg = task.spawn(() => {
+        fmt.println("bg started");
+        let forever = Future<int>();
+        let r = forever.join();
+        fmt.println("bg resumed");
+        return 0;
+    }, { background: true });
+    sys.yield();
+    fmt.println("main returns");
+    return 3;
+}
+""",
+            3);
+
+        // A killed task leaves the waiters of the future it joined: killing
+        // the task it waits for later must not wake it (the runtime checks
+        // that every waiter it wakes still waits).
+        s.run(
+            "tasks: background tasks waiting for each other are all killed",
+            """
+fn main(): int {
+    let gate = Future<int>();
+    let target = task.spawn(() => {
+        let r = gate.join();
+        return 1;
+    }, { background: true });
+    let waiter = task.spawn(() => {
+        let r = target.join();
+        fmt.println("waiter resumed");
+        return 2;
+    }, { background: true });
+    sys.yield();
+    fmt.println(f"{target.isDone()} {waiter.isDone()}");
+    return 0;
+}
+""",
+            "false false");
+
+        // C216: the scheduler between tasks runs no Haze code, so C asking
+        // for a context there (here: at exit, after the last task) fails
+        // loudly.
+        s.run(
+            "tasks: a context made from C while no task runs panics",
+            """
+__c__("#include <stdlib.h>\nstatic void at_exit(void) { hzstd_context_t c = hzstd_context_for_current_thread(); (void)c; }");
+fn main(): int {
+    let args = sys.args();
+    if args.length > 1 && args[1] == "child" {
+        do unsafe { __c__("atexit(at_exit);"); };
+        return 0;
+    }
+    let r = process.runCaptured(args[0], ["child"]);
+    fmt.println(f"{r.exitCode} {r.stderrResult.contains("runs no task")}");
+    return 0;
+}
+""",
+            "255 true");
+
+        s.run(
+            "tasks: a background task is killed at thread end, not resumed",
+            """
+fn main(): int {
+    let bg = task.spawn(() => {
+        fmt.println("bg started");
+        let forever = Future<int>();
+        let r = forever.join();
+        fmt.println("bg resumed");
+        return 0;
+    }, { background: true });
+    let worker = task.spawn(() => {
+        for (let i = 0; i < 3; i++) { sys.yield(); }
+        fmt.println("worker done");
+    });
+    fmt.println("main returns");
+    return 0;
+}
+""",
+            "main returns\nbg started\nworker done");
+
+        // C438, C561: the futures of killed tasks, joined after the thread
+        // ended (from C, at exit, under a stand-in task: joining a settled
+        // future never suspends). Threads (stage 5) will join them for real.
+        s.run(
+            "tasks: joining a killed task gives Killed, one that never ran NeverRan",
+            """
+__c__("#include <stdlib.h>\nhzstd_none_t report(hzstd_context_t *ctx, void *killed, void *never_ran);\nstatic hzstd_thread_t *report_thread;\nstatic void *report_killed;\nstatic void *report_never_ran;\nstatic void at_exit(void) { hzstd_context_t c = { 0 }; hzstd_task_t t = { 0 }; t.thread = report_thread; c.task = &t; c.thread = report_thread; c.settings = hzstd_context_settings_default(); report(&c, report_killed, report_never_ran); }");
+fn describe(r: Result<int, TaskError>): str {
+    if r is int { return f"value {r}"; }
+    if r is TaskError {
+        if r == TaskError.Killed { return "Killed"; }
+        return "NeverRan";
+    }
+    return "?";
+}
+fn asFuture(p: cptr): Future<int> {
+    return do unsafe {
+        let f: Future<int> = uninitialized;
+        __c__("f = p;");
+        f
+    };
+}
+extern C fn report(killed: cptr, neverRan: cptr) {
+    let k = asFuture(killed);
+    let n = asFuture(neverRan);
+    fmt.println(f"{describe(k.join())} {describe(n.join())} {k.isDone()}");
+}
+fn main(): int {
+    let p = sys.contextPtr();
+    let killed = task.spawn(() => {
+        let forever = Future<int>();
+        let r = forever.join();
+        return 1;
+    }, { background: true });
+    sys.yield();
+    let neverRan = task.spawn(() => { return 2; }, { background: true });
+    // Static C memory is scanned by the collector: the futures stay alive.
+    do unsafe { __c__("report_thread = ((hzstd_context_t *)p)->thread; report_killed = (void *)killed; report_never_ran = (void *)neverRan; atexit(at_exit);"); };
+    return 0;
+}
+""",
+            "Killed NeverRan true");
+
+        // Every task that keeps the thread alive waits for something that can
+        // never happen: a loud failure, not a hang.
+        s.run(
+            "tasks: a deadlock ends the program with an error",
+            """
+fn main(): int {
+    let args = sys.args();
+    if args.length > 1 && args[1] == "child" {
+        let never = Future<int>();
+        let r = never.join();
+        fmt.println("not reached");
+        return 0;
+    }
+    let r = process.runCaptured(args[0], ["child"]);
+    fmt.println(f"{r.exitCode} {r.stderrResult.contains("deadlock")} {r.stdoutResult.length}");
+    return 0;
+}
+""",
+            "255 true 0");
+
+        // C242: more than 10 ms of a task's own CPU time without a switch
+        // warns, on stderr, naming the thread; runs below never do. The
+        // watchdog measures every 5 ms, so the runs here stay well clear of
+        // the limit on either side.
+        s.run(
+            "tasks: the stall warning fires when a task runs more than 10 ms without yielding",
+            """
+fn spin(seconds: real): int {
+    let start = time.now();
+    let n = 0;
+    while time.now() - start < seconds { n++; }
+    return n;
+}
+fn main(): int {
+    let args = sys.args();
+    if args.length > 1 && args[1] == "long" {
+        let n = spin(0.06);
+        return 0;
+    }
+    if args.length > 1 && args[1] == "short" {
+        for (let i = 0; i < 30; i++) {
+            let n = spin(0.002);
+            sys.yield();
+        }
+        return 0;
+    }
+    let longRun = process.runCaptured(args[0], ["long"]);
+    let shortRuns = process.runCaptured(args[0], ["short"]);
+    fmt.println(f"{longRun.stderrResult.contains("without yielding (thread: main)")} {shortRuns.stderrResult.contains("without yielding")} {longRun.exitCode} {shortRuns.exitCode}");
+    return 0;
+}
+""",
+            "true false 0 0");
+
+        // C588, C590: the loop calls only yieldAfter, and the other task
+        // still gets its turns, each after about 20 ms of the loop's time.
+        s.run(
+            "tasks: sys.yieldAfter yields once the task has run longer than asked",
+            """
+fn main(): int {
+    let turns: mut []int = [];
+    let other = task.spawn(() => {
+        while turns.length < 3 {
+            turns.push(1);
+            sys.yield();
+        }
+    });
+    let longest = 0.0;
+    let iterations = 0;
+    while turns.length < 3 && iterations < 2000000000 {
+        iterations++;
+        let t = sys.timeSinceTaskSwitch();
+        if t > longest { longest = t; }
+        sys.yieldAfter(0.02);
+    }
+    let r = other.join();
+    fmt.println(f"{turns.length} {longest >= 0.015} {longest < 0.2}");
+    return 0;
+}
+""",
+            "3 true true");
+
+        // A switch starts the measurement over: right after it the task has
+        // run for no time, whatever the task before it ran (the watchdog's
+        // next look comes up to 5 ms later).
+        s.run(
+            "tasks: the time since the last switch starts over at every switch",
+            """
+fn main(): int {
+    let other = task.spawn(() => { return 0; });
+    let iterations = 0;
+    while sys.timeSinceTaskSwitch() < 0.015 && iterations < 2000000000 { iterations++; }
+    let before = sys.timeSinceTaskSwitch();
+    sys.yield();
+    let after = sys.timeSinceTaskSwitch();
+    fmt.println(f"{before >= 0.015} {after < 0.005}");
+    return 0;
+}
+""",
+            "true true");
+
+        s.run(
+            "tasks: yielding with nothing else ready goes on at once",
+            """
+fn main(): int {
+    let n = 0;
+    for (let i = 0; i < 1000; i++) {
+        sys.yield();
+        n++;
+    }
+    fmt.println(f"{n}");
+    return 0;
+}
+""",
+            "1000");
+    }
+}

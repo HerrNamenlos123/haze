@@ -54,7 +54,6 @@ export enum TK {
     Requires,
     Unsafe,
     Do,
-    Yield,
     Raise,
     Emit,
     Ref,
@@ -221,7 +220,6 @@ export fn tokenName(k: TK): str {
     if k == TK.Requires { return "requires"; }
     if k == TK.Unsafe { return "unsafe"; }
     if k == TK.Do { return "do"; }
-    if k == TK.Yield { return "yield"; }
     if k == TK.Raise { return "raise"; }
     if k == TK.Emit { return "emit"; }
     if k == TK.Ref { return "ref"; }

@@ -357,9 +357,13 @@ export function ensureNativeParser(repoRoot: string): boolean {
  * exactly that many bytes of JSON, or `ERR <message>\n`. Byte counts avoid
  * having to scan or escape the payload.
  */
+// How much of the parser server's stderr is kept to explain its exit.
+const STDERR_TAIL_BYTES = 16 * 1024;
+
 export class NativeParserServer {
   private proc: child_process.ChildProcessWithoutNullStreams | null = null;
   private buffer = Buffer.alloc(0);
+  private stderrTail = Buffer.alloc(0);
   private pending: {
     resolve: (v: string) => void;
     reject: (e: Error) => void;
@@ -387,9 +391,26 @@ export class NativeParserServer {
       this.drain();
     });
 
+    // Always read: a pipe nobody reads fills up and blocks the parser in its
+    // next write to stderr (a Haze program writes there on its own, e.g. the
+    // runtime's stall warning). The tail explains an exit.
+    this.proc.stderr.on("data", (chunk: Buffer) => {
+      this.stderrTail = Buffer.concat([this.stderrTail, chunk]);
+      if (this.stderrTail.length > STDERR_TAIL_BYTES) {
+        this.stderrTail = this.stderrTail.subarray(
+          this.stderrTail.length - STDERR_TAIL_BYTES
+        );
+      }
+    });
+
     this.proc.on("exit", () => {
       this.proc = null;
-      this.failAll(new Error("native parser exited"));
+      const tail = this.stderrTail.toString("utf8").trim();
+      this.failAll(
+        new Error(
+          tail.length > 0 ? `native parser exited: ${tail}` : "native parser exited"
+        )
+      );
     });
   }
 

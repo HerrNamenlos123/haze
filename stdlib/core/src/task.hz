@@ -1,0 +1,160 @@
+// ============================================================================
+// Tasks (docs/async-runtime.md section 2; Axiom C216 to C261, C384, C387,
+// C406, C438, C443, C444, C561). The runtime side is hzstd_sched.c.
+//
+// Every piece of Haze code runs in a task, `main` too. A task runs until it
+// suspends (joining a future that is not done, yielding) or returns; then the
+// thread's next ready task runs. `task.spawn` starts nothing by itself: the
+// new task runs once its spawner suspends (C384). The `task` namespace holds
+// only spawning; the tools tasks use live in `sys`.
+// ============================================================================
+
+namespace ffi {
+    // Exported: Future<T> is re-elaborated in every module that uses it.
+    export extern C noemit fn hzstd_future_core_new(): cptr :: final;
+    export extern C noemit fn hzstd_future_state(core: cptr): int :: final;
+    export extern C noemit fn hzstd_future_complete(ctx: cptr, core: cptr) :: final;
+    export extern C noemit fn hzstd_future_wait(ctx: cptr, core: cptr): int :: final;
+    extern C noemit fn hzstd_task_yield(ctx: cptr) :: final;
+}
+
+// Why joining a future gave no value (C438, C561).
+export enum TaskError {
+    // The task was killed after it had started: a background task its
+    // thread ended under (C437).
+    Killed,
+    // The task was killed before it ever ran.
+    NeverRan,
+}
+
+// The result of a task, or a value some code hands over later (C387): one
+// type for both. `join()` waits for it; `complete(v)` gives it its value,
+// once (C444). Meant to be passed to whoever needs the result: a future is a
+// reference, every copy is the same future.
+export ref struct Future<T> {
+    private core: cptr;
+    private result: Box<T> | none = none;
+
+    // A future that code completes with `complete(v)` (C443).
+    fn constructor(): mut Future<T> {
+        return Future<T> { core: ffi.hzstd_future_core_new() };
+    }
+
+    // Suspends the calling task until the future is done (C256), and gives
+    // its value, or why there is none: the error case must be handled
+    // (C419), a task can be killed (C438) or never run (C561).
+    fn join(): Result<T, TaskError> {
+        let state = ffi.hzstd_future_wait(sys.contextPtr(), this.core);
+        if state == 2 {
+            return TaskError.Killed;
+        }
+        if state == 3 {
+            return TaskError.NeverRan;
+        }
+        if let done = this.result {
+            return done.value;
+        }
+        sys.unreachable();
+    }
+
+    // Whether the future is done: completed, or its task killed. Never
+    // suspends; meant for polling from code that has other work to do.
+    fn isDone(): bool {
+        return ffi.hzstd_future_state(this.core) != 0;
+    }
+
+    // Gives the future its value and readies every task waiting in `join`.
+    // A future gets its value once: a second `complete` panics (C444), also
+    // on a task's future (the task completes it when it returns), and the
+    // first value stays.
+    mut fn complete(value: T) {
+        // Settled first: it panics if the future is settled already. The
+        // tasks it readies run only once this task suspends, after the value
+        // is in place (one thread; a completion from another thread will
+        // need the value published before the state).
+        ffi.hzstd_future_complete(sys.contextPtr(), this.core);
+        this.result = Box<T> { value: value };
+    }
+
+    // Runs `body` as a new task that completes this future.
+    mut fn _spawn(body: () => T, background: bool) {
+        let me = this;
+        task._spawnThunk(task._Thunk { run: () => { me.complete(body()); } }, background, this.core);
+    }
+}
+
+namespace task {
+    // How `spawn` runs a task.
+    export struct SpawnOptions {
+        // Background work: it does not keep its thread alive (C304, C435),
+        // and is killed when the thread ends (C437). Meant for work nothing
+        // waits for, such as a periodic refresh.
+        background: bool = false;
+    }
+
+    // Runs `body` as a new task on this thread and gives the future of its
+    // result (C250, C257). The task starts once the calling task suspends
+    // (C384), with a copy of the caller's context (C406) and of its
+    // task-local values (C285).
+    export fn spawn<T>(body: () => T, options: SpawnOptions = SpawnOptions {}): Future<T> {
+        let future = Future<T>();
+        future._spawn(body, options.background);
+        return future;
+    }
+
+    // What a task runs, boxed so C holds it as one pointer. Internal: only
+    // Future._spawn makes one.
+    export ref struct _Thunk {
+        run: () => none;
+    }
+
+    // hzstd_task_entry_t: runs a _Thunk. An `extern C` function defined in
+    // Haze, so it takes the task's context as its first C parameter (C401).
+    // Not exported: it takes any pointer for a _Thunk, so only _spawnThunk
+    // names it.
+    extern C fn __hz_task_run_thunk(thunk: cptr) {
+        let box = do unsafe {
+            let b: _Thunk = uninitialized;
+            __c__("b = thunk;");
+            b
+        };
+        box.run();
+    }
+
+    // Not generic, so it is compiled here: Future._spawn is re-elaborated in
+    // the importing module, which cannot name the entry.
+    export fn _spawnThunk(thunk: _Thunk, background: bool, core: cptr) {
+        let entry = __hz_task_run_thunk;
+        let ctx = sys.contextPtr();
+        do unsafe {
+            __c__("hzstd_task_spawn((hzstd_context_t *)ctx, entry, (void *)thunk, background, (hzstd_future_core_t *)core);");
+        };
+    }
+}
+
+namespace ffi {
+    extern C noemit fn hzstd_time_since_task_switch(ctx: cptr): real :: final;
+}
+
+namespace sys {
+    // Lets every other ready task on this thread run first, then continues
+    // (C243). Meant for long computations, so that nothing else on the thread
+    // waits behind them: call it now and then inside the loop.
+    export fn yield() {
+        ffi.hzstd_task_yield(contextPtr());
+    }
+
+    // Yields once the task has run longer than `seconds` since it last
+    // switched, and otherwise returns at once (C588, C590). Meant to be
+    // called on every iteration of a long loop: it is cheap enough for that
+    // (one load and one compare, inline, no clock read; hzstd_runtime.h).
+    // The time is CPU time, measured every 5 ms (so is its precision).
+    export extern C noemit fn yieldAfter(seconds: real) :: final, context;
+
+    // Seconds the current task has run since its last switch (C589): CPU
+    // time, measured every 5 ms (so is its precision). Meant for code that
+    // decides itself when to yield or hand off work.
+    export fn timeSinceTaskSwitch(): real {
+        return ffi.hzstd_time_since_task_switch(contextPtr());
+    }
+}

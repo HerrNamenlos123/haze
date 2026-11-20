@@ -2291,6 +2291,11 @@ export class ModuleCompiler {
     compilerFlags.addAll(`-D${fiberTargetMacro(HOST)}`);
 
     compilerFlags.addLinux("-fPIC");
+    // Task stacks end in a 64 KiB guard (docs/async-runtime.md section 7):
+    // with stack clash protection no frame, however large, steps over it
+    // without touching it, so an overflow always faults in the guard (C287).
+    // Windows probes every frame above a page already (__chkstk).
+    compilerFlags.addLinux("-fstack-clash-protection");
 
     const compileCommands: CompileCommands =
       await this.loadDependencyCompileCommands();

@@ -186,16 +186,74 @@ class CodeGenerator {
       this.out.function_definitions.writeLine(
         `const char *const hzstd_app_id = ${appId !== undefined ? JSON.stringify(appId) : "0"};\n`
       );
+      const nsSeg = getModuleNamespaceMangledSegment(
+        config.name,
+        config.version,
+        config.id
+      );
+
+      // `main` is a task like any other (Axiom C216, C237;
+      // docs/async-runtime.md section 5.3): the C main sets up the runtime and
+      // runs the main thread's scheduler, which runs the user's main as the
+      // first task. The context every Haze call chain starts from (C209,
+      // C390) is the task's, made by the scheduler with the defaults
+      // `Context()` gives.
+      //
+      // Whole-program profiling (`haze run --profile`, or HAZE_PROFILE=1 on an
+      // already-built binary): the main task starts with the stdlib's begin
+      // hook, and the thread's last task, once no task keeps the thread alive
+      // any more, runs the end hook, so the profiled region is
+      // startup-through-exit without the program itself being modified. Both
+      // hooks decide at runtime whether anything actually happens -- see
+      // profiling.beginAutoProfiling for why this is a begin/end pair of
+      // zero-argument functions, and why the enable check lives there rather
+      // than being compiled in here.
+      //
+      // These are stdlib symbols, so a `std = "none"` build (which has no
+      // `profiling` namespace to call into) has neither. Their mangled names
+      // are hand-built the same way the user's own main is: `profiling` is a
+      // plain top-level namespace, so it needs no module segment, and both
+      // hooks are zero-argument (`Ev`) by design.
+      const canAutoProfile = !config.nostdlib;
+      if (canAutoProfile) {
+        // Declared by hand for the same reason the names are built by hand:
+        // these live in the stdlib's translation unit, not this module's, so
+        // they never show up in this module's own lowered-function declarations.
+        this.out.function_declarations
+          .writeLine(
+            `hzstd_void_t _HN9profiling18beginAutoProfilingEv(${CONTEXT_POINTER_TYPE});`
+          )
+          .writeLine(
+            `hzstd_void_t _HN9profiling16endAutoProfilingEv(${CONTEXT_POINTER_TYPE});`
+          );
+      }
+      this.out.function_definitions
+        .writeLine("static int32_t __hz_main_task(hzstd_context_t *__hz_ctx) {")
+        .pushIndent();
+      if (canAutoProfile) {
+        this.out.function_definitions.writeLine(
+          "_HN9profiling18beginAutoProfilingEv(__hz_ctx);"
+        );
+      }
+      this.out.function_definitions
+        .writeLine(`return _HN${nsSeg}4mainEv(__hz_ctx);`)
+        .popIndent()
+        .writeLine("}\n");
+      if (canAutoProfile) {
+        this.out.function_definitions
+          .writeLine(
+            "static void __hz_main_thread_end(hzstd_context_t *__hz_ctx) {"
+          )
+          .pushIndent()
+          .writeLine("_HN9profiling16endAutoProfilingEv(__hz_ctx);")
+          .popIndent()
+          .writeLine("}\n");
+      }
+
       this.out.function_definitions
         .writeLine("int32_t main(int argc, const char* argv[]) {")
         .pushIndent();
       this.out.function_definitions.writeLine("hzstd_initialize();");
-      // The root context (Axiom C209, C390, C504): on main's stack, the main
-      // thread's runtime data and the defaults `Context()` gives. Every Haze
-      // call chain starts from it.
-      this.out.function_definitions.writeLine(
-        "hzstd_context_t __hz_root = hzstd_context_for_current_thread();"
-      );
 
       const have = new Set<string>();
       for (const module of this.allModules) {
@@ -216,67 +274,10 @@ class CodeGenerator {
         );
       }
 
-      //   // .writeLine(
-      //   //   `${generateUsageCode(this.module.getBuiltinType("Context"), this.module)} ctx = {};`,
-      //   // )
-      //   .writeLine(`_HN6Memory5ArenaE defaultArena = {};`)
-      //   .writeLine(`ctx.mem.globalDefaultArena = &defaultArena;`);
-      // if (!this.module.moduleConfig.nostdlib) {
-      //   // this.out.function_declarations["_H13__setupStdlib"].writeLine(
-      //   //   `void _H13__setupStdlib(${generateUsageCode(this.module.getBuiltinType("Context"), this.module)}* ctx);`,
-      //   // );
-      //   this.out.function_definitions.writeLine("_H13__setupStdlib(&ctx);");
-      // }
-      // this.out.function_definitions.writeLine(
-      //   `_H4ListI6StringE argsList = _HN7Process10__loadArgvE(&ctx, argc, (uint8_t**)argv);`,
-      // );
-      const nsSeg = getModuleNamespaceMangledSegment(
-        config.name,
-        config.version,
-        config.id
+      this.out.function_definitions.writeLine(
+        `return hzstd_sched_run_main(__hz_main_task, ${canAutoProfile ? "__hz_main_thread_end" : "NULL"});`
       );
-
-      // Whole-program profiling (`haze run --profile`, or HAZE_PROFILE=1 on an
-      // already-built binary): the user's main gets bracketed by the stdlib's
-      // two profiling hooks, so the profiled region is startup-through-exit
-      // without the program itself being modified. Both hooks decide at runtime
-      // whether anything actually happens -- see profiling.beginAutoProfiling
-      // for why this is a begin/end pair of zero-argument functions rather than
-      // one wrapper taking main as a closure, and why the enable check lives
-      // there rather than being compiled in here.
-      //
-      // These are stdlib symbols, so a `std = "none"` build (which has no
-      // `profiling` namespace to call into) keeps the original direct call.
-      // Their mangled names are hand-built the same way the user's own main is
-      // just above: `profiling` is a plain top-level namespace, so it needs no
-      // module segment, and both hooks are zero-argument (`Ev`) by design.
-      const canAutoProfile = !config.nostdlib;
-      if (canAutoProfile) {
-        // Declared by hand for the same reason the names are built by hand:
-        // these live in the stdlib's translation unit, not this module's, so
-        // they never show up in this module's own lowered-function declarations.
-        this.out.function_declarations
-          .writeLine(
-            `hzstd_void_t _HN9profiling18beginAutoProfilingEv(${CONTEXT_POINTER_TYPE});`
-          )
-          .writeLine(
-            `hzstd_void_t _HN9profiling16endAutoProfilingEv(${CONTEXT_POINTER_TYPE});`
-          );
-        this.out.function_definitions
-          .writeLine("_HN9profiling18beginAutoProfilingEv(&__hz_root);")
-          .writeLine(
-            `int32_t __hz_exit_code = _HN${nsSeg}4mainEv(&__hz_root);`
-          )
-          .writeLine("_HN9profiling16endAutoProfilingEv(&__hz_root);")
-          .writeLine("return __hz_exit_code;");
-      } else {
-        this.out.function_definitions.writeLine(
-          `return _HN${nsSeg}4mainEv(&__hz_root);`
-        );
-      }
       this.out.function_definitions
-        // .writeLine(`hzstd_arena_cleanup_and_free(parent_arena->arenaImpl);`)
-        // .writeLine(`return __hz_result;`)
         .popIndent()
         .writeLine("}\n");
     }

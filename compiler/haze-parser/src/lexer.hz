@@ -245,7 +245,6 @@ export ref struct Lexer {
             if s.startsWith("while", start) { return TK.While; }
             if s.startsWith("break", start) { return TK.Break; }
             if s.startsWith("raise", start) { return TK.Raise; }
-            if s.startsWith("yield", start) { return TK.Yield; }
             if s.startsWith("union", start) { return TK.Union; }
             if s.startsWith("final", start) { return TK.Final; }
             if s.startsWith("plain", start) { return TK.Plain; }

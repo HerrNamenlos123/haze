@@ -407,6 +407,84 @@ As built (2026-11-18, the user's go "task-local storage and stage 2"):
 - Found: `HZSTD_STACKREF_CHECK` and `hzstd_stackref_scope_renew` have no users (ledger); both
   follow the new design all the same.
 
+## Stage 3: tasks, the scheduler, overflow and the stall watchdog (contract sections 5 to 10)
+
+Runtime: `stdlib/core/src/hzstd/src/hzstd_sched.c`; Haze API: `stdlib/core/src/task.hz`; tests:
+`testsuite/src/cases_tasks.hz`.
+
+- **S3-1. `yield` is no longer a reserved word.** Both lexers made it a token that no grammar
+  rule used, so the contract's `sys.yield()` (a name the user decided) could not be declared or
+  called. Removed from HazeLexer.g4 and the native lexer; the equivalence sweep stays green.
+- **S3-2. Where the API lives.** `Future<T>` and `TaskError` are global types, like `Result` and
+  `Box` (the contract writes `Future<T>()` unqualified); `task.spawn` and `task.SpawnOptions` in
+  `task`; `sys.yield`, `sys.yieldAfter`, `sys.timeSinceTaskSwitch` in `sys` (contract section 2).
+  `task.spawn(body, { background: true })` takes the options as a struct with defaults.
+- **S3-3. A future is a C core plus the value in Haze.** The core (GC memory) holds the state
+  (pending, value, killed, never ran) and the tasks waiting in `join`, in the order they began
+  to wait; the Haze struct holds the value as `Box<T> | none`, so a `T` that includes `none`
+  works. `complete` settles the core first (it panics if settled, C444) and stores the value
+  after: the tasks it readies run only when the completing task suspends, so a recovered second
+  `complete` keeps the first value. `join` returns `Result<T, TaskError>` (C419, C438, C561).
+  Completing from another thread (C443) needs the value published before the state; there are
+  no other threads until stage 5.
+- **S3-4. A task gets its stack when it first runs**, from a per-thread pool of 16 stacks, each
+  trimmed to its top 64 KiB when returned (fiber_stack_trim); tasks that never run never reserve
+  one. Stacks are 8 MiB plus a 64 KiB guard (decided 2026-11-17).
+- **S3-5. The GC registry** (every scheduler, every unfinished task of each) changes only under
+  `GC_call_with_alloc_lock`: a task is added at spawn, gets its stack and first frame together
+  at its first run (so the push hook never sees a stack without a valid saved sp), and is
+  removed when it ends. Schedulers are uncollectable GC memory; tasks are GC memory reached
+  through them.
+- **S3-6. The signal stack.** BDWGC checks for the signal stack before it calls the sp
+  corrector, so the corrector leaves an sp on the thread's signal stack alone (replacing it
+  would scan across two mappings) and the push hook pushes the stacks the fault handler
+  interrupted, from the sp the handler records first thing (section 8.3, the existing gap
+  closed). Without that record, the running task's whole usable stack (conservative).
+- **S3-7. The end of a thread.** The loop stops as soon as no task that keeps the thread alive
+  is unfinished, also when background tasks are still ready: those never ran and are killed as
+  `NeverRan` (C435). Killing a task gives back its stackref slots and its stack, takes it out
+  of the waiters of the future it joined, and settles its own future (`Killed` or `NeverRan`).
+  It is never resumed (C437); no cleanup runs yet, because none can be registered (C546 is
+  open).
+- **S3-8. A deadlock fails loudly.** When every task that keeps the thread alive waits and
+  nothing can wake one (no timers, I/O or other threads exist yet), the scheduler panics
+  ("deadlock"), exit status 255, instead of hanging.
+- **S3-9. The generated `main`** sets up hzstd, the regex tables, and runs
+  `hzstd_sched_run_main(main task, end task)`: the user's main is the first task, with the
+  context `Context()` gives; the profiling end hook runs as the thread's last task, once no
+  other task is left (before: right after main returned). A `std = "none"` build has no end
+  task.
+- **S3-10. `hzstd_context_for_current_thread` panics when the thread runs no task** (between
+  tasks, after the last one): Haze code runs only in tasks (C216).
+- **S3-11. A stack overflow is a guard hit:** the fault handler checks the fault address against
+  the running task's guard and reports `Stack overflow` with type `stackoverflow`; recovery is
+  the existing longjmp to the task's innermost recovery frame (C383). Linux code is compiled
+  with `-fstack-clash-protection`, so no frame steps over the guard (C287).
+- **S3-12. A spawned task copies its creator's context settings (C406) and task-local blocks
+  (C285, TL-6)** at spawn, shallow, block by block (the sizes come from the registry).
+- **S3-13. The profiler's frame walk** (allocation stacks) takes the running task's stack bounds;
+  the thread's own bounds only for code outside a task.
+- **S3-14. The stall watchdog** is one process-wide thread (Linux). Each scheduler has a run
+  epoch on its own cache line, bumped on every switch in (odd) and out (even); switching in also
+  clears `thread->running_for`. Every 5 ms while any task runs, the watchdog reads each thread's
+  CPU clock (`pthread_getcpuclockid`) minus the collections that thread ran
+  (`GC_set_on_collection_event`), publishes the run's length in `running_for`, and warns on
+  stderr above 10 ms (C242), again at each doubling. It sleeps on a semaphore when no task
+  runs anywhere; the switch wakes it (a Dekker pair on the sleeping flag and the epoch). The
+  first tick of a run starts its clock, so a run is measured up to 5 ms short, never long.
+  Not yet: the stack trace in the warning, deduplication by stack, the separate GC pause
+  report, Windows (there `running_for` stays 0: no warning, `yieldAfter` never yields).
+- **S3-15. `sys.yieldAfter` is inline C.** An `extern C noemit` declaration with
+  `:: final, context` gets the caller's context, so the call compiles to hzstd_runtime.h's
+  `static inline yieldAfter(ctx, seconds)`: load `ctx->thread`, load `running_for`, compare,
+  branch; the yield is out of line. Measured 2026-11-20 (release build, 4e8 iterations): 0.32
+  ns per iteration without the call, 0.57 with it. The C name `yieldAfter` is taken in every
+  generated translation unit (Haze names are mangled, so only an `extern C` function of that
+  name could collide). `sys.timeSinceTaskSwitch` returns the same measurement.
+- **S3-16. The native parser server's stderr is always read** (its tail explains an exit):
+  before, nobody read the pipe, so a Haze program writing to stderr (the stall warning) would
+  eventually block in a full pipe.
+
 ## Tooling
 
 - **G-1. The parser-equivalence sweep reads what the commit and the run decide** (user,

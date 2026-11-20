@@ -5,6 +5,7 @@
 #include "../include/hzstd_memory.h"
 #include "../include/hzstd_string.h"
 #include <signal.h>
+#include <ucontext.h>
 #include <time.h>
 
 #define GC_THREADS
@@ -538,9 +539,25 @@ static void *hzstd_panic_handler_thread(void *_)
 // worker and wait.  After the worker finishes (recovery case) we unblock
 // SIGSEGV manually (since we used plain longjmp, not siglongjmp) and jump.
 
+// The stack pointer of the code a signal interrupted.
+static void *hzstd_interrupted_sp(void *ucontext)
+{
+  const ucontext_t *uc = ucontext;
+#if defined(__x86_64__)
+  return (void *)(uintptr_t)uc->uc_mcontext.gregs[REG_RSP];
+#elif defined(__aarch64__)
+  return (void *)(uintptr_t)uc->uc_mcontext.sp;
+#else
+#error "hzstd: the interrupted stack pointer is not known for this architecture"
+#endif
+}
+
 static void hzstd_panic_handler(int sig, siginfo_t *si, void *ucontext)
 {
   (void)sig;
+  // First thing: a collection while this runs on the signal stack must still
+  // scan the stack it interrupted (docs/async-runtime.md section 8.3).
+  hzstd_sched_note_interrupted_sp(hzstd_interrupted_sp(ucontext));
   int expected = 0;
   if (!atomic_compare_exchange_strong(&panic_in_progress, &expected, 1)) {
     // Another thread already claimed the panic slot.
@@ -549,7 +566,13 @@ static void hzstd_panic_handler(int sig, siginfo_t *si, void *ucontext)
 
   memcpy(&panic_context, ucontext, sizeof(unw_context_t));
 
-  if (sig == SIGSEGV) {
+  // A fault in the running task's guard is its stack overflowing (C383).
+  const fiber_stack *task_stack = hzstd_current_task_stack();
+  if (sig == SIGSEGV && task_stack != NULL && fiber_stack_guard_contains(task_stack, si->si_addr)) {
+    panic_type = hzstd_panic_type_stackoverflow;
+    store_panic_reason(HZSTD_STRING_FROM_CSTR("Stack overflow: the task used up its stack (endless recursion?)"));
+  }
+  else if (sig == SIGSEGV) {
     panic_type = hzstd_panic_type_segfault;
     switch (si->si_code) {
     case SEGV_MAPERR:
@@ -648,6 +671,8 @@ static void hzstd_panic_handler(int sig, siginfo_t *si, void *ucontext)
   // Hand the info to the task, so the recover: label can read it (the
   // recovery frame exists, so this thread runs a task).
   hzstd_current_task()->panic_info = localRecoveryTarget->_hz_panic_stacktrace;
+  // Back on the interrupted stack after the jump: nothing to record any more.
+  hzstd_sched_note_interrupted_sp(NULL);
 
   // Only now -- after every shared global this thread needed has been fully
   // consumed -- release the gate. See the INVARIANT comment above
