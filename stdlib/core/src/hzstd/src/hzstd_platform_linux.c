@@ -534,6 +534,19 @@ static void *hzstd_panic_handler_thread(void *_)
   }
 }
 
+// A failure while this thread holds the world stopped for a collection:
+// written directly (async-signal-safe), and the process ends.
+_Noreturn static void hzstd_fail_while_world_stopped(const char *what)
+{
+  static const char head[] = "\n[FATAL] ";
+  static const char tail[] = " while this thread was running a garbage collection: every other thread is stopped, so no stack trace can be built; the program ends.\n";
+  ssize_t written = write(STDERR_FILENO, head, sizeof(head) - 1);
+  written = write(STDERR_FILENO, what, strlen(what));
+  written = write(STDERR_FILENO, tail, sizeof(tail) - 1);
+  (void)written;
+  _exit(hzstd_exit_status() >= 0 ? hzstd_exit_status() : 255);
+}
+
 // ── Signal handler ────────────────────────────────────────────────────────────
 //
 // Runs on the alt-stack (8 KB).  Deliberately minimal: copy the CPU context
@@ -560,6 +573,16 @@ static void hzstd_panic_handler(int sig, siginfo_t *si, void *ucontext)
   // First thing: a collection while this runs on the signal stack must still
   // scan the stack it interrupted (docs/async-runtime.md section 8.3).
   hzstd_sched_note_interrupted_sp(hzstd_interrupted_sp(ucontext));
+  if (hzstd_this_thread_stopped_the_world()) {
+    // In the middle of a collection this thread runs, with every other
+    // thread suspended: the panic worker cannot build a trace, and nothing
+    // could go on after a recovery (the world stays stopped, the collector's
+    // lock held). Reported directly; the process ends (review 2026-11-20:
+    // it hung, silently).
+    const fiber_stack *stack = hzstd_current_task_stack();
+    bool overflow = sig == SIGSEGV && stack != NULL && fiber_stack_guard_contains(stack, si->si_addr);
+    hzstd_fail_while_world_stopped(overflow ? "Stack overflow" : (sig == SIGFPE ? "Arithmetic error" : "Segmentation Fault"));
+  }
   int expected = 0;
   if (!atomic_compare_exchange_strong(&panic_in_progress, &expected, 1)) {
     // Another thread already claimed the panic slot.
@@ -689,6 +712,80 @@ static void hzstd_panic_handler(int sig, siginfo_t *si, void *ucontext)
   __builtin_unreachable();
 }
 
+// ── The stall warning's stack trace (docs/async-runtime.md section 10) ───────
+//
+// The watchdog signals the stalled thread; the handler copies the interrupted
+// context and lets the panic worker build the frames from it, exactly as for
+// a crash, while the thread waits in the handler (its stack does not change
+// meanwhile). The handler allocates nothing. When a panic holds the worker,
+// it gives up: the warning then has no trace.
+
+#define HZSTD_STALL_SIGNAL (SIGRTMIN + 3)
+
+static hzstd_stacktrace_t g_stall_trace;
+static _Atomic int g_stall_trace_ready = 0; // 1: g_stall_trace holds a trace for the watchdog
+
+static void hzstd_stall_signal_handler(int sig, siginfo_t *si, void *ucontext)
+{
+  (void)sig;
+  (void)si;
+  int saved_errno = errno;
+  int expected = 0;
+  if (hzstd_this_thread_stopped_the_world()) {
+    // The worker is stopped too: no trace this time.
+    atomic_store(&g_stall_trace_ready, 2);
+  }
+  else if (atomic_compare_exchange_strong(&panic_in_progress, &expected, 1)) {
+    memcpy(&panic_context, ucontext, sizeof(unw_context_t));
+    store_panic_reason(HZSTD_STRING_FROM_CSTR(""));
+    panic_skip_n_frames = 0;
+    panic_type = hzstd_panic_type_unknown;
+    panic_recovery_target = NULL;
+    panic_mode = PANIC_MODE_BUILD_ONLY;
+    hzstd_trigger_semaphore(panic_trigger);
+    hzstd_wait_for_semaphore(panic_response);
+    g_stall_trace = panic_built_stacktrace;
+    atomic_store(&panic_in_progress, 0);
+    atomic_store(&g_stall_trace_ready, 1);
+  }
+  else {
+    atomic_store(&g_stall_trace_ready, 2); // no trace this time
+  }
+  errno = saved_errno;
+}
+
+void hzstd_install_stall_signal_handler(void)
+{
+  struct sigaction sa;
+  memset(&sa, 0, sizeof(sa));
+  sa.sa_sigaction = hzstd_stall_signal_handler;
+  sa.sa_flags = SA_SIGINFO | SA_RESTART;
+  sigemptyset(&sa.sa_mask);
+  if (sigaction(HZSTD_STALL_SIGNAL, &sa, NULL) != 0) {
+    hzstd_panic("Could not install the stall warning's signal handler");
+  }
+}
+
+// The stalled thread's stack trace, built while it waits in its handler; false
+// if none could be had within the timeout (the thread is gone, or a panic held
+// the worker).
+bool hzstd_capture_stall_trace(pthread_t thread, hzstd_stacktrace_t *out)
+{
+  atomic_store(&g_stall_trace_ready, 0);
+  if (pthread_kill(thread, HZSTD_STALL_SIGNAL) != 0) {
+    return false;
+  }
+  for (int i = 0; i < 200 && atomic_load(&g_stall_trace_ready) == 0; i++) {
+    struct timespec ts = { .tv_sec = 0, .tv_nsec = 500000 };
+    nanosleep(&ts, NULL);
+  }
+  if (atomic_load(&g_stall_trace_ready) != 1) {
+    return false;
+  }
+  *out = g_stall_trace;
+  return true;
+}
+
 // ── hzstd_panic_with_stacktrace ───────────────────────────────────────────────
 //
 // Called by all hzstd_panic* variants.  Uses minimal stack: only stores a few
@@ -699,6 +796,14 @@ static void hzstd_panic_handler(int sig, siginfo_t *si, void *ucontext)
 
 _Noreturn void hzstd_panic_with_stacktrace(hzstd_str_t msg, hzstd_int_t skip_n_frames)
 {
+  if (hzstd_this_thread_stopped_the_world()) {
+    // See hzstd_panic_handler: no worker can run now.
+    char text[512];
+    size_t length = msg.length < sizeof(text) - 1 ? (size_t)msg.length : sizeof(text) - 1;
+    memcpy(text, msg.data, length);
+    text[length] = '\0';
+    hzstd_fail_while_world_stopped(text);
+  }
   int expected = 0;
   if (!atomic_compare_exchange_strong(&panic_in_progress, &expected, 1)) {
     // Another panic is already in flight; park this thread.

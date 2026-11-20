@@ -69,13 +69,15 @@ struct hzstd_sched_t {
   char run_epoch_line_before[64];
   _Atomic uint64_t run_epoch;
   char run_epoch_line_after[56];
-  _Atomic double gc_cpu; // CPU seconds this thread spent running collections
+  _Atomic double gc_cpu;   // CPU seconds this thread spent running collections, ended ones
+  _Atomic double gc_since; // this thread's CPU clock when its running collection began, 0 if none
 #if !FIBER__WINDOWS
   clockid_t cpu_clock; // the thread's CPU time
 #endif
   uint64_t wd_epoch; // the watchdog's own: the run it measures, since when,
   double wd_start;   // and the length of its next report
   double wd_next_report;
+  bool wd_reported; // whether this run's first report was printed
   hzstd_task_t *ready_head; // the ready queue, oldest first
   hzstd_task_t *ready_tail;
   hzstd_task_t *live;       // every unfinished task (the registry)
@@ -722,8 +724,58 @@ static double hzstd_clock_seconds(clockid_t clock)
   return (double)ts.tv_sec + (double)ts.tv_nsec * 1e-9;
 }
 
-static void hzstd_stall_report(hzstd_sched_t *s, double ran)
+// Stacks already reported (section 10: deduplicated by stack hash), by a hash
+// of their functions' names; the watchdog's own.
+#define HZSTD_STALL_SEEN_MAX 256
+static uint64_t g_stall_seen[HZSTD_STALL_SEEN_MAX];
+static size_t g_stall_seen_count = 0;
+
+static uint64_t hzstd_stall_stack_hash(hzstd_stacktrace_t st)
 {
+  uint64_t h = 1469598103934665603ull;
+  hzstd_dynamic_array_t *frames = st.frames;
+  for (size_t i = 0; frames != NULL && i < frames->size; i++) {
+    // By function, not instruction: a loop is caught at a different
+    // instruction every time.
+    hzstd_stackframe_t f = HZSTD_DYNAMIC_ARRAY_GET(frames, hzstd_stackframe_t, i);
+    for (hzstd_int_t k = 0; k < f.name.length; k++) {
+      h = (h ^ (uint8_t)f.name.data[k]) * 1099511628211ull;
+    }
+    h = (h ^ 0xff) * 1099511628211ull;
+  }
+  return h;
+}
+
+static bool hzstd_stall_seen_before(uint64_t hash)
+{
+  for (size_t i = 0; i < g_stall_seen_count; i++) {
+    if (g_stall_seen[i] == hash) {
+      return true;
+    }
+  }
+  if (g_stall_seen_count < HZSTD_STALL_SEEN_MAX) {
+    g_stall_seen[g_stall_seen_count++] = hash;
+  }
+  return false;
+}
+
+// A run's first report comes with the stack trace of where the task is, once
+// per stack (by the names of its functions); a later report of the same run,
+// at each doubling, is one line, and only if the first one was printed.
+static void hzstd_stall_report(hzstd_sched_t *s, double ran, bool first)
+{
+  hzstd_stacktrace_t trace = { 0 };
+  bool traced = false;
+  if (first) {
+    traced = hzstd_capture_stall_trace(s->pthread, &trace);
+    s->wd_reported = !(traced && hzstd_stall_seen_before(hzstd_stall_stack_hash(trace)));
+    if (!s->wd_reported) {
+      return;
+    }
+  }
+  else if (!s->wd_reported) {
+    return;
+  }
   char name[32];
   if (s->thread->id == 1) {
     snprintf(name, sizeof(name), "main");
@@ -732,17 +784,27 @@ static void hzstd_stall_report(hzstd_sched_t *s, double ran)
     snprintf(name, sizeof(name), "%llu", (unsigned long long)s->thread->id);
   }
   char text[512];
-  int n = snprintf(text,
-                   sizeof(text),
-                   "warning: a task ran %.0f ms without yielding (thread: %s), so nothing else on this thread could run.\n"
-                   "         Insert sys.yield() in the long-running loop, or move the work to a thread spawned with\n"
-                   "         the stall warning turned off (thread.spawn option stallWarning).\n",
-                   ran * 1000.0,
-                   name);
-  if (n > 0) {
-    ssize_t written = write(STDERR_FILENO, text, (size_t)n < sizeof(text) ? (size_t)n : sizeof(text) - 1);
-    (void)written;
+  int n;
+  if (first) {
+    n = snprintf(text,
+                 sizeof(text),
+                 "warning: a task ran %.0f ms without yielding (thread: %s), so nothing else on this thread could run.\n"
+                 "         Insert sys.yield() in the long-running loop, or move the work to a thread spawned with\n"
+                 "         the stall warning turned off (thread.spawn option stallWarning).%s\n",
+                 ran * 1000.0,
+                 name,
+                 traced ? " It is currently at:" : "");
   }
+  else {
+    n = snprintf(text, sizeof(text), "warning: that task (thread: %s) has now run %.0f ms without yielding.\n", name, ran * 1000.0);
+  }
+  if (n > 0) {
+    fwrite(text, 1, (size_t)n < sizeof(text) ? (size_t)n : sizeof(text) - 1, stderr);
+  }
+  if (traced) {
+    hzstd_print_stacktrace(trace);
+  }
+  fflush(stderr);
 }
 
 static void *hzstd_watchdog_main(void *unused)
@@ -766,13 +828,19 @@ static void *hzstd_watchdog_main(void *unused)
         continue;
       }
       running = true;
-      double cpu = hzstd_clock_seconds(s->cpu_clock) - atomic_load_explicit(&s->gc_cpu, memory_order_relaxed);
+      // A collection in progress counts as soon as it began, not only from
+      // its end: BDWGC restarts the world before it reports the end
+      // (review 2026-11-20). Read before the total, which the end updates
+      // first: a race only ever makes the run look shorter.
+      double since = atomic_load(&s->gc_since);
+      double total = atomic_load(&s->gc_cpu);
+      double cpu = (since > 0 ? since : hzstd_clock_seconds(s->cpu_clock)) - total;
       if (epoch != s->wd_epoch) {
         s->wd_epoch = epoch;
         s->wd_start = cpu;
         s->wd_next_report = HZSTD_STALL_LIMIT;
       }
-      double ran = cpu - s->wd_start;
+      double ran = cpu > s->wd_start ? cpu - s->wd_start : 0.0;
       atomic_store_explicit(&s->thread->running_for, ran, memory_order_relaxed);
       if (atomic_load_explicit(&s->run_epoch, memory_order_acquire) != epoch) {
         // The task switched meanwhile: the next run starts from 0.
@@ -780,7 +848,7 @@ static void *hzstd_watchdog_main(void *unused)
         continue;
       }
       if (ran > s->wd_next_report) {
-        hzstd_stall_report(s, ran);
+        hzstd_stall_report(s, ran, s->wd_next_report == HZSTD_STALL_LIMIT);
         s->wd_next_report = ran * 2;
       }
     }
@@ -829,18 +897,74 @@ static void hzstd_watchdog_start(void)
 // collector calls this on the collecting thread.
 static GC_on_collection_event_proc g_hzstd_previous_collection_event = NULL;
 static _Thread_local double t_hzstd_gc_start = 0;
+// Wall clock of the collection this thread runs, and of its stopped world.
+static _Thread_local double t_hzstd_gc_wall_start = 0;
+static _Thread_local double t_hzstd_gc_stop_start = 0;
+static _Thread_local double t_hzstd_gc_stopped = 0;
+
+// A long collection is reported as a pause of its own (section 10), not as a
+// stall of the task that happened to run it.
+static void hzstd_report_gc_pause(hzstd_thread_t *thread, double took, double stopped)
+{
+  char name[32];
+  if (thread->id == 1) {
+    snprintf(name, sizeof(name), "main");
+  }
+  else {
+    snprintf(name, sizeof(name), "%llu", (unsigned long long)thread->id);
+  }
+  char text[256];
+  int n = snprintf(text,
+                   sizeof(text),
+                   "warning: a garbage collection took %.0f ms (thread: %s), so nothing else on this thread could run;"
+                   " every thread was stopped for %.0f ms of it.\n",
+                   took * 1000.0,
+                   name,
+                   stopped * 1000.0);
+  // write, not stdio: this runs with the collector's lock held.
+  if (n > 0) {
+    ssize_t written = write(STDERR_FILENO, text, (size_t)n < sizeof(text) ? (size_t)n : sizeof(text) - 1);
+    (void)written;
+  }
+}
+// Set while this thread holds the world stopped: every other registered
+// thread, the panic worker included, is suspended then.
+static _Thread_local bool t_hzstd_stopped_the_world = false;
+
+bool hzstd_this_thread_stopped_the_world(void)
+{
+  return t_hzstd_stopped_the_world;
+}
+
 static void GC_CALLBACK hzstd_gc_event(GC_EventType event)
 {
+  if (event == GC_EVENT_PRE_STOP_WORLD) {
+    t_hzstd_stopped_the_world = true;
+    t_hzstd_gc_stop_start = hzstd_clock_seconds(CLOCK_MONOTONIC);
+  }
+  else if (event == GC_EVENT_POST_START_WORLD) {
+    t_hzstd_stopped_the_world = false;
+    t_hzstd_gc_stopped += hzstd_clock_seconds(CLOCK_MONOTONIC) - t_hzstd_gc_stop_start;
+  }
   if (event == GC_EVENT_START || event == GC_EVENT_END) {
     hzstd_thread_t *thread = hzstd_current_thread;
     if (thread != NULL && thread->sched != NULL) {
       double now = hzstd_clock_seconds(CLOCK_THREAD_CPUTIME_ID);
       if (event == GC_EVENT_START) {
         t_hzstd_gc_start = now;
+        t_hzstd_gc_wall_start = hzstd_clock_seconds(CLOCK_MONOTONIC);
+        t_hzstd_gc_stopped = 0;
+        atomic_store(&thread->sched->gc_since, now);
       }
       else {
-        double total = atomic_load_explicit(&thread->sched->gc_cpu, memory_order_relaxed);
-        atomic_store_explicit(&thread->sched->gc_cpu, total + (now - t_hzstd_gc_start), memory_order_relaxed);
+        double took = hzstd_clock_seconds(CLOCK_MONOTONIC) - t_hzstd_gc_wall_start;
+        if (took > HZSTD_STALL_LIMIT) {
+          hzstd_report_gc_pause(thread, took, t_hzstd_gc_stopped);
+        }
+        // The total first, then the end: see the watchdog's read.
+        double total = atomic_load(&thread->sched->gc_cpu);
+        atomic_store(&thread->sched->gc_cpu, total + (now - t_hzstd_gc_start));
+        atomic_store(&thread->sched->gc_since, 0.0);
       }
     }
   }
@@ -938,6 +1062,7 @@ static void hzstd_sched_initialize_main_thread(void)
 #endif
   hzstd_sched_init_thread(hzstd_current_thread);
 #if !FIBER__WINDOWS
+  hzstd_install_stall_signal_handler();
   hzstd_watchdog_start();
 #endif
 }

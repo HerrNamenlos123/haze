@@ -472,8 +472,8 @@ Runtime: `stdlib/core/src/hzstd/src/hzstd_sched.c`; Haze API: `stdlib/core/src/t
   stderr above 10 ms (C242), again at each doubling. It sleeps on a semaphore when no task
   runs anywhere; the switch wakes it (a Dekker pair on the sleeping flag and the epoch). The
   first tick of a run starts its clock, so a run is measured up to 5 ms short, never long.
-  Not yet: the stack trace in the warning, deduplication by stack, the separate GC pause
-  report, Windows (there `running_for` stays 0: no warning, `yieldAfter` never yields).
+  The trace (S3-23) and the GC pause report (S3-26) came later the same day. Not yet: Windows
+  (there `running_for` stays 0: no warning, `yieldAfter` never yields).
 - **S3-15. `sys.yieldAfter` is inline C.** An `extern C noemit` declaration with
   `:: final, context` gets the caller's context, so the call compiles to hzstd_runtime.h's
   `static inline yieldAfter(ctx, seconds)`: load `ctx->thread`, load `running_for`, compare,
@@ -511,10 +511,50 @@ Runtime: `stdlib/core/src/hzstd/src/hzstd_sched.c`; Haze API: `stdlib/core/src/t
   **`sys.abort()`**: `_exit(134)` (the status a shell reports for SIGABRT) without handlers,
   flushing or a core dump (C547, C574). Not yet tested: the status of a panic after an exit
   started (nothing can panic after it in one thread).
+- **S3-23. The stall warning's stack trace.** The watchdog sends the stalled thread a real-time
+  signal (SIGRTMIN + 3, SA_RESTART, on the thread's current stack); the handler hands the
+  interrupted context to the panic worker, as a crash does, and waits while it builds the frames
+  (it allocates nothing; if a panic holds the worker it gives up and the warning has no trace).
+  The watchdog prints them after the message ("It is currently at:"). A run's first report is
+  skipped when the same chain of function names was reported before (deduplication by stack);
+  later reports of the same run, at each doubling, are one line. Not tested: the deduplication
+  (where a sampled loop is caught varies, so no test can repeat a stack exactly).
 - **S3-22. A finished task is reachable from its scheduler before it leaves the registry** (the
   trampoline sets `s->ended` first): its own stack is not scanned once it has left, so a
   collection another thread runs in between (the profiler's reader allocates) could have freed
   it. Found by reading the code, not reproduced (the window is a few instructions wide).
+
+- **S3-26. A long collection is reported as a pause of its own** (section 10): above 10 ms of
+  wall time from the collection's start to its end on the collecting thread, "a garbage
+  collection took N ms (thread: ...)", with how long the world was stopped; written with
+  `write(2)` (the collector's lock is held). The time is not the task's (S3-24), so it never
+  shows as a stall.
+
+### Fixes from the independent review of part 1 (2026-11-20, all test-first, proven red)
+
+- **S3-24. A collection in progress counts as soon as it began.** BDWGC restarts the world
+  before it reports a collection's end, and the watchdog, stopped during the mark, ticks at once
+  after the restart: it counted the whole mark as the task's run (a false stall warning in 2 of
+  4 runs of the reviewer's probe, and an inflated `running_for`). Each scheduler now publishes
+  the CPU clock at a collection's start; while one runs, the run's time stops there. Test: the
+  collector's event hook called by hand around a 60 ms busy stretch.
+- **S3-25. A failure while this thread holds the world stopped is reported directly.** The panic
+  worker is a registered thread, so it is suspended too: a fault in the collector (the stack
+  running out inside a collection near the guard) or a panic in a GC callback (the sp
+  corrector's) parked the thread and hung the process silently, forever. The collector's
+  PRE_STOP_WORLD / POST_START_WORLD events set a thread-local flag; with it set, the fault
+  handler and `hzstd_panic_with_stacktrace` write a fixed message (`write(2)`) and `_exit(255)`
+  (or the exit status of a graceful exit that started); no recovery, since the world would stay
+  stopped and the collector's lock held. The stall signal handler gives up on its trace then.
+  Linux only. Test: a recursion that collects whenever less than 24 KiB of stack is left.
+- Review finding "a finished task can be collected before its stack is returned" is S3-22,
+  fixed in part 2 before the report arrived (the review read part 1).
+- Tests added for gaps the review named: a 30 ms run warns (the 10 ms limit, not a later one),
+  a long run is reported again, the overflow is checked against the running task's guard while
+  a newer task exists.
+- Not fixed, ledgered: the perf sampler's live-read guard knows only the native stack (frames
+  past a sample's snapshot on a task stack are read live); `live_sp` is never cleared after a
+  collection (harmless while no thread ends; stage 5).
 
 ## Tooling
 

@@ -257,7 +257,10 @@ fn main(): int {
         };
         return f"{r} {message.contains("Stack overflow")} {deep(1000)}";
     });
+    // A newer task: the guard checked is the running task's, not the newest.
+    let newer = task.spawn(() => { return 0; });
     let r = f.join();
+    let n = newer.join();
     if r is str { fmt.println(r); }
     let again = attempt { deep(1000000000) } recover e { -2 };
     fmt.println(f"{again}");
@@ -455,6 +458,10 @@ fn main(): int {
         let n = spin(0.06);
         return 0;
     }
+    if args.length > 1 && args[1] == "medium" {
+        let n = spin(0.03);
+        return 0;
+    }
     if args.length > 1 && args[1] == "short" {
         for (let i = 0; i < 30; i++) {
             let n = spin(0.002);
@@ -464,11 +471,15 @@ fn main(): int {
     }
     let longRun = process.runCaptured(args[0], ["long"]);
     let shortRuns = process.runCaptured(args[0], ["short"]);
-    fmt.println(f"{longRun.stderrResult.contains("without yielding (thread: main)")} {shortRuns.stderrResult.contains("without yielding")} {longRun.exitCode} {shortRuns.exitCode}");
+    let mediumRun = process.runCaptured(args[0], ["medium"]);
+    let traced = longRun.stderrResult.contains("It is currently at:") && longRun.stderrResult.contains("spin");
+    // Reported again at each doubling while it still runs.
+    let again = longRun.stderrResult.contains("has now run");
+    fmt.println(f"{longRun.stderrResult.contains("without yielding (thread: main)")} {traced} {again} {mediumRun.stderrResult.contains("without yielding")} {shortRuns.stderrResult.contains("without yielding")} {longRun.exitCode} {shortRuns.exitCode}");
     return 0;
 }
 """,
-            "true false 0 0");
+            "true true true true false 0 0");
 
         // C588, C590: the loop calls only yieldAfter, and the other task
         // still gets its turns, each after about 20 ms of the loop's time.
@@ -685,6 +696,73 @@ fn main(): int {
 }
 """,
             "134 0");
+
+        // A collection the task's thread runs is not the task's time (section
+        // 10), also before the collector reports its end (BDWGC restarts the
+        // world first; review 2026-11-20). The collector's event hook is
+        // called by hand around a busy stretch, as a collection would.
+        s.run(
+            "tasks: a collection in progress does not count as the task's run time",
+            """
+__c__("#include <gc/gc.h>\nstatic void gc_event(int e) { GC_get_on_collection_event()((GC_EventType)e); }");
+fn spin(seconds: real): int {
+    let start = time.now();
+    let n = 0;
+    while time.now() - start < seconds { n++; }
+    return n;
+}
+fn main(): int {
+    let args = sys.args();
+    if args.length > 1 && args[1] == "child" {
+        do unsafe { __c__("gc_event(GC_EVENT_START);"); };
+        let n = spin(0.06);
+        let during = sys.timeSinceTaskSwitch();
+        do unsafe { __c__("gc_event(GC_EVENT_END);"); };
+        fmt.println(f"{during < 0.01}");
+        return 0;
+    }
+    if args.length > 1 && args[1] == "short" {
+        do unsafe { __c__("gc_event(GC_EVENT_START);"); };
+        let n = spin(0.002);
+        do unsafe { __c__("gc_event(GC_EVENT_END);"); };
+        return 0;
+    }
+    let r = process.runCaptured(args[0], ["child"]);
+    let shortGc = process.runCaptured(args[0], ["short"]);
+    // A long one is reported as a pause of its own (section 10).
+    let pause = r.stderrResult.contains("a garbage collection took");
+    fmt.println(f"{r.stdoutResult.trim()} {r.stderrResult.contains("without yielding")} {pause} {shortGc.stderrResult.contains("garbage collection")} {r.exitCode}");
+    return 0;
+}
+""",
+            "true false true false 0");
+
+        // A fault while this thread holds the world stopped (here: the stack
+        // runs out inside a collection) cannot be handed to the panic worker,
+        // which is stopped too: it is reported directly and ends the program
+        // (review 2026-11-20: it hung, silently). `timeout` ends a hang.
+        s.run(
+            "tasks: a stack overflow inside a collection is reported, never a hang",
+            """
+__c__("#include <gc/gc.h>\nstatic hzstd_int_t stack_left(void) { const fiber_stack *s = hzstd_current_task_stack(); char here; return (hzstd_int_t)(&here - (char *)s->limit); }");
+fn deep(n: int): int :: final {
+    let left = 0;
+    do unsafe { __c__("left = stack_left(); if (left < 24000) GC_gcollect();"); };
+    let pad: [4]int = [n, n, n, n];
+    return deep(n + 1) + pad[n % 4] - n;
+}
+fn main(): int {
+    let args = sys.args();
+    if args.length > 1 && args[1] == "child" {
+        fmt.println(f"{deep(0)}");
+        return 0;
+    }
+    let r = process.runCaptured("timeout", ["30", args[0], "child"]);
+    fmt.println(f"{r.exitCode} {r.stderrResult.contains("Stack overflow")}");
+    return 0;
+}
+""",
+            "255 true");
 
         s.run(
             "tasks: yielding with nothing else ready goes on at once",

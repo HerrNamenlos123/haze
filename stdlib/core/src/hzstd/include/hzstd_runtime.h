@@ -61,10 +61,22 @@ static inline void yieldAfter(hzstd_context_t *ctx, hzstd_real_t seconds)
 // thread's last task runs, then the process ends with `status` (C521, C576,
 // C586). The first status is final.
 _Noreturn void hzstd_task_exit(hzstd_context_t *ctx, hzstd_int_t status);
+// Whether the calling thread holds the world stopped for a collection: no
+// other thread can run then (the panic worker neither), so a failure there
+// is reported directly (Linux).
+bool hzstd_this_thread_stopped_the_world(void);
 // The status of a graceful exit that has started, or -1.
 int hzstd_exit_status(void);
 // sys.abort: ends the process at once, status 134, no cleanup (C547, C574).
 _Noreturn void hzstd_abort(void);
+// The stall warning's trace (Linux): the handler of the signal the watchdog
+// sends, and the watchdog's side, which waits for the trace the panic worker
+// builds while the stalled thread waits in that handler.
+void hzstd_install_stall_signal_handler(void);
+#if defined(HAZE_PLATFORM_LINUX)
+#include <pthread.h>
+bool hzstd_capture_stall_trace(pthread_t thread, hzstd_stacktrace_t *out);
+#endif
 // sys.timeSinceTaskSwitch: the same measurement, in seconds.
 hzstd_real_t hzstd_time_since_task_switch(hzstd_context_t *ctx);
 
@@ -125,7 +137,7 @@ hzstd_task_t *hzstd_current_task(void);
 int hzstd_panic_recovery_frame_count(void);
 // `frame` is the caller's stack storage (see HAZE_ATTEMPT); nothing is allocated.
 hzstd_panic_recovery_frame_t *hzstd_push_panic_recovery_frame(hzstd_context_t *ctx, hzstd_panic_recovery_frame_t *frame);
-// Pre-sizes this thread's frame stack (64 frames); called at startup for the main thread.
+// The innermost frame of the task of `ctx`, taken off its stack.
 hzstd_panic_recovery_frame_t *hzstd_pop_panic_recovery_frame(hzstd_context_t *ctx);
 hzstd_panic_recovery_frame_t *hzstd_get_current_panic_recovery_frame(void);
 
