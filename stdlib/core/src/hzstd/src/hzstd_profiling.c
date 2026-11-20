@@ -512,9 +512,7 @@ struct hzstd_profiling_context_t {
 // (outside any task: code of threads Haze does not run tasks on); an
 // allocation in a task walks that task's stack (hzstd_current_task_stack).
 // Queried lazily on first use and cached per-thread: allocations come from
-// any thread (unlike
-// g_hzstd_perf_stack_low/high above, which describe only the one profiled
-// thread), and pthread_getattr_np is far too expensive to call per
+// any thread, and pthread_getattr_np is far too expensive to call per
 // allocation. Zero means "not resolved yet"; low==high==1 is the sentinel
 // for "resolution failed", which disables frame-pointer walking for this
 // thread rather than retrying forever.
@@ -985,20 +983,24 @@ typedef struct {
 // hzstd_profiling_unwind_perf_sample.
 static __thread hzstd_perf_sample_regs_t *g_hzstd_perf_current_sample = NULL;
 
-// The profiled thread's overall stack region ([low, high)), queried once in
-// hzstd_profiling_start via pthread_getattr_np. See hzstd_perf_access_mem for
-// why this matters: an address can be outside *this sample's* captured
-// snapshot for two very different reasons -- it's genuinely not stack memory
-// at all (CFI tables, globals: stable, safe to read live), or it *is* more of
-// the profiled thread's stack that simply wasn't captured (deep native call
-// chains, e.g. through the GC or a libc syscall wrapper, can easily exceed
-// context->perf_stack_size). Reading the latter case live is wrong even
-// when it doesn't crash outright: that memory keeps changing after the
-// sample, so it no longer reflects what was actually running at the sampled
-// instant. Knowing the real bounds is what lets access_mem tell those two
-// cases apart instead of guessing.
-static uint64_t g_hzstd_perf_stack_low = 0;
-static uint64_t g_hzstd_perf_stack_high = 0;
+// The memory a sample's unwind may read live: the loaded modules' segments
+// (sorted [lo, hi) ranges, collected on first use). An address outside this
+// sample's captured snapshot is either module memory (CFI tables, code,
+// libunwind's own data: stable, safe and correct to read live) or anything
+// else: the sampled stack past what was captured (deep native call chains,
+// e.g. through the GC or a libc syscall wrapper, easily exceed
+// context->perf_stack_size), any task stack, the heap. Samples are unwound
+// after the run (see the raw capture file), so all of the latter has moved on
+// since the sample; reading it would give frames that never ran together.
+// Before tasks, only the profiled thread's own stack was refused, and task
+// stacks were read live (review 2026-11-20).
+typedef struct {
+  uint64_t lo;
+  uint64_t hi;
+} hzstd_perf_range_t;
+static hzstd_perf_range_t *g_hzstd_perf_module_ranges = NULL;
+static size_t g_hzstd_perf_module_range_count = 0;
+static bool g_hzstd_perf_module_ranges_loaded = false;
 
 // Set by hzstd_perf_access_mem whenever it refuses a read specifically
 // because the address was more of the profiled thread's stack than this
@@ -1059,12 +1061,68 @@ static int hzstd_perf_unw_reg_to_slot(unw_regnum_t regnum)
 //     this address may have already changed by the time we get here (it kept
 //     running after the sample), so this must come from the snapshot, not
 //     live memory.
-//   - Everywhere else (CFI tables, globals, the GOT, ...): this data belongs
-//     to the binary/its loaded modules, not the profiled thread's stack, so
-//     it's stable, and reading it live is both safe and correct -- and is
+//   - Inside a loaded module (CFI tables, code, the GOT, ...): stable, and
+//     reading it live is both safe and correct -- and is
 //     exactly what lets the delegated find_proc_info (see
 //     hzstd_profiling_start) work unmodified, since it reads
 //     .eh_frame/.eh_frame_hdr bytes through this same callback.
+static int hzstd_perf_collect_module_ranges(struct dl_phdr_info *info, size_t size, void *data)
+{
+  (void)size;
+  size_t *capacity = data;
+  for (int i = 0; i < info->dlpi_phnum; i++) {
+    const ElfW(Phdr) *ph = &info->dlpi_phdr[i];
+    if (ph->p_type != PT_LOAD || ph->p_memsz == 0) {
+      continue;
+    }
+    if (g_hzstd_perf_module_range_count == *capacity) {
+      size_t grown = *capacity == 0 ? 64 : *capacity * 2;
+      hzstd_perf_range_t *ranges = realloc(g_hzstd_perf_module_ranges, grown * sizeof(*ranges));
+      if (ranges == NULL) {
+        hzstd_panic("Out of memory collecting the loaded modules for profiling");
+      }
+      g_hzstd_perf_module_ranges = ranges;
+      *capacity = grown;
+    }
+    uint64_t lo = (uint64_t)(info->dlpi_addr + ph->p_vaddr);
+    g_hzstd_perf_module_ranges[g_hzstd_perf_module_range_count++] = (hzstd_perf_range_t) { .lo = lo, .hi = lo + (uint64_t)ph->p_memsz };
+  }
+  return 0;
+}
+
+static int hzstd_perf_compare_ranges(const void *a, const void *b)
+{
+  uint64_t x = ((const hzstd_perf_range_t *)a)->lo;
+  uint64_t y = ((const hzstd_perf_range_t *)b)->lo;
+  return x < y ? -1 : x > y ? 1 : 0;
+}
+
+// Whether the unwinder may read the word at `addr` live: only inside a loaded
+// module (see g_hzstd_perf_module_ranges). Called on one thread at a time
+// (the unwind after the run, or a test).
+bool hzstd_perf_live_read_allowed(uint64_t addr)
+{
+  if (!g_hzstd_perf_module_ranges_loaded) {
+    size_t capacity = 0;
+    dl_iterate_phdr(hzstd_perf_collect_module_ranges, &capacity);
+    qsort(g_hzstd_perf_module_ranges, g_hzstd_perf_module_range_count, sizeof(hzstd_perf_range_t), hzstd_perf_compare_ranges);
+    g_hzstd_perf_module_ranges_loaded = true;
+  }
+  size_t lo = 0;
+  size_t hi = g_hzstd_perf_module_range_count;
+  while (lo < hi) {
+    size_t mid = lo + (hi - lo) / 2;
+    if (g_hzstd_perf_module_ranges[mid].lo <= addr) {
+      lo = mid + 1;
+    }
+    else {
+      hi = mid;
+    }
+  }
+  // lo: the first range starting above addr; the one before may hold it.
+  return lo > 0 && addr + sizeof(unw_word_t) <= g_hzstd_perf_module_ranges[lo - 1].hi;
+}
+
 static int hzstd_perf_access_mem(unw_addr_space_t as, unw_word_t addr, unw_word_t *valp, int write, void *arg)
 {
   (void)as;
@@ -1080,19 +1138,19 @@ static int hzstd_perf_access_mem(unw_addr_space_t as, unw_word_t addr, unw_word_
   if (addr == 0) {
     return -UNW_EINVAL;
   }
-  if (g_hzstd_perf_stack_low != g_hzstd_perf_stack_high && addr >= g_hzstd_perf_stack_low
-      && addr < g_hzstd_perf_stack_high) {
-    // More of the profiled thread's stack than this sample happened to
-    // capture -- not safe to read live (see the comment on
-    // g_hzstd_perf_stack_low/high above). Reporting it as unavailable simply
-    // truncates this sample's walk at this frame, the same graceful
-    // truncation as running past the edge of a fully-captured stack -- but
-    // unlike that natural-end case, this one specifically means "there were
-    // real frames above this that we don't have," so flag it as such.
+  if (!hzstd_perf_live_read_allowed(addr)) {
+    // Not module memory: stack past what this sample captured, or memory
+    // that has changed since (see g_hzstd_perf_module_ranges). Reporting it
+    // as unavailable truncates this sample's walk at this frame, the same
+    // graceful truncation as running past the edge of a fully-captured
+    // stack -- but unlike that natural-end case, this one specifically
+    // means "there were real frames above this that we don't have," so flag
+    // it as such.
     g_hzstd_perf_current_sample_truncated = true;
     return -UNW_EINVAL;
   }
-  *valp = *(unw_word_t *)addr;
+  // memcpy: the unwinder computes the address, which need not be aligned.
+  memcpy(valp, (const void *)(uintptr_t)addr, sizeof(*valp));
   return 0;
 }
 
@@ -1112,13 +1170,12 @@ static int hzstd_perf_access_reg(unw_addr_space_t as, unw_regnum_t regnum, unw_w
   return 0;
 }
 
-// hzstd_perf_access_mem's stack-bounds check (see g_hzstd_perf_stack_low/high)
-// covers the common case of a computed address legitimately being more stack
-// than this sample captured. It can't cover every case, though -- CFI data
-// for hand-written asm, PLT stubs, or an unusual module can still be
-// incomplete or wrong in ways that make the unwinder compute a bogus,
-// entirely unmapped address for what it *thinks* is non-stack memory (module
-// data/CFI tables). Exactly like hzstd_profiling_safe_get_proc_name_by_ip
+// hzstd_perf_access_mem's module check (see g_hzstd_perf_module_ranges)
+// refuses every address outside the snapshot that is not module memory, so a
+// bogus address the unwinder computes from incomplete or wrong CFI data
+// (hand-written asm, PLT stubs, an unusual module) is no longer read. Reads
+// that fault anyway (a module unmapped since the run) still must not take
+// down the thread doing the unwind. Exactly like hzstd_profiling_safe_get_proc_name_by_ip
 // below (same justification, different call), a single bad address here must
 // not be allowed to take down the whole reader thread -- this treats a crash
 // during one sample's unwind the same as reaching the natural end of the
@@ -1986,21 +2043,6 @@ hzstd_profiling_start(int sampling_rate_hz, bool memoryInstrumentation, bool mem
   context->last_ring_slot = SIZE_MAX;
 
 #ifdef HAZE_PLATFORM_LINUX
-  // hzstd_profiling_start runs on the thread that's about to be profiled
-  // (context->tid == the caller), so this queries that thread's own stack
-  // bounds -- see g_hzstd_perf_stack_low/high and hzstd_perf_access_mem for
-  // why access_mem needs them. Left at 0/0 (disabling that check, but
-  // otherwise harmless) if this ever fails.
-  pthread_attr_t selfAttr;
-  if (pthread_getattr_np(pthread_self(), &selfAttr) == 0) {
-    void *stackAddr = NULL;
-    size_t stackSize = 0;
-    if (pthread_attr_getstack(&selfAttr, &stackAddr, &stackSize) == 0) {
-      g_hzstd_perf_stack_low = (uint64_t)(uintptr_t)stackAddr;
-      g_hzstd_perf_stack_high = g_hzstd_perf_stack_low + (uint64_t)stackSize;
-    }
-    pthread_attr_destroy(&selfAttr);
-  }
 
   // _UPT_create/_UPT_accessors give us the "find which loaded module/CFI
   // table a given address belongs to" logic for free (it works correctly for

@@ -786,6 +786,29 @@ fn main(): int {
 """,
             "0 finished true");
 
+        // The profiler unwinds its samples after the run, from snapshots of
+        // the sampled stack: memory past a snapshot is read live only where
+        // it cannot have changed, inside a loaded module (CFI, code). A task
+        // stack and the heap have moved on since the sample (review
+        // 2026-11-20: only the thread's own stack was refused).
+        s.run(
+            "tasks: the profiler's unwinder reads only module memory live",
+            """
+__c__("#include <stdint.h>\n#include <stdbool.h>\nbool hzstd_perf_live_read_allowed(uint64_t addr);\nstatic int some_global = 1;");
+fn main(): int {
+    let code = false;
+    let globalData = false;
+    let taskStack = true;
+    let heap = true;
+    do unsafe {
+        __c__("int local = 2; void *block = hzstd_heap_allocate(64, NULL); code = hzstd_perf_live_read_allowed((uint64_t)(uintptr_t)&hzstd_perf_live_read_allowed); globalData = hzstd_perf_live_read_allowed((uint64_t)(uintptr_t)&some_global); taskStack = hzstd_perf_live_read_allowed((uint64_t)(uintptr_t)&local); heap = hzstd_perf_live_read_allowed((uint64_t)(uintptr_t)block);");
+    };
+    fmt.println(f"{code} {globalData} {taskStack} {heap}");
+    return 0;
+}
+""",
+            "true true false false");
+
         s.run(
             "tasks: yielding with nothing else ready goes on at once",
             """

@@ -556,9 +556,17 @@ Runtime: `stdlib/core/src/hzstd/src/hzstd_sched.c`; Haze API: `stdlib/core/src/t
 - Tests added for gaps the review named: a 30 ms run warns (the 10 ms limit, not a later one),
   a long run is reported again, the overflow is checked against the running task's guard while
   a newer task exists.
-- Not fixed, ledgered: the perf sampler's live-read guard knows only the native stack (frames
-  past a sample's snapshot on a task stack are read live); `live_sp` is never cleared after a
-  collection (harmless while no thread ends; stage 5).
+- **S3-27. The perf sampler reads only module memory live** (review finding: its live-read
+  guard knew only the profiled thread's own stack, so frames past a sample's snapshot on a task
+  stack were read live, after the run, from a stack that had moved on). Samples are unwound
+  after the run; outside the snapshot, only loaded modules' PT_LOAD segments (CFI, code,
+  libunwind's data) cannot have changed, so every other address (any stack, the heap) truncates
+  the sample. Replaces the native-stack bounds (`g_hzstd_perf_stack_low/high`, removed). The
+  live read is a `memcpy` now, which fixes the ledgered UBSan misaligned load on that line.
+  Test (red on the old rule): the decision for a code, a global, a task-stack and a heap
+  address.
+- Not fixed, ledgered: `live_sp` is never cleared after a collection (harmless while no thread
+  ends; stage 5).
 
 ## Tooling
 
