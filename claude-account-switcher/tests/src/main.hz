@@ -912,6 +912,10 @@ ref struct Window {
 }
 
 fn openWindow(sim: mut Sim, activation: rx.Reactive<int>): mut Window {
+    // Every window opens with the pointer outside it and no button held,
+    // whatever the scenario before left (a pointer left on a row hovers it).
+    sim.mouse = { x: -100.0, y: -100.0 };
+    sim.leftHeld = false;
     let layout = ui_layout.LayoutContext({
         width: WIDTH,
         height: HEIGHT,
@@ -1462,8 +1466,9 @@ fn scenarioWindowUsageShown(sim: mut Sim) {
     sim.checkStr("80: red", colorOf(sim, "80%"), RED);
     sim.checkStr("100: red", colorOf(sim, "100%"), RED);
 
-    // No active account: no panel.
+    // No active account and no row hovered: no panel.
     s().deactivate();
+    w.hover({ x: -100.0, y: -100.0 });
     w.frames(3);
     sim.check("nothing without an active account", !shows(sim, "5h"));
 }
@@ -1593,6 +1598,67 @@ fn scenarioUsageProbeAllOnOpen(sim: mut Sim) {
     s().usageWindowOpened(at + 20000, 120.0);
     s().tickUsage(at + 20000, 130.0);
     sim.check("opened again at once: no probe", !s().usage.isProbing("a") && !s().usage.isProbing("b") && !s().usage.isProbing("c"));
+}
+
+// The panel under the accounts shows the hovered account's usage while one
+// is hovered, the active account's otherwise; a click still makes the row's
+// account active.
+fn scenarioWindowUsageFollowsHover(sim: mut Sim) {
+    let f = threeAccounts(sim);
+    let activation = rx.reactive<int>(0);
+    let w = openWindow(sim, activation);
+    noneDue(NOW);
+    probed("a", windowUsage(42.7, NOW + 3 * HOUR + 37 * MINUTE + 20000), windowUsage(85.2, NOW + 2 * DAY + 5 * HOUR), NOW);
+    probed("c", windowUsage(12.0, NOW + HOUR), windowUsage(60.0, NOW + DAY + 2 * HOUR), NOW);
+    s().tickUsage(NOW, 100.0);
+    w.frames(3);
+    sim.check("the active account's usage", shows(sim, "42%") && shows(sim, "3h 37m"));
+
+    w.hover(centerOf(sim, "C"));
+    w.frames(3);
+    sim.check("c hovered: c's 5h and when it resets", shows(sim, "12%") && shows(sim, "1h 0m"));
+    sim.check("c hovered: c's 7d and when it resets", shows(sim, "60%") && shows(sim, "1d 2h"));
+    sim.check("c hovered: a's numbers gone", !shows(sim, "42%") && !shows(sim, "85%"));
+    sim.checkStr("hovering switches nothing", activeId(), "a");
+
+    w.hover(centerOf(sim, "B"));
+    w.frames(3);
+    sim.check("b hovered: no numbers of a or c", !shows(sim, "42%") && !shows(sim, "12%"));
+    sim.check("b hovered: the panel stays", shows(sim, "5h") && shows(sim, "7d"));
+
+    w.hover({ x: -100.0, y: -100.0 });
+    w.frames(3);
+    sim.check("nothing hovered: the active account's again", shows(sim, "42%") && !shows(sim, "12%"));
+
+    w.click(centerOf(sim, "C"));
+    w.frames(3);
+    sim.checkStr("a click switches", activeId(), "c");
+    sim.check("c's usage", shows(sim, "12%"));
+    w.hover({ x: -100.0, y: -100.0 });
+    w.frames(3);
+    sim.check("c active and not hovered: still c's", shows(sim, "12%") && !shows(sim, "42%"));
+
+    // No active account: the panel only while a row is hovered.
+    s().deactivate();
+    w.frames(3);
+    sim.check("no active account, nothing hovered: no panel", !shows(sim, "5h"));
+    w.hover(centerOf(sim, "A"));
+    w.frames(3);
+    sim.check("no active account, a hovered: a's usage", shows(sim, "42%"));
+    w.hover({ x: -100.0, y: -100.0 });
+    w.frames(3);
+    sim.check("and gone again", !shows(sim, "5h"));
+
+    // A hovered account that is removed: its row is gone without the pointer
+    // leaving it, and the panel is the active account's again.
+    s().activateAccount("a");
+    w.hover(centerOf(sim, "C"));
+    w.frames(3);
+    sim.check("c hovered once more", shows(sim, "12%"));
+    s().removeAccount("c");
+    w.frames(3);
+    sim.checkStr("c removed", ids(), "a+,b+");
+    sim.check("the removed account's numbers are gone", !shows(sim, "12%") && shows(sim, "42%"));
 }
 
 // ── Tray state and the GNOME Shell extension ─────────────────────────
@@ -1815,6 +1881,7 @@ fn main(): int {
     run("window-usage-shown", (s: mut Sim) => { scenarioWindowUsageShown(s); });
     run("window-usage-stale-and-error", (s: mut Sim) => { scenarioWindowUsageStaleAndError(s); });
     run("window-usage-refresh", (s: mut Sim) => { scenarioWindowUsageRefresh(s); });
+    run("window-usage-follows-hover", (s: mut Sim) => { scenarioWindowUsageFollowsHover(s); });
     run("usage-probe-all-on-open", (s: mut Sim) => { scenarioUsageProbeAllOnOpen(s); });
     run("files-private", (s: mut Sim) => { scenarioFilesPrivate(s); });
     run("tray-state", (s: mut Sim) => { scenarioTrayState(s); });

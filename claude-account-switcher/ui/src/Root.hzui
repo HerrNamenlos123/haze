@@ -46,7 +46,29 @@ let activeId = computed((): str => {
     if let id = rx.get(switcher().active) { return id; }
     return "";
 });
-let showsUsage = computed((): bool => rx.get(hasRepo) && rx.get(view) != View.Settings && rx.get(activeId) != "");
+// The account whose row the pointer is on; "" while it is on none.
+let hoveredId = reactive<str>("");
+let rowHovered = (id: str, on: bool) => {
+    if on {
+        hoveredId := id;
+    } else if rx.get(hoveredId) == id {
+        hoveredId := "";
+    }
+};
+// Whose usage the panel under the accounts shows: the hovered account's
+// while one is, the active account's otherwise.
+let usageId = computed((): str => {
+    let hovered = rx.get(hoveredId);
+    if hovered != "" {
+        for account in switcher().list() {
+            if account.id == hovered {
+                return hovered;
+            }
+        }
+    }
+    return rx.get(activeId);
+});
+let showsUsage = computed((): bool => rx.get(hasRepo) && rx.get(view) != View.Settings && rx.get(usageId) != "");
 
 ui.watch(() => rx.get(props.activation), (value, old) => {
     menuOpen := false;
@@ -211,14 +233,14 @@ ScrollView else [] padding=[6] {
             AccountRow for=[account, i in items] key=[switcher().rowKey(account.id)] []
                 account=[account] active=[switcher().isActive(account.id)] mode=[modeOf(account.id)]
                 usage=[switcher().usageView(account.id)]
-                @menu=openMenu @setMode=setMode {}
+                @menu=openMenu @setMode=setMode @hoverChange=rowHovered {}
             div if=[items.length == 0 && rx.get(view) != View.Add] [col w-grow items-center py-[40]px] {
                 text [text-color-[text3]] ["No accounts"]
             }
         }
     }
 }
-UsagePanel if=[rx.get(showsUsage)] [] accountId=[rx.get(activeId)] view=[switcher().usageView(rx.get(activeId))] {}
+UsagePanel if=[rx.get(showsUsage)] [] accountId=[rx.get(usageId)] view=[switcher().usageView(rx.get(usageId))] {}
 div if=[switcher().hasProblem()] [row w-grow h-fit gap-[10]px items-center pl-[12]px pr-[6]px py-[6]px bg-[dangerTint] border-l-[2] border-color-[danger]] {
     div [w-grow h-fit] {
         text [text-color-[text1] font-size-[smallSize]] [switcher().problemText()]
