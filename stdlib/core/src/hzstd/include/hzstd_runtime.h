@@ -61,10 +61,10 @@ static inline void yieldAfter(hzstd_context_t *ctx, hzstd_real_t seconds)
 // thread's last task runs, then the process ends with `status` (C521, C576,
 // C586). The first status is final.
 _Noreturn void hzstd_task_exit(hzstd_context_t *ctx, hzstd_int_t status);
-// Whether the calling thread holds the world stopped for a collection: no
-// other thread can run then (the panic worker neither), so a failure there
-// is reported directly (Linux).
-bool hzstd_this_thread_stopped_the_world(void);
+// Whether the calling thread runs a collection (it holds the collector's
+// lock, and maybe the world stopped): the panic worker cannot report a
+// failure then, so it is reported directly (Linux).
+bool hzstd_this_thread_is_collecting(void);
 // The status of a graceful exit that has started, or -1.
 int hzstd_exit_status(void);
 // sys.abort: ends the process at once, status 134, no cleanup (C547, C574).

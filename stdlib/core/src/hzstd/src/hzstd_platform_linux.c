@@ -534,8 +534,8 @@ static void *hzstd_panic_handler_thread(void *_)
   }
 }
 
-// A failure while this thread holds the world stopped for a collection:
-// written directly (async-signal-safe), and the process ends.
+// A failure while this thread runs a collection: written directly
+// (async-signal-safe), and the process ends.
 _Noreturn static void hzstd_fail_while_world_stopped(const char *what)
 {
   static const char head[] = "\n[FATAL] ";
@@ -573,12 +573,12 @@ static void hzstd_panic_handler(int sig, siginfo_t *si, void *ucontext)
   // First thing: a collection while this runs on the signal stack must still
   // scan the stack it interrupted (docs/async-runtime.md section 8.3).
   hzstd_sched_note_interrupted_sp(hzstd_interrupted_sp(ucontext));
-  if (hzstd_this_thread_stopped_the_world()) {
-    // In the middle of a collection this thread runs, with every other
-    // thread suspended: the panic worker cannot build a trace, and nothing
-    // could go on after a recovery (the world stays stopped, the collector's
-    // lock held). Reported directly; the process ends (review 2026-11-20:
-    // it hung, silently).
+  if (hzstd_this_thread_is_collecting()) {
+    // In the middle of a collection this thread runs: the panic worker is
+    // suspended (the world is stopped) or its report waits for the
+    // collector's lock this thread holds, and nothing could go on after a
+    // recovery (the lock stays held). Reported directly; the process ends
+    // (review 2026-11-20: it hung, silently).
     const fiber_stack *stack = hzstd_current_task_stack();
     bool overflow = sig == SIGSEGV && stack != NULL && fiber_stack_guard_contains(stack, si->si_addr);
     hzstd_fail_while_world_stopped(overflow ? "Stack overflow" : (sig == SIGFPE ? "Arithmetic error" : "Segmentation Fault"));
@@ -842,7 +842,7 @@ bool hzstd_capture_stall_trace(pthread_t thread, hzstd_stacktrace_t *out)
 
 _Noreturn void hzstd_panic_with_stacktrace(hzstd_str_t msg, hzstd_int_t skip_n_frames)
 {
-  if (hzstd_this_thread_stopped_the_world()) {
+  if (hzstd_this_thread_is_collecting()) {
     // See hzstd_panic_handler: no worker can run now.
     char text[512];
     size_t length = msg.length < sizeof(text) - 1 ? (size_t)msg.length : sizeof(text) - 1;

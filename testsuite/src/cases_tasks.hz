@@ -764,6 +764,29 @@ fn main(): int {
 """,
             "255 true");
 
+        // The same for the whole collection, not only while the world is
+        // stopped: the collecting thread holds the collector's lock until
+        // the collection's end, and the panic worker's report allocates GC
+        // memory (under ASan the overflow above lands after the world
+        // restarted, and hung there; 2026-11-20). The collector's event hook
+        // is called by hand.
+        s.run(
+            "tasks: a panic while this thread runs a collection is reported directly",
+            """
+__c__("#include <gc/gc.h>\nstatic void gc_event(int e) { GC_get_on_collection_event()((GC_EventType)e); }");
+fn main(): int {
+    let args = sys.args();
+    if args.length > 1 && args[1] == "child" {
+        do unsafe { __c__("gc_event(GC_EVENT_START);"); };
+        sys.panic("boom");
+    }
+    let r = process.runCaptured("timeout", ["30", args[0], "child"]);
+    fmt.println(f"{r.exitCode} {r.stderrResult.contains("boom while this thread was running a garbage collection")}");
+    return 0;
+}
+""",
+            "255 true");
+
         // The stall trace is taken while the task holds a lock an unwinder
         // needs (glibc's loader lock, inside dl_iterate_phdr: the profiler
         // parses symbol tables there): it must neither deadlock nor lose

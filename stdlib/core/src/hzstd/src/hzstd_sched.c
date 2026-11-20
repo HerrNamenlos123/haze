@@ -927,13 +927,17 @@ static void hzstd_report_gc_pause(hzstd_thread_t *thread, double took, double st
     (void)written;
   }
 }
-// Set while this thread holds the world stopped: every other registered
-// thread, the panic worker included, is suspended then.
+// Set while this thread runs a collection (GC_EVENT_START to END: it holds
+// the collector's lock all along) and while it holds the world stopped
+// (every other registered thread, the panic worker included, is suspended
+// then). The panic worker cannot report a failure in either window: it is
+// suspended, or its report allocates GC memory and waits for the lock.
+static _Thread_local bool t_hzstd_collecting = false;
 static _Thread_local bool t_hzstd_stopped_the_world = false;
 
-bool hzstd_this_thread_stopped_the_world(void)
+bool hzstd_this_thread_is_collecting(void)
 {
-  return t_hzstd_stopped_the_world;
+  return t_hzstd_collecting || t_hzstd_stopped_the_world;
 }
 
 static void GC_CALLBACK hzstd_gc_event(GC_EventType event)
@@ -951,6 +955,7 @@ static void GC_CALLBACK hzstd_gc_event(GC_EventType event)
     if (thread != NULL && thread->sched != NULL) {
       double now = hzstd_clock_seconds(CLOCK_THREAD_CPUTIME_ID);
       if (event == GC_EVENT_START) {
+        t_hzstd_collecting = true;
         t_hzstd_gc_start = now;
         t_hzstd_gc_wall_start = hzstd_clock_seconds(CLOCK_MONOTONIC);
         t_hzstd_gc_stopped = 0;
@@ -965,6 +970,7 @@ static void GC_CALLBACK hzstd_gc_event(GC_EventType event)
         double total = atomic_load(&thread->sched->gc_cpu);
         atomic_store(&thread->sched->gc_cpu, total + (now - t_hzstd_gc_start));
         atomic_store(&thread->sched->gc_since, 0.0);
+        t_hzstd_collecting = false;
       }
     }
   }

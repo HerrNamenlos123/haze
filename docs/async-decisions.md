@@ -546,11 +546,15 @@ Runtime: `stdlib/core/src/hzstd/src/hzstd_sched.c`; Haze API: `stdlib/core/src/t
 - **S3-25. A failure while this thread holds the world stopped is reported directly.** The panic
   worker is a registered thread, so it is suspended too: a fault in the collector (the stack
   running out inside a collection near the guard) or a panic in a GC callback (the sp
-  corrector's) parked the thread and hung the process silently, forever. The collector's
-  PRE_STOP_WORLD / POST_START_WORLD events set a thread-local flag; with it set, the fault
-  handler and `hzstd_panic_with_stacktrace` write a fixed message (`write(2)`) and `_exit(255)`
-  (or the exit status of a graceful exit that started); no recovery, since the world would stay
-  stopped and the collector's lock held. Linux only. Test: a recursion that collects whenever less than 24 KiB of stack is left.
+  corrector's) parked the thread and hung the process silently, forever. The window is the whole
+  collection on that thread (GC_EVENT_START to END, during which it holds the collector's lock,
+  and PRE_STOP_WORLD to POST_START_WORLD): the worker's report allocates GC memory, so it waits
+  for that lock even after the world restarted (the sanitizer run hung there: ASan's larger
+  frames moved the overflow past the restart). In that window the fault handler and
+  `hzstd_panic_with_stacktrace` write a fixed message (`write(2)`) and `_exit(255)` (or the exit
+  status of a graceful exit that started); no recovery, since the lock stays held. Linux only.
+  Tests: a recursion that collects whenever less than 24 KiB of stack is left; a panic between a
+  collection's start and end events (called by hand).
 - Review finding "a finished task can be collected before its stack is returned" is S3-22,
   fixed in part 2 before the report arrived (the review read part 1).
 - Tests added for gaps the review named: a 30 ms run warns (the 10 ms limit, not a later one),
