@@ -225,8 +225,8 @@ hzstd uses the library since stage 3 of `docs/async-implementation-plan.md`
    handler is pushed from the sp the handler records first thing.
 6. **ASan: done** (stage 2: hzstd gives back the signal stack it displaced when a thread ends).
 7. **Scheduler, libuv, per-task state: done** for one thread: 8 MiB stacks with 64 KiB guards from
-   a pool of 16 per thread, trimmed to 64 KiB when returned. Not yet: trimming the pool in
-   `hzstd_release_idle_memory`.
+   a pool of 16 per thread, each trimmed to 64 KiB as it is returned, so an idle pool holds at most
+   1 MiB per thread and `hzstd_release_idle_memory` has nothing more to give back.
 8. **Optional (Windows):** unhandled SEH exceptions in tasks skip `SetUnhandledExceptionFilter`.
    hzstd's VEH is unaffected.
 9. **Toolchain for ARM64 hosts** (`src/ProjectCompiler/ProjectCompiler.ts`):

@@ -714,44 +714,54 @@ static void hzstd_panic_handler(int sig, siginfo_t *si, void *ucontext)
 
 // ── The stall warning's stack trace (docs/async-runtime.md section 10) ───────
 //
-// The watchdog signals the stalled thread; the handler copies the interrupted
-// context and lets the panic worker build the frames from it, exactly as for
-// a crash, while the thread waits in the handler (its stack does not change
-// meanwhile). The handler allocates nothing. When a panic holds the worker,
-// it gives up: the warning then has no trace.
+// The watchdog signals the stalled thread; the handler walks the frame
+// pointers of the interrupted code (all Haze and hzstd code keeps them) within
+// the running stack's bounds and records the return addresses: no lock, no
+// allocation, no unwinder. The stall can be anywhere, also inside a lock an
+// unwinder needs (glibc's loader lock, which libunwind takes through
+// dl_iterate_phdr): handing the context to the panic worker deadlocked there
+// (2026-11-20). The watchdog then names the addresses on its own thread,
+// where waiting for such a lock only waits. Code without frame pointers (parts
+// of libc) cuts the walk short; the interrupted address always comes first.
 
 #define HZSTD_STALL_SIGNAL (SIGRTMIN + 3)
+#define HZSTD_STALL_MAX_FRAMES 64
 
-static hzstd_stacktrace_t g_stall_trace;
-static _Atomic int g_stall_trace_ready = 0; // 1: g_stall_trace holds a trace for the watchdog
+static uintptr_t g_stall_ips[HZSTD_STALL_MAX_FRAMES];
+static _Atomic int g_stall_ip_count = 0;
+static _Atomic int g_stall_trace_ready = 0; // 1: g_stall_ips holds a walk for the watchdog
 
 static void hzstd_stall_signal_handler(int sig, siginfo_t *si, void *ucontext)
 {
   (void)sig;
   (void)si;
-  int saved_errno = errno;
-  int expected = 0;
-  if (hzstd_this_thread_stopped_the_world()) {
-    // The worker is stopped too: no trace this time.
-    atomic_store(&g_stall_trace_ready, 2);
+  const ucontext_t *uc = ucontext;
+#if defined(__x86_64__)
+  uintptr_t pc = (uintptr_t)uc->uc_mcontext.gregs[REG_RIP];
+  uintptr_t fp = (uintptr_t)uc->uc_mcontext.gregs[REG_RBP];
+#elif defined(__aarch64__)
+  uintptr_t pc = (uintptr_t)uc->uc_mcontext.pc;
+  uintptr_t fp = (uintptr_t)uc->uc_mcontext.regs[29];
+#endif
+  const fiber_stack *stack = hzstd_current_task_stack();
+  uintptr_t lo = stack != NULL ? (uintptr_t)stack->limit : 0;
+  uintptr_t hi = stack != NULL ? (uintptr_t)stack->top : 0;
+  int count = 0;
+  g_stall_ips[count++] = pc;
+  while (count < HZSTD_STALL_MAX_FRAMES && fp >= lo && fp + 2 * sizeof(uintptr_t) <= hi && (fp & (sizeof(uintptr_t) - 1)) == 0) {
+    uintptr_t next = ((const uintptr_t *)fp)[0];
+    uintptr_t ret = ((const uintptr_t *)fp)[1];
+    if (ret == 0) {
+      break;
+    }
+    g_stall_ips[count++] = ret - 1; // inside the call instruction, for naming
+    if (next <= fp) {
+      break;
+    }
+    fp = next;
   }
-  else if (atomic_compare_exchange_strong(&panic_in_progress, &expected, 1)) {
-    memcpy(&panic_context, ucontext, sizeof(unw_context_t));
-    store_panic_reason(HZSTD_STRING_FROM_CSTR(""));
-    panic_skip_n_frames = 0;
-    panic_type = hzstd_panic_type_unknown;
-    panic_recovery_target = NULL;
-    panic_mode = PANIC_MODE_BUILD_ONLY;
-    hzstd_trigger_semaphore(panic_trigger);
-    hzstd_wait_for_semaphore(panic_response);
-    g_stall_trace = panic_built_stacktrace;
-    atomic_store(&panic_in_progress, 0);
-    atomic_store(&g_stall_trace_ready, 1);
-  }
-  else {
-    atomic_store(&g_stall_trace_ready, 2); // no trace this time
-  }
-  errno = saved_errno;
+  atomic_store(&g_stall_ip_count, count);
+  atomic_store(&g_stall_trace_ready, 1);
 }
 
 void hzstd_install_stall_signal_handler(void)
@@ -766,9 +776,9 @@ void hzstd_install_stall_signal_handler(void)
   }
 }
 
-// The stalled thread's stack trace, built while it waits in its handler; false
-// if none could be had within the timeout (the thread is gone, or a panic held
-// the worker).
+// The stalled thread's stack trace, on the watchdog's thread: the handler's
+// walk, named here (plain malloc memory, kept: a report is rare). False if
+// the thread did not answer within 100 ms.
 bool hzstd_capture_stall_trace(pthread_t thread, hzstd_stacktrace_t *out)
 {
   atomic_store(&g_stall_trace_ready, 0);
@@ -782,7 +792,43 @@ bool hzstd_capture_stall_trace(pthread_t thread, hzstd_stacktrace_t *out)
   if (atomic_load(&g_stall_trace_ready) != 1) {
     return false;
   }
-  *out = g_stall_trace;
+  int count = atomic_load(&g_stall_ip_count);
+  hzstd_allocator_t allocator = hzstd_make_non_gc_raw_malloc_allocator();
+  hzstd_dynamic_array_t *frames = hzstd_allocate(allocator, sizeof(hzstd_dynamic_array_t), "hzstd_dynamic_array_t");
+  frames->buffer = hzstd_allocate(allocator, (size_t)count * sizeof(hzstd_stackframe_t), NULL);
+  frames->elem_size = sizeof(hzstd_stackframe_t);
+  frames->size = 0;
+  frames->capacity = (size_t)count;
+  frames->elementTypeName = "hzstd_stackframe_t";
+  frames->borrowed_buffer = false;
+  size_t next_id = 1;
+  for (int i = 0; i < count; i++) {
+    // The same address is the same frame (the printer folds repeats by id).
+    size_t id = 0;
+    for (int k = 0; k < i && id == 0; k++) {
+      if (g_stall_ips[k] == g_stall_ips[i]) {
+        id = ((hzstd_stackframe_t *)frames->buffer)[k].id;
+      }
+    }
+    if (id == 0) {
+      id = next_id++;
+    }
+    int max_name = 512;
+    char *name = hzstd_allocate_unscanned(allocator, (size_t)max_name, NULL);
+    unw_word_t offset;
+    size_t length = 0;
+    if (unw_get_proc_name_by_ip(unw_local_addr_space, (unw_word_t)g_stall_ips[i], name, (size_t)max_name, &offset, NULL) == 0) {
+      length = strlen(name);
+    }
+    hzstd_stackframe_t frame = {
+      .id = id,
+      .instructionPointer = (void *)g_stall_ips[i],
+      .name = HZSTD_STRING(name, length),
+      .sourceloc = { ._filename = HZSTD_STRING(NULL, 0), ._line = 0, ._column = 0 },
+    };
+    ((hzstd_stackframe_t *)frames->buffer)[frames->size++] = frame;
+  }
+  *out = (hzstd_stacktrace_t) { .frames = frames, .skip_n_frames = 0 };
   return true;
 }
 

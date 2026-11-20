@@ -512,10 +512,15 @@ Runtime: `stdlib/core/src/hzstd/src/hzstd_sched.c`; Haze API: `stdlib/core/src/t
   flushing or a core dump (C547, C574). Not yet tested: the status of a panic after an exit
   started (nothing can panic after it in one thread).
 - **S3-23. The stall warning's stack trace.** The watchdog sends the stalled thread a real-time
-  signal (SIGRTMIN + 3, SA_RESTART, on the thread's current stack); the handler hands the
-  interrupted context to the panic worker, as a crash does, and waits while it builds the frames
-  (it allocates nothing; if a panic holds the worker it gives up and the warning has no trace).
-  The watchdog prints them after the message ("It is currently at:"). A run's first report is
+  signal (SIGRTMIN + 3, SA_RESTART, on the thread's current stack); the handler walks the frame
+  pointers of the interrupted code within the running stack's bounds and records the return
+  addresses (no lock, no allocation, no unwinder); the watchdog names them on its own thread
+  (`unw_get_proc_name_by_ip`) and prints them after the message ("It is currently at:"). Code
+  without frame pointers (parts of libc) cuts the walk short. The first version handed the
+  context to the panic worker, as a crash does: a stall inside glibc's loader lock (the
+  profiler parses symbol tables in `dl_iterate_phdr`) deadlocked, since libunwind takes the
+  same lock (found by the sanitizer run, whose timing made such a stall; test-first fix, red
+  as a 30 s timeout). A run's first report is
   skipped when the same chain of function names was reported before (deduplication by stack);
   later reports of the same run, at each doubling, are one line. Not tested: the deduplication
   (where a sampled loop is caught varies, so no test can repeat a stack exactly).
@@ -545,8 +550,7 @@ Runtime: `stdlib/core/src/hzstd/src/hzstd_sched.c`; Haze API: `stdlib/core/src/t
   PRE_STOP_WORLD / POST_START_WORLD events set a thread-local flag; with it set, the fault
   handler and `hzstd_panic_with_stacktrace` write a fixed message (`write(2)`) and `_exit(255)`
   (or the exit status of a graceful exit that started); no recovery, since the world would stay
-  stopped and the collector's lock held. The stall signal handler gives up on its trace then.
-  Linux only. Test: a recursion that collects whenever less than 24 KiB of stack is left.
+  stopped and the collector's lock held. Linux only. Test: a recursion that collects whenever less than 24 KiB of stack is left.
 - Review finding "a finished task can be collected before its stack is returned" is S3-22,
   fixed in part 2 before the report arrived (the review read part 1).
 - Tests added for gaps the review named: a 30 ms run warns (the 10 ms limit, not a later one),

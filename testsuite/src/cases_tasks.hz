@@ -764,6 +764,28 @@ fn main(): int {
 """,
             "255 true");
 
+        // The stall trace is taken while the task holds a lock an unwinder
+        // needs (glibc's loader lock, inside dl_iterate_phdr: the profiler
+        // parses symbol tables there): it must neither deadlock nor lose
+        // the warning (the sanitizer run of 2026-11-20 hung there).
+        s.run(
+            "tasks: a stall inside dl_iterate_phdr is reported, never a deadlock",
+            """
+__c__("#define _GNU_SOURCE\n#include <link.h>\n#include <time.h>\nstatic int busy_in_loader(struct dl_phdr_info *info, size_t size, void *data) { (void)info; (void)size; struct timespec a, b; clock_gettime(CLOCK_THREAD_CPUTIME_ID, &a); do { clock_gettime(CLOCK_THREAD_CPUTIME_ID, &b); } while ((b.tv_sec - a.tv_sec) * 1000000000L + (b.tv_nsec - a.tv_nsec) < 60000000L); return 1; }");
+fn main(): int {
+    let args = sys.args();
+    if args.length > 1 && args[1] == "child" {
+        do unsafe { __c__("dl_iterate_phdr(busy_in_loader, NULL);"); };
+        fmt.println("finished");
+        return 0;
+    }
+    let r = process.runCaptured("timeout", ["30", args[0], "child"]);
+    fmt.println(f"{r.exitCode} {r.stdoutResult.trim()} {r.stderrResult.contains("without yielding")}");
+    return 0;
+}
+""",
+            "0 finished true");
+
         s.run(
             "tasks: yielding with nothing else ready goes on at once",
             """
