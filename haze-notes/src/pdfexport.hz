@@ -296,8 +296,17 @@ ref struct PdfExport {
         return f"{this.path}.exporting";
     }
 
+    // Ends the export as failed: what was written of the file is closed and
+    // removed, and whatever was at `path` before stays as it was.
     mut fn fail(message: str) {
         fmt.println(f"Failed to export {this.path}: {message}");
+        if let writer = this.writer {
+            writer.abandon();
+            let removed = fs.removeFile(this.temporaryPath());
+            if !removed {
+                fmt.println(f"The unfinished {this.temporaryPath()} could not be removed: {fsErrorText(removed)}");
+            }
+        }
         this.failed = true;
         this.finished = true;
     }

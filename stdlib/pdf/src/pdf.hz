@@ -330,6 +330,19 @@ export ref struct Writer {
         return Result<none, Error>.Ok(none);
     }
 
+    // Gives up on the file: a writer that is not finished closes its file as
+    // it is, incomplete, and is finished from then on. What was written stays
+    // on disk for the caller to remove. Nothing to do after finish().
+    mut fn abandon() {
+        if this.finished {
+            return;
+        }
+        this.finished = true;
+        if let file = this.file {
+            file.close();
+        }
+    }
+
     // The whole file, for a writer made with the constructor, once finished.
     mut fn bytes(): Bytes {
         if !this.finished {

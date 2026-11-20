@@ -100,12 +100,20 @@ fn toUIKeyEdges(a: app.App, out: mut []ui_components.KeyEdge): []ui_components.K
 }
 
 fn main(): int {
-    // The one-time conversion of a vault from .tsk (migrate.hz), without a
-    // window.
+    // The commands that run without a window (cli.hz): nothing of the app
+    // is started for them.
     let args = sys.args();
-    if args.length >= 2 && args[1] == "migrate-tsk" {
-        return migrateCommand(args);
+    if args.length >= 2 && args[1] == "new" {
+        return newCommand(args);
     }
+    if args.length >= 2 && args[1] == "export-pdf" {
+        return exportPdfCommand(args);
+    }
+    let started = launchFrom(args);
+    if started is LaunchRefused {
+        return started.exitCode;
+    }
+    let launch: Launch = started;
     // On worker threads while the window and the GPU come up (see
     // startPaperDecode).
     startPaperDecode();
@@ -120,8 +128,9 @@ fn main(): int {
             title: "Haze Notes",
             nativeTitlebar: false,
             // Opens the way it was left: size, maximized, and where the
-            // platform allows it, position.
-            rememberWindowState: true,
+            // platform allows it, position. A note edited on its own
+            // remembers nothing.
+            rememberWindowState: !launch.exclusive,
         })?!;
 
         // Embedded rather than loaded by path: an installed copy runs from
@@ -206,7 +215,13 @@ fn main(): int {
                     a.commitWindowRegions();
                 },
             },
-            ui: (ui: ui_components.UIContext) => { UIComponent(ui, { id: 0, gfx: a.gfx }); },
+            ui: (ui: ui_components.UIContext) => {
+                if launch.exclusive {
+                    ExclusiveNoteComponent(ui, { id: 0, gfx: a.gfx, path: launch.note });
+                } else {
+                    UIComponent(ui, { id: 0, gfx: a.gfx, startVault: launch.vault, startNote: launch.noteInVault });
+                }
+            },
         });
 
         while let frame = a.nextFrame() {

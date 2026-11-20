@@ -82,6 +82,11 @@ hzstd_fs_error_t hzstd_create_private_directory(hzstd_str_t path);
 
 hzstd_fs_exists_result_t hzstd_fs_exists(hzstd_str_t path);
 
+// The absolute path of what `path` names (relative to the working directory),
+// with every symbolic link, "." and ".." resolved: the one spelling of an
+// existing file or folder. Fails for a path that does not exist.
+hzstd_fs_path_result_t hzstd_fs_real_path(hzstd_allocator_t allocator, hzstd_str_t path);
+
 // Copy a file or directory (recursive if needed) to a destination.
 // Automatically creates parent directories. Overwrite, symlink, and error
 // behavior controlled via options.

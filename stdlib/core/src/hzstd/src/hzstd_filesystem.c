@@ -1695,6 +1695,119 @@ hzstd_fs_exists_result_t hzstd_fs_exists(hzstd_str_t path)
   return result;
 }
 
+// A copy of `text` (`length` bytes) in the caller's allocator, as the result.
+static hzstd_fs_path_result_t hzstd_fs_path_result(hzstd_allocator_t allocator, const char* text, size_t length)
+{
+  char* copy = hzstd_allocate_unscanned(allocator, length > 0 ? length : 1, NULL);
+  if (!copy) {
+    return (hzstd_fs_path_result_t) {
+      .path = HZSTD_STRING(NULL, 0),
+      .error = { .code = hzstd_fs_error_code_out_of_memory, .message = HZSTD_STRING("out of memory", 13) },
+    };
+  }
+  memcpy(copy, text, length);
+  return (hzstd_fs_path_result_t) {
+    .path = HZSTD_STRING(copy, length),
+    .error = { .code = hzstd_fs_error_code_none, .message = HZSTD_STRING(NULL, 0) },
+  };
+}
+
+hzstd_fs_path_result_t hzstd_fs_real_path(hzstd_allocator_t allocator, hzstd_str_t path)
+{
+  if (path.data == NULL || path.length == 0) {
+    return (hzstd_fs_path_result_t) {
+      .path = HZSTD_STRING(NULL, 0),
+      .error = { .code = hzstd_fs_error_code_invalid_path, .message = HZSTD_STRING("invalid path", 12) },
+    };
+  }
+#if defined(HAZE_PLATFORM_WIN32)
+  int wideLength = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path.data, (int)path.length, NULL, 0);
+  if (wideLength <= 0) {
+    return (hzstd_fs_path_result_t) {
+      .path = HZSTD_STRING(NULL, 0),
+      .error = { .code = hzstd_fs_error_code_invalid_path, .message = HZSTD_STRING("path is not valid UTF-8", 23) },
+    };
+  }
+  wchar_t* wide = (wchar_t*)malloc(((size_t)wideLength + 1) * sizeof(wchar_t));
+  if (!wide) {
+    return (hzstd_fs_path_result_t) {
+      .path = HZSTD_STRING(NULL, 0),
+      .error = { .code = hzstd_fs_error_code_out_of_memory, .message = HZSTD_STRING("out of memory", 13) },
+    };
+  }
+  MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path.data, (int)path.length, wide, wideLength);
+  wide[wideLength] = L'\0';
+  // BACKUP_SEMANTICS opens a folder too; no access is asked for, only the
+  // name.
+  HANDLE handle = CreateFileW(wide, 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING,
+                              FILE_FLAG_BACKUP_SEMANTICS, NULL);
+  free(wide);
+  if (handle == INVALID_HANDLE_VALUE) {
+    DWORD err = GetLastError();
+    return (hzstd_fs_path_result_t) {
+      .path = HZSTD_STRING(NULL, 0),
+      .error = { .code = hzstd_fs_error_from_windows_error(err), .message = hzstd_fs_windows_error(err) },
+    };
+  }
+  DWORD finalLength = GetFinalPathNameByHandleW(handle, NULL, 0, FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
+  wchar_t* final = finalLength > 0 ? (wchar_t*)malloc(((size_t)finalLength + 1) * sizeof(wchar_t)) : NULL;
+  DWORD written = final ? GetFinalPathNameByHandleW(handle, final, finalLength + 1, FILE_NAME_NORMALIZED | VOLUME_NAME_DOS) : 0;
+  DWORD finalErr = GetLastError();
+  CloseHandle(handle);
+  if (!final || written == 0 || written > finalLength) {
+    free(final);
+    return (hzstd_fs_path_result_t) {
+      .path = HZSTD_STRING(NULL, 0),
+      .error = { .code = hzstd_fs_error_from_windows_error(finalErr), .message = hzstd_fs_windows_error(finalErr) },
+    };
+  }
+  // The name comes back as "\\?\C:\..." (or "\\?\UNC\server\..."): the
+  // spelling every other call takes is without that prefix.
+  const wchar_t* name = final;
+  if (wcsncmp(name, L"\\\\?\\UNC\\", 8) == 0) {
+    // "\\server\share\...": the prefix's last two characters become "\\".
+    name = final + 6;
+    final[6] = L'\\';
+  }
+  else if (wcsncmp(name, L"\\\\?\\", 4) == 0) {
+    name = final + 4;
+  }
+  int utf8Length = WideCharToMultiByte(CP_UTF8, 0, name, -1, NULL, 0, NULL, NULL);
+  char* utf8 = utf8Length > 0 ? (char*)malloc((size_t)utf8Length) : NULL;
+  if (!utf8 || WideCharToMultiByte(CP_UTF8, 0, name, -1, utf8, utf8Length, NULL, NULL) <= 0) {
+    free(utf8);
+    free(final);
+    return (hzstd_fs_path_result_t) {
+      .path = HZSTD_STRING(NULL, 0),
+      .error = { .code = hzstd_fs_error_code_out_of_memory, .message = HZSTD_STRING("out of memory", 13) },
+    };
+  }
+  free(final);
+  hzstd_fs_path_result_t result = hzstd_fs_path_result(allocator, utf8, strlen(utf8));
+  free(utf8);
+  return result;
+#else
+  HZSTD_SCRATCH_CSTR(nullTermPath, path);
+  if (!nullTermPath) {
+    return (hzstd_fs_path_result_t) {
+      .path = HZSTD_STRING(NULL, 0),
+      .error = { .code = hzstd_fs_error_code_out_of_memory, .message = HZSTD_STRING("out of memory", 13) },
+    };
+  }
+  char* resolved = realpath(nullTermPath, NULL);
+  if (!resolved) {
+    int err = errno;
+    return (hzstd_fs_path_result_t) {
+      .path = HZSTD_STRING(NULL, 0),
+      .error = { .code = hzstd_fs_error_from_errno(err), .message = hzstd_fs_errno_message(err) },
+    };
+  }
+  hzstd_fs_path_result_t result = hzstd_fs_path_result(allocator, resolved, strlen(resolved));
+  free(resolved);
+  return result;
+#endif
+}
+
 
 #ifdef HAZE_PLATFORM_WIN32
 static inline hzstd_str_t hzstd_fs_windows_error(DWORD err)

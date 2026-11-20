@@ -56,6 +56,13 @@ namespace ffi {
 
     extern C noemit fn hzstd_fs_exists(path: str): hzstd_fs_exists_result_t :: final;
 
+    extern C noemit struct hzstd_fs_path_result_t {
+        path: str;
+        error: hzstd_fs_error_t;
+    };
+
+    extern C noemit fn hzstd_fs_real_path(allocator: Allocator, path: str): hzstd_fs_path_result_t :: final;
+
     // A value, passed to C by value: three bools have no business on the heap.
     extern C noemit struct hzstd_fs_copy_options_t {
         overwrite: bool;
@@ -607,6 +614,18 @@ export namespace fs {
             return Result<bool, Error>.Ok(result.exists);
         }
         return Result<bool, Error>.Err(mapErrorEnum(result.error.code));
+    }
+
+    // The absolute path of the file or folder `path` names (a relative one
+    // is taken from the working directory), with every symbolic link, "."
+    // and ".." resolved: the one spelling of it, whichever way it was named.
+    // NotFound for a path that does not exist.
+    export fn realPath(path: str): Result<str, Error> {
+        let result = ffi.hzstd_fs_real_path(Alloc.heap(), path);
+        if result.error.code == ffi.hzstd_fs_error_code_none {
+            return Result<str, Error>.Ok(result.path);
+        }
+        return Result<str, Error>.Err(mapErrorEnum(result.error.code));
     }
 
     export fn createDirectory(path: str): Result<none, Error> {

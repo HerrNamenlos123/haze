@@ -40,7 +40,7 @@ and against which commit it was verified; re-check a note against the code befor
 - [haze-notes never-freeze architecture](haze-notes-never-freeze-architecture.md) - tile budgets, incremental save/load
 - [haze-notes PDF export](haze-notes-pdf-export.md) - real-size export, bit-exact perfect_freehand port
 - [Shape page ownership](haze-notes-shape-page-ownership.md) - shape lives on the page of its bbox middle
-- [haze-notes UI](haze-notes-ui-architecture.md) - theme, components, flat FileTree, flat vault index, caches, background walk, tree scroll restore
+- [haze-notes UI](haze-notes-ui-architecture.md) - theme, components, flat FileTree, flat vault index, caches, background walk, tree scroll restore, command line, exclusive mode
 - [Headless UI testing](headless-ui-testing-technique.md) - real Clay layout without GPU
 - [Hidden context](hidden-context-implemented.md) - context keyword, clone/init, extern C ABI, error codes; as built, design superseded (see docs/async-runtime.md)
 - [Hit geometry](hit-geometry-rules.md) - clipping and per-pass boxes for hit testing
@@ -85,7 +85,7 @@ and against which commit it was verified; re-check a note against the code befor
 - [Profiling and Node runs](profiling-and-node-runs.md) - profile/debug scripts; Node-hosted runs need Node 22+; Bun profiler drops big profiles
 - [Dev compiler paths](dev-compiler-paths.md) - run from the repo root (parser found via cwd); embed paths resolve against haze.toml's dir
 - [wgpu-native fatal errors](wgpu-native-fatal-errors.md) - which calls abort the app; NULL error callbacks; lost panic message; crash offset to function via relink map
-- [.hznote format](hznote-format.md) - haze-notes' file format: a binfile, chunks per page, read by name, plain copies, errors, the migrate-tsk conversion
+- [.hznote format](hznote-format.md) - haze-notes' file format: a binfile, chunks per page, read by name, plain copies, errors
 - [binfile and CacheFile](binfile-and-cachefile.md) - stdlib typed container; CacheFile: deep tracking per field, merge under a lock, views; traps: no consts in import.hz, zero-field struct
 - [File locks](file-locks.md) - fs.tryLockFile/lockFile: flock/LockFileEx, dropped at process death, O_CLOEXEC, never delete the lock file
 - [Lifecycle hooks chain](ui-lifecycle-hooks.md) - onFrame/onMounted/onUnmount: every registration runs, in order

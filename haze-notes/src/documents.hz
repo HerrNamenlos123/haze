@@ -626,8 +626,8 @@ fn tesselateStroke(args: StrokeTesselateArgs): TesselationResult {
 // Where `a` and `b` first differ in what a note stores ("pages[2].shapes[7]
 // .points[3].x"), or "" when they are the same: every number by its exact
 // bits (-0 and NaN payloads too), strings and images byte for byte. Caches
-// and runtime state are not looked at. What the one-time conversion from
-// .tsk proves each note by, and what the format's tests check.
+// and runtime state are not looked at. What the load tests check a note
+// that went through a file by.
 fn documentDifference(a: DocumentFile, b: DocumentFile): str {
     let x = a.data;
     let y = b.data;
