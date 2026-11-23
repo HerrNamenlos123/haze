@@ -507,11 +507,17 @@ static void hzstd_trace_reserve(hzstd_sched_t *s, size_t n)
   }
 }
 
-// `reserved`: the caller made room with hzstd_trace_reserve and must not allocate.
+// Slots every append outside the collector leaves free: the world-stop events
+// of a collection can always be written, even one BDWGC begins without
+// GC_EVENT_START.
+#define HZSTD_TRACE_SPARE 8
+
+// `reserved`: the caller must not allocate (inside the collector); the spare
+// slots are its room.
 static void hzstd_trace_append(hzstd_sched_t *s, uint32_t kind, uint64_t task, uint32_t reason, uint64_t cpu, bool reserved)
 {
   if (!reserved) {
-    hzstd_trace_reserve(s, 1);
+    hzstd_trace_reserve(s, 1 + HZSTD_TRACE_SPARE);
   }
   else if (s->trace_tail == NULL || s->trace_tail->count == HZSTD_TRACE_CHUNK_EVENTS) {
     hzstd_trap_ccstr("Internal Runtime Error: a scheduler event had no room reserved");
@@ -629,6 +635,9 @@ void hzstd_sched_trace_begin(void)
   }
   g_hzstd_trace_foreign_count = 0;
   atomic_flag_clear_explicit(&g_hzstd_trace_foreign_lock, memory_order_release);
+  for (hzstd_sched_t *s = atomic_load(&g_hzstd_scheds); s != NULL; s = s->next) {
+    hzstd_trace_reserve(s, HZSTD_TRACE_SPARE);
+  }
   atomic_store(&g_hzstd_trace_on, true);
   // The tasks that exist already: spawned before the session, they are known
   // by id and spawn site all the same. The running one first.
@@ -679,6 +688,10 @@ void hzstd_sched_trace_end(hzstd_profiling_result_t *result, double time_ref)
     }
   }
   atomic_store(&g_hzstd_trace_on, false);
+  // The watchdog may be appending a report it began before the session's end:
+  // the list is the lock's until it is merged and emptied below.
+  while (atomic_flag_test_and_set_explicit(&g_hzstd_trace_foreign_lock, memory_order_acquire)) {
+  }
   double seconds_per_tick = hzstd_watchdog_seconds_per_tick();
   hzstd_allocator_t heap = hzstd_make_heap_allocator();
   result->threads = HZSTD_DYNAMIC_ARRAY_CREATE(heap, hzstd_profiling_thread_t, 4, "hzstd_profiling_thread_t");
@@ -736,6 +749,7 @@ void hzstd_sched_trace_end(hzstd_profiling_result_t *result, double time_ref)
     hzstd_trace_free(s);
   }
   g_hzstd_trace_foreign_count = 0;
+  atomic_flag_clear_explicit(&g_hzstd_trace_foreign_lock, memory_order_release);
 }
 
 double hzstd_cpu_seconds_per_tick(void)
@@ -943,6 +957,7 @@ static void hzstd_task_kill(hzstd_sched_t *s, hzstd_task_t *t)
   hzstd_context_t ctx = { .task = t, .thread = s->thread };
   hzstd_stackref_unwind_to(&ctx, 0);
   hzstd_trace_note(s, HZSTD_SCHED_EVENT_KILLED, t->id, 0);
+  hzstd_alloc_windows_discard(&t->alloc_windows);
   hzstd_task_end(s, t);
   if (t->stack.top != NULL) {
     hzstd_stack_release(s, &t->stack);
@@ -1358,6 +1373,10 @@ static void hzstd_stall_report(hzstd_sched_t *s, double ran, bool first)
   hzstd_stacktrace_t trace = { 0 };
   bool traced = false;
   if (first) {
+    // For the profiler, before the report: naming the trace takes long, and
+    // the run may end meanwhile.
+    hzstd_task_t *running = s->thread->current_task;
+    hzstd_trace_note_foreign(s, HZSTD_SCHED_EVENT_STALL, running != NULL ? running->id : 0, (uint32_t)(ran * 1000.0));
     traced = hzstd_capture_stall_trace(s, &trace);
     s->wd_reported = !(traced && hzstd_stall_seen_before(hzstd_stall_stack_hash(trace)));
     if (!s->wd_reported) {
@@ -1395,10 +1414,6 @@ static void hzstd_stall_report(hzstd_sched_t *s, double ran, bool first)
   if (traced) {
     // Kept, like the trace: a report is rare (once per stack).
     hzstd_print_stacktrace_without_gc(trace);
-  }
-  if (first) {
-    hzstd_task_t *running = s->thread->current_task;
-    hzstd_trace_note_foreign(s, HZSTD_SCHED_EVENT_STALL, running != NULL ? running->id : 0, (uint32_t)(ran * 1000.0));
   }
   fflush(stderr);
 }
@@ -1550,15 +1565,14 @@ static void GC_CALLBACK hzstd_gc_event(GC_EventType event)
   else if (event == GC_EVENT_POST_START_WORLD) {
     t_hzstd_gc_stopped += hzstd_wall_seconds() - t_hzstd_gc_stop_start;
   }
-  // The profiler's record (no allocation while the world is stopped: room for
-  // the four events is made when the collection starts).
+  // The profiler's record (no allocation while the world is stopped: the
+  // spare slots every other append leaves, HZSTD_TRACE_SPARE, are its room).
   if (hzstd_sched_tracing() && hzstd_current_thread != NULL && hzstd_current_thread->sched != NULL) {
     hzstd_sched_t *traced = hzstd_current_thread->sched;
     hzstd_task_t *running = hzstd_current_thread->current_task;
     uint64_t task = running != NULL ? running->id : 0;
     if (event == GC_EVENT_START) {
-      hzstd_trace_reserve(traced, 4);
-      hzstd_trace_append(traced, HZSTD_SCHED_EVENT_GC_BEGIN, task, 0, 0, true);
+      hzstd_trace_append(traced, HZSTD_SCHED_EVENT_GC_BEGIN, task, 0, 0, false);
     }
     else if (event == GC_EVENT_PRE_STOP_WORLD) {
       hzstd_trace_append(traced, HZSTD_SCHED_EVENT_WORLD_STOPPED, task, 0, 0, true);

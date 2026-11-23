@@ -649,7 +649,7 @@ namespace profiling {
             } else if e.kind == eventWorldStarted && worldBegin >= 0.0 {
                 bars.push(Bar { beginUs: worldBegin, endUs: us, data: { type: "GC, world stopped" } });
                 worldBegin = -1.0;
-            } else if e.kind == eventStall {
+            } else if e.kind == eventStall && runBegin >= 0.0 && e.task == runTask {
                 runNote = f"stall warning after {e.reason} ms";
             } else if e.kind == eventOsOut {
                 osOut = us;

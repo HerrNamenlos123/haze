@@ -78,6 +78,9 @@ size_t hzstd_alloc_window_depth(void);
 void hzstd_alloc_windows_restore(size_t depth);
 // A task's windows, once it ended (none may be open then).
 void hzstd_alloc_windows_release(hzstd_alloc_windows_t *windows);
+// Closes every window of a task that never runs again (killed: its frames
+// are gone without returning through them).
+void hzstd_alloc_windows_discard(hzstd_alloc_windows_t *windows);
 
 // Forces an immediate full Boehm collection (GC_gcollect) instead of waiting
 // for GC's own heap-growth-driven heuristics to decide one is due. Normally

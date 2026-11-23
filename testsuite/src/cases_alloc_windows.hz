@@ -150,13 +150,15 @@ fn main(): int {
             "255 true true");
 
         // A recovered panic closes the windows it unwound; one around it stays
-        // open and counts on, and a spent limit does not trip again.
+        // open and counts on (the panic's own report counts too, so at least
+        // the three allocations), and a spent limit does not trip again.
         s.run(
             "allocation windows: a recovered panic closes the windows it unwound",
             helpers() + """
 ref struct Seen {
     recovered: int = 0;
     after: sys.AllocationStats = sys.AllocationStats { count: -1, bytes: -1 };
+    afterC: bool = false;
 }
 fn main(): int {
     // Known only at run time, so the lambdas below are no `noreturn` ones.
@@ -179,18 +181,80 @@ fn main(): int {
         sys.limitAllocations({ count: 1 }, () => {
             allocA();
             let r = attempt { allocB(); 0 } recover e { 1 };
+            // Reached only if the spent limit does not trip again.
             allocC();
-            if r == 1 { sys.panic("recovered inside"); }
+            seen.afterC = r == 1;
         });
         0
     } recover e {
         2
     };
-    fmt.println(f"{seen.recovered} {seen.after.count} {seen.after.bytes} {outer.count >= 3} {spent}");
+    fmt.println(f"{seen.recovered} {seen.after.count} {seen.after.bytes} {outer.count >= 3} {spent} {seen.afterC}");
     return 0;
 }
 """,
-            "1 1 100 true 2");
+            "1 1 100 true 0 true");
+
+        // An allocation a limit refuses never happens: no open window counts
+        // it. Compared with the same recovery from a panic that allocates
+        // nothing: the two panics' own messages differ by some bytes, the
+        // refused allocation would add a megabyte.
+        s.run(
+            "allocation windows: an allocation a limit refuses counts nowhere",
+            helpers() + """
+fn main(): int {
+    let boom = sys.args().length > 0;
+    let refused = sys.traceAllocations(() => {
+        let r = attempt {
+            sys.limitAllocations({ count: 0 }, () => { do unsafe { __c__("(void)hzstd_heap_allocate(1000000, NULL);"); }; });
+            0
+        } recover e { 1 };
+    });
+    let calm = sys.traceAllocations(() => {
+        let r = attempt {
+            sys.limitAllocations({ count: 0 }, () => { if boom { sys.panic("no allocation"); } });
+            0
+        } recover e { 1 };
+    });
+    fmt.println(f"{refused.bytes - calm.bytes < 100000}");
+    return 0;
+}
+""",
+            "true");
+
+        // A task that never runs to its end (killed when its thread ends:
+        // a background task, or every task after sys.exit) closes its open
+        // windows with it.
+        s.run(
+            "allocation windows: a killed task's open windows close with it",
+            helpers() + """
+fn main(): int {
+    let forever = sys.args().length > 0;
+    let bg = task.spawn(() => {
+        let stats = sys.traceAllocations(() => {
+            while forever { time.sleep(0.005); }
+        });
+        return 0;
+    }, { background: true });
+    time.sleep(0.02);
+    fmt.println("main ends");
+    return 0;
+}
+""",
+            "main ends");
+
+        s.runExitCode(
+            "allocation windows: sys.exit inside an open window ends the program with its status",
+            helpers() + """
+fn main(): int {
+    let leave = sys.args().length > 0;
+    let stats = sys.traceAllocations(() => {
+        if leave { sys.exit(3); }
+    });
+    return 0;
+}
+""",
+            3);
 
         // The window is the task's: another task's allocations stay out, also
         // those it makes while this one is suspended inside the window.

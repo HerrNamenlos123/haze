@@ -413,7 +413,9 @@ static DWORD WINAPI hzstd_panic_handler_thread(LPVOID _)
   for (;;) {
     hzstd_wait_for_semaphore(panic_trigger);
 
-    hzstd_allocator_t allocator = hzstd_make_heap_allocator();
+    // Not GC memory: the panicking thread may hold the collector's lock (as
+    // hzstd_platform_linux.c's worker). Kept: a report is rare.
+    hzstd_allocator_t allocator = hzstd_make_non_gc_raw_malloc_allocator();
 
     // From a copy of the context: the panicking thread may still poll it.
     hzstd_dynamic_array_t* frameArray = hzstd_walk_and_name(&panic_context, NULL, allocator, SIZE_MAX);

@@ -229,6 +229,12 @@ void hzstd_alloc_windows_restore(size_t depth)
   hz_alloc_windows_moved(slot, -closed);
 }
 
+void hzstd_alloc_windows_discard(hzstd_alloc_windows_t *windows)
+{
+  atomic_fetch_sub_explicit(&hz_alloc_task_windows_open, windows->depth, memory_order_relaxed);
+  windows->depth = 0;
+}
+
 void hzstd_alloc_windows_release(hzstd_alloc_windows_t *windows)
 {
   if (windows->depth != 0) {
@@ -236,11 +242,6 @@ void hzstd_alloc_windows_release(hzstd_alloc_windows_t *windows)
   }
   free(windows->windows);
   *windows = (hzstd_alloc_windows_t) { 0 };
-}
-
-static bool hz_alloc_window_past(const hzstd_alloc_window_t *w)
-{
-  return (w->max_count >= 0 && w->count > w->max_count) || (w->max_bytes >= 0 && w->bytes > w->max_bytes);
 }
 
 // "12 allocations", "4096 bytes" or both, for the limit panic.
@@ -257,31 +258,42 @@ static void hz_alloc_window_format_limit(char *out, size_t cap, hzstd_int_t max_
   }
 }
 
+// Whether the window would be past a limit after one more allocation of
+// `size` bytes.
+static bool hz_alloc_window_would_pass(const hzstd_alloc_window_t *w, size_t size)
+{
+  return (w->max_count >= 0 && w->count + 1 > w->max_count)
+      || (w->max_bytes >= 0 && w->bytes + (hzstd_int_t)size > w->max_bytes);
+}
+
 static void hz_alloc_windows_count_slow(size_t size)
 {
   hzstd_alloc_windows_t *slot = hz_alloc_windows_slot();
   hzstd_alloc_window_t *over = NULL;
   for (size_t i = slot->depth; i-- > 0;) {
-    hzstd_alloc_window_t *w = &slot->windows[i];
-    w->count += 1;
-    w->bytes += (hzstd_int_t)size;
-    if (over == NULL && hz_alloc_window_past(w)) {
-      over = w;
+    if (hz_alloc_window_would_pass(&slot->windows[i], size)) {
+      over = &slot->windows[i];
+      break;
     }
   }
   if (over == NULL) {
+    for (size_t i = 0; i < slot->depth; i++) {
+      slot->windows[i].count += 1;
+      slot->windows[i].bytes += (hzstd_int_t)size;
+    }
     return;
   }
-  // The innermost window past its limit is reported. A limit that is past is
-  // spent: the panic's own report, and code that recovers from it inside the
-  // window, must not trip it again.
+  // The innermost window it would take past a limit is reported, and the
+  // allocation does not happen: no window counts it. A limit that would be
+  // passed is spent: the panic's own report, and code that recovers from it
+  // inside the window, must not trip it again.
   char limit[96];
   hz_alloc_window_format_limit(limit, sizeof(limit), over->max_count, over->max_bytes);
-  hzstd_int_t count = over->count;
-  hzstd_int_t bytes = over->bytes;
+  hzstd_int_t count = over->count + 1;
+  hzstd_int_t bytes = over->bytes + (hzstd_int_t)size;
   hzstd_source_location_t where = over->where;
   for (size_t i = 0; i < slot->depth; i++) {
-    if (hz_alloc_window_past(&slot->windows[i])) {
+    if (hz_alloc_window_would_pass(&slot->windows[i], size)) {
       slot->windows[i].max_count = -1;
       slot->windows[i].max_bytes = -1;
     }
@@ -385,11 +397,13 @@ void *hzstd_heap_allocate_n(size_t size, const char *dataType, int skip_n_frames
 {
   hzstd_memory_instrumentation_callback_t fn;
   void *data;
+  // The allocation first: one an allocation window refuses never reaches the
+  // profiler.
+  void *ptr = hz_gc_malloc(size);
   if (hz_profiler_instrumentation_try_get(&fn, &data)) {
     fn(hz_profiler_instrument_allocation_type_heap, size, dataType, 1 + skip_n_frames, data);
   }
-
-  return hz_gc_malloc(size);
+  return ptr;
 }
 
 void *hzstd_heap_allocate(size_t size, const char *dataType)
@@ -401,11 +415,13 @@ void *hzstd_heap_allocate_unscanned_n(size_t size, const char *dataType, int ski
 {
   hzstd_memory_instrumentation_callback_t fn;
   void *data;
+  // The allocation first: one an allocation window refuses never reaches the
+  // profiler.
+  void *ptr = hz_gc_malloc_atomic(size);
   if (hz_profiler_instrumentation_try_get(&fn, &data)) {
     fn(hz_profiler_instrument_allocation_type_heap_unscanned, size, dataType, 1 + skip_n_frames, data);
   }
-
-  return hz_gc_malloc_atomic(size);
+  return ptr;
 }
 
 void *hzstd_heap_allocate_unscanned(size_t size, const char *dataType)
@@ -417,11 +433,11 @@ void *hzstd_heap_realloc_n(void *buffer, size_t size, const char *dataType, int 
 {
   hzstd_memory_instrumentation_callback_t fn;
   void *data;
+  void *ptr = hz_gc_realloc(buffer, size);
   if (hz_profiler_instrumentation_try_get(&fn, &data)) {
     fn(hz_profiler_instrument_allocation_type_heap_realloc, size, dataType, 1 + skip_n_frames, data);
   }
-
-  return hz_gc_realloc(buffer, size);
+  return ptr;
 }
 
 void *hzstd_heap_realloc(void *buffer, size_t size, const char *dataType)
