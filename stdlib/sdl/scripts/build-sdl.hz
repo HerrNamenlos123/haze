@@ -1,5 +1,72 @@
+// What SDL's Wayland backend (cmake/sdlchecks.cmake, CheckWayland and the
+// libdecor check) and this module need on Linux: pkg-config names, and the
+// packages that ship them on Ubuntu/Debian and on Fedora. All are checked
+// before anything is fetched or built, and every missing one is named at once.
+struct SystemPackage {
+    pkgConfig: str;
+    apt: str;
+    dnf: str;
+}
+
+fn linuxPackages(): []SystemPackage {
+    return [
+        SystemPackage { pkgConfig: "wayland-client >= 1.18", apt: "libwayland-dev", dnf: "wayland-devel" },
+        SystemPackage { pkgConfig: "wayland-egl", apt: "libwayland-dev", dnf: "wayland-devel" },
+        SystemPackage { pkgConfig: "wayland-cursor", apt: "libwayland-dev", dnf: "wayland-devel" },
+        // The program SDL and gen-wayland-protocols.hz run; its .pc file ships with it.
+        SystemPackage { pkgConfig: "wayland-scanner", apt: "libwayland-dev", dnf: "wayland-devel" },
+        SystemPackage { pkgConfig: "egl", apt: "libegl-dev", dnf: "libglvnd-devel" },
+        SystemPackage { pkgConfig: "xkbcommon >= 0.5.0", apt: "libxkbcommon-dev", dnf: "libxkbcommon-devel" },
+        SystemPackage { pkgConfig: "libdecor-0", apt: "libdecor-0-dev", dnf: "libdecor-devel" },
+    ];
+}
+
+// `words` with `word` added unless it is there already.
+fn appendOnce(words: str, word: str): str {
+    let parts = words.split(" ");
+    for (let i = 0; i < parts.length; i++) {
+        if parts[i] == word {
+            return words;
+        }
+    }
+    if words.length == 0 {
+        return word;
+    }
+    return f"{words} {word}";
+}
+
+// None, or the message naming every missing package with both install lines.
+fn missingLinuxPackages(): str | none {
+    if !process.run("pkg-config", { "--version" }, process.Options { inherit_stdio: false }) {
+        return "pkg-config is not installed\n  Ubuntu/Debian: sudo apt install pkg-config\n  Fedora:        sudo dnf install pkgconf-pkg-config";
+    }
+    let names = "";
+    let apt = "";
+    let dnf = "";
+    let packages = linuxPackages();
+    for (let i = 0; i < packages.length; i++) {
+        let p = packages[i];
+        if !process.run("pkg-config", { "--exists", p.pkgConfig }, process.Options { inherit_stdio: false }) {
+            names = names.length == 0 ? p.pkgConfig : f"{names}, {p.pkgConfig}";
+            apt = appendOnce(apt, p.apt);
+            dnf = appendOnce(dnf, p.dnf);
+        }
+    }
+    if names.length == 0 {
+        return none;
+    }
+    return f"missing system packages: {names}\n  Ubuntu/Debian: sudo apt install {apt}\n  Fedora:        sudo dnf install {dnf}";
+}
+
 fn main(): int {
     attempt {
+        if sys.isLinux() {
+            let missing = missingLinuxPackages();
+            if missing is str {
+                raise missing;
+            }
+        }
+
         let binaryDir = env.get("HAZE_MODULE_BINARY_DIR");
         if !binaryDir { raise f"HAZE_MODULE_BINARY_DIR not defined"; }
 
@@ -65,38 +132,6 @@ fn main(): int {
                 inherit_stdio: true,
                 cwd: repoPath,
             })?!;
-        }
-
-        // This is for building with Wayland support on a fresh non-desktop linux:
-        // sudo apt install \
-        //     libwayland-dev \
-        //     wayland-protocols \
-        //     libxkbcommon-dev \
-        //     libegl1-mesa-dev \
-        //     libgles2-mesa-dev
-
-        if sys.isLinux() {
-            let pkg = process.run(
-                "pkg-config",
-                { "--version" },
-            );
-            if !pkg {
-                raise f"pkg-config is not installed";
-            }
-            let requiredPackages: []str = [
-                "libdecor-0",
-            ];
-            for package in requiredPackages {
-                let result = process.run(
-                    "pkg-config",
-                    { "--exists", package },
-                    process.Options {}
-                );
-
-                if !result {
-                    raise f"Required system package '{package}' is missing";
-                }
-            }
         }
 
         fs.createDirectory(f"{repoPath}/build")?!;
