@@ -680,6 +680,12 @@ void hzstd_print_stacktrace(hzstd_stacktrace_t st)
   fflush(stderr);
 }
 
+void hzstd_print_stacktrace_without_gc(hzstd_stacktrace_t st)
+{
+  print_frames_to_stderr(hzstd_make_non_gc_raw_malloc_allocator(), st.frames, st.skip_n_frames);
+  fflush(stderr);
+}
+
 // Stringifies the full panic report (header + message + frames).
 hzstd_str_t hzstd_stringify_panic_info(hzstd_allocator_t alloc, hzstd_panic_info_t info)
 {

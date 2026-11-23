@@ -486,20 +486,26 @@ fn main(): int {
 
         // Section 10: a stall is reported with its trace once per stack (by
         // the names of its functions); the same stack again stays quiet, a
-        // different one is reported.
+        // different one is reported. The loops look at the clock only every
+        // million steps: a trace caught inside time.now() is another stack, and
+        // checking it every step put most traces there.
         s.run(
             "tasks: a stall trace is printed once per stack",
             """
 fn spinA(seconds: real): int {
     let start = time.now();
     let n = 0;
-    while time.now() - start < seconds { n++; }
+    while time.now() - start < seconds {
+        for (let i = 0; i < 1000000; i++) { n++; }
+    }
     return n;
 }
 fn spinB(seconds: real): int {
     let start = time.now();
     let n = 0;
-    while time.now() - start < seconds { n++; }
+    while time.now() - start < seconds {
+        for (let i = 0; i < 1000000; i++) { n++; }
+    }
     return n;
 }
 fn main(): int {
@@ -519,6 +525,34 @@ fn main(): int {
 }
 """,
             "0 2 true true");
+
+        // The watchdog allocates no GC memory, also not to print a stall
+        // trace: a stall inside a profiled window adds nothing to the
+        // program's allocations (the profiler's hook sees every thread).
+        s.run(
+            "tasks: a stall report allocates nothing the program's profiler counts",
+            """
+fn spin(seconds: real): int {
+    let start = time.now();
+    let n = 0;
+    while time.now() - start < seconds { n++; }
+    return n;
+}
+fn main(): int {
+    let args = sys.args();
+    if args.length > 1 && args[1] == "child" {
+        let p = Profiler({ samplingRate: 0, memoryInstrumentation: true, memoryInstrumentationStacktraces: false });
+        let n = spin(0.06);
+        let r = p.stop();
+        // The profiler reports on stdout: the count goes out as the status.
+        return r.memoryInstrumentationFrames.length - 1;
+    }
+    let r = process.runCaptured(args[0], ["child"]);
+    fmt.println(f"{r.exitCode} {r.stderrResult.contains("It is currently at:")}");
+    return 0;
+}
+""",
+            "0 true");
 
         // C521, C576: once a graceful exit started, its status is final: a
         // failure after it (here in an exit handler, where no task runs) is

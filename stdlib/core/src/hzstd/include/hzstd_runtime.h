@@ -310,6 +310,10 @@ hzstd_stacktrace_t hzstd_build_stacktrace(int skip_n_frames);
 // Print only the "Stack trace:" section (no message/type header).
 void hzstd_print_stacktrace(hzstd_stacktrace_t st);
 
+// The same, without GC memory: for runtime threads that must allocate none
+// (the stall watchdog). The names it builds stay in malloc memory.
+void hzstd_print_stacktrace_without_gc(hzstd_stacktrace_t st);
+
 // Stringify only the "Stack trace:" section (no message/type header).
 // Pass hzstd_make_heap_allocator() for a persistent result.
 hzstd_str_t hzstd_stringify_stacktrace(hzstd_allocator_t alloc, hzstd_stacktrace_t st);

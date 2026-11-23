@@ -1019,7 +1019,8 @@ static void hzstd_stall_report(hzstd_sched_t *s, double ran, bool first)
     fwrite(text, 1, (size_t)n < sizeof(text) ? (size_t)n : sizeof(text) - 1, stderr);
   }
   if (traced) {
-    hzstd_print_stacktrace(trace);
+    // Kept, like the trace: a report is rare (once per stack).
+    hzstd_print_stacktrace_without_gc(trace);
   }
   fflush(stderr);
 }
