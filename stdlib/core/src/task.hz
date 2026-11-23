@@ -31,7 +31,7 @@ export enum TaskError {
 // type for both. `join()` waits for it; `complete(v)` gives it its value,
 // once (C444). Meant to be passed to whoever needs the result: a future is a
 // reference, every copy is the same future.
-export ref struct Future<T> {
+export opaque ref struct Future<T> {
     private core: cptr;
     private result: Box<T> | none = none;
 

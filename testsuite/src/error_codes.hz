@@ -290,6 +290,7 @@ namespace errorcodes {
         TaskLocalOfNocopyType = 7234,
         RebindOfDeepReactiveMember = 7235,
         TaskLocalOutsideFunction = 7236,
+        PrivateMemberOfNonOpaqueStruct = 7237,
         ThisDistroPackageManagerNotSupportedYetPlease = 8001,
         DeadCodeDetectedAndStripped = 9001,
         EmbeddedFileSizeMBExceeds50MB = 9002,

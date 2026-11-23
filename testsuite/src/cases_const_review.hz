@@ -314,7 +314,7 @@ fn main(): int {
 
         // ── private constructors (C173) ─────────────────────────────────────
         rejects(s, "a private constructor called from outside", priv, """
-struct Vault {
+opaque struct Vault {
     v: int = 0;
     private fn constructor(): Vault { return Vault { v: 5 }; }
 }
@@ -324,7 +324,7 @@ fn main(): int {
 }
 """);
         rejects(s, "a private constructor reached by an implicit conversion", priv, """
-struct Meters {
+opaque struct Meters {
     v: int = 0;
     private fn constructor(n: int): Meters { return Meters { v: n * 100 }; }
 }

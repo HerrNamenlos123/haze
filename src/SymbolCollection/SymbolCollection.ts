@@ -12,6 +12,7 @@ import {
   type ASTModuleImport,
   type ASTRoot,
   type ASTScope,
+  type ASTStructDefinition,
   type ASTStructMemberDefinition,
   type ASTSymbolDefinition,
   type ASTSymbolImport,
@@ -1589,6 +1590,7 @@ function collectTypeDef(
     // =================================================================================================================
 
     case "StructDefinition": {
+      rejectPrivateOutsideOpaque(item);
       const parent = cc.scopeNodes.get(args.currentParentScope);
       assert(
         parent.variant === Collect.ENode.FileScope ||
@@ -2320,6 +2322,29 @@ function collectSymbol(
  * today. `global let` is refused so that nothing silently behaves like a plain
  * global; its H7231 refusal is the code to remove when atomic types exist.
  */
+/**
+ * `private` exists only in an opaque struct (user decision 2026-11-23). A
+ * member hidden from outside makes the struct more than plain data: a literal
+ * written outside would have to set the hidden member or could not exist, so
+ * the struct is made only by its own code, which is what `opaque` means.
+ * `opaque` marks where plain data, which owns nothing and is freely
+ * referenced, ends.
+ */
+function rejectPrivateOutsideOpaque(item: ASTStructDefinition) {
+  if (item.opaque) {
+    return;
+  }
+  const member = [...item.members, ...item.methods].find((m) => m.private);
+  if (!member) {
+    return;
+  }
+  throw new CompilerError(
+    `'${member.name}' is private, so '${item.name}' is no longer plain data and only its own code can make one: declare it 'opaque struct ${item.name}'`,
+    member.sourceloc,
+    HazeErrorCode.PrivateMemberOfNonOpaqueStruct
+  );
+}
+
 function rejectUnavailableGlobalStorage(item: ASTGlobalVariableDefinition) {
   if (item.storage === EGlobalStorage.Thread) {
     return;

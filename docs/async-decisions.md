@@ -122,6 +122,17 @@ Run of 2026-11-17 (unattended, started 01:10 Vienna time on main 8fc71ae9).
 - **S0-18. Operators are checked where every method call is built** (`SemanticBuilder.callableExpr`):
   `a == b`, `a[i]`, `x as T`, `x := v` call the method without naming it. Found by lane S as a
   hole after its checks in member access; fixed test-first.
+- **S0-17a. `private` only in an opaque struct** (user, 2026-11-23: H7237 otherwise, checked where
+  the struct is collected, `rejectPrivateOutsideOpaque`). A member hidden from outside makes the
+  struct more than plain data: a literal written outside would have to set it or could not exist,
+  so only the struct's own code makes one, which is what `opaque` says. `opaque` marks where plain
+  data (owning nothing, freely referenced) ends. A nested struct needs its own `opaque`.
+  Consequences: a literal of such a struct outside is H7118 and a spread H7206 (never H7230);
+  `Future<T>` is `opaque ref struct`; json writes and reads such a struct only through its hooks,
+  also when every private field is `[[json.ignore]]`d (user, 2026-11-23: "opaque requires
+  hooks"; before, such a struct was written without the ignored fields). Made unreachable, kept until the user decides:
+  json's and traverse's per-field private checks after their opaque check, the private check of a
+  spread, the private check of a struct literal's named fields.
 - **S0-19. Serializers never reach inside an encapsulated struct** (user, 2026-11-18). A struct
   with a private field, or an opaque one, is no plain data any more (a private method alone
   changes nothing: no serializer calls methods): its inside is its own code's
@@ -135,7 +146,7 @@ Run of 2026-11-17 (unattended, started 01:10 Vienna time on main 8fc71ae9).
   field walk (the alternative to copying plain memory) is compiled either way. Every rejection is one static assert naming
   the field, not H7230 from inside the stdlib. This covers S1-12's special guards: Context, Logger
   and Allocator are opaque, so json and traverse refuse them by the general rule (the special
-  guards are gone). Open (user): whether `private` should require `opaque`. Deep `rx.reactive` of
+  guards are gone). Deep `rx.reactive` of
   a struct with private fields is still rejected by H7230 (not a serializer; unchanged).
   Reflection still lists private fields; the metadata queries answer for them unchecked, and
   compiler-generated member-wise operations (structural `==`, `default`) are not "outside".
