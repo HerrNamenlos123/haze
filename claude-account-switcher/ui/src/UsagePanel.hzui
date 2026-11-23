@@ -1,8 +1,9 @@
 from ui_widgets import ButtonComponent
 
-// The active account's usage, under the accounts: one line per window, the
-// refresh button beside them, and why the last probe failed when it did (the
-// kind; the message while the pointer is on it).
+// An account's usage, under the accounts (the hovered account's, else the
+// active one's: Root): one line per window, the refresh button beside them,
+// and why the last probe failed when it did (the kind; the message while the
+// pointer is on it).
 
 @props
 accountId: str;

@@ -1,0 +1,205 @@
+// The GNOME Shell extension that is the switcher's tray icon on GNOME
+// (gnome-shell-extension/ in this project). The program installs it for the
+// user itself, from the copy built into it, and turns it on. GNOME Shell
+// looks for extensions only at login, so one written or changed while it runs
+// takes effect at the next login (docs/agent-notes/gnome-shell-window-placement.md).
+
+// The extension's uuid, also its folder's name (gnome-shell-extension/metadata.json).
+// A function: an exported const does not reach other modules (haze ledger).
+export fn extensionUuid(): str {
+    return "claude-account-switcher@hazelang.github.io";
+}
+
+export enum ExtensionInstall { Unchanged, Installed, Updated }
+
+// One file of the extension.
+export struct ExtensionFile {
+    name: str;
+    content: str;
+}
+
+// paths.json, beside the extension's files: where it finds share/tray.json.
+export struct ExtensionPaths {
+    stateDir: str;
+}
+
+// The extension's files for a program whose state folder is `stateDir`.
+export fn extensionFiles(metadata: str, script: str, stateDir: str): []ExtensionFile {
+    return [
+        ExtensionFile { name: "metadata.json", content: metadata },
+        ExtensionFile { name: "extension.js", content: script },
+        ExtensionFile { name: "paths.json", content: json.stringify(ExtensionPaths { stateDir: stateDir }) },
+    ];
+}
+
+// Makes `<extensionsDir>/<extensionUuid()>` hold `files`, writing only those
+// that differ. Installed when the folder was not there, Updated when a file
+// changed, Unchanged when all were as they are.
+export fn installExtension(extensionsDir: str, files: []ExtensionFile): Result<ExtensionInstall, str> {
+    let dir = f"{extensionsDir}/{extensionUuid()}";
+    let there = fs.exists(dir);
+    if !there {
+        return Result<ExtensionInstall, str>.Err(f"{dir} could not be checked: {there}");
+    }
+    let existed: bool = there;
+    let changed = false;
+    for file in files {
+        let path = f"{dir}/{file.name}";
+        let current = fs.readText(path);
+        if current {
+            let text: str = current;
+            if text == file.content {
+                continue;
+            }
+        } else if current != fs.Error.NotFound {
+            return Result<ExtensionInstall, str>.Err(f"{path} could not be read: {current}");
+        }
+        let written = fs.replaceText(path, file.content);
+        if !written {
+            return Result<ExtensionInstall, str>.Err(f"{path} could not be written: {written}");
+        }
+        changed = true;
+    }
+    if !changed {
+        return Result<ExtensionInstall, str>.Ok(ExtensionInstall.Unchanged);
+    }
+    if existed {
+        return Result<ExtensionInstall, str>.Ok(ExtensionInstall.Updated);
+    }
+    return Result<ExtensionInstall, str>.Ok(ExtensionInstall.Installed);
+}
+
+// ── gsettings string lists ───────────────────────────────────────────
+//
+// org.gnome.shell enabled-extensions and disabled-extensions are GVariant
+// string arrays; `gsettings get` prints them in GVariant text, `@as []` or
+// `['a', "b'c"]` (single quotes, or double quotes for a string with a single
+// quote in it, a backslash before a quote or backslash inside), and
+// `gsettings set` takes the same text.
+
+// The strings in `text`, as `gsettings get` prints a string array; an error
+// for anything else, so that a list that is not understood is never written
+// back.
+export fn parseStringList(text: str): Result<[]str, str> {
+    let items: []str = [];
+    let source = ByteBuffer(text.trim());
+    let n = source.length();
+    let i = 0;
+    // `@as []`: the type annotation GVariant puts on an empty array.
+    if n >= 3 && source.getAt(0) == 64 && source.getAt(1) == 97 && source.getAt(2) == 115 {
+        i = 3;
+        while i < n && source.getAt(i) == 32 { i++; }
+    }
+    if i >= n || source.getAt(i) != 91 {
+        return Result<[]str, str>.Err(f"not a string list: {text}");
+    }
+    i++;
+    let expectItem = true;
+    while true {
+        while i < n && source.getAt(i) == 32 { i++; }
+        if i >= n {
+            return Result<[]str, str>.Err(f"not a string list: {text}");
+        }
+        let c = source.getAt(i);
+        if c == 93 {
+            if !expectItem || items.length == 0 {
+                i++;
+                break;
+            }
+            return Result<[]str, str>.Err(f"not a string list: {text}");
+        }
+        if !expectItem {
+            if c != 44 {
+                return Result<[]str, str>.Err(f"not a string list: {text}");
+            }
+            i++;
+            expectItem = true;
+            continue;
+        }
+        if c != 39 && c != 34 {
+            return Result<[]str, str>.Err(f"not a string list: {text}");
+        }
+        let quote = c;
+        i++;
+        let item = ByteBuffer();
+        let closed = false;
+        while i < n {
+            let b = source.getAt(i);
+            if b == 92 && i + 1 < n {
+                item.push(source.getAt(i + 1));
+                i = i + 2;
+                continue;
+            }
+            if b == quote {
+                closed = true;
+                i++;
+                break;
+            }
+            item.push(b);
+            i++;
+        }
+        if !closed {
+            return Result<[]str, str>.Err(f"not a string list: {text}");
+        }
+        item.commit();
+        items.push(item.string());
+        expectItem = false;
+    }
+    while i < n && source.getAt(i) == 32 { i++; }
+    if i != n {
+        return Result<[]str, str>.Err(f"not a string list: {text}");
+    }
+    return Result<[]str, str>.Ok(items);
+}
+
+// `items` in GVariant text, for `gsettings set`.
+export fn printStringList(items: []str): str {
+    if items.length == 0 {
+        return "@as []";
+    }
+    let out = ByteBuffer();
+    out.push(91 as u8);
+    for (let k = 0; k < items.length; k++) {
+        if k > 0 {
+            out.push(44 as u8);
+            out.push(32 as u8);
+        }
+        out.push(39 as u8);
+        let item = ByteBuffer(items[k]);
+        for (let j = 0; j < item.length(); j++) {
+            let b = item.getAt(j);
+            if b == 39 || b == 92 {
+                out.push(92 as u8);
+            }
+            out.push(b);
+        }
+        out.push(39 as u8);
+    }
+    out.push(93 as u8);
+    out.commit();
+    return out.string();
+}
+
+// `list` with `uuid` in it (appended when it was not).
+export fn withItem(list: []str, uuid: str): []str {
+    let out: []str = [];
+    for item in list {
+        if item == uuid {
+            return list;
+        }
+        out.push(item);
+    }
+    out.push(uuid);
+    return out;
+}
+
+// `list` without `uuid`.
+export fn withoutItem(list: []str, uuid: str): []str {
+    let out: []str = [];
+    for item in list {
+        if item != uuid {
+            out.push(item);
+        }
+    }
+    return out;
+}

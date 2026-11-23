@@ -1,0 +1,29 @@
+// ============================================================================
+// process.runCaptured reads its child's stdout and stderr while the child
+// runs. A pipe holds only so much (4 KiB on Windows, 64 KiB on Linux), so a
+// parent that waits for the child's exit before reading leaves a child with
+// more to say blocked in its write forever (found 2026-11-23: a stall
+// warning's trace on stderr hung a test case on Windows).
+// ============================================================================
+
+namespace cases_process_capture {
+
+    export fn register(s: mut testsuite.Suite) {
+        s.run(
+            "process capture: a child that writes more than a pipe holds, to both streams",
+            """
+__c__("#include <stdio.h>\nstatic void write_both(void) { static char out[1000], err[1000]; for (int i = 0; i < 1000; i++) { out[i] = 'o'; err[i] = 'e'; } for (int i = 0; i < 300; i++) { fwrite(out, 1, sizeof(out), stdout); fwrite(err, 1, sizeof(err), stderr); } fflush(stdout); fflush(stderr); }");
+fn main(): int {
+    let args = sys.args();
+    if args.length > 1 && args[1] == "child" {
+        do unsafe { __c__("write_both();"); };
+        return 0;
+    }
+    let r = process.runCaptured(args[0], ["child"]);
+    fmt.println(f"{r.exitCode} {r.stdoutResult.length} {r.stderrResult.length}");
+    return 0;
+}
+""",
+            "0 300000 300000");
+    }
+}

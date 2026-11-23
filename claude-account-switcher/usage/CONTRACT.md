@@ -42,8 +42,9 @@ and machines may see; nothing secret beyond the active token is in it.
 | `tokens/<id>.token` | switcher | switcher only (never shared) |
 | `share/active.token` | switcher | `--print-token` (host apiKeyHelper), the VM's apiKeyHelper |
 | `share/usage.json` | switcher, through `UsageTracker` | `claude-usage-sync`, `claude-usage`, `claude-usage-wait` |
+| `share/tray.json` (GNOME, while it runs) | switcher | its GNOME Shell extension (`ui/src/tray_state.hz`) |
 
-Every file is replaced whole (`fs.replaceText`), never written into.
+Every file is replaced whole (`fs.replaceText`; the tokens with `fs.replacePrivateText`, 0600 on Linux), never written into.
 
 ### usage.json (version 2)
 

@@ -48,4 +48,7 @@ flags = [
     "-lversion",
     "-lcfgmgr32",
     "-lsetupapi",
+    "-lgdi32",
+    "-lole32",
+    "-loleaut32",
 ]

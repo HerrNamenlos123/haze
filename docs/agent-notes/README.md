@@ -40,7 +40,7 @@ and against which commit it was verified; re-check a note against the code befor
 - [haze-notes never-freeze architecture](haze-notes-never-freeze-architecture.md) - tile budgets, incremental save/load
 - [haze-notes PDF export](haze-notes-pdf-export.md) - real-size export, bit-exact perfect_freehand port
 - [Shape page ownership](haze-notes-shape-page-ownership.md) - shape lives on the page of its bbox middle
-- [haze-notes UI](haze-notes-ui-architecture.md) - theme, components, flat FileTree, flat vault index, caches, background walk, tree scroll restore
+- [haze-notes UI](haze-notes-ui-architecture.md) - theme, components, flat FileTree, flat vault index, caches, background walk, tree scroll restore, command line, exclusive mode
 - [Headless UI testing](headless-ui-testing-technique.md) - real Clay layout without GPU
 - [Hidden context](hidden-context-implemented.md) - runtime data and settings, clone, extern C bodies take the context, `:: context`, sys.contextPtr; as built on branch async-runtime
 - [Task-local storage](task-local-storage.md) - one block per module per task, index through the context; Lower/Codegen/hzstd pieces; second task in C for tests
@@ -68,6 +68,7 @@ and against which commit it was verified; re-check a note against the code befor
 - [Running stdlib module tests](running-stdlib-module-tests.md) - throwaway project, relative dep paths, not haze exec
 - [SDL click-through](sdl-focus-clickthrough.md) - activating click is dropped unless the hint is set
 - [SDL hit-test per backend](sdl-hittest-backend-behavior.md) - what DRAGGABLE gives on Windows vs Wayland
+- [GNOME Shell window placement](gnome-shell-window-placement.md) - never move in window-created (segfault); move in `shown`; extensions load only at login
 - [SDL screen saver, keepScreenAwake](sdl-screen-saver-keep-awake.md) - never on by itself; runtime switch; hint before init; SDL_Quit forgets hints
 - [Semantic token routes](semantic-tokens-routes.md) - tsserver vs LSP; opt-in per theme
 - [hzui SFC plugin design](sfc-plugin-design.md) - plugin interface, #source mapping, format rules, quirks
@@ -86,7 +87,7 @@ and against which commit it was verified; re-check a note against the code befor
 - [Profiling and Node runs](profiling-and-node-runs.md) - profile/debug scripts; Node-hosted runs need Node 22+; Bun profiler drops big profiles
 - [Dev compiler paths](dev-compiler-paths.md) - run from the repo root (parser found via cwd); embed paths resolve against haze.toml's dir
 - [wgpu-native fatal errors](wgpu-native-fatal-errors.md) - which calls abort the app; NULL error callbacks; lost panic message; crash offset to function via relink map
-- [.hznote format](hznote-format.md) - haze-notes' file format: a binfile, chunks per page, read by name, plain copies, errors, the migrate-tsk conversion
+- [.hznote format](hznote-format.md) - haze-notes' file format: a binfile, chunks per page, read by name, plain copies, errors
 - [binfile and CacheFile](binfile-and-cachefile.md) - stdlib typed container; CacheFile: deep tracking per field, merge under a lock, views; traps: no consts in import.hz, zero-field struct
 - [File locks](file-locks.md) - fs.tryLockFile/lockFile: flock/LockFileEx, dropped at process death, O_CLOEXEC, never delete the lock file
 - [Lifecycle hooks chain](ui-lifecycle-hooks.md) - onFrame/onMounted/onUnmount: every registration runs, in order

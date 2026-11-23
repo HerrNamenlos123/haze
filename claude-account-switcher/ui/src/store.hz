@@ -4,7 +4,9 @@
 //
 // Three folders:
 // - `stateDir`, this machine's own: settings.json and tokens/<id>.token.
-//   Never synced: a token belongs to one machine.
+//   Never synced: a token belongs to one machine. On Linux the folder and
+//   tokens/ are 0700 and every token file 0600 (fs.createPrivateDirectory,
+//   fs.replacePrivateText); active.token too.
 // - `shareDir` (`<stateDir>/share`), what this machine shares with tools and
 //   with a VM it mounts the folder into: active.token and usage.json (written
 //   by the usage tracker, see claude_usage).
@@ -13,8 +15,8 @@
 //
 // active.token is the active account's token, copied. It is the one file
 // Claude Code reads (its apiKeyHelper prints it before requests), so it is
-// only ever replaced as a whole (fs.replaceText): a reader sees the old token
-// or the new one, never a mix.
+// only ever replaced as a whole (fs.replacePrivateText): a reader sees the
+// old token or the new one, never a mix.
 
 import image
 import claude_usage
@@ -203,6 +205,19 @@ export ref struct Switcher {
     // Bumped whenever an icon may have changed (`icons` is not reactive), for
     // whoever shows them or caches their pixels on the GPU.
     iconVersion: rx.Reactive<int>;
+    // The tray icon's GNOME Shell extension was just installed or updated: the
+    // window says so until OK (the shell loads it at the next login).
+    extensionNotice: rx.Reactive<ExtensionInstall>;
+
+    fn showExtensionNotice(install: ExtensionInstall) {
+        if install != ExtensionInstall.Unchanged {
+            this.extensionNotice := install;
+        }
+    }
+
+    fn dismissExtensionNotice() {
+        this.extensionNotice := ExtensionInstall.Unchanged;
+    }
 
     // The icon to show for `id`; draftIconId is the add form's picked one.
     fn iconOf(id: str): image.Image | none {
@@ -212,6 +227,18 @@ export ref struct Switcher {
         for entry in this.icons {
             if entry.id == id {
                 return entry.icon;
+            }
+        }
+        return none;
+    }
+
+    // The file of `id`'s icon; none when it has none that shows.
+    fn iconFileOf(id: str): str | none {
+        if let dir = this.syncedDir() {
+            for entry in this.icons {
+                if entry.id == id {
+                    return f"{dir}/icons/{id}.png";
+                }
             }
         }
         return none;
@@ -560,7 +587,25 @@ export ref struct Switcher {
         return none;
     }
 
-    // What a click on the tray icon does: the next account with a token
+    // The account switchToNext makes active; none when there is no account
+    // with a token here other than the active one.
+    fn nextAccount(): Account | none {
+        let active = rx.get(this.active);
+        if let next = this.nextWithToken(active) {
+            if let current = active {
+                if current == next {
+                    return none;
+                }
+            }
+            let index = this.indexOf(next);
+            if index >= 0 {
+                return this.list()[index];
+            }
+        }
+        return none;
+    }
+
+    // What the tray menu's switch entry does: the next account with a token
     // becomes active. False when there is none to switch to (the host then
     // opens the window) or the switch failed (`problem` says why).
     mut fn switchToNext(): bool {
@@ -594,7 +639,7 @@ export ref struct Switcher {
         if !made {
             return this.fail(f"{this.shareDir} could not be created: {made}");
         }
-        let written = fs.replaceText(this.activeTokenPath(), token);
+        let written = fs.replacePrivateText(this.activeTokenPath(), token);
         if !written {
             return this.fail(f"{this.activeTokenPath()} could not be written: {written}");
         }
@@ -944,11 +989,11 @@ export ref struct Switcher {
     }
 
     fn writeToken(id: str, token: str): bool {
-        let made = fs.createDirectory(this.tokensDir());
+        let made = fs.createPrivateDirectory(this.tokensDir());
         if !made {
             return this.fail(f"{this.tokensDir()} could not be created: {made}");
         }
-        let written = fs.replaceText(this.tokenPath(id), token);
+        let written = fs.replacePrivateText(this.tokenPath(id), token);
         if !written {
             return this.fail(f"{this.tokenPath(id)} could not be written: {written}");
         }
@@ -1207,7 +1252,7 @@ fn moveLegacyActiveToken(stateDir: str, shareDir: str): Result<none, str> {
         if !made {
             return Result<none, str>.Err(f"{shareDir} could not be created: {made}");
         }
-        let written = fs.replaceText(target, token);
+        let written = fs.replacePrivateText(target, token);
         if !written {
             return Result<none, str>.Err(f"{target} could not be written: {written}");
         }
@@ -1226,6 +1271,11 @@ fn moveLegacyActiveToken(stateDir: str, shareDir: str): Result<none, str> {
 // The usage tracker writes `shareDir`/usage.json and feeds Claude Code's
 // cache entry in `claudeConfig` (none: it feeds none).
 export fn openSwitcher(stateDir: str, shareDir: str, claudeConfig: str | none, usageSettings: claude_usage.TrackerSettings, pick: (kind: PickKind) => bool): Result<none, str> {
+    // This user's alone: it holds the tokens.
+    let madeState = fs.createPrivateDirectory(stateDir);
+    if !madeState {
+        return Result<none, str>.Err(f"{stateDir} could not be created: {madeState}");
+    }
     let settings = SettingsFile { profileRepo: "", active: none };
     let hasSettings = false;
     let path = f"{stateDir}/settings.json";
@@ -1262,6 +1312,7 @@ export fn openSwitcher(stateDir: str, shareDir: str, claudeConfig: str | none, u
         claudeSettingsProblem: rx.reactive<str | none>(none),
         claudeSettingsRetries: rx.reactive<int>(0),
         iconVersion: rx.reactive<int>(0),
+        extensionNotice: rx.reactive<ExtensionInstall>(ExtensionInstall.Unchanged),
     };
     if hasSettings {
         store.profileRepo := settings.profileRepo;

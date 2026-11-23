@@ -1,0 +1,34 @@
+// share/tray.json: what the tray icon shows, for the GNOME Shell extension
+// that is the switcher's tray icon on GNOME (gnome-shell-extension/extension.js
+// reads it, and shows no icon without it). The program writes it at start,
+// before it opens a window, and whenever what it says changes; it removes it
+// when it quits. JSON leaves out a field that is none.
+
+export const trayStateVersion = 1;
+
+export struct TrayState {
+    version: int;
+    // The installed program, which the extension runs for a click.
+    executable: str;
+    // The active account's name; none while no account is active.
+    account: str | none;
+    // The active account's icon file; none while it has none (the extension
+    // then shows the program's own icon).
+    icon: str | none;
+    // The name of the account a switch makes active; none when there is no
+    // other account with a token on this machine.
+    next: str | none;
+}
+
+// The tray state of the switcher as it is now.
+export fn trayStateOf(s: Switcher, executable: str): TrayState {
+    let state = TrayState { version: trayStateVersion, executable: executable, account: none, icon: none, next: none };
+    if let account = s.activeAccount() {
+        state.account = account.name;
+        state.icon = s.iconFileOf(account.id);
+    }
+    if let next = s.nextAccount() {
+        state.next = next.name;
+    }
+    return state;
+}

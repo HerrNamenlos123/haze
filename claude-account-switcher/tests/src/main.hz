@@ -912,6 +912,10 @@ ref struct Window {
 }
 
 fn openWindow(sim: mut Sim, activation: rx.Reactive<int>): mut Window {
+    // Every window opens with the pointer outside it and no button held,
+    // whatever the scenario before left (a pointer left on a row hovers it).
+    sim.mouse = { x: -100.0, y: -100.0 };
+    sim.leftHeld = false;
     let layout = ui_layout.LayoutContext({
         width: WIDTH,
         height: HEIGHT,
@@ -1462,8 +1466,9 @@ fn scenarioWindowUsageShown(sim: mut Sim) {
     sim.checkStr("80: red", colorOf(sim, "80%"), RED);
     sim.checkStr("100: red", colorOf(sim, "100%"), RED);
 
-    // No active account: no panel.
+    // No active account and no row hovered: no panel.
     s().deactivate();
+    w.hover({ x: -100.0, y: -100.0 });
     w.frames(3);
     sim.check("nothing without an active account", !shows(sim, "5h"));
 }
@@ -1595,6 +1600,234 @@ fn scenarioUsageProbeAllOnOpen(sim: mut Sim) {
     sim.check("opened again at once: no probe", !s().usage.isProbing("a") && !s().usage.isProbing("b") && !s().usage.isProbing("c"));
 }
 
+// The panel under the accounts shows the hovered account's usage while one
+// is hovered, the active account's otherwise; a click still makes the row's
+// account active.
+fn scenarioWindowUsageFollowsHover(sim: mut Sim) {
+    let f = threeAccounts(sim);
+    let activation = rx.reactive<int>(0);
+    let w = openWindow(sim, activation);
+    noneDue(NOW);
+    probed("a", windowUsage(42.7, NOW + 3 * HOUR + 37 * MINUTE + 20000), windowUsage(85.2, NOW + 2 * DAY + 5 * HOUR), NOW);
+    probed("c", windowUsage(12.0, NOW + HOUR), windowUsage(60.0, NOW + DAY + 2 * HOUR), NOW);
+    s().tickUsage(NOW, 100.0);
+    w.frames(3);
+    sim.check("the active account's usage", shows(sim, "42%") && shows(sim, "3h 37m"));
+
+    w.hover(centerOf(sim, "C"));
+    w.frames(3);
+    sim.check("c hovered: c's 5h and when it resets", shows(sim, "12%") && shows(sim, "1h 0m"));
+    sim.check("c hovered: c's 7d and when it resets", shows(sim, "60%") && shows(sim, "1d 2h"));
+    sim.check("c hovered: a's numbers gone", !shows(sim, "42%") && !shows(sim, "85%"));
+    sim.checkStr("hovering switches nothing", activeId(), "a");
+
+    w.hover(centerOf(sim, "B"));
+    w.frames(3);
+    sim.check("b hovered: no numbers of a or c", !shows(sim, "42%") && !shows(sim, "12%"));
+    sim.check("b hovered: the panel stays", shows(sim, "5h") && shows(sim, "7d"));
+
+    w.hover({ x: -100.0, y: -100.0 });
+    w.frames(3);
+    sim.check("nothing hovered: the active account's again", shows(sim, "42%") && !shows(sim, "12%"));
+
+    w.click(centerOf(sim, "C"));
+    w.frames(3);
+    sim.checkStr("a click switches", activeId(), "c");
+    sim.check("c's usage", shows(sim, "12%"));
+    w.hover({ x: -100.0, y: -100.0 });
+    w.frames(3);
+    sim.check("c active and not hovered: still c's", shows(sim, "12%") && !shows(sim, "42%"));
+
+    // No active account: the panel only while a row is hovered.
+    s().deactivate();
+    w.frames(3);
+    sim.check("no active account, nothing hovered: no panel", !shows(sim, "5h"));
+    w.hover(centerOf(sim, "A"));
+    w.frames(3);
+    sim.check("no active account, a hovered: a's usage", shows(sim, "42%"));
+    w.hover({ x: -100.0, y: -100.0 });
+    w.frames(3);
+    sim.check("and gone again", !shows(sim, "5h"));
+
+    // A hovered account that is removed: its row is gone without the pointer
+    // leaving it, and the panel is the active account's again.
+    s().activateAccount("a");
+    w.hover(centerOf(sim, "C"));
+    w.frames(3);
+    sim.check("c hovered once more", shows(sim, "12%"));
+    s().removeAccount("c");
+    w.frames(3);
+    sim.checkStr("c removed", ids(), "a+,b+");
+    sim.check("the removed account's numbers are gone", !shows(sim, "12%") && shows(sim, "42%"));
+}
+
+// ── Tray state and the GNOME Shell extension ─────────────────────────
+
+fn trayJson(): str {
+    return json.stringify(claude_account_switcher_ui.trayStateOf(s(), "/usr/local/bin/claude-account-switcher"));
+}
+
+// What tray.json says: the active account, its icon file, and the account a
+// switch makes active (none when there is no other with a token here).
+fn scenarioTrayState(sim: mut Sim) {
+    let f = newFixture(sim);
+    open(sim, f);
+    s().setProfileRepo(f.repo);
+    sim.checkStr("no accounts", trayJson(), "{\"version\":1,\"executable\":\"/usr/local/bin/claude-account-switcher\"}");
+    s().addAccount("Alpha", f.iconFile, TOKEN_A);
+    let icons = f"{f.synced()}/icons";
+    sim.checkStr("one account: nothing to switch to", trayJson(),
+        f"{{\"version\":1,\"executable\":\"/usr/local/bin/claude-account-switcher\",\"account\":\"Alpha\",\"icon\":\"{icons}/alpha.png\"}}");
+    s().addAccount("Beta", f.iconFile, TOKEN_B);
+    s().addAccount("Gamma", f.iconFile, TOKEN_C);
+    sim.checkStr("next after alpha", trayJson(),
+        f"{{\"version\":1,\"executable\":\"/usr/local/bin/claude-account-switcher\",\"account\":\"Alpha\",\"icon\":\"{icons}/alpha.png\",\"next\":\"Beta\"}}");
+    fs.removeFile(f"{f.state}/tokens/beta.token");
+    s().reload();
+    sim.checkStr("an account without a token here is skipped", trayJson(),
+        f"{{\"version\":1,\"executable\":\"/usr/local/bin/claude-account-switcher\",\"account\":\"Alpha\",\"icon\":\"{icons}/alpha.png\",\"next\":\"Gamma\"}}");
+    s().switchToNext();
+    sim.checkStr("wraps around", trayJson(),
+        f"{{\"version\":1,\"executable\":\"/usr/local/bin/claude-account-switcher\",\"account\":\"Gamma\",\"icon\":\"{icons}/gamma.png\",\"next\":\"Alpha\"}}");
+    fs.removeFile(f"{icons}/gamma.png");
+    s().reload();
+    sim.checkStr("without an icon file", trayJson(),
+        "{\"version\":1,\"executable\":\"/usr/local/bin/claude-account-switcher\",\"account\":\"Gamma\",\"next\":\"Alpha\"}");
+}
+
+fn installName(r: Result<claude_account_switcher_ui.ExtensionInstall, str>): str {
+    if !r {
+        return f"error {r}";
+    }
+    let install: claude_account_switcher_ui.ExtensionInstall = r;
+    if install == claude_account_switcher_ui.ExtensionInstall.Installed { return "Installed"; }
+    if install == claude_account_switcher_ui.ExtensionInstall.Updated { return "Updated"; }
+    return "Unchanged";
+}
+
+// Written where it differs: Installed, then Unchanged, then Updated for a
+// changed file or a changed state folder, and Updated when a file went missing.
+fn scenarioExtensionInstall(sim: mut Sim) {
+    let f = newFixture(sim);
+    let extensions = f"{f.state}/extensions";
+    let dir = f"{extensions}/{claude_account_switcher_ui.extensionUuid()}";
+    let files = claude_account_switcher_ui.extensionFiles("{\"uuid\":1}", "// one", f.state);
+    sim.checkStr("first install", installName(claude_account_switcher_ui.installExtension(extensions, files)), "Installed");
+    sim.checkStr("metadata", readOr(f"{dir}/metadata.json", ""), "{\"uuid\":1}");
+    sim.checkStr("script", readOr(f"{dir}/extension.js", ""), "// one");
+    sim.checkStr("paths", readOr(f"{dir}/paths.json", ""), json.stringify(claude_account_switcher_ui.ExtensionPaths { stateDir: f.state }));
+    sim.checkStr("again", installName(claude_account_switcher_ui.installExtension(extensions, files)), "Unchanged");
+    let changed = claude_account_switcher_ui.extensionFiles("{\"uuid\":1}", "// two", f.state);
+    sim.checkStr("a changed script", installName(claude_account_switcher_ui.installExtension(extensions, changed)), "Updated");
+    sim.checkStr("script replaced", readOr(f"{dir}/extension.js", ""), "// two");
+    let moved = claude_account_switcher_ui.extensionFiles("{\"uuid\":1}", "// two", f"{f.state}-elsewhere");
+    sim.checkStr("another state folder", installName(claude_account_switcher_ui.installExtension(extensions, moved)), "Updated");
+    fs.removeFile(f"{dir}/metadata.json");
+    sim.checkStr("a missing file", installName(claude_account_switcher_ui.installExtension(extensions, moved)), "Updated");
+    sim.checkStr("metadata back", readOr(f"{dir}/metadata.json", ""), "{\"uuid\":1}");
+}
+
+fn listText(r: Result<[]str, str>): str {
+    if !r {
+        return "refused";
+    }
+    let items: []str = r;
+    let out = "";
+    for item in items {
+        out = out + "<" + item + ">";
+    }
+    return out;
+}
+
+// gsettings' GVariant text for a string array, read and written.
+fn scenarioGsettingsLists(sim: mut Sim) {
+    sim.checkStr("empty", listText(claude_account_switcher_ui.parseStringList("@as []")), "");
+    sim.checkStr("empty without type", listText(claude_account_switcher_ui.parseStringList("[]")), "");
+    sim.checkStr("one", listText(claude_account_switcher_ui.parseStringList("['a@b.c']")), "<a@b.c>");
+    sim.checkStr("several, with a line break after", listText(claude_account_switcher_ui.parseStringList("['a', 'b@c', 'd']\n")), "<a><b@c><d>");
+    sim.checkStr("double quotes and escapes", listText(claude_account_switcher_ui.parseStringList("[\"it's\", 'back\\\\slash', 'q\\'uote']")), "<it's><back\\slash><q'uote>");
+    let refused: []str = ["", "['a'", "['a',]", "['a' 'b']", "[a]", "['a'] x", "@as", "No such schema “org.gnome.shell”"];
+    for text in refused {
+        sim.checkStr(f"refused: {text}", listText(claude_account_switcher_ui.parseStringList(text)), "refused");
+    }
+    sim.checkStr("print empty", claude_account_switcher_ui.printStringList([]), "@as []");
+    sim.checkStr("print", claude_account_switcher_ui.printStringList(["a@b", "it's", "x\\y"]), "['a@b', 'it\\'s', 'x\\\\y']");
+    let round: []str = ["a@b", "it's", "x\\y", "q\"uote"];
+    sim.checkStr("round trip", listText(claude_account_switcher_ui.parseStringList(claude_account_switcher_ui.printStringList(round))), "<a@b><it's><x\\y><q\"uote>");
+    sim.checkStr("added", listText(Result<[]str, str>.Ok(claude_account_switcher_ui.withItem(["a", "b"], "c"))), "<a><b><c>");
+    sim.checkStr("already there", listText(Result<[]str, str>.Ok(claude_account_switcher_ui.withItem(["a", "c", "b"], "c"))), "<a><c><b>");
+    sim.checkStr("removed", listText(Result<[]str, str>.Ok(claude_account_switcher_ui.withoutItem(["c", "a", "c"], "c"))), "<a>");
+}
+
+// The notice after the program installed or updated its GNOME Shell
+// extension: up until OK, also over a click elsewhere in the window.
+fn scenarioWindowExtensionNotice(sim: mut Sim) {
+    let f = threeAccounts(sim);
+    let activation = rx.reactive<int>(0);
+    let w = openWindow(sim, activation);
+    sim.check("no notice", !shows(sim, "OK"));
+    s().showExtensionNotice(claude_account_switcher_ui.ExtensionInstall.Unchanged);
+    w.frames(2);
+    sim.check("none for an unchanged extension", !shows(sim, "OK"));
+    s().showExtensionNotice(claude_account_switcher_ui.ExtensionInstall.Installed);
+    w.frames(2);
+    sim.check("installed", findTextStarting(sim, "Tray icon installed") ? true : false);
+    sim.check("with OK", shows(sim, "OK"));
+    // Nothing new to tell never takes the notice away.
+    s().showExtensionNotice(claude_account_switcher_ui.ExtensionInstall.Unchanged);
+    w.frames(2);
+    sim.check("an unchanged extension keeps it", shows(sim, "OK"));
+    w.click({ x: 20.0, y: 400.0 });
+    w.frames(2);
+    sim.check("a click elsewhere leaves it", shows(sim, "OK"));
+    w.click(centerOf(sim, "OK"));
+    w.frames(2);
+    sim.check("OK closes it", !shows(sim, "OK"));
+    sim.check("installed text gone", !(findTextStarting(sim, "Tray icon installed") ? true : false));
+    sim.checkStr("nothing else changed", ids(), "a+,b+,c+");
+    s().showExtensionNotice(claude_account_switcher_ui.ExtensionInstall.Updated);
+    w.frames(2);
+    sim.check("updated", findTextStarting(sim, "Tray icon updated") ? true : false);
+}
+
+// ── Permissions ──────────────────────────────────────────────────────
+
+// The permission bits of `path` in octal, as stat prints them; "gone" when
+// it is not there.
+fn mode(path: str): str {
+    let r = process.runCaptured("stat", ["-c", "%a", path]);
+    if r.exitCode != 0 {
+        return "gone";
+    }
+    return r.stdoutResult.trim();
+}
+
+// On Linux the tokens are this user's alone: the state folder and tokens/
+// 0700, every token file and share/active.token 0600, also once replaced.
+// (Bug 2026-11-18: they were 0644, and fs.replaceText made Claude Code's
+// 0600 files 0644 too.) On Windows a file has its folder's permissions.
+fn scenarioFilesPrivate(sim: mut Sim) {
+    if !sys.isLinux() {
+        return;
+    }
+    let f = newFixture(sim);
+    open(sim, f);
+    sim.checkStr("state folder made private at start", mode(f.state), "700");
+    s().setProfileRepo(f.repo);
+    s().addAccount("A", f.iconFile, TOKEN_A);
+    s().addAccount("B", f.iconFile, TOKEN_B);
+    sim.checkStr("tokens folder", mode(f"{f.state}/tokens"), "700");
+    sim.checkStr("a's token", mode(f"{f.state}/tokens/a.token"), "600");
+    sim.checkStr("b's token", mode(f"{f.state}/tokens/b.token"), "600");
+    sim.checkStr("active token", mode(f"{f.share}/active.token"), "600");
+    s().switchToNext();
+    sim.checkStr("switched to b", readOr(f"{f.share}/active.token", ""), TOKEN_B);
+    sim.checkStr("active token after a switch", mode(f"{f.share}/active.token"), "600");
+    s().setToken("a", TOKEN_C);
+    sim.checkStr("a's token replaced", readOr(f"{f.state}/tokens/a.token", ""), TOKEN_C);
+    sim.checkStr("a's token after replacing it", mode(f"{f.state}/tokens/a.token"), "600");
+}
+
 fn main(): int {
     let args = sys.args();
     let only = args.length >= 2 ? args[1] : "";
@@ -1648,7 +1881,13 @@ fn main(): int {
     run("window-usage-shown", (s: mut Sim) => { scenarioWindowUsageShown(s); });
     run("window-usage-stale-and-error", (s: mut Sim) => { scenarioWindowUsageStaleAndError(s); });
     run("window-usage-refresh", (s: mut Sim) => { scenarioWindowUsageRefresh(s); });
+    run("window-usage-follows-hover", (s: mut Sim) => { scenarioWindowUsageFollowsHover(s); });
     run("usage-probe-all-on-open", (s: mut Sim) => { scenarioUsageProbeAllOnOpen(s); });
+    run("files-private", (s: mut Sim) => { scenarioFilesPrivate(s); });
+    run("tray-state", (s: mut Sim) => { scenarioTrayState(s); });
+    run("extension-install", (s: mut Sim) => { scenarioExtensionInstall(s); });
+    run("gsettings-lists", (s: mut Sim) => { scenarioGsettingsLists(s); });
+    run("window-extension-notice", (s: mut Sim) => { scenarioWindowExtensionNotice(s); });
     fmt.println(f"{sim.checks - sim.failures}/{sim.checks} checks passed");
     return sim.failures;
 }

@@ -1,0 +1,223 @@
+import image
+
+// The command line (main.hz): which note the app starts with, and the
+// commands that run without a window.
+
+fn printUsage() {
+    fmt.println("Usage:");
+    fmt.println("  haze-notes                                       the app");
+    fmt.println("  haze-notes <note.hznote>                         the app, with the note open in its vault");
+    fmt.println("  haze-notes --exclusive <note.hznote>             only this note: no tree, nothing remembered");
+    fmt.println("  haze-notes new <note.hznote> [--image <picture>] creates a note, the picture across the top of page 1");
+    fmt.println("  haze-notes export-pdf <note.hznote> [<out.pdf>]  writes the note as a PDF (default: beside it)");
+}
+
+// What the app starts with.
+struct Launch {
+    // The note to open, as given; "" for none.
+    note: str = "";
+    // On its own (ExclusiveNote), rather than in its vault.
+    exclusive: bool = false;
+    // The vault it is opened in, and the note's path in it (UI.hzui).
+    vault: str = "";
+    noteInVault: str = "";
+}
+
+// The app is not started: what was wrong has been printed, and this is the
+// exit code.
+struct LaunchRefused {
+    exitCode: int;
+}
+
+fn launchFrom(args: []str): Launch | LaunchRefused {
+    if args.length == 1 {
+        return Launch {};
+    }
+    let exclusive = args[1] == "--exclusive";
+    let given = "";
+    if exclusive && args.length == 3 {
+        given = args[2];
+    } else if !exclusive && args.length == 2 && !args[1].startsWith("-") {
+        given = args[1];
+    } else {
+        printUsage();
+        return LaunchRefused { exitCode: 2 };
+    }
+    // The one spelling of the path: the vault is found by it, and is
+    // remembered by it.
+    let resolved = fs.realPath(given);
+    if !resolved {
+        // (fsErrorText says a folder is gone, which it is not here.)
+        let why = resolved == fs.Error.NotFound ? "there is no such file" : fsErrorText(resolved);
+        fmt.println(f"Cannot open {given}: {why}.");
+        return LaunchRefused { exitCode: 1 };
+    }
+    let note: str = resolved;
+    if exclusive {
+        return Launch { note: note, exclusive: true };
+    }
+    let vault = vaultContaining(note);
+    if !vault {
+        fmt.println(f"{given} is in no vault: no folder above it has a .hznotes folder. To edit it on its own: haze-notes --exclusive {given}");
+        return LaunchRefused { exitCode: 1 };
+    }
+    let folder: str = vault;
+    let relative = vaultRelative(folder, note);
+    assert(relative, "a note outside the vault it was found in");
+    let inVault: str = relative;
+    return Launch { note: note, vault: folder, noteInVault: inVault };
+}
+
+// The vault `path` is in: the nearest folder above it with a .hznotes folder,
+// where every vault the app has opened keeps its caches.
+fn vaultContaining(path: str): str | none {
+    let end = path.length;
+    while end > 0 {
+        let cut = end - 1;
+        while cut >= 0 && !isSeparator(path[cut] as int) {
+            cut -= 1;
+        }
+        if cut <= 0 {
+            return none;
+        }
+        let folder = path.slice(0, cut);
+        // `exists` answers with a Result -- its Ok-ness is not the answer.
+        if let there = fs.exists(f"{folder}/.hznotes") {
+            if there {
+                return folder;
+            }
+        }
+        end = cut;
+    }
+    return none;
+}
+
+// ── haze-notes new ──────────────────────────────────────────────────────
+
+// A picture as a note holds it: a PNG file.
+struct NotePicture {
+    png: Bytes;
+    width: int = 0;
+    height: int = 0;
+    // Why there is none, "" when there is.
+    problem: str = "";
+}
+
+// The picture file at `path`: a PNG as it is, anything else image.decode
+// reads converted to one (as a paste converts what the clipboard holds).
+fn readPicture(path: str): NotePicture {
+    let read = fs.readBinary(path);
+    if !read {
+        return NotePicture { png: Bytes(), problem: f"cannot read it ({fsErrorText(read)})" };
+    }
+    let bytes: Bytes = read;
+    let png = bytes;
+    if !isPng(bytes) {
+        // The file's own channels, as a paste keeps them.
+        let decoded = image.decode(bytes, 0);
+        if !decoded {
+            return NotePicture { png: Bytes(), problem: decoded.message };
+        }
+        let pixels: image.Image = decoded;
+        let encoded = image.encodePng(pixels);
+        if !encoded {
+            return NotePicture { png: Bytes(), problem: encoded.message };
+        }
+        png = encoded;
+    }
+    let info = image.info(png);
+    if !info {
+        return NotePicture { png: Bytes(), problem: info.message };
+    }
+    if info.width <= 0 || info.height <= 0 {
+        return NotePicture { png: Bytes(), problem: "it has no pixels" };
+    }
+    return NotePicture { png: png, width: info.width, height: info.height };
+}
+
+// The PNG file signature.
+fn isPng(bytes: Bytes): bool {
+    if bytes.length < 8 {
+        return false;
+    }
+    return bytes[0] == 0x89 && bytes[1] == 0x50 && bytes[2] == 0x4E && bytes[3] == 0x47
+        && bytes[4] == 0x0D && bytes[5] == 0x0A && bytes[6] == 0x1A && bytes[7] == 0x0A;
+}
+
+// `haze-notes new <note> [--image <picture>]`: a new note, as the tree's "New
+// note" makes it, optionally with the picture across the top of its first
+// page: the page's full width from its top-left corner, or as wide as fits
+// when it would be taller than the page. Never replaces a file.
+fn newCommand(args: []str): int {
+    let picturePath = "";
+    if args.length == 5 && args[3] == "--image" {
+        picturePath = args[4];
+    } else if args.length != 3 {
+        printUsage();
+        return 2;
+    }
+    let target = args[2];
+    let doc = newNote();
+    if picturePath.length > 0 {
+        let picture = readPicture(picturePath);
+        if picture.problem.length > 0 {
+            fmt.println(f"Not created: the picture {picturePath}: {picture.problem}.");
+            return 1;
+        }
+        let width = doc.data.pageWidthMm;
+        let height = width * picture.height as real / picture.width as real;
+        if height > doc.data.pageHeightMm {
+            width = width * doc.data.pageHeightMm / height;
+            height = doc.data.pageHeightMm;
+        }
+        let shape: Shape = ImageShape { variant: "Image", position: Vec2(0.0, 0.0), size: Vec2(width, height), png: picture.png };
+        doc.data.pages[0].shapes.push(shape);
+    }
+    let folder = parentFolder(target);
+    if folder.length == 0 {
+        folder = target.startsWith("/") ? "/" : ".";
+    }
+    // (createNote's own words are the tree's: a folder gone since it was
+    // listed.)
+    if !fs.listDir(folder) {
+        fmt.println(f"Not created: there is no folder {folder}.");
+        return 1;
+    }
+    let created = createNote(folder, entryName(target), encodeNote(doc));
+    if created.error.length > 0 {
+        fmt.println(f"Not created: {created.error}");
+        return 1;
+    }
+    fmt.println(created.path);
+    return 0;
+}
+
+// ── haze-notes export-pdf ───────────────────────────────────────────────
+
+// `haze-notes export-pdf <note> [<out.pdf>]`: the note's PDF, exactly as the
+// Export button writes it, beside the note unless told where.
+fn exportPdfCommand(args: []str): int {
+    if args.length != 3 && args.length != 4 {
+        printUsage();
+        return 2;
+    }
+    let note = args[2];
+    let out = args.length == 4 ? args[3] : pdfPathFor(note);
+    let load = DocumentLoad(note);
+    load.step(0.0);
+    let loaded = load.doc;
+    if load.failed || !loaded {
+        let why = load.notANote ? "it is not a note." : load.hint;
+        fmt.println(f"Not exported: {note}: {why}");
+        return 1;
+    }
+    let doc: DocumentFile = loaded;
+    let job = PdfExport(out, doc);
+    job.finish();
+    if job.failed {
+        // PdfExport said why.
+        return 1;
+    }
+    fmt.println(out);
+    return 0;
+}

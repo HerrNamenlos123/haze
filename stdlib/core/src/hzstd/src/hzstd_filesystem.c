@@ -408,10 +408,15 @@ hzstd_fs_error_t hzstd_write_file_text(hzstd_allocator_t allocator, hzstd_str_t 
 // over `path`. Every failure removes `<path>.saving` and leaves `path` as it
 // was: unlike hzstd_fs_move, nothing here ever falls back to copying over the
 // destination, which would write it in place.
+//
+// On Linux the renamed file is a new file, so it takes over the permission
+// bits of the file it replaces (not setuid, setgid or sticky: the content is
+// new); a new file gets the default ones, and with `privateFile` it is 0600
+// either way. On Windows a file has its folder's permissions.
 #if defined(HAZE_PLATFORM_WIN32)
 static inline hzstd_str_t hzstd_fs_windows_error(DWORD err);
 #endif
-hzstd_fs_error_t hzstd_replace_file_text(hzstd_str_t path, hzstd_str_t input)
+hzstd_fs_error_t hzstd_replace_file_text(hzstd_str_t path, hzstd_str_t input, hzstd_bool_t privateFile)
 {
   HZSTD_SCRATCH_CSTR(target, path);
   size_t targetLength = target ? strlen(target) : 0;
@@ -423,12 +428,53 @@ hzstd_fs_error_t hzstd_replace_file_text(hzstd_str_t path, hzstd_str_t input)
   memcpy(partial + targetLength, ".saving", sizeof(".saving"));
 
   hzstd_mkdir_recursive(hzstd_fs_parent_dir(target));
+#if defined(HAZE_PLATFORM_WIN32)
+  (void)privateFile;
   FILE* f = fopen(partial, "wb");
   if (!f) {
     int err = errno;
     free(partial);
     return (hzstd_fs_error_t) { .code = hzstd_fs_error_from_errno(err), .message = hzstd_fs_errno_message(err) };
   }
+#else
+  int setMode = 0;
+  mode_t bits = 0;
+  if (privateFile) {
+    setMode = 1;
+    bits = 0600;
+  } else {
+    struct stat replaced;
+    if (stat(target, &replaced) == 0) {
+      setMode = 1;
+      bits = replaced.st_mode & 0777;
+    }
+  }
+  // A `<path>.saving` left by an interrupted replace would keep its own
+  // permissions through a truncating open: the new one starts from nothing.
+  unlink(partial);
+  int fd = open(partial, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, privateFile ? 0600 : 0666);
+  if (fd < 0) {
+    int err = errno;
+    free(partial);
+    return (hzstd_fs_error_t) { .code = hzstd_fs_error_from_errno(err), .message = hzstd_fs_errno_message(err) };
+  }
+  // fchmod, unlike open's mode, is not cut by the umask.
+  if (setMode && fchmod(fd, bits) != 0) {
+    int err = errno;
+    close(fd);
+    unlink(partial);
+    free(partial);
+    return (hzstd_fs_error_t) { .code = hzstd_fs_error_from_errno(err), .message = hzstd_fs_errno_message(err) };
+  }
+  FILE* f = fdopen(fd, "wb");
+  if (!f) {
+    int err = errno;
+    close(fd);
+    unlink(partial);
+    free(partial);
+    return (hzstd_fs_error_t) { .code = hzstd_fs_error_from_errno(err), .message = hzstd_fs_errno_message(err) };
+  }
+#endif
   int failed = 0;
   int err = 0;
   if (input.length > 0 && fwrite(input.data, 1, input.length, f) < input.length) {
@@ -1484,7 +1530,11 @@ hzstd_write_file_binary(hzstd_allocator_t allocator, hzstd_str_t path, void* buf
   };
 }
 
-hzstd_fs_error_t hzstd_mkdir_recursive(hzstd_str_t path)
+// Makes the folder `path` and every missing folder above it. The folders
+// above get the default permissions; with `privateLeaf`, `path` itself, when
+// it is made here, is 0700 on Linux (on Windows it has its parent's). A
+// folder already there keeps its permissions.
+static hzstd_fs_error_t hzstd_mkdir_recursive_leaf(hzstd_str_t path, int privateLeaf)
 {
   if (path.data == NULL || path.length == 0) {
     return (hzstd_fs_error_t) {
@@ -1557,7 +1607,13 @@ hzstd_fs_error_t hzstd_mkdir_recursive(hzstd_str_t path)
       };
     }
 
-    if (MKDIR(tmp) != 0 && errno != EEXIST) {
+#if defined(HAZE_PLATFORM_WIN32)
+    (void)privateLeaf;
+    int made = MKDIR(tmp);
+#else
+    int made = privateLeaf ? mkdir(tmp, 0700) : MKDIR(tmp);
+#endif
+    if (made != 0 && errno != EEXIST) {
       int err = errno;
       return (hzstd_fs_error_t) {
         .code = hzstd_fs_error_from_errno(err),
@@ -1576,6 +1632,16 @@ hzstd_fs_error_t hzstd_mkdir_recursive(hzstd_str_t path)
     .code = hzstd_fs_error_code_none,
     .message = HZSTD_STRING(NULL, 0),
   };
+}
+
+hzstd_fs_error_t hzstd_mkdir_recursive(hzstd_str_t path)
+{
+  return hzstd_mkdir_recursive_leaf(path, 0);
+}
+
+hzstd_fs_error_t hzstd_create_private_directory(hzstd_str_t path)
+{
+  return hzstd_mkdir_recursive_leaf(path, 1);
 }
 
 hzstd_fs_exists_result_t hzstd_fs_exists(hzstd_str_t path)
@@ -1627,6 +1693,119 @@ hzstd_fs_exists_result_t hzstd_fs_exists(hzstd_str_t path)
   };
 
   return result;
+}
+
+// A copy of `text` (`length` bytes) in the caller's allocator, as the result.
+static hzstd_fs_path_result_t hzstd_fs_path_result(hzstd_allocator_t allocator, const char* text, size_t length)
+{
+  char* copy = hzstd_allocate_unscanned(allocator, length > 0 ? length : 1, NULL);
+  if (!copy) {
+    return (hzstd_fs_path_result_t) {
+      .path = HZSTD_STRING(NULL, 0),
+      .error = { .code = hzstd_fs_error_code_out_of_memory, .message = HZSTD_STRING("out of memory", 13) },
+    };
+  }
+  memcpy(copy, text, length);
+  return (hzstd_fs_path_result_t) {
+    .path = HZSTD_STRING(copy, length),
+    .error = { .code = hzstd_fs_error_code_none, .message = HZSTD_STRING(NULL, 0) },
+  };
+}
+
+hzstd_fs_path_result_t hzstd_fs_real_path(hzstd_allocator_t allocator, hzstd_str_t path)
+{
+  if (path.data == NULL || path.length == 0) {
+    return (hzstd_fs_path_result_t) {
+      .path = HZSTD_STRING(NULL, 0),
+      .error = { .code = hzstd_fs_error_code_invalid_path, .message = HZSTD_STRING("invalid path", 12) },
+    };
+  }
+#if defined(HAZE_PLATFORM_WIN32)
+  int wideLength = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path.data, (int)path.length, NULL, 0);
+  if (wideLength <= 0) {
+    return (hzstd_fs_path_result_t) {
+      .path = HZSTD_STRING(NULL, 0),
+      .error = { .code = hzstd_fs_error_code_invalid_path, .message = HZSTD_STRING("path is not valid UTF-8", 23) },
+    };
+  }
+  wchar_t* wide = (wchar_t*)malloc(((size_t)wideLength + 1) * sizeof(wchar_t));
+  if (!wide) {
+    return (hzstd_fs_path_result_t) {
+      .path = HZSTD_STRING(NULL, 0),
+      .error = { .code = hzstd_fs_error_code_out_of_memory, .message = HZSTD_STRING("out of memory", 13) },
+    };
+  }
+  MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path.data, (int)path.length, wide, wideLength);
+  wide[wideLength] = L'\0';
+  // BACKUP_SEMANTICS opens a folder too; no access is asked for, only the
+  // name.
+  HANDLE handle = CreateFileW(wide, 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING,
+                              FILE_FLAG_BACKUP_SEMANTICS, NULL);
+  free(wide);
+  if (handle == INVALID_HANDLE_VALUE) {
+    DWORD err = GetLastError();
+    return (hzstd_fs_path_result_t) {
+      .path = HZSTD_STRING(NULL, 0),
+      .error = { .code = hzstd_fs_error_from_windows_error(err), .message = hzstd_fs_windows_error(err) },
+    };
+  }
+  DWORD finalLength = GetFinalPathNameByHandleW(handle, NULL, 0, FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
+  wchar_t* final = finalLength > 0 ? (wchar_t*)malloc(((size_t)finalLength + 1) * sizeof(wchar_t)) : NULL;
+  DWORD written = final ? GetFinalPathNameByHandleW(handle, final, finalLength + 1, FILE_NAME_NORMALIZED | VOLUME_NAME_DOS) : 0;
+  DWORD finalErr = GetLastError();
+  CloseHandle(handle);
+  if (!final || written == 0 || written > finalLength) {
+    free(final);
+    return (hzstd_fs_path_result_t) {
+      .path = HZSTD_STRING(NULL, 0),
+      .error = { .code = hzstd_fs_error_from_windows_error(finalErr), .message = hzstd_fs_windows_error(finalErr) },
+    };
+  }
+  // The name comes back as "\\?\C:\..." (or "\\?\UNC\server\..."): the
+  // spelling every other call takes is without that prefix.
+  const wchar_t* name = final;
+  if (wcsncmp(name, L"\\\\?\\UNC\\", 8) == 0) {
+    // "\\server\share\...": the prefix's last two characters become "\\".
+    name = final + 6;
+    final[6] = L'\\';
+  }
+  else if (wcsncmp(name, L"\\\\?\\", 4) == 0) {
+    name = final + 4;
+  }
+  int utf8Length = WideCharToMultiByte(CP_UTF8, 0, name, -1, NULL, 0, NULL, NULL);
+  char* utf8 = utf8Length > 0 ? (char*)malloc((size_t)utf8Length) : NULL;
+  if (!utf8 || WideCharToMultiByte(CP_UTF8, 0, name, -1, utf8, utf8Length, NULL, NULL) <= 0) {
+    free(utf8);
+    free(final);
+    return (hzstd_fs_path_result_t) {
+      .path = HZSTD_STRING(NULL, 0),
+      .error = { .code = hzstd_fs_error_code_out_of_memory, .message = HZSTD_STRING("out of memory", 13) },
+    };
+  }
+  free(final);
+  hzstd_fs_path_result_t result = hzstd_fs_path_result(allocator, utf8, strlen(utf8));
+  free(utf8);
+  return result;
+#else
+  HZSTD_SCRATCH_CSTR(nullTermPath, path);
+  if (!nullTermPath) {
+    return (hzstd_fs_path_result_t) {
+      .path = HZSTD_STRING(NULL, 0),
+      .error = { .code = hzstd_fs_error_code_out_of_memory, .message = HZSTD_STRING("out of memory", 13) },
+    };
+  }
+  char* resolved = realpath(nullTermPath, NULL);
+  if (!resolved) {
+    int err = errno;
+    return (hzstd_fs_path_result_t) {
+      .path = HZSTD_STRING(NULL, 0),
+      .error = { .code = hzstd_fs_error_from_errno(err), .message = hzstd_fs_errno_message(err) },
+    };
+  }
+  hzstd_fs_path_result_t result = hzstd_fs_path_result(allocator, resolved, strlen(resolved));
+  free(resolved);
+  return result;
+#endif
 }
 
 

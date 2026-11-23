@@ -17,7 +17,9 @@ import image
 //     point -- so that is what is written here, not a true quadratic.
 //   - pages without shapes are left out, and text blocks draw nothing.
 //
-// What differs: a page is its real size -- the web app made a page size_mm
+// What differs: the first page is exported even without shapes, and a note
+// without any page as one blank page: a PDF of no pages is no valid PDF.
+// And a page is its real size -- the web app made a page size_mm
 // POINTS, 210 x 297 pt for A4, a quarter of an A4 sheet by area; here the
 // same drawing is scaled up to 210 x 297 mm. And, invisibly, the texture goes
 // in as the JPEG it is (pdf-lib re-encoded its decoded pixels, a few MB per
@@ -265,6 +267,12 @@ ref struct PdfExport {
             total += shapes.length;
             pages.push(shapes);
         }
+        // A note without a page is shown with one blank page to draw on
+        // (controls.hz), and exported as that page.
+        if pages.length == 0 {
+            let blank: []Shape = [];
+            pages.push(blank);
+        }
         let grid = parseExportColor(doc.data.gridColor);
         if !grid {
             grid = parseExportColor(pdfDefaultGridColor);
@@ -296,8 +304,17 @@ ref struct PdfExport {
         return f"{this.path}.exporting";
     }
 
+    // Ends the export as failed: what was written of the file is closed and
+    // removed, and whatever was at `path` before stays as it was.
     mut fn fail(message: str) {
         fmt.println(f"Failed to export {this.path}: {message}");
+        if let writer = this.writer {
+            writer.abandon();
+            let removed = fs.removeFile(this.temporaryPath());
+            if !removed {
+                fmt.println(f"The unfinished {this.temporaryPath()} could not be removed: {fsErrorText(removed)}");
+            }
+        }
         this.failed = true;
         this.finished = true;
     }
@@ -331,7 +348,8 @@ ref struct PdfExport {
             let shapes = this.pages[this.page];
             // The web app skipped a page with nothing on it -- counting a
             // text block, which then draws nothing.
-            if shapes.length == 0 {
+            // The first page stays, blank or not: a PDF needs a page.
+            if shapes.length == 0 && this.page > 0 {
                 this.page += 1;
                 continue;
             }

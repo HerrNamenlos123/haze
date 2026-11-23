@@ -1,0 +1,40 @@
+import ui_components
+import renderer
+
+// The open note of the component whose setup is running -- Workspace's in a
+// vault, ExclusiveNote's on its own: the controls that load, edit, save and
+// export it, drawing into `canvasRef` through a renderer of their own (their
+// `view`). They belong to that component: unsaved work and an export in
+// flight are finished before the app goes, and when the component unmounts
+// (then the renderer's GPU resources go too).
+fn noteEditor(ui: ui_components.UIContext, gfx: mut renderer.gfx.Context, canvasRef: ui_components.CanvasRef): EditorControls {
+    let documentRenderer = DocumentRenderer(gfx);
+    // The renderer's state is plain data the canvas cannot track, so every
+    // change to it says so. The redraw happens once, at the canvas's step of
+    // the next frame, however often this is called before then.
+    let invalidateCanvas: () => none = () => {
+        canvasRef?.invalidate();
+    };
+    let controls = EditorControls(documentRenderer, invalidateCanvas);
+
+    // Unsaved work is written before the app goes -- there are no more frames
+    // to spread the save over, but the window is already gone. A component
+    // that was unmounted before that (another vault was opened) has written
+    // its work already, and must not write it again: the note may have been
+    // opened and changed since, and this copy is stale.
+    let closed: ref Box<bool> = { value: false };
+    onExit(() => {
+        if closed.value { return; }
+        controls.finishSaves();
+        controls.finishExport();
+    });
+
+    ui.onUnmount(() => {
+        closed.value = true;
+        controls.finishSaves();
+        controls.finishExport();
+        documentRenderer.releaseResources();
+    });
+
+    return controls;
+}

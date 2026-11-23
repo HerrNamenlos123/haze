@@ -13,6 +13,8 @@ usage: UsageView;
 // The row's menu, at a point in the window.
 menu: (str, real, real,);
 setMode: (str, RowMode,);
+// The pointer came onto the row (true) or left it (false).
+hoverChange: (str, bool,);
 
 @setup
 let rootRef = elementRef<DivElement>();
@@ -79,6 +81,10 @@ let cancel = () => {
     token := "";
     emits.setMode(props.account.id, RowMode.Normal);
 };
+
+ui.watch(() => rx.get(hovered), (value, old) => {
+    emits.hoverChange(props.account.id, value);
+});
 
 ui.watch(() => props.mode, (value, old) => {
     if value == RowMode.Rename {

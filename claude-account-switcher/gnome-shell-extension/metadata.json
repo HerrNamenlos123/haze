@@ -1,0 +1,7 @@
+{
+  "uuid": "claude-account-switcher@hazelang.github.io",
+  "name": "Claude Account Switcher",
+  "description": "The tray icon of Claude Account Switcher, which installs this extension itself: a click opens its window below the icon, a right click its menu.",
+  "shell-version": ["48", "49"],
+  "url": "https://github.com/herrnamenlos123/haze"
+}

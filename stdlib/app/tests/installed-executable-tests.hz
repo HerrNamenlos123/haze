@@ -1,0 +1,80 @@
+import app
+
+// app.installedExecutable on Linux: the program installed for this user
+// (~/.local/bin) when it is there, none when it is installed nowhere. The
+// machine-wide place (/usr/local/bin) needs root to set up and is not tested
+// here. The program runs itself again with `--child <name>` and a HOME of its
+// own, so the lookup sees exactly that home.
+//
+//   scripts/run-stdlib-test.sh stdlib/app/tests/installed-executable-tests.hz app
+//
+// Exits with the number of failed checks.
+
+fn lookup(name: str, home: str | none): str {
+    let environment: []str = ["PATH=/usr/bin:/bin"];
+    if let h = home {
+        environment.push(f"HOME={h}");
+    }
+    let r = process.runCaptured("/proc/self/exe", ["--child", name], { env: environment });
+    if r.exitCode != 0 {
+        return f"child failed with {r.exitCode}";
+    }
+    return r.stdoutResult.trim();
+}
+
+ref struct State {
+    failures: int = 0;
+
+    fn check(label: str, got: str, want: str) {
+        if got != want {
+            fmt.println(f"FAIL {label}: {got}, wanted {want}");
+            this.failures = this.failures + 1;
+        }
+    }
+}
+
+fn main(): int {
+    let args = sys.args();
+    for (let i = 0; i < args.length; i++) {
+        if args[i] == "--child" && i + 1 < args.length {
+            if let installed = app.installedExecutable(args[i + 1]) {
+                fmt.println(installed);
+            } else {
+                fmt.println("none");
+            }
+            return 0;
+        }
+    }
+    if !sys.isLinux() {
+        fmt.println("installed-executable-tests: Linux only");
+        return 0;
+    }
+
+    let s = State {};
+    let name = f"hz-installed-test-{sys.processId()}";
+    let home = f"/tmp/hz-installed-test-home-{sys.processId()}";
+    let bin = f"{home}/.local/bin";
+    fs.createDirectory(home);
+
+    s.check("nothing installed", lookup(name, home), "none");
+    s.check("no HOME", lookup(name, none), "none");
+    s.check("empty HOME", lookup(name, ""), "none");
+
+    fs.createDirectory(bin);
+    s.check("an empty bin folder", lookup(name, home), "none");
+
+    fs.writeText(f"{bin}/{name}", "#!/bin/sh\n");
+    s.check("installed for this user", lookup(name, home), f"{bin}/{name}");
+    s.check("another name", lookup(f"{name}-other", home), "none");
+
+    fs.removeFile(f"{bin}/{name}");
+    s.check("removed again", lookup(name, home), "none");
+
+    fs.removeEmptyDirectory(bin);
+    fs.removeEmptyDirectory(f"{home}/.local");
+    fs.removeEmptyDirectory(home);
+    if s.failures == 0 {
+        fmt.println("installed-executable-tests: all passed");
+    }
+    return s.failures;
+}

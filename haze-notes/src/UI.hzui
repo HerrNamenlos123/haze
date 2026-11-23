@@ -46,6 +46,9 @@ ref struct VaultSession {
     path: str;
     cache: CacheFile<VaultCache>;
     indexCache: CacheFile<IndexCache>;
+    // An entry its Workspace shows in the tree when it mounts: the note the
+    // app was started with, in the session it was started in.
+    reveal: str = "";
 
     fn flush() {
         this.cache.flush();
@@ -82,6 +85,10 @@ ref struct VaultPicker {
 @props
 [[hzui.untracked]]
 gfx: mut renderer.gfx.Context;
+// The note the app was started with (`haze-notes <note>`, main.hz) and the
+// vault it is in; "" for neither. It is opened as if picked in the tree.
+startVault: str = "";
+startNote: str = "";
 
 @setup
 let cache = CacheFile<GlobalCache>(globalCachePath());
@@ -200,6 +207,17 @@ ui.watch(() => rx.get(session), (value, old) => {
     activeSession.value = next;
 }, { immediate: true });
 
+// The note from the command line: its vault becomes the open one, as if
+// picked, and the note the vault's open note, as if picked in its tree --
+// which also shows it there.
+if props.startVault.length > 0 {
+    openVault(props.startVault);
+    if let s = rx.get(session) {
+        s.cache.data.lastOpenedFile := props.startNote;
+        s.reveal = props.startNote;
+    }
+}
+
 let sessions = computed((): []VaultSession => {
     let list: []VaultSession = [];
     if let s = rx.get(session) {
@@ -240,7 +258,7 @@ onExit(() => {
 @template [col w-grow h-grow bg-[theme().chrome] text-color-[theme().text] font-size-13]
 
 Workspace for=[s in sessions] key=[s.id] [] cache=[s.cache] indexCache=[s.indexCache] gfx=[props.gfx] vaultPath=[s.path]
-    @switchVault=pickVault {}
+    revealOnMount=[s.reveal] @switchVault=pickVault {}
 
 div if=[!hasSession] [col w-grow h-grow] {
     AppBar [] title="Haze Notes" sidebarButton=[false] windowControls=[!ui.window.hasNativeTitlebar()] {}

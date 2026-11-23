@@ -20,6 +20,9 @@ indexCache: CacheFile<IndexCache>;
 [[hzui.untracked]]
 gfx: mut renderer.gfx.Context;
 vaultPath: str;
+// An entry to show in the tree once mounted, its folders opened: the note
+// the app was started with (UI.hzui).
+revealOnMount: str = "";
 
 @emit
 switchVault: ();
@@ -37,16 +40,10 @@ if props.cache.data.lastOpenedFile {
     currentDocumentPath := props.cache.data.lastOpenedFile;
 }
 
-let documentRenderer = DocumentRenderer(props.gfx);
+// Saved at exit and unmount (see noteEditor).
 let canvasRef = ui.canvasRef();
-
-// The renderer's state is plain data the canvas cannot track, so every
-// change to it says so. The redraw happens once, at the canvas's step of the
-// next frame, however often this is called before then.
-let invalidateCanvas: () => none = () => {
-    canvasRef?.invalidate();
-};
-let controls = EditorControls(documentRenderer, invalidateCanvas);
+let controls = noteEditor(ui, props.gfx, canvasRef);
+let documentRenderer = controls.view;
 
 let openFile = (path: str) => {
     // Picking the open note again does not reload it -- unless it failed to
@@ -71,25 +68,6 @@ ui.watch(() => rx.get(currentDocumentPath), (old, new) => {
         controls.open(none);
     }
 }, { immediate: true });
-
-// Unsaved work is written before the app goes -- there are no more frames to
-// spread the save over, but the window is already gone. A workspace that was
-// closed before that (another vault was opened) has written its work already,
-// and must not write it again: the note may have been opened and changed
-// since, and this copy is stale.
-let closed: ref Box<bool> = { value: false };
-onExit(() => {
-    if closed.value { return; }
-    controls.finishSaves();
-    controls.finishExport();
-});
-
-ui.onUnmount(() => {
-    closed.value = true;
-    controls.finishSaves();
-    controls.finishExport();
-    documentRenderer.releaseResources();
-});
 
 // ── What is open ─────────────────────────────────────────────────────
 
@@ -267,6 +245,9 @@ let revealInTree = (path: str) => {
     revealTarget := path;
     revealSerial := rx.get(revealSerial) + 1;
 };
+if props.revealOnMount.length > 0 {
+    revealInTree(props.revealOnMount);
+}
 
 // A line under the tree saying what did not work, for a while.
 const NOTICE_SECONDS = 6.0;

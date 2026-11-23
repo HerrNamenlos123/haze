@@ -848,6 +848,13 @@ typedef struct {
   hzstd_fs_error_t error;
 } hzstd_fs_exists_result_t;
 
+// A path the file system worked out (hzstd_fs_real_path). path is only valid
+// when error.code == hzstd_fs_error_code_none.
+typedef struct {
+  hzstd_str_t path;
+  hzstd_fs_error_t error;
+} hzstd_fs_path_result_t;
+
 // data is only valid when error.code == hzstd_fs_error_code_none.
 typedef struct {
   hzstd_str_t data;

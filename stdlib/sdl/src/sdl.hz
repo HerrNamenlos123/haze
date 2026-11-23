@@ -11,6 +11,9 @@ namespace ffi {
 
 	extern C fn haze_sdl_createTray(pixels: cptr, width: int, height: int, tooltip: str): SDL_Tray | none :: final;
 	extern C fn haze_sdl_addTrayEntry(tray: SDL_Tray, label: str): int :: final;
+	extern C fn haze_sdl_addTraySeparator(tray: SDL_Tray): void :: final;
+	extern C fn haze_sdl_setTrayEntryLabel(tray: SDL_Tray, index: int, label: str): bool :: final;
+	extern C fn haze_sdl_setTrayEntryEnabled(tray: SDL_Tray, index: int, enabled: bool): bool :: final;
 	extern C fn haze_sdl_takeTrayClick(): int :: final;
 	extern C fn haze_sdl_takeTrayIconClick(): int :: final;
 	extern C fn haze_sdl_setTrayIcon(tray: SDL_Tray, pixels: cptr, width: int, height: int): void :: final;
@@ -1326,6 +1329,25 @@ export ref struct Tray {
 
 	fn addEntry(label: str): int {
 		return ffi.haze_sdl_addTrayEntry(this.handle, label);
+	}
+
+	// A line between the entries before and after it.
+	fn addSeparator() {
+		ffi.haze_sdl_addTraySeparator(this.handle);
+	}
+
+	// The entry addEntry returned `index` for now reads `label`.
+	fn setEntryLabel(index: int, label: str) {
+		if !ffi.haze_sdl_setTrayEntryLabel(this.handle, index, label) {
+			sys.panic(f"The tray menu has no entry {index}");
+		}
+	}
+
+	// A disabled entry shows greyed out and cannot be chosen.
+	fn setEntryEnabled(index: int, enabled: bool) {
+		if !ffi.haze_sdl_setTrayEntryEnabled(this.handle, index, enabled) {
+			sys.panic(f"The tray menu has no entry {index}");
+		}
 	}
 
 	// The menu entry the user chose, by the index addEntry returned.

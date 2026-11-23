@@ -7,10 +7,10 @@ import binfile
 
 // What a new note holds: technicalsketcher.web's new document (createDocument
 // in its store.ts), one blank ruled A4 page.
-fn newNoteBytes(): Bytes {
+fn newNote(): DocumentFile {
     let blank: []Shape = [];
     let pages: []Page = [Page { shapes: blank }];
-    return encodeNote(DocumentFile {
+    return DocumentFile {
         data: DocumentBody {
             pageColor: "#ffffff",
             gridColor: "#5252524f",
@@ -20,7 +20,12 @@ fn newNoteBytes(): Bytes {
             pageHeightMm: 297.0,
             currentPageIndex: 0,
         },
-    });
+    };
+}
+
+// A new note's file.
+fn newNoteBytes(): Bytes {
+    return encodeNote(newNote());
 }
 
 // How much of a file is read to tell whether it is a note at all.

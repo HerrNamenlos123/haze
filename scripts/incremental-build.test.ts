@@ -14,6 +14,7 @@
 import { beforeAll, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import {
+  cpSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -27,13 +28,18 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { detectHost, platformName } from "../src/shared/HostPlatform";
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const WORKSPACE = join(REPO_ROOT, "__haze__");
 const MODULES = ["incrt_base", "incrt_mid", "incrt_app", "incrt_gen_hz"];
 const LONG = 300_000;
+const EXE = process.platform === "win32" ? ".exe" : "";
+const PLATFORM = platformName(detectHost(process.platform, process.arch));
 
 let root = "";
+/** The standard library the builds use, when a test replaces it. */
+let stdlibDir: string | undefined;
 
 type Timeline = {
   builds: { id: number; parentRow: string | null }[];
@@ -66,7 +72,11 @@ function build(...extra: string[]): Result {
     {
       cwd: REPO_ROOT,
       encoding: "utf8",
-      env: { ...process.env, NODE_ENV: "development" },
+      env: {
+        ...process.env,
+        NODE_ENV: "development",
+        ...(stdlibDir ? { HAZE_STDLIB_DIR: stdlibDir } : {}),
+      },
     }
   );
   const output = `${run.stdout ?? ""}${run.stderr ?? ""}`;
@@ -101,11 +111,15 @@ function build(...extra: string[]): Result {
 }
 
 function runApp(): string {
-  const run = spawnSync(join(WORKSPACE, "incrt_app", "bin", "incrt_app"), [], {
-    encoding: "utf8",
-  });
+  const run = spawnSync(
+    join(WORKSPACE, "incrt_app", "bin", `incrt_app${EXE}`),
+    [],
+    {
+      encoding: "utf8",
+    }
+  );
   expect(run.status).toBe(0);
-  return run.stdout.trim();
+  return run.stdout.replaceAll("\r\n", "\n").trim();
 }
 
 function write(rel: string, text: string) {
@@ -278,7 +292,7 @@ describe("incremental builds", () => {
   test(
     "a build with nothing changed does nothing",
     () => {
-      const bin = join(WORKSPACE, "incrt_app", "bin", "incrt_app");
+      const bin = join(WORKSPACE, "incrt_app", "bin", `incrt_app${EXE}`);
       const published = statSync(bin).mtimeMs;
       const r = build();
       expect(r.status, r.output).toBe(0);
@@ -392,7 +406,12 @@ describe("incremental builds", () => {
   test(
     "a module's generated C does not depend on what else the build compiled",
     () => {
-      const cFile = join(WORKSPACE, "incrt_mid", "build", "incrt_mid-linux-x64.c");
+      const cFile = join(
+        WORKSPACE,
+        "incrt_mid",
+        "build",
+        `incrt_mid-${PLATFORM}.c`
+      );
       // Everything compiled in one process: the old process-wide counter gave
       // mid whatever ids stdlib and base left over.
       expect(build("--full-rebuild").status).toBe(0);
@@ -436,10 +455,12 @@ describe("incremental builds", () => {
     LONG
   );
 
-  test(
+  // --strip strips only on Linux (ModuleCompiler.publishExecutable); a
+  // Windows executable keeps its symbols in the PDB.
+  test.skipIf(process.platform !== "linux")(
     "stripping changes only the published binary, and is undone without a rebuild",
     () => {
-      const bin = join(WORKSPACE, "incrt_app", "bin", "incrt_app");
+      const bin = join(WORKSPACE, "incrt_app", "bin", `incrt_app${EXE}`);
       const symbols = () =>
         spawnSync("nm", [bin], { encoding: "utf8" }).stdout.includes(" main");
 
@@ -486,7 +507,7 @@ describe("incremental builds", () => {
   test(
     "an app whose object file is gone is rebuilt, not relinked without it",
     () => {
-      rmSync(join(WORKSPACE, "incrt_app", "build", "incrt_app-linux-x64.o"));
+      rmSync(join(WORKSPACE, "incrt_app", "build", `incrt_app-${PLATFORM}.o`));
       const good = read("base/src/base.hz");
       write("base/src/base.hz", good.replace("return 2;", "return 3;"));
       const r = build();
@@ -540,9 +561,55 @@ describe("incremental builds", () => {
           }
         );
         expect(run.status, `${run.stdout}${run.stderr}`).toBe(0);
-        const exe = spawnSync(join(WORKSPACE, name, "bin", name));
+        const exe = spawnSync(join(WORKSPACE, name, "bin", `${name}${EXE}`));
         expect(exe.status).toBe(0);
         rmSync(join(WORKSPACE, name), { recursive: true, force: true });
+      }
+    },
+    LONG
+  );
+
+  test(
+    "an edit of hzstd rebuilds every module",
+    () => {
+      // A copy of the standard library, so the edit never touches the
+      // checkout's. An edit of a .c file of hzstd's unity build is what
+      // clang's dependency files alone would not pass on to dependents.
+      const copy = join(root, "stdlib-copy");
+      cpSync(
+        join(
+          process.env["HAZE_STDLIB_DIR"] ?? join(REPO_ROOT, "stdlib"),
+          "core"
+        ),
+        join(copy, "core"),
+        { recursive: true }
+      );
+      stdlibDir = copy;
+      try {
+        const first = build();
+        expect(first.status, first.output).toBe(0);
+        const unchanged = build();
+        expect(unchanged.status, unchanged.output).toBe(0);
+        expect(unchanged.did).toMatchObject({
+          "haze-stdlib": "up-to-date",
+          incrt_base: "up-to-date",
+          incrt_mid: "up-to-date",
+          incrt_app: "up-to-date",
+        });
+
+        const file = join(copy, "core", "src", "hzstd", "src", "hzstd_utils.c");
+        writeFileSync(file, `${readFileSync(file, "utf8")}\n// edited\n`);
+        const edited = build();
+        expect(edited.status, edited.output).toBe(0);
+        expect(edited.did).toMatchObject({
+          "haze-stdlib": "rebuilt",
+          incrt_base: "rebuilt",
+          incrt_mid: "rebuilt",
+          incrt_app: "rebuilt",
+        });
+        expect(runApp()).toBe("24\n101\n8\n5");
+      } finally {
+        stdlibDir = undefined;
       }
     },
     LONG

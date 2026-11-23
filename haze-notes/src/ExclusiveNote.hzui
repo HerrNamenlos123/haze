@@ -1,0 +1,41 @@
+// One note and nothing else: `haze-notes --exclusive <note>` (main.hz). The
+// app bar and the note, no tree, no vault, no switching to another note --
+// and nothing remembered: no app cache, no vault cache, nothing written but
+// the note itself. Closing the window saves it and ends the app.
+
+@props
+[[hzui.untracked]]
+gfx: mut renderer.gfx.Context;
+// The note, as given on the command line.
+path: str;
+
+@setup
+// Saved at exit (see noteEditor).
+let canvasRef = ui.canvasRef();
+let controls = noteEditor(ui, props.gfx, canvasRef);
+controls.open(props.path);
+
+let title = noteTitle(baseName(props.path));
+
+let exportPdf = () => {
+    controls.exportPdf();
+};
+
+// Keys reach here from whatever has focus -- the page, a button just
+// clicked -- so the shortcuts work wherever the focus is.
+let onKeyDown = (e: KeyboardEvent) => {
+    controls.keyDown(e, ui);
+};
+
+@template [col w-grow h-grow bg-[theme().chrome] text-color-[theme().text] font-size-13]
+    focusable=[true]
+    autofocus=[true]
+    @keydown=onKeyDown
+
+AppBar [] title=[title] sidebarButton=[false]
+    windowControls=[!ui.window.hasNativeTitlebar()]
+    exportVisible=[rx.get(controls.documentOpen)] exportLabel=[rx.get(controls.exportLabel)]
+    exportEnabled=[!rx.get(controls.exportBusy)]
+    @exportPdf=exportPdf {}
+
+DocumentView [] controls=[controls] canvasRef=[canvasRef] title=[title] {}
