@@ -16,7 +16,8 @@ Recipe (main checkout = the repo root):
 3. `rm -rf __haze__/sdl/bin/SDL/build` in the copy: its CMakeCache.txt holds the main checkout's absolute paths and makes the SDL generator fail ("CMakeCache.txt directory ... is different"); the first build then reconfigures SDL once. wgpu needed nothing.
 4. Build from the worktree root with the dev compiler: `bun run src/main.ts build --dir <project> --quiet` (not the installed `haze` binary). A separate cwd also avoids [[shared-haze-workspace-rebuild-pingpong]]. A haze-notes build then took 29 s.
 
-Collect uncommitted work: `git -C <wt> diff HEAD` plus `git -C <wt> ls-files --others --exclude-standard`. Remove with `git worktree remove --force` (the copied caches are untracked).
+Collect uncommitted work: `git -C <wt> diff HEAD` plus `git -C <wt> ls-files --others --exclude-standard`. Remove with `git worktree remove --force` (the copied caches are untracked). Windows: unlink every junction in the worktree first (`cmd /c rmdir <wt>
+ode_modules`): `git worktree remove --force` deletes the contents of a junction's target (proven 2026-11-23 with a probe; it emptied the main checkout's node_modules; restore with `bun install --frozen-lockfile`).
 - Trap (2026-11-11): the dev compiler writes a project's binary to `<repo>/__haze__/<project>/bin/<project>`. A `<project>/__haze__/<project>/bin/` (haze-notes has one in the main checkout, from the installed `haze build` run inside the project) is NOT rebuilt by it; reflinked into a worktree it is a stale binary that looks current. Run the binary from the repo-root `__haze__`, and delete the copied `<project>/__haze__/<project>` in a worktree.
 - Windows (2026-11-23, 8f787fa1): no reflinks; link node_modules as a junction from PowerShell, `cmd /c "mklink /J ""<wt>
 ode_modules"" ""<repo>
