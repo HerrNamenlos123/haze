@@ -18,3 +18,6 @@ Recipe (main checkout = the repo root):
 
 Collect uncommitted work: `git -C <wt> diff HEAD` plus `git -C <wt> ls-files --others --exclude-standard`. Remove with `git worktree remove --force` (the copied caches are untracked).
 - Trap (2026-11-11): the dev compiler writes a project's binary to `<repo>/__haze__/<project>/bin/<project>`. A `<project>/__haze__/<project>/bin/` (haze-notes has one in the main checkout, from the installed `haze build` run inside the project) is NOT rebuilt by it; reflinked into a worktree it is a stale binary that looks current. Run the binary from the repo-root `__haze__`, and delete the copied `<project>/__haze__/<project>` in a worktree.
+- Windows (2026-11-23, 8f787fa1): no reflinks; link node_modules as a junction from PowerShell, `cmd /c "mklink /J ""<wt>
+ode_modules"" ""<repo>
+ode_modules"""` (through Git Bash `cmd //c` the quoted path with a space is cut at the space and the junction points nowhere); copy `src/Parser/grammar/autogen` with a plain copy, then stamp it as in [[antlr-autogen-goes-stale]] when the worktree's grammar differs. A worktree gets its own `__haze__` (cold: the first build fetches and builds libuv/SDL there).
