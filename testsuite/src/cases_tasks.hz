@@ -255,7 +255,10 @@ fn main(): int {
             message = e.message;
             -1
         };
-        return f"{r} {message.contains("Stack overflow")} {deep(1000)}";
+        // Once more in the same task: the recovery re-armed its guard
+        // (Windows: the first overflow used it up).
+        let second = attempt { deep(1000000000) } recover e { -3 };
+        return f"{r} {message.contains("Stack overflow")} {deep(1000)} {second}";
     });
     // A newer task: the guard checked is the running task's, not the newest.
     let newer = task.spawn(() => { return 0; });
@@ -267,7 +270,7 @@ fn main(): int {
     return 0;
 }
 """,
-            "-1 true 1000\n-2");
+            "-1 true 1000 -3\n-2");
 
         s.run(
             "tasks: an uncaught stack overflow ends the program with a stack trace",
@@ -480,6 +483,62 @@ fn main(): int {
 }
 """,
             "true true true true false 0 0");
+
+        // Section 10: a stall is reported with its trace once per stack (by
+        // the names of its functions); the same stack again stays quiet, a
+        // different one is reported.
+        s.run(
+            "tasks: a stall trace is printed once per stack",
+            """
+fn spinA(seconds: real): int {
+    let start = time.now();
+    let n = 0;
+    while time.now() - start < seconds { n++; }
+    return n;
+}
+fn spinB(seconds: real): int {
+    let start = time.now();
+    let n = 0;
+    while time.now() - start < seconds { n++; }
+    return n;
+}
+fn main(): int {
+    let args = sys.args();
+    if args.length > 1 && args[1] == "child" {
+        for (let i = 0; i < 2; i++) {
+            let n = spinA(0.03);
+            sys.yield();
+        }
+        let m = spinB(0.03);
+        return 0;
+    }
+    let r = process.runCaptured(args[0], ["child"]);
+    let reports = r.stderrResult.split("It is currently at:").length - 1;
+    fmt.println(f"{r.exitCode} {reports} {r.stderrResult.contains("spinA")} {r.stderrResult.contains("spinB")}");
+    return 0;
+}
+""",
+            "0 2 true true");
+
+        // C521, C576: once a graceful exit started, its status is final: a
+        // failure after it (here in an exit handler, where no task runs) is
+        // printed and ends the program with that status, not 255.
+        s.run(
+            "tasks: a panic after sys.exit started keeps the exit status",
+            """
+__c__("#include <stdlib.h>\nstatic void at_exit(void) { hzstd_context_t c = hzstd_context_for_current_thread(); (void)c; }");
+fn main(): int {
+    let args = sys.args();
+    if args.length > 1 && args[1] == "child" {
+        do unsafe { __c__("atexit(at_exit);"); };
+        sys.exit(3);
+    }
+    let r = process.runCaptured(args[0], ["child"]);
+    fmt.println(f"{r.exitCode} {r.stderrResult.contains("runs no task")}");
+    return 0;
+}
+""",
+            "3 true");
 
         // C588, C590: the loop calls only yieldAfter, and the other task
         // still gets its turns, each after about 20 ms of the loop's time.
@@ -738,13 +797,17 @@ fn main(): int {
             "true false true false 0");
 
         // A fault while this thread holds the world stopped (here: the stack
-        // runs out inside a collection) cannot be handed to the panic worker,
+        // runs out inside a collection; stack_left counts from where the
+        // overflow is reported, on Windows the stack guarantee and the
+        // kernel's own pages above the guard) cannot be handed to the panic worker,
         // which is stopped too: it is reported directly and ends the program
-        // (review 2026-11-20: it hung, silently). `timeout` ends a hang.
+        // (review 2026-11-20: it hung, silently). The child's hang guard (a
+        // thread the collector does not know, so a stopped world does not
+        // stop it) ends a hang with 124.
         s.run(
             "tasks: a stack overflow inside a collection is reported, never a hang",
             """
-__c__("#include <gc/gc.h>\nstatic hzstd_int_t stack_left(void) { const fiber_stack *s = hzstd_current_task_stack(); char here; return (hzstd_int_t)(&here - (char *)s->limit); }");
+__c__("#include <gc/gc.h>\n\n#ifdef _WIN32\n#define OVERFLOW_RESERVE (16384 + 2 * 4096)\n#else\n#define OVERFLOW_RESERVE 0\n#endif\nstatic hzstd_int_t stack_left(void) { const fiber_stack *s = hzstd_current_task_stack(); char here; return (hzstd_int_t)(&here - (char *)s->limit) - OVERFLOW_RESERVE; }\n#ifdef _WIN32\n#include <windows.h>\n#undef CreateThread\nstatic DWORD WINAPI hang_guard_main(LPVOID p) { (void)p; Sleep(30000); TerminateProcess(GetCurrentProcess(), 124); return 0; }\nstatic void hang_guard(void) { CloseHandle(CreateThread(NULL, 0, hang_guard_main, NULL, 0, NULL)); }\n#else\n#include <pthread.h>\n#include <unistd.h>\n#undef pthread_create\nstatic void *hang_guard_main(void *p) { (void)p; sleep(30); _exit(124); return NULL; }\nstatic void hang_guard(void) { pthread_t t; pthread_create(&t, NULL, hang_guard_main, NULL); pthread_detach(t); }\n#endif");
 fn deep(n: int): int :: final {
     let left = 0;
     do unsafe { __c__("left = stack_left(); if (left < 24000) GC_gcollect();"); };
@@ -754,10 +817,11 @@ fn deep(n: int): int :: final {
 fn main(): int {
     let args = sys.args();
     if args.length > 1 && args[1] == "child" {
+        do unsafe { __c__("hang_guard();"); };
         fmt.println(f"{deep(0)}");
         return 0;
     }
-    let r = process.runCaptured("timeout", ["30", args[0], "child"]);
+    let r = process.runCaptured(args[0], ["child"]);
     fmt.println(f"{r.exitCode} {r.stderrResult.contains("Stack overflow")}");
     return 0;
 }
@@ -773,14 +837,14 @@ fn main(): int {
         s.run(
             "tasks: a panic while this thread runs a collection is reported directly",
             """
-__c__("#include <gc/gc.h>\nstatic void gc_event(int e) { GC_get_on_collection_event()((GC_EventType)e); }");
+__c__("#include <gc/gc.h>\nstatic void gc_event(int e) { GC_get_on_collection_event()((GC_EventType)e); }\n#ifdef _WIN32\n#include <windows.h>\n#undef CreateThread\nstatic DWORD WINAPI hang_guard_main(LPVOID p) { (void)p; Sleep(30000); TerminateProcess(GetCurrentProcess(), 124); return 0; }\nstatic void hang_guard(void) { CloseHandle(CreateThread(NULL, 0, hang_guard_main, NULL, 0, NULL)); }\n#else\n#include <pthread.h>\n#include <unistd.h>\n#undef pthread_create\nstatic void *hang_guard_main(void *p) { (void)p; sleep(30); _exit(124); return NULL; }\nstatic void hang_guard(void) { pthread_t t; pthread_create(&t, NULL, hang_guard_main, NULL); pthread_detach(t); }\n#endif");
 fn main(): int {
     let args = sys.args();
     if args.length > 1 && args[1] == "child" {
-        do unsafe { __c__("gc_event(GC_EVENT_START);"); };
+        do unsafe { __c__("hang_guard(); gc_event(GC_EVENT_START);"); };
         sys.panic("boom");
     }
-    let r = process.runCaptured("timeout", ["30", args[0], "child"]);
+    let r = process.runCaptured(args[0], ["child"]);
     fmt.println(f"{r.exitCode} {r.stderrResult.contains("boom while this thread was running a garbage collection")}");
     return 0;
 }
@@ -791,11 +855,15 @@ fn main(): int {
         // (under ASan the stack ran out inside the hook itself, before it
         // had marked the thread as collecting, and the report then waited
         // for the collector's lock; 2026-11-20). Each level runs the hook,
-        // the deepest call, until the stack is gone.
-        s.run(
-            "tasks: a stack overflow inside the collector's event hook is reported directly",
-            """
-__c__("#include <gc/gc.h>\nstatic hzstd_int_t stack_left(void) { const fiber_stack *s = hzstd_current_task_stack(); char here; return (hzstd_int_t)(&here - (char *)s->limit); }\nstatic void gc_events(void) { GC_on_collection_event_proc p = GC_get_on_collection_event(); p(GC_EVENT_START); p(GC_EVENT_END); }");
+        // the deepest call, until the stack is gone. That needs a hook that
+        // takes more stack than a level of the recursion, which holds on
+        // Linux; the hook is shallower on Windows, so the stack runs out in
+        // the recursion there (the case below covers both).
+        if sys.isLinux() {
+            s.run(
+                "tasks: a stack overflow inside the collector's event hook is reported directly",
+                """
+__c__("#include <gc/gc.h>\n\n#ifdef _WIN32\n#define OVERFLOW_RESERVE (16384 + 2 * 4096)\n#else\n#define OVERFLOW_RESERVE 0\n#endif\nstatic hzstd_int_t stack_left(void) { const fiber_stack *s = hzstd_current_task_stack(); char here; return (hzstd_int_t)(&here - (char *)s->limit) - OVERFLOW_RESERVE; }\nstatic void gc_events(void) { GC_on_collection_event_proc p = GC_get_on_collection_event(); p(GC_EVENT_START); p(GC_EVENT_END); }\n#ifdef _WIN32\n#include <windows.h>\n#undef CreateThread\nstatic DWORD WINAPI hang_guard_main(LPVOID p) { (void)p; Sleep(30000); TerminateProcess(GetCurrentProcess(), 124); return 0; }\nstatic void hang_guard(void) { CloseHandle(CreateThread(NULL, 0, hang_guard_main, NULL, 0, NULL)); }\n#else\n#include <pthread.h>\n#include <unistd.h>\n#undef pthread_create\nstatic void *hang_guard_main(void *p) { (void)p; sleep(30); _exit(124); return NULL; }\nstatic void hang_guard(void) { pthread_t t; pthread_create(&t, NULL, hang_guard_main, NULL); pthread_detach(t); }\n#endif");
 fn deep(n: int): int :: final {
     let left = 0;
     do unsafe { __c__("left = stack_left(); if (left < 16000) gc_events();"); };
@@ -805,32 +873,61 @@ fn deep(n: int): int :: final {
 fn main(): int {
     let args = sys.args();
     if args.length > 1 && args[1] == "child" {
+        do unsafe { __c__("hang_guard();"); };
         fmt.println(f"{deep(0)}");
         return 0;
     }
-    let r = process.runCaptured("timeout", ["30", args[0], "child"]);
+    let r = process.runCaptured(args[0], ["child"]);
+    fmt.println(f"{r.exitCode} {r.stderrResult.contains("Stack overflow while this thread was running a garbage collection")}");
+    return 0;
+}
+""",
+                "255 true");
+        }
+
+        // The same window, opened by the hook (a collection's start) and
+        // never closed: the stack running out anywhere in it is reported
+        // directly, never handed to the stopped panic worker.
+        s.run(
+            "tasks: a stack overflow while the collection window is open is reported directly",
+            """
+__c__("#include <gc/gc.h>\nstatic void gc_start(void) { GC_get_on_collection_event()(GC_EVENT_START); }\n#ifdef _WIN32\n#include <windows.h>\n#undef CreateThread\nstatic DWORD WINAPI hang_guard_main(LPVOID p) { (void)p; Sleep(30000); TerminateProcess(GetCurrentProcess(), 124); return 0; }\nstatic void hang_guard(void) { CloseHandle(CreateThread(NULL, 0, hang_guard_main, NULL, 0, NULL)); }\n#else\n#include <pthread.h>\n#include <unistd.h>\n#undef pthread_create\nstatic void *hang_guard_main(void *p) { (void)p; sleep(30); _exit(124); return NULL; }\nstatic void hang_guard(void) { pthread_t t; pthread_create(&t, NULL, hang_guard_main, NULL); pthread_detach(t); }\n#endif");
+fn deep(n: int): int :: final {
+    let pad: [4]int = [n, n, n, n];
+    return deep(n + 1) + pad[n % 4] - n;
+}
+fn main(): int {
+    let args = sys.args();
+    if args.length > 1 && args[1] == "child" {
+        do unsafe { __c__("hang_guard(); gc_start();"); };
+        fmt.println(f"{deep(0)}");
+        return 0;
+    }
+    let r = process.runCaptured(args[0], ["child"]);
     fmt.println(f"{r.exitCode} {r.stderrResult.contains("Stack overflow while this thread was running a garbage collection")}");
     return 0;
 }
 """,
             "255 true");
 
-        // The stall trace is taken while the task holds a lock an unwinder
-        // needs (glibc's loader lock, inside dl_iterate_phdr: the profiler
-        // parses symbol tables there): it must neither deadlock nor lose
-        // the warning (the sanitizer run of 2026-11-20 hung there).
+        // The stall trace is taken while the task holds a lock that naming
+        // the trace needs: on Linux glibc's loader lock, inside
+        // dl_iterate_phdr (the unwinder parses symbol tables there; the
+        // sanitizer run of 2026-11-20 hung there); on Windows the process
+        // heap's lock, which malloc and dbghelp take. It must neither
+        // deadlock nor lose the warning.
         s.run(
-            "tasks: a stall inside dl_iterate_phdr is reported, never a deadlock",
+            "tasks: a stall inside a lock the stall trace needs is reported, never a deadlock",
             """
-__c__("#define _GNU_SOURCE\n#include <link.h>\n#include <time.h>\nstatic int busy_in_loader(struct dl_phdr_info *info, size_t size, void *data) { (void)info; (void)size; struct timespec a, b; clock_gettime(CLOCK_THREAD_CPUTIME_ID, &a); do { clock_gettime(CLOCK_THREAD_CPUTIME_ID, &b); } while ((b.tv_sec - a.tv_sec) * 1000000000L + (b.tv_nsec - a.tv_nsec) < 60000000L); return 1; }");
+__c__("#ifdef _WIN32\n#include <windows.h>\nstatic void stall_in_lock(void) { HANDLE heap = GetProcessHeap(); LARGE_INTEGER f, a, b; QueryPerformanceFrequency(&f); HeapLock(heap); QueryPerformanceCounter(&a); do { QueryPerformanceCounter(&b); } while ((b.QuadPart - a.QuadPart) * 1000 < 60 * f.QuadPart); HeapUnlock(heap); }\n#else\n#define _GNU_SOURCE\n#include <link.h>\n#include <time.h>\nstatic int busy_in_loader(struct dl_phdr_info *info, size_t size, void *data) { (void)info; (void)size; struct timespec a, b; clock_gettime(CLOCK_THREAD_CPUTIME_ID, &a); do { clock_gettime(CLOCK_THREAD_CPUTIME_ID, &b); } while ((b.tv_sec - a.tv_sec) * 1000000000L + (b.tv_nsec - a.tv_nsec) < 60000000L); return 1; }\nstatic void stall_in_lock(void) { dl_iterate_phdr(busy_in_loader, NULL); }\n#endif\n#ifdef _WIN32\n#include <windows.h>\n#undef CreateThread\nstatic DWORD WINAPI hang_guard_main(LPVOID p) { (void)p; Sleep(30000); TerminateProcess(GetCurrentProcess(), 124); return 0; }\nstatic void hang_guard(void) { CloseHandle(CreateThread(NULL, 0, hang_guard_main, NULL, 0, NULL)); }\n#else\n#include <pthread.h>\n#include <unistd.h>\n#undef pthread_create\nstatic void *hang_guard_main(void *p) { (void)p; sleep(30); _exit(124); return NULL; }\nstatic void hang_guard(void) { pthread_t t; pthread_create(&t, NULL, hang_guard_main, NULL); pthread_detach(t); }\n#endif");
 fn main(): int {
     let args = sys.args();
     if args.length > 1 && args[1] == "child" {
-        do unsafe { __c__("dl_iterate_phdr(busy_in_loader, NULL);"); };
+        do unsafe { __c__("hang_guard(); stall_in_lock();"); };
         fmt.println("finished");
         return 0;
     }
-    let r = process.runCaptured("timeout", ["30", args[0], "child"]);
+    let r = process.runCaptured(args[0], ["child"]);
     fmt.println(f"{r.exitCode} {r.stdoutResult.trim()} {r.stderrResult.contains("without yielding")}");
     return 0;
 }
@@ -841,10 +938,12 @@ fn main(): int {
         // the sampled stack: memory past a snapshot is read live only where
         // it cannot have changed, inside a loaded module (CFI, code). A task
         // stack and the heap have moved on since the sample (review
-        // 2026-11-20: only the thread's own stack was refused).
-        s.run(
-            "tasks: the profiler's unwinder reads only module memory live",
-            """
+        // 2026-11-20: only the thread's own stack was refused). The sampling
+        // profiler (perf_event_open) exists on Linux only.
+        if sys.isLinux() {
+            s.run(
+                "tasks: the profiler's unwinder reads only module memory live",
+                """
 __c__("#include <stdint.h>\n#include <stdbool.h>\nbool hzstd_perf_live_read_allowed(uint64_t addr);\nstatic int some_global = 1;");
 fn main(): int {
     let code = false;
@@ -858,7 +957,8 @@ fn main(): int {
     return 0;
 }
 """,
-            "true true false false");
+                "true true false false");
+        }
 
         s.run(
             "tasks: yielding with nothing else ready goes on at once",

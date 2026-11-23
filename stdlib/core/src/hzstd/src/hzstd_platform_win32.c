@@ -190,17 +190,16 @@ bool hzstd_run_on_worker_thread(void (*fn)(void* arg), void* arg)
 // ── Panic global state ────────────────────────────────────────────────────────
 //
 // DESIGN: VectoredHandler and hzstd_panic_with_stacktrace do as little as
-// possible — they copy the CPU context into a global and signal the worker.
+// possible: they copy the CPU context into a global and signal the worker.
 // The worker does all stack-walking (unknown stack cost) on its own stack.
 //
 // For STACK OVERFLOW recovery on Windows:
 //   After a stack overflow, Windows reserves SetThreadStackGuarantee() bytes of
-//   extra stack for the VEH handler.  We use that budget ONLY to copy globals
-//   and wait for the worker.  Before longjmping we call _resetstkoflw() to
-//   restore the guard page so that subsequent stack use in the recovery block
-//   is safe.  _resetstkoflw() must be called while still inside the VEH
-//   handler (before longjmp unwinds us out of it) because it relies on the
-//   current thread's stack layout being intact at that point.
+//   extra stack for the VEH handler (a task's stack inherits the guarantee,
+//   fiber.h).  We use that budget ONLY to copy globals and wait for the
+//   worker, then longjmp.  The recovery frame calls hzstd_panic_recovered,
+//   which re-arms the guard with _resetstkoflw(): only once the stack is
+//   unwound is there room for it.
 //
 // The longjmp MUST happen on the panicking thread (not the worker) so that the
 // unwind reaches the correct setjmp point.
@@ -211,7 +210,6 @@ static CONTEXT panic_context;
 static hzstd_int_t panic_skip_n_frames = 0;
 static hzstd_panic_type_t panic_type = hzstd_panic_type_unknown;
 static hzstd_panic_recovery_frame_t* panic_recovery_target = NULL;
-static bool panic_is_stackoverflow = false;
 static atomic_int panic_in_progress = 0;
 
 typedef enum {
@@ -246,130 +244,178 @@ static void store_panic_reason(hzstd_str_t msg)
 // hzstd_stacktrace_t using StackWalk64 on the captured CONTEXT, then either
 // signals panic_response (recovery) or prints & exits.
 
+// Ends the process now, from any thread, without exit handlers: _exit takes
+// the CRT's exit lock, which the main thread holds while it runs atexit
+// handlers (a panic in one hung there), and ExitProcess runs DLL detach.
+_Noreturn static void hzstd_terminate_process(int status)
+{
+  TerminateProcess(GetCurrentProcess(), (UINT)status);
+  for (;;) {
+    hzstd_block_thread_forever();
+  }
+}
+
 #define SYM_BUF_SIZE (sizeof(SYMBOL_INFO) + MAX_SYM_NAME * sizeof(TCHAR))
+
+// dbghelp is single threaded: the panic worker and the stall watchdog take
+// this lock around every call into it. Whoever comes first initializes it
+// (the panic worker, as soon as it starts).
+static SRWLOCK g_dbghelp_lock = SRWLOCK_INIT;
+static bool g_dbghelp_initialized = false;
+
+static void hzstd_dbghelp_lock(void)
+{
+  AcquireSRWLockExclusive(&g_dbghelp_lock);
+  if (!g_dbghelp_initialized) {
+    g_dbghelp_initialized = true;
+    // Each module's symbols load at their first lookup: initializing took
+    // 37 ms otherwise, at the start of every process, holding this lock while
+    // the first stall report waited for it (measured 2026-11-23).
+    SymSetOptions(SymGetOptions() | SYMOPT_DEFERRED_LOADS);
+    if (!SymInitialize(GetCurrentProcess(), NULL, TRUE)) {
+      fprintf(stderr, "Warning: SymInitialize failed, so stack traces show raw addresses only.\n");
+    }
+  }
+}
+
+static void hzstd_dbghelp_unlock(void)
+{
+  ReleaseSRWLockExclusive(&g_dbghelp_lock);
+}
+
+// Walks the stack `context` describes and names every frame, under the
+// dbghelp lock; repeated addresses share their frame's id (the printer folds
+// them). `read` serves the walk's memory reads (NULL: the process's own).
+static hzstd_dynamic_array_t *hzstd_walk_and_name(const CONTEXT *context,
+                                                  PREAD_PROCESS_MEMORY_ROUTINE64 read,
+                                                  hzstd_allocator_t allocator,
+                                                  size_t max_frames)
+{
+  CONTEXT ctx;
+  STACKFRAME64 sf;
+  memcpy(&ctx, context, sizeof(CONTEXT));
+  memset(&sf, 0, sizeof(sf));
+  ctx.ContextFlags = CONTEXT_INTEGER | CONTEXT_CONTROL;
+
+#ifdef _M_X64
+  sf.AddrPC.Offset = ctx.Rip;
+  sf.AddrPC.Mode = AddrModeFlat;
+  sf.AddrFrame.Offset = ctx.Rbp;
+  sf.AddrFrame.Mode = AddrModeFlat;
+  sf.AddrStack.Offset = ctx.Rsp;
+  sf.AddrStack.Mode = AddrModeFlat;
+  DWORD machineType = IMAGE_FILE_MACHINE_AMD64;
+#elif defined(_M_IX86)
+#error Only 64-bit is supported
+#endif
+
+  HANDLE hProcess = GetCurrentProcess();
+  HANDLE hThread = GetCurrentProcess(); /* StackWalk64 accepts process handle here */
+
+  hzstd_dbghelp_lock();
+
+  // Dry-run: count frames.
+  CONTEXT ctx2;
+  STACKFRAME64 sf2;
+  memcpy(&ctx2, &ctx, sizeof(ctx));
+  memcpy(&sf2, &sf, sizeof(sf));
+
+  size_t numberOfFrames = 0;
+  while (numberOfFrames < max_frames &&
+         StackWalk64(machineType, hProcess, hThread, &sf2, &ctx2, read, SymFunctionTableAccess64, SymGetModuleBase64, NULL)) {
+    numberOfFrames++;
+    if (sf2.AddrPC.Offset == 0) {
+      break;
+    }
+  }
+
+  // Re-copy for the real pass.
+  memcpy(&ctx2, &ctx, sizeof(ctx));
+  memcpy(&sf2, &sf, sizeof(sf));
+
+  size_t nextId = 1;
+  hzstd_dynamic_array_t* frameArray
+      = hzstd_dynamic_array_create(allocator, sizeof(hzstd_stackframe_t), numberOfFrames, "hzstd_stackframe_t");
+
+  while (hzstd_dynamic_array_size(frameArray) < numberOfFrames &&
+         StackWalk64(machineType, hProcess, hThread, &sf2, &ctx2, read, SymFunctionTableAccess64, SymGetModuleBase64, NULL)) {
+    bool pushed = false;
+    for (size_t i = 0; i < hzstd_dynamic_array_size(frameArray); i++) {
+      hzstd_stackframe_t frame = HZSTD_DYNAMIC_ARRAY_GET(frameArray, hzstd_stackframe_t, i);
+      if (frame.instructionPointer == (hzstd_cptr_t)sf2.AddrPC.Offset) {
+        HZSTD_DYNAMIC_ARRAY_PUSH(frameArray, frame);
+        pushed = true;
+        break;
+      }
+    }
+
+    if (!pushed) {
+      hzstd_str_t name = HZSTD_STRING(NULL, 0);
+
+      DWORD64 displacement = 0;
+      char symbolBuffer[SYM_BUF_SIZE];
+      PSYMBOL_INFO pSym = (PSYMBOL_INFO)symbolBuffer;
+      pSym->SizeOfStruct = sizeof(SYMBOL_INFO);
+      pSym->MaxNameLen = MAX_SYM_NAME;
+      if (SymFromAddr(hProcess, sf2.AddrPC.Offset, &displacement, pSym)) {
+        name = hzstd_str_from_cstr_dup(allocator, pSym->Name);
+      }
+
+      hzstd_source_location_t sourceloc = { ._filename = HZSTD_STRING(NULL, 0), ._line = 0, ._column = 0 };
+      IMAGEHLP_LINE64 lineInfo;
+      lineInfo.SizeOfStruct = sizeof(IMAGEHLP_LINE64);
+      DWORD lineDisp = 0;
+      if (SymGetLineFromAddr64(hProcess, sf2.AddrPC.Offset, &lineDisp, &lineInfo)) {
+        sourceloc._filename = hzstd_str_from_cstr_dup(allocator, lineInfo.FileName);
+        sourceloc._line = (hzstd_int_t)lineInfo.LineNumber;
+      }
+
+      hzstd_stackframe_t fr = {
+        .id = nextId++,
+        .instructionPointer = (void*)sf2.AddrPC.Offset,
+        .name = name,
+        .sourceloc = sourceloc,
+      };
+      HZSTD_DYNAMIC_ARRAY_PUSH(frameArray, fr);
+    }
+
+    if (sf2.AddrPC.Offset == 0) {
+      break;
+    }
+  }
+
+  hzstd_dbghelp_unlock();
+  return frameArray;
+}
 
 static DWORD WINAPI hzstd_panic_handler_thread(LPVOID _)
 {
   (void)_;
 
-  BOOL sym_ok = SymInitialize(GetCurrentProcess(), NULL, TRUE);
-  if (!sym_ok) {
-    fprintf(stderr,
-            "Warning: SymInitialize failed — stack trace will show raw "
-            "addresses only.\n");
-  }
+  // dbghelp loads the symbols now, not at the first panic.
+  hzstd_dbghelp_lock();
+  hzstd_dbghelp_unlock();
 
   for (;;) {
     hzstd_wait_for_semaphore(panic_trigger);
 
     hzstd_allocator_t allocator = hzstd_make_heap_allocator();
 
-    // Work on a local copy of the context so StackWalk64 mutation doesn't
-    // race with the panicking thread (which might still be polling).
-    CONTEXT ctx;
-    STACKFRAME64 sf;
-    memcpy(&ctx, &panic_context, sizeof(CONTEXT));
-    memset(&sf, 0, sizeof(sf));
-
-    ctx.ContextFlags = CONTEXT_INTEGER | CONTEXT_CONTROL;
-
-#ifdef _M_X64
-    sf.AddrPC.Offset = ctx.Rip;
-    sf.AddrPC.Mode = AddrModeFlat;
-    sf.AddrFrame.Offset = ctx.Rbp;
-    sf.AddrFrame.Mode = AddrModeFlat;
-    sf.AddrStack.Offset = ctx.Rsp;
-    sf.AddrStack.Mode = AddrModeFlat;
-    DWORD machineType = IMAGE_FILE_MACHINE_AMD64;
-#elif defined(_M_IX86)
-#error Only 64-bit is supported
-#endif
-
-    HANDLE hProcess = GetCurrentProcess();
-    HANDLE hThread = GetCurrentProcess(); /* StackWalk64 accepts process handle here */
-
-    // Dry-run: count frames.
-    CONTEXT ctx2;
-    STACKFRAME64 sf2;
-    memcpy(&ctx2, &ctx, sizeof(ctx));
-    memcpy(&sf2, &sf, sizeof(sf));
-
-    size_t numberOfFrames = 0;
-    while (StackWalk64(
-        machineType, hProcess, hThread, &sf2, &ctx2, NULL, SymFunctionTableAccess64, SymGetModuleBase64, NULL)) {
-      numberOfFrames++;
-      if (sf2.AddrPC.Offset == 0) {
-        break;
-      }
-    }
-
-    // Re-copy for the real pass.
-    memcpy(&ctx2, &ctx, sizeof(ctx));
-    memcpy(&sf2, &sf, sizeof(sf));
-
-    size_t nextId = 1;
-    hzstd_dynamic_array_t* frameArray
-        = hzstd_dynamic_array_create(allocator, sizeof(hzstd_stackframe_t), numberOfFrames, "hzstd_stackframe_t");
-
-    while (StackWalk64(
-        machineType, hProcess, hThread, &sf2, &ctx2, NULL, SymFunctionTableAccess64, SymGetModuleBase64, NULL)) {
-      bool pushed = false;
-      for (size_t i = 0; i < hzstd_dynamic_array_size(frameArray); i++) {
-        hzstd_stackframe_t frame = HZSTD_DYNAMIC_ARRAY_GET(frameArray, hzstd_stackframe_t, i);
-        if (frame.instructionPointer == (hzstd_cptr_t)sf2.AddrPC.Offset) {
-          HZSTD_DYNAMIC_ARRAY_PUSH(frameArray, frame);
-          pushed = true;
-          break;
-        }
-      }
-
-      if (!pushed) {
-        hzstd_str_t name = HZSTD_STRING(NULL, 0);
-
-        DWORD64 displacement = 0;
-        char symbolBuffer[SYM_BUF_SIZE];
-        PSYMBOL_INFO pSym = (PSYMBOL_INFO)symbolBuffer;
-        pSym->SizeOfStruct = sizeof(SYMBOL_INFO);
-        pSym->MaxNameLen = MAX_SYM_NAME;
-        if (SymFromAddr(hProcess, sf2.AddrPC.Offset, &displacement, pSym)) {
-          name = hzstd_str_from_cstr_dup(allocator, pSym->Name);
-        }
-
-        hzstd_source_location_t sourceloc = { ._filename = HZSTD_STRING(NULL, 0), ._line = 0, ._column = 0 };
-        IMAGEHLP_LINE64 lineInfo;
-        lineInfo.SizeOfStruct = sizeof(IMAGEHLP_LINE64);
-        DWORD lineDisp = 0;
-        if (SymGetLineFromAddr64(hProcess, sf2.AddrPC.Offset, &lineDisp, &lineInfo)) {
-          sourceloc._filename = hzstd_str_from_cstr_dup(allocator, lineInfo.FileName);
-          sourceloc._line = (hzstd_int_t)lineInfo.LineNumber;
-        }
-
-        hzstd_stackframe_t fr = {
-          .id = nextId++,
-          .instructionPointer = (void*)sf2.AddrPC.Offset,
-          .name = name,
-          .sourceloc = sourceloc,
-        };
-        HZSTD_DYNAMIC_ARRAY_PUSH(frameArray, fr);
-      }
-
-      if (sf2.AddrPC.Offset == 0) {
-        break;
-      }
-    }
+    // From a copy of the context: the panicking thread may still poll it.
+    hzstd_dynamic_array_t* frameArray = hzstd_walk_and_name(&panic_context, NULL, allocator, SIZE_MAX);
 
     bool has_recovery = (panic_recovery_target != NULL);
     bool build_only = (panic_mode == PANIC_MODE_BUILD_ONLY);
 
     if (build_only) {
-      // Caller just wants frames — no message or type needed.
+      // Caller just wants frames: no message or type needed.
       panic_built_stacktrace.frames = frameArray;
       panic_built_stacktrace.skip_n_frames = panic_skip_n_frames;
       atomic_store(&panic_in_progress, 0);
       hzstd_trigger_semaphore(panic_response);
     }
     else {
-      // Panic path — heap-copy the reason string so it survives longjmp.
+      // Panic path: heap-copy the reason string so it survives longjmp.
       size_t reason_len = panic_reason.length;
       char* reason_data = (char*)hzstd_allocate_unscanned(allocator, reason_len + 1, NULL);
       memcpy(reason_data, panic_reason.data, reason_len);
@@ -390,8 +436,9 @@ static DWORD WINAPI hzstd_panic_handler_thread(LPVOID _)
         fflush(stdout);
         fflush(stderr);
         // After a graceful exit started, its status is final (contract
-        // section 2): the panic is printed and changes nothing.
-        _exit(hzstd_exit_status() >= 0 ? hzstd_exit_status() : -1);
+        // section 2): the panic is printed and changes nothing. An
+        // uncaught failure ends with 255 (C227).
+        hzstd_terminate_process(hzstd_exit_status() >= 0 ? hzstd_exit_status() : 255);
       }
     }
   }
@@ -407,11 +454,30 @@ static DWORD WINAPI hzstd_panic_handler_thread(LPVOID _)
 //   _resetstkoflw() restores the guard page BEFORE longjmping out so that
 //   code in the recovery block can use the stack normally.
 
+_Noreturn static void hzstd_fail_while_world_stopped(const char *what);
+
+
 LONG WINAPI VectoredHandler(PEXCEPTION_POINTERS ExceptionInfo)
 {
   DWORD code = ExceptionInfo->ExceptionRecord->ExceptionCode;
   if (code != EXCEPTION_ACCESS_VIOLATION && code != EXCEPTION_STACK_OVERFLOW) {
     return EXCEPTION_CONTINUE_SEARCH;
+  }
+
+  PEXCEPTION_RECORD rec = ExceptionInfo->ExceptionRecord;
+  // A task's stack grows like a thread's (fiber.h): the kernel reports its
+  // end as EXCEPTION_STACK_OVERFLOW, and a fault inside the guard below it is
+  // an overflow too (C383).
+  const fiber_stack *task_stack = hzstd_current_task_stack();
+  bool overflow = code == EXCEPTION_STACK_OVERFLOW ||
+                  (code == EXCEPTION_ACCESS_VIOLATION && task_stack != NULL &&
+                   fiber_stack_guard_contains(task_stack, (const void *)rec->ExceptionInformation[1]));
+  if (hzstd_this_thread_is_collecting()) {
+    // In the middle of a collection this thread runs: the panic worker is
+    // suspended (the world is stopped) or its report waits for the
+    // collector's lock this thread holds, and nothing could go on after a
+    // recovery (the lock stays held). Reported directly; the process ends.
+    hzstd_fail_while_world_stopped(overflow ? "Stack overflow" : "Segmentation Fault");
   }
 
   int expected = 0;
@@ -421,12 +487,15 @@ LONG WINAPI VectoredHandler(PEXCEPTION_POINTERS ExceptionInfo)
 
   memcpy(&panic_context, ExceptionInfo->ContextRecord, sizeof(CONTEXT));
 
-  PEXCEPTION_RECORD rec = ExceptionInfo->ExceptionRecord;
+  if (overflow) {
+    store_panic_reason(task_stack != NULL
+                           ? HZSTD_STRING_FROM_CSTR("Stack overflow: the task used up its stack (endless recursion?)")
+                           : HZSTD_STRING_FROM_CSTR("Stack Overflow (likely due to deep recursion)"));
+    panic_type = hzstd_panic_type_stackoverflow;
+    code = EXCEPTION_STACK_OVERFLOW;
+  }
   switch (code) {
   case EXCEPTION_STACK_OVERFLOW:
-    store_panic_reason(HZSTD_STRING_FROM_CSTR("Stack Overflow (likely due to deep recursion)"));
-    panic_type = hzstd_panic_type_stackoverflow;
-    panic_is_stackoverflow = true;
     break;
 
   case EXCEPTION_ACCESS_VIOLATION: {
@@ -444,13 +513,11 @@ LONG WINAPI VectoredHandler(PEXCEPTION_POINTERS ExceptionInfo)
       store_panic_reason(HZSTD_STRING_FROM_CSTR("Segmentation Fault: Access Violation"));
     }
     panic_type = hzstd_panic_type_segfault;
-    panic_is_stackoverflow = false;
     break;
   }
   default:
     store_panic_reason(HZSTD_STRING_FROM_CSTR("Unknown System Fault"));
     panic_type = hzstd_panic_type_unknown;
-    panic_is_stackoverflow = false;
     break;
   }
 
@@ -468,12 +535,9 @@ LONG WINAPI VectoredHandler(PEXCEPTION_POINTERS ExceptionInfo)
   // Wait for the worker to finish building the stacktrace.
   WaitForSingleObject(panic_response->handle, INFINITE);
 
-  // Restore the guard page BEFORE any further stack use (including longjmp
-  // itself uses a tiny amount of stack, which is fine with the guarantee).
-  // Must be called while still inside the VEH frame.
-  if (panic_is_stackoverflow) {
-    _resetstkoflw();
-  }
+  // The guard is re-armed once the stack is unwound to the recovery frame
+  // (hzstd_panic_recovered): here, at the bottom of the stack, there is no
+  // room for it. The longjmp runs in the stack guarantee.
 
   // Hand the info to the task, so the recover: label can read it (the
   // recovery frame exists, so this thread runs a task).
@@ -484,10 +548,140 @@ LONG WINAPI VectoredHandler(PEXCEPTION_POINTERS ExceptionInfo)
   return EXCEPTION_CONTINUE_EXECUTION;
 }
 
+// A failure while this thread runs a collection: written directly, and the
+// process ends.
+_Noreturn static void hzstd_fail_while_world_stopped(const char *what)
+{
+  static const char head[] = "\n[FATAL] ";
+  static const char tail[] = " while this thread was running a garbage collection: every other thread is stopped, so no stack trace can be built; the program ends.\n";
+  HANDLE err = GetStdHandle(STD_ERROR_HANDLE);
+  DWORD written = 0;
+  WriteFile(err, head, sizeof(head) - 1, &written, NULL);
+  WriteFile(err, what, (DWORD)strlen(what), &written, NULL);
+  WriteFile(err, tail, sizeof(tail) - 1, &written, NULL);
+  hzstd_terminate_process(hzstd_exit_status() >= 0 ? hzstd_exit_status() : 255);
+}
+
+// The recovery frame's first step, on the stack it unwound to: after a stack
+// overflow the task's stack has no growth guard left (the kernel used it), so
+// the next overflow would find no room for its handler. _resetstkoflw puts the
+// guard back below the stack pointer, from the TEB's bounds of the running
+// stack (fiber.h swaps them per task).
+void hzstd_panic_recovered(hzstd_context_t *ctx)
+{
+  if (ctx->task->panic_info.type == hzstd_panic_type_stackoverflow && _resetstkoflw() == 0) {
+    hzstd_trap_ccstr("Internal Runtime Error: the stack guard could not be re-armed after a stack overflow");
+  }
+}
+
+// ── The stall warning's stack trace (docs/async-runtime.md section 10) ───────
+//
+// The watchdog suspends the stalled thread, copies its registers and the live
+// part of the stack it runs on (from the stack pointer up, at most
+// HZSTD_STALL_COPY_MAX bytes), and lets it run again at once: nothing that
+// takes a lock happens while it is suspended, because the stall can be
+// anywhere, also inside the loader's or the heap's lock that unwinding and
+// naming need. StackWalk64 then unwinds the copy: its reads of the copied
+// range come from the copy, reads of the rest of that stack fail (it has
+// changed since), other memory (code, unwind data) is read as it is. Win64
+// code keeps rbp at an offset inside its frame, so walking frame pointers as
+// on Linux stops after one frame (measured 2026-11-23).
+
+#define HZSTD_STALL_COPY_MAX ((size_t)256 << 10)
+#define HZSTD_STALL_MAX_FRAMES 64
+
+static char *g_stall_copy;          // the watchdog's own buffer, made before any task runs
+static uintptr_t g_stall_copy_lo;   // the copied range, in the stalled thread's stack
+static uintptr_t g_stall_copy_hi;
+static uintptr_t g_stall_stack_lo;  // the whole stack it was on
+static uintptr_t g_stall_stack_hi;
+
+static BOOL CALLBACK hzstd_stall_read_memory(HANDLE process, DWORD64 base, PVOID buffer, DWORD size, LPDWORD read)
+{
+  uintptr_t lo = (uintptr_t)base;
+  uintptr_t hi = lo + size;
+  *read = 0;
+  if (lo >= g_stall_copy_lo && hi <= g_stall_copy_hi) {
+    memcpy(buffer, g_stall_copy + (lo - g_stall_copy_lo), size);
+    *read = size;
+    return TRUE;
+  }
+  if (lo < g_stall_stack_hi && hi > g_stall_stack_lo) {
+    return FALSE; // the stack outside the copy has changed since
+  }
+  SIZE_T got = 0;
+  BOOL ok = ReadProcessMemory(process, (LPCVOID)base, buffer, size, &got);
+  *read = (DWORD)got;
+  return ok;
+}
+
+void hzstd_stall_trace_initialize(void)
+{
+  g_stall_copy = malloc(HZSTD_STALL_COPY_MAX);
+  if (g_stall_copy == NULL) {
+    hzstd_panic("Out of memory for the stall watchdog's stack copy");
+  }
+}
+
+bool hzstd_capture_stall_trace(hzstd_sched_t *s, hzstd_stacktrace_t *out)
+{
+  static CONTEXT context __attribute__((aligned(16)));
+  memset(&context, 0, sizeof(context));
+  context.ContextFlags = CONTEXT_INTEGER | CONTEXT_CONTROL;
+  if (SuspendThread(s->handle) == (DWORD)-1) {
+    return false;
+  }
+  // From here until ResumeThread: no lock, no allocation, no call into a
+  // library that might take one.
+  bool ok = GetThreadContext(s->handle, &context) != 0;
+  if (ok) {
+    const char *sp = (const char *)(uintptr_t)context.Rsp;
+    hzstd_task_t *task = s->thread->current_task; // stable: the thread is stopped
+    const char *lo = NULL;
+    const char *hi = NULL;
+    if (task != NULL && task->stack.top != NULL && hzstd_in_range(sp, task->stack.limit, task->stack.top)) {
+      lo = task->stack.limit;
+      hi = task->stack.top;
+    }
+    else if (hzstd_in_range(sp, s->native_lo, s->native_hi)) {
+      lo = s->native_lo;
+      hi = s->native_hi;
+    }
+    ok = lo != NULL;
+    if (ok) {
+      // [sp, hi) is committed: a stack is committed from its lowest touched
+      // page up.
+      size_t length = (size_t)(hi - sp) < HZSTD_STALL_COPY_MAX ? (size_t)(hi - sp) : HZSTD_STALL_COPY_MAX;
+      memcpy(g_stall_copy, sp, length);
+      g_stall_copy_lo = (uintptr_t)sp;
+      g_stall_copy_hi = (uintptr_t)sp + length;
+      g_stall_stack_lo = (uintptr_t)lo;
+      g_stall_stack_hi = (uintptr_t)hi;
+    }
+  }
+  ResumeThread(s->handle);
+  if (!ok) {
+    return false;
+  }
+  // Plain malloc memory, kept: a report is rare, and the watchdog allocates
+  // no GC memory.
+  out->frames = hzstd_walk_and_name(&context, hzstd_stall_read_memory, hzstd_make_non_gc_raw_malloc_allocator(), HZSTD_STALL_MAX_FRAMES);
+  out->skip_n_frames = 0;
+  return true;
+}
+
 // ── hzstd_panic_with_stacktrace ───────────────────────────────────────────────
 
 _Noreturn void hzstd_panic_with_stacktrace(hzstd_str_t msg, hzstd_int_t skip_n_frames)
 {
+  if (hzstd_this_thread_is_collecting()) {
+    // See VectoredHandler: no worker can run now.
+    char text[512];
+    size_t length = msg.length < sizeof(text) - 1 ? (size_t)msg.length : sizeof(text) - 1;
+    memcpy(text, msg.data, length);
+    text[length] = '\0';
+    hzstd_fail_while_world_stopped(text);
+  }
   int expected = 0;
   if (!atomic_compare_exchange_strong(&panic_in_progress, &expected, 1)) {
     hzstd_block_thread_forever();
@@ -497,7 +691,6 @@ _Noreturn void hzstd_panic_with_stacktrace(hzstd_str_t msg, hzstd_int_t skip_n_f
   store_panic_reason(msg);
   panic_skip_n_frames = skip_n_frames;
   panic_type = hzstd_panic_type_user;
-  panic_is_stackoverflow = false;
   panic_recovery_target = (hzstd_panic_recovery_frame_count() > 0) ? hzstd_get_current_panic_recovery_frame() : NULL;
   panic_mode = PANIC_MODE_CRASH;
 
@@ -527,7 +720,6 @@ hzstd_stacktrace_t hzstd_build_stacktrace(int skip_n_frames)
   store_panic_reason(HZSTD_STRING_FROM_CSTR(""));
   panic_skip_n_frames = skip_n_frames + 1;
   panic_type = hzstd_panic_type_unknown;
-  panic_is_stackoverflow = false;
   panic_recovery_target = NULL;
   panic_mode = PANIC_MODE_BUILD_ONLY;
 

@@ -712,6 +712,13 @@ static void hzstd_panic_handler(int sig, siginfo_t *si, void *ucontext)
   __builtin_unreachable();
 }
 
+// The first step of a recovery frame: nothing to re-arm on Linux (a task's
+// guard stays PROT_NONE, the signal stack is the thread's).
+void hzstd_panic_recovered(hzstd_context_t *ctx)
+{
+  (void)ctx;
+}
+
 // ── The stall warning's stack trace (docs/async-runtime.md section 10) ───────
 //
 // The watchdog signals the stalled thread; the handler walks the frame
@@ -764,7 +771,7 @@ static void hzstd_stall_signal_handler(int sig, siginfo_t *si, void *ucontext)
   atomic_store(&g_stall_trace_ready, 1);
 }
 
-void hzstd_install_stall_signal_handler(void)
+void hzstd_stall_trace_initialize(void)
 {
   struct sigaction sa;
   memset(&sa, 0, sizeof(sa));
@@ -779,10 +786,10 @@ void hzstd_install_stall_signal_handler(void)
 // The stalled thread's stack trace, on the watchdog's thread: the handler's
 // walk, named here (plain malloc memory, kept: a report is rare). False if
 // the thread did not answer within 100 ms.
-bool hzstd_capture_stall_trace(pthread_t thread, hzstd_stacktrace_t *out)
+bool hzstd_capture_stall_trace(hzstd_sched_t *s, hzstd_stacktrace_t *out)
 {
   atomic_store(&g_stall_trace_ready, 0);
-  if (pthread_kill(thread, HZSTD_STALL_SIGNAL) != 0) {
+  if (pthread_kill(s->pthread, HZSTD_STALL_SIGNAL) != 0) {
     return false;
   }
   for (int i = 0; i < 200 && atomic_load(&g_stall_trace_ready) == 0; i++) {

@@ -201,7 +201,7 @@ constrain the choice:
   stack under `fiber_exit`'s unwind info: on Linux its CFI describes the new frame; on Windows an
   asynchronous sampler stopping exactly there gets one wrong frame. Nothing can fault there.
 
-## Integration checklist (state 2026-11-20, branch async-runtime)
+## Integration checklist (state 2026-11-23, branch async-runtime)
 
 hzstd uses the library since stage 3 of `docs/async-implementation-plan.md`
 (`stdlib/core/src/hzstd/src/hzstd_sched.c`; decisions S3-* in `docs/async-decisions.md`).
@@ -214,11 +214,12 @@ hzstd uses the library since stage 3 of `docs/async-implementation-plan.md`
 3. **Compiler flags: done** on Linux: `-fstack-clash-protection` (ModuleCompiler.ts). Never add
    `-fcf-protection=return|full`, `-mbranch-protection=standard` (GCS) or `-fsanitize=thread`: the
    build stops on them.
-4. **Fault handling:** Linux done: `fiber_stack_guard_contains` on the running task's stack
+4. **Fault handling: done** on both. `fiber_stack_guard_contains` on the running task's stack
    classifies a stack overflow, the current task is set on the resumed side of every switch, and
-   the panic longjmps to the task's own recovery frame. **Open on Windows** (never built or run
-   there): an access violation in the guard as an overflow, and moving `_resetstkoflw()` from
-   inside the VEH to after the longjmp.
+   the panic longjmps to the task's own recovery frame. Windows (2026-11-23): the VEH takes
+   `EXCEPTION_STACK_OVERFLOW` or an access violation in the guard as an overflow, and
+   `_resetstkoflw()` runs in `hzstd_panic_recovered`, the recovery frame's first step on the
+   unwound stack (a second overflow in the same task is recovered too; decisions S3-33).
 5. **GC glue: done**, ported from `tests/gc_test.c` (sp corrector, chained push hook that finds the
    running task by address, registry under `GC_call_with_alloc_lock`, the Windows
    `GetThreadContext` variant and warning filter). The interrupted stack of a thread in its fault

@@ -483,8 +483,8 @@ Runtime: `stdlib/core/src/hzstd/src/hzstd_sched.c`; Haze API: `stdlib/core/src/t
   stderr above 10 ms (C242), again at each doubling. It sleeps on a semaphore when no task
   runs anywhere; the switch wakes it (a Dekker pair on the sleeping flag and the epoch). The
   first tick of a run starts its clock, so a run is measured up to 5 ms short, never long.
-  The trace (S3-23) and the GC pause report (S3-26) came later the same day. Not yet: Windows
-  (there `running_for` stays 0: no warning, `yieldAfter` never yields).
+  The trace (S3-23) and the GC pause report (S3-26) came later the same day; Windows since
+  2026-11-23 (S3-28 to S3-35).
 - **S3-15. `sys.yieldAfter` is inline C.** An `extern C noemit` declaration with
   `:: final, context` gets the caller's context, so the call compiles to hzstd_runtime.h's
   `static inline yieldAfter(ctx, seconds)`: load `ctx->thread`, load `running_for`, compare,
@@ -584,6 +584,54 @@ Runtime: `stdlib/core/src/hzstd/src/hzstd_sched.c`; Haze API: `stdlib/core/src/t
   address.
 - Not fixed, ledgered: `live_sp` is never cleared after a collection (harmless while no thread
   ends; stage 5).
+
+### Windows (2026-11-23, on the Windows laptop; the user's go: "get windows on par with linux")
+
+- **S3-28. One watchdog, platform clocks below it.** The loop, the reports, the GC event hook and
+  the pause report are shared; per platform only: a thread's CPU time in ticks, the wall clock,
+  the 5 ms tick, sleeping and waking, starting the thread, writing to stderr. CPU time is stored
+  as ticks (`gc_cpu_ticks`, `gc_since_ticks`), never seconds: Linux nanoseconds (the thread's CPU
+  clock, as before), Windows the cycles `QueryThreadCycleTime` counts. Those run at the TSC's
+  rate (measured: 97 to 98 % of `rdtsc` for a thread that never blocks, the rest preemption;
+  `GetThreadTimes` agrees within its 15.6 ms ticks), so the watchdog learns that rate against
+  QPC from its first tick on; only it turns ticks into seconds. The tick is a high-resolution
+  waitable timer. Windows ARM64: an `#error` (no TSC; never ran there).
+- **S3-29. The Windows stall trace: suspend, copy, resume, then unwind the copy.** Win64 frames
+  keep rbp at an offset, so the Linux frame-pointer walk stops after one frame (measured). The
+  unwinder (`RtlLookupFunctionEntry`, dbghelp) can take the loader's or the heap's lock, which
+  the stalled task may hold, so nothing of it runs while the task is suspended: `SuspendThread`,
+  `GetThreadContext`, a copy of its stack from rsp up (at most 256 KiB, into a buffer made before
+  any task runs), `ResumeThread`. `StackWalk64` then walks the copy (its read callback serves the
+  copied range, refuses the rest of that stack, reads code and unwind data as they are).
+  Rejected: unwinding the live stack while suspended (deadlocks), relocating registers into the
+  copy (the read callback does it without touching registers).
+- **S3-30. dbghelp is one lock** for the panic worker and the watchdog (it is single threaded),
+  initialized by whoever comes first, with `SYMOPT_DEFERRED_LOADS` (37 ms at every process start
+  otherwise, holding the lock the first stall report needs). The panic worker and the stall
+  trace share one walk-and-name function.
+- **S3-31. Windows debug builds write a PDB** (`-gcodeview`, link `-g`): without one every Windows
+  trace, panics included, named its frames after the nearest export. Also on main.
+- **S3-32. The process waits for a stall report in progress** (both platforms): naming a trace
+  can wait for a lock the stalled task held, so it often ends after the stall, and a process
+  ending meanwhile lost the report (Windows, and on Linux by luck of timing). The watchdog
+  announces a report before its last look at the run epoch; the end of `hzstd_sched_run_main`
+  fences after the last switch out and waits (Dekker): either the report sees the run ended and
+  is dropped, or the end sees the report.
+- **S3-33. A task's overflow on Windows** is `EXCEPTION_STACK_OVERFLOW`, or an access violation in
+  the task's guard (`fiber_stack_guard_contains`); a fault or panic while this thread collects is
+  written directly (as S3-25). `_resetstkoflw` moved out of the VEH into
+  `hzstd_panic_recovered`, the first step of every recovery frame (`HAZE_ATTEMPT`), on the
+  unwound stack: in the VEH there is no room for a guard. Linux: nothing to re-arm.
+- **S3-34. Windows ends a failing process with `TerminateProcess`, status 255** (C227): `_exit`
+  takes the CRT's exit lock, which the main thread holds while it runs atexit handlers (a panic
+  in one hung), and Windows keeps -1 where Linux truncates it to 255.
+- **S3-35. Tests.** A hang guard thread in the child (unknown to the collector, so a stopped
+  world does not stop it) replaces coreutils `timeout`; the stall-in-a-lock case uses the process
+  heap's lock on Windows; the event-hook overflow case stays Linux only (it needs a hook deeper
+  than a recursion level) and a deterministic case for both covers an overflow in an open
+  collection window; the perf profiler case is Linux only (perf_event_open). New on both: a
+  second overflow in the same task, stall traces once per stack, a panic after `sys.exit` keeps
+  its status. The harness drops CR before comparing output.
 
 ## Tooling
 

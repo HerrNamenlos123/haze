@@ -608,8 +608,13 @@ switch path never reads a clock:
   backoff;
 * when no scheduler runs a task, the watchdog blocks on a futex without timeout: zero idle wakeups.
 
-**Report**: Linux `pthread_kill` with a dedicated real-time signal whose handler captures the context
-for the panic worker's trace path; Windows `SuspendThread` + `GetThreadContext` + `ResumeThread`.
+**Report**: Linux `pthread_kill` with a dedicated real-time signal whose handler walks the frame
+pointers; Windows `SuspendThread` + `GetThreadContext` + a copy of the stack from rsp up +
+`ResumeThread`, then `StackWalk64` over the copy (Win64 frames keep rbp at an offset, so frame
+pointers do not chain). Nothing that takes a lock runs while the thread is stopped; the names come
+after (decisions S3-23, S3-29, S3-30). A report in progress delays the process's end (S3-32).
+Windows CPU time: `QueryThreadCycleTime` counts at the TSC's rate, which the watchdog learns
+against QPC (S3-28).
 Deduplicated by stack hash. Message, roughly:
 
 ```

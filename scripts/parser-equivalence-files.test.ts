@@ -39,7 +39,10 @@ function track(root: string, ...paths: string[]) {
 }
 
 function relativeSweep(root: string, freshSinceMs: number | null): string[] {
-  return sweepFiles(root, freshSinceMs).map((p) => p.slice(root.length + 1));
+  // With / on every platform (Windows paths come with \).
+  return sweepFiles(root, freshSinceMs).map((p) =>
+    p.slice(root.length + 1).replaceAll("\\", "/")
+  );
 }
 
 describe("parser equivalence: the files it sweeps", () => {

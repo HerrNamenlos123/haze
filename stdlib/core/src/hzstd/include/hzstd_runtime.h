@@ -61,22 +61,27 @@ static inline void yieldAfter(hzstd_context_t *ctx, hzstd_real_t seconds)
 // thread's last task runs, then the process ends with `status` (C521, C576,
 // C586). The first status is final.
 _Noreturn void hzstd_task_exit(hzstd_context_t *ctx, hzstd_int_t status);
+// The first step of a recovery frame, on the stack the panic unwound to:
+// re-arms what the failure used up (Windows: a stack's guard, after an
+// overflow).
+void hzstd_panic_recovered(hzstd_context_t *ctx);
 // Whether the calling thread runs a collection (it holds the collector's
 // lock, and maybe the world stopped): the panic worker cannot report a
-// failure then, so it is reported directly (Linux).
+// failure then, so the fault handler reports it directly.
 bool hzstd_this_thread_is_collecting(void);
 // The status of a graceful exit that has started, or -1.
 int hzstd_exit_status(void);
 // sys.abort: ends the process at once, status 134, no cleanup (C547, C574).
 _Noreturn void hzstd_abort(void);
-// The stall warning's trace (Linux): the handler of the signal the watchdog
-// sends, and the watchdog's side, which waits for the trace the panic worker
-// builds while the stalled thread waits in that handler.
-void hzstd_install_stall_signal_handler(void);
-#if defined(HAZE_PLATFORM_LINUX)
-#include <pthread.h>
-bool hzstd_capture_stall_trace(pthread_t thread, hzstd_stacktrace_t *out);
-#endif
+// The stall warning's trace of the task a scheduler runs, taken and named on
+// the watchdog's thread (docs/async-runtime.md section 10); false if none
+// could be taken. Linux: a signal whose handler walks the frame pointers.
+// Windows: the thread is suspended while its registers and stack are copied,
+// and unwound from the copy once it runs again. What it needs is set up once,
+// before any task runs (hzstd_stall_trace_initialize): the signal handler,
+// the copy buffer.
+void hzstd_stall_trace_initialize(void);
+bool hzstd_capture_stall_trace(hzstd_sched_t *s, hzstd_stacktrace_t *out);
 // sys.timeSinceTaskSwitch: the same measurement, in seconds.
 hzstd_real_t hzstd_time_since_task_switch(hzstd_context_t *ctx);
 
@@ -250,6 +255,7 @@ _Noreturn void hzstd_panic_bad_stackref(hzstd_thread_t *thread, hzstd_stackref_t
     }                                                                                                                  \
     else if (__hz_jmp_##id == 1) {                                                                                     \
       /* the panic machinery already set the task's panic_info */                                                      \
+      hzstd_panic_recovered(__hz_ctx);                                                                                 \
       /* The longjmp skipped every stackref scope exit between the panic site and here. */                             \
       hzstd_stackref_unwind_to(__hz_ctx, __hz_frame_##id->saved_stackref_count);                                       \
       /* ...and every computed evaluation and write delivery: see hzstd_reactive_state_t. */                           \

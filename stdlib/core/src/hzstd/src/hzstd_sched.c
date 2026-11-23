@@ -69,8 +69,10 @@ struct hzstd_sched_t {
   char run_epoch_line_before[64];
   _Atomic uint64_t run_epoch;
   char run_epoch_line_after[56];
-  _Atomic double gc_cpu;   // CPU seconds this thread spent running collections, ended ones
-  _Atomic double gc_since; // this thread's CPU clock when its running collection began, 0 if none
+  // In CPU ticks (the watchdog's clocks): this thread's ended collections,
+  // and its CPU clock when its running collection began, 0 if none.
+  _Atomic uint64_t gc_cpu_ticks;
+  _Atomic uint64_t gc_since_ticks;
 #if !FIBER__WINDOWS
   clockid_t cpu_clock; // the thread's CPU time
 #endif
@@ -701,28 +703,243 @@ static void hzstd_sleep_cancel(hzstd_task_t *t)
 // doubling. With no task running anywhere it sleeps until a switch wakes it:
 // no wakeups while the process idles.
 //
-// Linux only for now: on Windows `running_for` stays 0 (no warning, and
-// sys.yieldAfter never yields).
+// The clocks and the waiting are the platform parts (just below): Linux reads
+// the thread's CPU clock and ticks on an absolute monotonic clock; Windows
+// reads the thread's cycle count and ticks on a high-resolution waitable
+// timer. Both sleep on a semaphore while nothing runs.
 
 #define HZSTD_STALL_LIMIT 0.010
 #define HZSTD_WATCHDOG_TICK_NS 5000000L
 
-#if !FIBER__WINDOWS
+// ── Clocks and waiting, per platform ─────────────────────────────────────────
+//
+// A thread's CPU time is counted in ticks: nanoseconds on Linux (the thread's
+// CPU clock), on Windows the cycles QueryThreadCycleTime counts. Those run at
+// the TSC's rate (measured 2026-11-23: a thread that never blocks gets 97 to
+// 98 % of rdtsc's count, the rest is preemption, and the 15.6 ms granular
+// GetThreadTimes agrees), so the watchdog learns that rate against
+// QueryPerformanceCounter while it runs. Only the watchdog turns ticks into
+// seconds; the collection hook only stores ticks.
+
+#if FIBER__WINDOWS
+#if !defined(FIBER_TARGET_WIN32_X64)
+#error "hzstd: the stall watchdog's CPU clock (QueryThreadCycleTime at the TSC's rate) is only known for Windows x64"
+#endif
+#include <intrin.h>
+
+static HANDLE g_watchdog_wake;  // a semaphore: a switch wakes the sleeping watchdog
+static HANDLE g_watchdog_timer; // the 5 ms tick
+static double g_qpc_hz;         // QueryPerformanceFrequency, set before any clock is read
+static uint64_t g_wd_tsc_start; // rdtsc and QPC when the watchdog began: its TSC rate
+static int64_t g_wd_qpc_start;
+
+static uint64_t hzstd_sched_cpu_ticks(hzstd_sched_t *s)
+{
+  ULONG64 cycles = 0;
+  if (!QueryThreadCycleTime(s->handle, &cycles)) {
+    hzstd_trap_ccstr("Internal Runtime Error: the stall watchdog could not read a thread's CPU time");
+  }
+  return cycles;
+}
+
+static uint64_t hzstd_this_thread_cpu_ticks(void)
+{
+  ULONG64 cycles = 0;
+  QueryThreadCycleTime(GetCurrentThread(), &cycles); // the pseudo handle has every access right
+  return cycles;
+}
+
+static double hzstd_wall_seconds(void)
+{
+  LARGE_INTEGER now;
+  QueryPerformanceCounter(&now);
+  return (double)now.QuadPart / g_qpc_hz;
+}
+
+static int64_t hzstd_qpc_now(void)
+{
+  LARGE_INTEGER now;
+  QueryPerformanceCounter(&now);
+  return now.QuadPart;
+}
+
+// The TSC's rate over everything the watchdog has seen so far: at least one
+// tick (5 ms against QPC's 100 ns), more precise with every tick.
+static double hzstd_watchdog_seconds_per_tick(void)
+{
+  double elapsed = (double)(hzstd_qpc_now() - g_wd_qpc_start) / g_qpc_hz;
+  return elapsed / (double)(__rdtsc() - g_wd_tsc_start);
+}
+
+static void hzstd_watchdog_tick(void)
+{
+  LARGE_INTEGER due;
+  due.QuadPart = -(HZSTD_WATCHDOG_TICK_NS / 100); // relative, in 100 ns
+  if (!SetWaitableTimer(g_watchdog_timer, &due, 0, NULL, NULL, FALSE)) {
+    hzstd_trap_ccstr("Internal Runtime Error: the stall watchdog could not arm its timer");
+  }
+  WaitForSingleObject(g_watchdog_timer, INFINITE);
+}
+
+// First thing on the watchdog's thread: one tick passes before the first
+// look, so the TSC's rate is known by then.
+static void hzstd_watchdog_thread_begins(void)
+{
+  g_wd_qpc_start = hzstd_qpc_now();
+  g_wd_tsc_start = __rdtsc();
+  hzstd_watchdog_tick();
+}
+
+static void hzstd_watchdog_wait_for_switch(void)
+{
+  WaitForSingleObject(g_watchdog_wake, INFINITE);
+}
+
+static void hzstd_watchdog_restart_ticks(void) {}
+
+static void hzstd_watchdog_wake(void)
+{
+  ReleaseSemaphore(g_watchdog_wake, 1, NULL);
+}
+
+static void hzstd_write_stderr_raw(const char *text, size_t length)
+{
+  DWORD written = 0;
+  WriteFile(GetStdHandle(STD_ERROR_HANDLE), text, (DWORD)length, &written, NULL);
+}
+
+static DWORD WINAPI hzstd_watchdog_thread(LPVOID unused);
+
+static void hzstd_watchdog_start(void)
+{
+  g_watchdog_wake = CreateSemaphoreW(NULL, 0, LONG_MAX, NULL);
+  g_watchdog_timer = CreateWaitableTimerExW(NULL, NULL, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+  if (g_watchdog_wake == NULL || g_watchdog_timer == NULL) {
+    hzstd_panic("Could not create the stall watchdog's semaphore and timer");
+  }
+  // CreateThread is BDWGC's GC_CreateThread here: the watchdog is registered
+  // with the collector like every thread hzstd starts.
+  HANDLE thread = CreateThread(NULL, 0, hzstd_watchdog_thread, NULL, 0, NULL);
+  if (thread == NULL) {
+    hzstd_panic("Could not start the stall watchdog");
+  }
+  CloseHandle(thread);
+}
+
+static void hzstd_clocks_initialize(void)
+{
+  LARGE_INTEGER hz;
+  QueryPerformanceFrequency(&hz);
+  g_qpc_hz = (double)hz.QuadPart;
+}
+#else
 #include <semaphore.h>
 #include <time.h>
 #include <unistd.h>
 
 static sem_t g_watchdog_wake;
-static _Atomic int g_watchdog_sleeping = 0;
+static struct timespec g_watchdog_next; // the next tick, on the monotonic clock
 
-static double hzstd_clock_seconds(clockid_t clock)
+static uint64_t hzstd_clock_ticks(clockid_t clock)
 {
   struct timespec ts;
   if (clock_gettime(clock, &ts) != 0) {
     return 0;
   }
-  return (double)ts.tv_sec + (double)ts.tv_nsec * 1e-9;
+  return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
 }
+
+static uint64_t hzstd_sched_cpu_ticks(hzstd_sched_t *s)
+{
+  return hzstd_clock_ticks(s->cpu_clock);
+}
+
+static uint64_t hzstd_this_thread_cpu_ticks(void)
+{
+  return hzstd_clock_ticks(CLOCK_THREAD_CPUTIME_ID);
+}
+
+static double hzstd_wall_seconds(void)
+{
+  return (double)hzstd_clock_ticks(CLOCK_MONOTONIC) * 1e-9;
+}
+
+static double hzstd_watchdog_seconds_per_tick(void)
+{
+  return 1e-9;
+}
+
+static void hzstd_watchdog_restart_ticks(void)
+{
+  clock_gettime(CLOCK_MONOTONIC, &g_watchdog_next);
+}
+
+static void hzstd_watchdog_tick(void)
+{
+  g_watchdog_next.tv_nsec += HZSTD_WATCHDOG_TICK_NS;
+  if (g_watchdog_next.tv_nsec >= 1000000000L) {
+    g_watchdog_next.tv_nsec -= 1000000000L;
+    g_watchdog_next.tv_sec += 1;
+  }
+  while (clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &g_watchdog_next, NULL) != 0) {
+  }
+}
+
+// First thing on the watchdog's thread. Registered with the collector like
+// every thread hzstd starts (pthread_create is BDWGC's here), so it takes the
+// collector's two signals and no other.
+static void hzstd_watchdog_thread_begins(void)
+{
+  sigset_t all;
+  sigfillset(&all);
+  sigdelset(&all, GC_get_suspend_signal());
+  sigdelset(&all, GC_get_thr_restart_signal());
+  pthread_sigmask(SIG_BLOCK, &all, NULL);
+  hzstd_watchdog_restart_ticks();
+}
+
+static void hzstd_watchdog_wait_for_switch(void)
+{
+  while (sem_wait(&g_watchdog_wake) != 0) {
+  }
+}
+
+static void hzstd_watchdog_wake(void)
+{
+  sem_post(&g_watchdog_wake);
+}
+
+static void hzstd_write_stderr_raw(const char *text, size_t length)
+{
+  ssize_t written = write(STDERR_FILENO, text, length);
+  (void)written;
+}
+
+static void *hzstd_watchdog_thread(void *unused);
+
+static void hzstd_watchdog_start(void)
+{
+  if (sem_init(&g_watchdog_wake, 0, 0) != 0) {
+    hzstd_panic("Could not create the stall watchdog's semaphore");
+  }
+  pthread_t thread;
+  pthread_attr_t attr;
+  pthread_attr_init(&attr);
+  pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+  if (pthread_create(&thread, &attr, hzstd_watchdog_thread, NULL) != 0) {
+    hzstd_panic("Could not start the stall watchdog");
+  }
+  pthread_attr_destroy(&attr);
+}
+
+static void hzstd_clocks_initialize(void) {}
+#endif
+
+static _Atomic int g_watchdog_sleeping = 0;
+// Set while the watchdog reports a stall: the process does not end before the
+// report is out (hzstd_watchdog_wait_for_reports). Naming a trace can wait for
+// a lock the stalled task held, so it often finishes only after the stall.
+static _Atomic int g_stall_report_busy = 0;
 
 // Stacks already reported (section 10: deduplicated by stack hash), by a hash
 // of their functions' names; the watchdog's own.
@@ -767,7 +984,7 @@ static void hzstd_stall_report(hzstd_sched_t *s, double ran, bool first)
   hzstd_stacktrace_t trace = { 0 };
   bool traced = false;
   if (first) {
-    traced = hzstd_capture_stall_trace(s->pthread, &trace);
+    traced = hzstd_capture_stall_trace(s, &trace);
     s->wd_reported = !(traced && hzstd_stall_seen_before(hzstd_stall_stack_hash(trace)));
     if (!s->wd_reported) {
       return;
@@ -807,20 +1024,12 @@ static void hzstd_stall_report(hzstd_sched_t *s, double ran, bool first)
   fflush(stderr);
 }
 
-static void *hzstd_watchdog_main(void *unused)
+// Runs no Haze code and allocates no GC memory.
+static void hzstd_watchdog_main(void)
 {
-  (void)unused;
-  // Runs no Haze code and allocates no GC memory. Registered with the
-  // collector like every thread hzstd starts (pthread_create is BDWGC's
-  // here), so it takes the collector's two signals and no other.
-  sigset_t all;
-  sigfillset(&all);
-  sigdelset(&all, GC_get_suspend_signal());
-  sigdelset(&all, GC_get_thr_restart_signal());
-  pthread_sigmask(SIG_BLOCK, &all, NULL);
-  struct timespec next;
-  clock_gettime(CLOCK_MONOTONIC, &next);
+  hzstd_watchdog_thread_begins();
   for (;;) {
+    double seconds_per_tick = hzstd_watchdog_seconds_per_tick();
     bool running = false;
     for (hzstd_sched_t *s = atomic_load_explicit(&g_hzstd_scheds, memory_order_acquire); s != NULL; s = s->next) {
       uint64_t epoch = atomic_load_explicit(&s->run_epoch, memory_order_acquire);
@@ -831,10 +1040,12 @@ static void *hzstd_watchdog_main(void *unused)
       // A collection in progress counts as soon as it began, not only from
       // its end: BDWGC restarts the world before it reports the end
       // (review 2026-11-20). Read before the total, which the end updates
-      // first: a race only ever makes the run look shorter.
-      double since = atomic_load(&s->gc_since);
-      double total = atomic_load(&s->gc_cpu);
-      double cpu = (since > 0 ? since : hzstd_clock_seconds(s->cpu_clock)) - total;
+      // first: a race only ever makes the run look shorter (a negative CPU
+      // time here, never a wrapped one).
+      uint64_t since = atomic_load(&s->gc_since_ticks);
+      uint64_t total = atomic_load(&s->gc_cpu_ticks);
+      int64_t own = (int64_t)((since > 0 ? since : hzstd_sched_cpu_ticks(s)) - total);
+      double cpu = (double)own * seconds_per_tick;
       if (epoch != s->wd_epoch) {
         s->wd_epoch = epoch;
         s->wd_start = cpu;
@@ -842,18 +1053,27 @@ static void *hzstd_watchdog_main(void *unused)
       }
       double ran = cpu > s->wd_start ? cpu - s->wd_start : 0.0;
       atomic_store_explicit(&s->thread->running_for, ran, memory_order_relaxed);
-      if (atomic_load_explicit(&s->run_epoch, memory_order_acquire) != epoch) {
+      bool due = ran > s->wd_next_report;
+      if (due) {
+        // Dekker with hzstd_watchdog_wait_for_reports: announced before the
+        // look at the epoch, so either the report sees the run end and is
+        // dropped, or the process's end sees the report and waits for it.
+        atomic_store(&g_stall_report_busy, 1);
+      }
+      if (atomic_load(&s->run_epoch) != epoch) {
         // The task switched meanwhile: the next run starts from 0.
         atomic_store_explicit(&s->thread->running_for, 0.0, memory_order_relaxed);
+        atomic_store(&g_stall_report_busy, 0);
         continue;
       }
-      if (ran > s->wd_next_report) {
+      if (due) {
         hzstd_stall_report(s, ran, s->wd_next_report == HZSTD_STALL_LIMIT);
         s->wd_next_report = ran * 2;
+        atomic_store(&g_stall_report_busy, 0);
       }
     }
     if (!running) {
-      // Dekker with hzstd_watchdog_switched_in: either a switch sees the flag
+      // Dekker with hzstd_watchdog_switch_in: either a switch sees the flag
       // and wakes this thread, or the second look sees its odd epoch.
       atomic_store(&g_watchdog_sleeping, 1);
       bool any = false;
@@ -861,42 +1081,35 @@ static void *hzstd_watchdog_main(void *unused)
         any |= (atomic_load(&s->run_epoch) & 1) != 0;
       }
       if (!any) {
-        while (sem_wait(&g_watchdog_wake) != 0) {
-        }
+        hzstd_watchdog_wait_for_switch();
       }
       atomic_store(&g_watchdog_sleeping, 0);
-      clock_gettime(CLOCK_MONOTONIC, &next);
+      hzstd_watchdog_restart_ticks();
     }
-    next.tv_nsec += HZSTD_WATCHDOG_TICK_NS;
-    if (next.tv_nsec >= 1000000000L) {
-      next.tv_nsec -= 1000000000L;
-      next.tv_sec += 1;
-    }
-    while (clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &next, NULL) != 0) {
-    }
+    hzstd_watchdog_tick();
   }
-  return NULL;
 }
 
-static void hzstd_watchdog_start(void)
+#if FIBER__WINDOWS
+static DWORD WINAPI hzstd_watchdog_thread(LPVOID unused)
 {
-  if (sem_init(&g_watchdog_wake, 0, 0) != 0) {
-    hzstd_panic("Could not create the stall watchdog's semaphore");
-  }
-  pthread_t thread;
-  pthread_attr_t attr;
-  pthread_attr_init(&attr);
-  pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
-  if (pthread_create(&thread, &attr, hzstd_watchdog_main, NULL) != 0) {
-    hzstd_panic("Could not start the stall watchdog");
-  }
-  pthread_attr_destroy(&attr);
+  (void)unused;
+  hzstd_watchdog_main();
+  return 0;
 }
+#else
+static void *hzstd_watchdog_thread(void *unused)
+{
+  (void)unused;
+  hzstd_watchdog_main();
+  return NULL;
+}
+#endif
 
 // Collections a thread runs are not its task's time (section 10): the
 // collector calls this on the collecting thread.
 static GC_on_collection_event_proc g_hzstd_previous_collection_event = NULL;
-static _Thread_local double t_hzstd_gc_start = 0;
+static _Thread_local uint64_t t_hzstd_gc_start = 0;
 // Wall clock of the collection this thread runs, and of its stopped world.
 static _Thread_local double t_hzstd_gc_wall_start = 0;
 static _Thread_local double t_hzstd_gc_stop_start = 0;
@@ -921,10 +1134,9 @@ static void hzstd_report_gc_pause(hzstd_thread_t *thread, double took, double st
                    took * 1000.0,
                    name,
                    stopped * 1000.0);
-  // write, not stdio: this runs with the collector's lock held.
+  // Not stdio: this runs with the collector's lock held.
   if (n > 0) {
-    ssize_t written = write(STDERR_FILENO, text, (size_t)n < sizeof(text) ? (size_t)n : sizeof(text) - 1);
-    (void)written;
+    hzstd_write_stderr_raw(text, (size_t)n < sizeof(text) ? (size_t)n : sizeof(text) - 1);
   }
 }
 // Set while this thread runs a collection (GC_EVENT_START to END: it holds
@@ -952,30 +1164,30 @@ static void GC_CALLBACK hzstd_gc_event(GC_EventType event)
     t_hzstd_stopped_the_world = true;
   }
   if (event == GC_EVENT_PRE_STOP_WORLD) {
-    t_hzstd_gc_stop_start = hzstd_clock_seconds(CLOCK_MONOTONIC);
+    t_hzstd_gc_stop_start = hzstd_wall_seconds();
   }
   else if (event == GC_EVENT_POST_START_WORLD) {
-    t_hzstd_gc_stopped += hzstd_clock_seconds(CLOCK_MONOTONIC) - t_hzstd_gc_stop_start;
+    t_hzstd_gc_stopped += hzstd_wall_seconds() - t_hzstd_gc_stop_start;
   }
   if (event == GC_EVENT_START || event == GC_EVENT_END) {
     hzstd_thread_t *thread = hzstd_current_thread;
     if (thread != NULL && thread->sched != NULL) {
-      double now = hzstd_clock_seconds(CLOCK_THREAD_CPUTIME_ID);
+      uint64_t now = hzstd_this_thread_cpu_ticks();
       if (event == GC_EVENT_START) {
         t_hzstd_gc_start = now;
-        t_hzstd_gc_wall_start = hzstd_clock_seconds(CLOCK_MONOTONIC);
+        t_hzstd_gc_wall_start = hzstd_wall_seconds();
         t_hzstd_gc_stopped = 0;
-        atomic_store(&thread->sched->gc_since, now);
+        atomic_store(&thread->sched->gc_since_ticks, now);
       }
       else {
-        double took = hzstd_clock_seconds(CLOCK_MONOTONIC) - t_hzstd_gc_wall_start;
+        double took = hzstd_wall_seconds() - t_hzstd_gc_wall_start;
         if (took > HZSTD_STALL_LIMIT) {
           hzstd_report_gc_pause(thread, took, t_hzstd_gc_stopped);
         }
         // The total first, then the end: see the watchdog's read.
-        double total = atomic_load(&thread->sched->gc_cpu);
-        atomic_store(&thread->sched->gc_cpu, total + (now - t_hzstd_gc_start));
-        atomic_store(&thread->sched->gc_since, 0.0);
+        uint64_t total = atomic_load(&thread->sched->gc_cpu_ticks);
+        atomic_store(&thread->sched->gc_cpu_ticks, total + (now - t_hzstd_gc_start));
+        atomic_store(&thread->sched->gc_since_ticks, 0);
       }
     }
   }
@@ -989,7 +1201,6 @@ static void GC_CALLBACK hzstd_gc_event(GC_EventType event)
     t_hzstd_stopped_the_world = false;
   }
 }
-#endif
 
 // The switch's side of the watchdog: no clock, one store and one increment
 // (and a wake-up only when the watchdog sleeps because nothing ran).
@@ -997,16 +1208,24 @@ static void hzstd_watchdog_switch_in(hzstd_sched_t *s)
 {
   atomic_store_explicit(&s->thread->running_for, 0.0, memory_order_relaxed);
   atomic_fetch_add(&s->run_epoch, 1); // odd: a task runs
-#if !FIBER__WINDOWS
   if (atomic_load(&g_watchdog_sleeping) != 0 && atomic_exchange(&g_watchdog_sleeping, 0) != 0) {
-    sem_post(&g_watchdog_wake);
+    hzstd_watchdog_wake();
   }
-#endif
 }
 
 static void hzstd_watchdog_switch_out(hzstd_sched_t *s)
 {
   atomic_fetch_add_explicit(&s->run_epoch, 1, memory_order_release); // even: the scheduler runs
+}
+
+// Before the process ends: a stall report the watchdog has begun is printed
+// first. Called with no task running, after the last switch out.
+static void hzstd_watchdog_wait_for_reports(void)
+{
+  atomic_thread_fence(memory_order_seq_cst); // after the switch out's epoch store
+  while (atomic_load(&g_stall_report_busy) != 0) {
+    hzstd_os_thread_block_ns(1000000);
+  }
 }
 
 hzstd_real_t hzstd_time_since_task_switch(hzstd_context_t *ctx)
@@ -1070,18 +1289,17 @@ static void hzstd_sched_initialize_main_thread(void)
 {
   g_hzstd_previous_push_other_roots = GC_get_push_other_roots();
   GC_set_push_other_roots(hzstd_push_task_stacks);
+  hzstd_clocks_initialize();
 #if FIBER__WINDOWS
   GC_set_warn_proc(hzstd_gc_warn);
 #else
   GC_set_sp_corrector(hzstd_sp_corrector);
+#endif
   g_hzstd_previous_collection_event = GC_get_on_collection_event();
   GC_set_on_collection_event(hzstd_gc_event);
-#endif
   hzstd_sched_init_thread(hzstd_current_thread);
-#if !FIBER__WINDOWS
-  hzstd_install_stall_signal_handler();
+  hzstd_stall_trace_initialize();
   hzstd_watchdog_start();
-#endif
 }
 
 // The fault handler's record of where it interrupted (section 8.3); NULL
@@ -1177,6 +1395,7 @@ int32_t hzstd_sched_run_main(int32_t (*main_fn)(hzstd_context_t *ctx), void (*en
     hzstd_sched_spawn(s, NULL, hzstd_context_settings_default(), hzstd_main_end_entry, &call, false, NULL);
     hzstd_sched_loop(s);
   }
+  hzstd_watchdog_wait_for_reports();
   int status = hzstd_exit_status();
   return status >= 0 ? status : call.exit_code;
 }
