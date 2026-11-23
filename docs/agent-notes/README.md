@@ -33,6 +33,7 @@ and against which commit it was verified; re-check a note against the code befor
 - [codeeditor panels and agent](codeeditor-panels-and-agent.md) - file tree, splitters, process-wide agent session
 - [Component crash recovery](component-crash-recovery.md) - runComponentCode isolates panics per component
 - [Fiber library](fiber-stack-switching-library.md) - fiber.h stack switching, targets, tests, Windows lessons
+- [dwarfline reader](dwarfline-reader.md) - own DWARF line-table reader for the Linux profiler; oracle llvm-dwarfdump; replaces libdwarf
 - [fs.exists truthiness](fs-exists-result-truthiness.md) - if fs.exists(p) tests the call, not the bool
 - [Gotchas (verified subset)](haze-compiler-and-stdlib-gotchas.md) - reserved words, math.min/max, H7214/H7215, lambdas, narrowing
 - [haze-notes create/keep/show-all](haze-notes-create-keep-showall.md) - create notes, .hznotekeep, ghosts, trash, not-a-note
@@ -83,6 +84,7 @@ and against which commit it was verified; re-check a note against the code befor
 - [Remembered window state](window-state-remembering.md) - storage, placement rule, SDL patch, gaps
 - [Windows apps: console program, detached console](windows-gui-subsystem-no-console.md) - every [app] links console + detached manifest; why not /SUBSYSTEM:WINDOWS
 - [Windows command-line limit](windows-command-line-limit.md) - compile/link args go through a response file (cmd.exe caps 8191 chars); --rsp-quoting=windows
+- [Tests on Windows](windows-testing.md) - gate time and known failures, single case files, CRLF, Linux-only mechanics, finding a hang
 - [Build timing traps](build-timing-traps.md) - a src/ edit rebuilds every module; Parsing includes generator time
 - [Profiling and Node runs](profiling-and-node-runs.md) - profile/debug scripts; Node-hosted runs need Node 22+; Bun profiler drops big profiles
 - [Dev compiler paths](dev-compiler-paths.md) - run from the repo root (parser found via cwd); embed paths resolve against haze.toml's dir

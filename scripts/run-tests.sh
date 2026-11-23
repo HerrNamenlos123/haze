@@ -29,7 +29,7 @@ bun test scripts/parser-bootstrap.test.ts
 # the native parser must reject even where no file in the tree spells it (the
 # equivalence check below only sees the tree).
 echo "==> Running the parser tests"
-bun test src/Parser/Parser.test.ts
+bun test src/Parser/Parser.test.ts src/Parser/AntlrGrammar.test.ts
 
 # What an incremental build skips, and that the skipped work would have changed
 # nothing. Builds with the dev compiler, like the bootstrap check above.
@@ -113,5 +113,17 @@ set -e
 # it built), not just on whatever a compiled project happens to reach (§8.3).
 echo "==> Checking parser equivalence (§8.3)"
 bun run scripts/parser-equivalence.ts --fresh-since "$GATE_START"
+
+# hzstd's DWARF line-table reader against llvm-dwarfdump and llvm-symbolizer:
+# its unit tests, its fixtures, and every ELF executable this run has built
+# (the cases above included). After the suite, so they all exist.
+echo "==> Checking the DWARF line-table reader (stdlib/core/src/dwarfline)"
+set +e
+bun "$REPO_ROOT/stdlib/core/src/dwarfline/tests/run.ts"
+dwarfline_exit=$?
+set -e
+if [ "$exit_code" -eq 0 ]; then
+  exit_code=$dwarfline_exit
+fi
 
 exit "$exit_code"

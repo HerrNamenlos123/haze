@@ -2251,19 +2251,9 @@ export class ModuleCompiler {
       `"${HAZE_GLOBAL_DIR}/haze-libunwind/lib/libunwind-x86_64.a"`
     );
     linkerFlags.addLinux(`"${HAZE_GLOBAL_DIR}/haze-libunwind/lib/libunwind.a"`);
+    // libunwind's LZMA-compressed symbol tables (.gnu_debugdata, which Fedora's
+    // system libraries carry): a system library, kept for now (user, 2026-11-23).
     linkerFlags.addLinux("-llzma");
-
-    // Used by the profiler to resolve source locations (file/line) from instruction pointers by
-    // reading .debug_line directly, in-process, instead of shelling out to addr2line.
-    includeDirs.addLinux("/usr/include/libdwarf");
-    includeDirs.addLinux("/usr/include/libdwarf-0");
-
-    // Prefer the static version of libdwarf, because libdwarf.a and libdwarf.so are both available
-    linkerFlags.addLinux("-Wl,-Bstatic");
-    linkerFlags.addLinux("-ldwarf");
-    linkerFlags.addLinux("-lz");
-    linkerFlags.addLinux("-lzstd");
-    linkerFlags.addLinux("-Wl,-Bdynamic");
 
     includeDirs.addAll(`${HAZE_GLOBAL_DIR}/haze-bdwgc/include`);
     linkerFlags.addAll(`-L"${HAZE_GLOBAL_DIR}/haze-bdwgc/lib64/"`);

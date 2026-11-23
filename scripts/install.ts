@@ -39,6 +39,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import chalk from "chalk";
+import { ensureAntlrParserCurrent } from "../src/Parser/AntlrGrammar";
 import {
   NATIVE_PARSER_BUILD_FLAGS,
   stampNativeParser,
@@ -96,35 +97,6 @@ function run(
   return result.status === 0;
 }
 
-function sleepSync(ms: number): void {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-}
-
-/**
- * A Windows virus scanner holds a freshly written .exe open for a moment, and
- * the next link into that same path dies with "permission denied" — which looks
- * exactly like a compile error but clears itself in under a second. Give the
- * lock a few chances to disappear before concluding the build is broken.
- */
-function runWithRetry(
-  command: string,
-  args: string[],
-  options: { cwd?: string; env?: Record<string, string>; quiet?: boolean } = {},
-  attempts = 3
-): boolean {
-  for (let attempt = 1; ; attempt++) {
-    if (run(command, args, options)) {
-      return true;
-    }
-    if (attempt >= attempts) {
-      return false;
-    }
-    const delay = 500 * attempt;
-    warn(`build failed; retrying in ${delay}ms (${attempt + 1}/${attempts})`);
-    sleepSync(delay);
-  }
-}
-
 // ---------------------------------------------------------------------------
 // Arguments
 // ---------------------------------------------------------------------------
@@ -171,33 +143,21 @@ function parseArgs(argv: string[]): Options {
 
 /**
  * The ANTLR parser is only the fallback path now, but it is compiled into the
- * binary, so a missing autogen/ breaks the bundle outright. It is generated on
- * demand rather than every time: regeneration needs a JVM, and a checkout that
- * already has a current autogen/ should not depend on one.
+ * binary and bootstraps the native parser, so it must match the grammar: the
+ * same check and regeneration the build uses (ensureAntlrParserCurrent, which
+ * compares the grammar's hash with the stamp and writes the stamp). A checkout
+ * whose autogen/ is current needs no JVM. `--regen-antlr` regenerates it
+ * anyway.
  */
 function ensureAntlrParser(options: Options): void {
   heading("ANTLR parser sources");
-  const generated = join(
-    REPO_ROOT,
-    "src/Parser/grammar/autogen/HazeParser.ts"
-  );
-  if (existsSync(generated) && !options.regenAntlr) {
-    ok("autogen/ present (pass --regen-antlr to rebuild it)");
-    return;
+  const failure = ensureAntlrParserCurrent(REPO_ROOT, {
+    force: options.regenAntlr,
+  });
+  if (failure) {
+    fail(failure);
   }
-  info("running antlr4ng-cli...");
-  if (run("bun", ["run", "generate-parser"])) {
-    ok("generated");
-    return;
-  }
-  if (existsSync(generated)) {
-    warn("regeneration failed; keeping the existing autogen/");
-    return;
-  }
-  fail(
-    "The ANTLR parser sources are missing and could not be generated.\n" +
-      "  'bun run generate-parser' needs a working Java runtime."
-  );
+  ok(options.regenAntlr ? "regenerated" : "autogen/ matches the grammar");
 }
 
 /**
@@ -226,11 +186,11 @@ function buildNativeParser(): string {
   let built = false;
   if (existsSync(binary)) {
     info("building with the existing native parser...");
-    built = runWithRetry("bun", [...args, "--parser", "native"], { env });
+    built = run("bun", [...args, "--parser", "native"], { env });
   }
   if (!built) {
     info("bootstrapping through the ANTLR parser...");
-    built = runWithRetry("bun", [...args, "--parser", "antlr"], { env });
+    built = run("bun", [...args, "--parser", "antlr"], { env });
   }
   if (!(built && existsSync(binary))) {
     fail("Could not build the native Haze parser (compiler/haze-parser).");

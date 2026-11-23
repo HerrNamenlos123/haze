@@ -16,15 +16,20 @@ inputs = [
     { module="this", dir="root", path="patches/wayland-activated.patch" },
     { module="this", dir="root", path="patches/window-floating-rect.patch" },
 ]
+# SDL's own copy of the xdg-shell protocol is an output too, so the generator
+# below, which reads it, runs after this one.
 outputs = [
     { module="this", dir="bin", path="include/SDL3/SDL.h" },
+    { module="this", dir="bin", path="SDL/wayland-protocols/xdg-shell.xml" },
 ]
 
 # Wayland's xdg-shell bindings, so this module can start a compositor-driven
 # window move itself -- see gen-wayland-protocols.hz and sdl_impl.c.
 [generator.wayland-protocols]
 exec = "scripts/gen-wayland-protocols.hz"
-inputs = []
+inputs = [
+    { module="this", dir="bin", path="SDL/wayland-protocols/xdg-shell.xml" },
+]
 outputs = [
     { module="this", dir="bin", path="include/xdg-shell-client-protocol.h" },
     { module="this", dir="bin", path="include/xdg-shell-protocol.c" },

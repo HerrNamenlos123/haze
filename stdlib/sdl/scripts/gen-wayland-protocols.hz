@@ -2,10 +2,10 @@
 // move itself on Wayland -- see the "OS titlebar press ownership" block in
 // sdl_impl.c for why that is necessary at all.
 //
-// wayland-scanner and the xdg-shell protocol XML are NOT a new build
-// requirement: build-sdl.hz already needs libwayland-dev and
-// wayland-protocols on Linux to build SDL with Wayland support in the first
-// place, and both tools ship in exactly those packages.
+// The protocol XML is SDL's own copy (wayland-protocols/ in its source tree,
+// at the release build-sdl.hz checks out), the one SDL builds its own Wayland
+// bindings from, so no system package is needed for it. wayland-scanner is
+// one SDL's build needs anyway (build-sdl.hz checks for it).
 //
 // On every other platform this writes empty placeholders, because the
 // generator's declared outputs have to exist either way and nothing includes
@@ -33,16 +33,9 @@ fn main(): int {
             return 0;
         }
 
-        // Where the distribution keeps the protocol XML. Asked of pkg-config
-        // rather than hardcoding /usr/share, since the prefix moves between
-        // distributions and inside containers.
-        let dataDir = process.runCaptured("pkg-config", { "--variable=pkgdatadir", "wayland-protocols" });
-        if dataDir.exitCode != 0 {
-            raise f"wayland-protocols is not installed (pkg-config --variable=pkgdatadir wayland-protocols failed): {dataDir.stderrResult}";
-        }
-        let xml = f"{dataDir.stdoutResult.trim()}/stable/xdg-shell/xdg-shell.xml";
+        let xml = f"{binaryDir}/SDL/wayland-protocols/xdg-shell.xml";
         if !fs.exists(xml)?! {
-            raise f"xdg-shell protocol description not found at {xml}";
+            raise f"SDL's xdg-shell protocol description is not at {xml} (the sdl-build generator checks SDL out there)";
         }
 
         process.run("wayland-scanner", { "client-header", xml, header }, { inherit_stdio: true })?!;

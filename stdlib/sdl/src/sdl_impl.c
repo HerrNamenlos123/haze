@@ -139,23 +139,10 @@ static void haze_wl_pointer_axis_discrete(void *data, struct wl_pointer *p,
   (void)axis;
   (void)d;
 }
-static void haze_wl_pointer_axis_value120(void *data, struct wl_pointer *p,
-                                          uint32_t axis, int32_t d) {
-  (void)data;
-  (void)p;
-  (void)axis;
-  (void)d;
-}
-static void haze_wl_pointer_axis_relative_direction(void *data,
-                                                    struct wl_pointer *p,
-                                                    uint32_t axis,
-                                                    uint32_t dir) {
-  (void)data;
-  (void)p;
-  (void)axis;
-  (void)dir;
-}
-
+/* Exactly the events of wl_pointer version 5, the highest the seat is bound
+   at (haze_wl_registry_global): later versions' events (axis_value120 in 8,
+   axis_relative_direction in 9) never come, and libwayland before 1.21 has
+   no fields for them. */
 static const struct wl_pointer_listener haze_wl_pointer_listener = {
     haze_wl_pointer_enter,
     haze_wl_pointer_leave,
@@ -166,8 +153,6 @@ static const struct wl_pointer_listener haze_wl_pointer_listener = {
     haze_wl_pointer_axis_source,
     haze_wl_pointer_axis_stop,
     haze_wl_pointer_axis_discrete,
-    haze_wl_pointer_axis_value120,
-    haze_wl_pointer_axis_relative_direction,
 };
 
 /* The same for touch, which SDL's hit test does not cover at all: its
