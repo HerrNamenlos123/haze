@@ -97,35 +97,6 @@ function run(
   return result.status === 0;
 }
 
-function sleepSync(ms: number): void {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-}
-
-/**
- * A Windows virus scanner holds a freshly written .exe open for a moment, and
- * the next link into that same path dies with "permission denied" — which looks
- * exactly like a compile error but clears itself in under a second. Give the
- * lock a few chances to disappear before concluding the build is broken.
- */
-function runWithRetry(
-  command: string,
-  args: string[],
-  options: { cwd?: string; env?: Record<string, string>; quiet?: boolean } = {},
-  attempts = 3
-): boolean {
-  for (let attempt = 1; ; attempt++) {
-    if (run(command, args, options)) {
-      return true;
-    }
-    if (attempt >= attempts) {
-      return false;
-    }
-    const delay = 500 * attempt;
-    warn(`build failed; retrying in ${delay}ms (${attempt + 1}/${attempts})`);
-    sleepSync(delay);
-  }
-}
-
 // ---------------------------------------------------------------------------
 // Arguments
 // ---------------------------------------------------------------------------
@@ -215,11 +186,11 @@ function buildNativeParser(): string {
   let built = false;
   if (existsSync(binary)) {
     info("building with the existing native parser...");
-    built = runWithRetry("bun", [...args, "--parser", "native"], { env });
+    built = run("bun", [...args, "--parser", "native"], { env });
   }
   if (!built) {
     info("bootstrapping through the ANTLR parser...");
-    built = runWithRetry("bun", [...args, "--parser", "antlr"], { env });
+    built = run("bun", [...args, "--parser", "antlr"], { env });
   }
   if (!(built && existsSync(binary))) {
     fail("Could not build the native Haze parser (compiler/haze-parser).");
