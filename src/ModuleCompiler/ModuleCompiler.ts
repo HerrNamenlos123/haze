@@ -2310,6 +2310,11 @@ export class ModuleCompiler {
     compilerFlags.addAll("-std=c11");
     if (this.settings.debugInfo) {
       compilerFlags.addAll("-g");
+      // Windows: CodeView, the debug info dbghelp reads, and a PDB from the
+      // link (lld-link writes none without /DEBUG); without them every stack
+      // trace names its frames after the nearest exported symbol.
+      compilerFlags.addWin32("-gcodeview");
+      linkerFlags.addWin32("-g");
     }
     if (this.settings.optimize) {
       compilerFlags.addAll("-O3");

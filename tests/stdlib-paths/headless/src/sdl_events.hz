@@ -45,7 +45,8 @@ fn sdlEvents(log: mut pathcheck.Log) {
         __c__("const char *driver = SDL_GetCurrentVideoDriver(); offscreen = driver != NULL && SDL_strcmp(driver, \"offscreen\") == 0;");
     };
     log.check("sdl: the offscreen video driver is in use", offscreen);
-    let window = sdl.createWindow({ title: "stdlib-paths", size: { width: 320, height: 200 }, hidden: true });
+    // No OpenGL: the offscreen driver would load EGL for it, which Windows lacks.
+    let window = sdl.createWindow({ title: "stdlib-paths", size: { width: 320, height: 200 }, hidden: true, noApi: true });
     if !window {
         fmt.println(f"sdl.createWindow failed: {window}");
         log.check("sdl: an offscreen window", false);
