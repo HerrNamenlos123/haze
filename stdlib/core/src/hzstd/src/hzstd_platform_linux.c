@@ -18,6 +18,7 @@
 #include <dlfcn.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <pthread.h>
 #include <spawn.h>
 #include <sys/wait.h>
@@ -1010,29 +1011,57 @@ static char **process_cstr_block(const hzstd_str_t *first, hzstd_dynamic_array_t
 // on the way, so a large output leaves no garbage behind. NUL-terminated,
 // because the Haze side reads it as a C string. A failed read keeps what was
 // read so far: NULL would be read as a C string and crash.
-static inline char *read_all_fd_gc(int fd)
+typedef struct {
+  char *buf;
+  size_t len;
+  size_t cap;
+  bool open;
+} hzstd_output_t;
+
+static void hzstd_output_read(hzstd_output_t *o, int fd)
 {
-  size_t cap = 4096, len = 0;
-  char *buf = hzstd_heap_allocate_unscanned(cap + 1, "process output");
-  for (;;) {
-    if (len + 2048 > cap) {
-      cap *= 2;
-      buf = hzstd_heap_realloc(buf, cap + 1, "process output");
-    }
-    ssize_t r = read(fd, buf + len, cap - len);
-    if (r == 0) {
-      break;
-    }
-    if (r < 0) {
+  if (o->len + 2048 > o->cap) {
+    o->cap *= 2;
+    o->buf = hzstd_heap_realloc(o->buf, o->cap + 1, "process output");
+  }
+  ssize_t r = read(fd, o->buf + o->len, o->cap - o->len);
+  if (r > 0) {
+    o->len += (size_t)r;
+  }
+  else if (r == 0 || errno != EINTR) {
+    o->open = false;
+  }
+}
+
+// Both of a child's streams, read while it runs, until both end: a pipe holds
+// 64 KiB, and a child with more to say on the stream read second blocked in
+// its write forever while the parent waited for its exit.
+static void read_both_fds_gc(int out_fd, int err_fd, char **out, char **err)
+{
+  hzstd_output_t o = { .buf = hzstd_heap_allocate_unscanned(4096 + 1, "process output"), .cap = 4096, .open = true };
+  hzstd_output_t e = { .buf = hzstd_heap_allocate_unscanned(4096 + 1, "process output"), .cap = 4096, .open = true };
+  while (o.open || e.open) {
+    struct pollfd fds[2] = {
+      { .fd = o.open ? out_fd : -1, .events = POLLIN },
+      { .fd = e.open ? err_fd : -1, .events = POLLIN },
+    };
+    if (poll(fds, 2, -1) < 0) {
       if (errno == EINTR) {
         continue;
       }
       break;
     }
-    len += r;
+    if (fds[0].revents != 0) {
+      hzstd_output_read(&o, out_fd);
+    }
+    if (fds[1].revents != 0) {
+      hzstd_output_read(&e, err_fd);
+    }
   }
-  buf[len] = '\0';
-  return buf;
+  o.buf[o.len] = '\0';
+  e.buf[e.len] = '\0';
+  *out = o.buf;
+  *err = e.buf;
 }
 
 static inline char *process_build_error_message_gc(int err)
@@ -1148,6 +1177,12 @@ int hzstd_spawn_process(hzstd_str_t exe,
     return rc;
   }
 
+  if (!inherit_stdio) {
+    read_both_fds_gc(stdout_pipe[0], stderr_pipe[0], &out->stdout_data, &out->stderr_data);
+    close(stdout_pipe[0]);
+    close(stderr_pipe[0]);
+  }
+
   int status;
   if (waitpid(pid, &status, 0) < 0) {
     process_set_error_message(out, errno);
@@ -1155,13 +1190,6 @@ int hzstd_spawn_process(hzstd_str_t exe,
   }
 
   out->exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
-
-  if (!inherit_stdio) {
-    out->stdout_data = read_all_fd_gc(stdout_pipe[0]);
-    out->stderr_data = read_all_fd_gc(stderr_pipe[0]);
-    close(stdout_pipe[0]);
-    close(stderr_pipe[0]);
-  }
   return 0;
 }
 

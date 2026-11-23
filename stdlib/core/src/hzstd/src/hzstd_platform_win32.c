@@ -633,6 +633,23 @@ static inline char* read_all_handle(HANDLE h)
   return buf;
 }
 
+// The stderr side of hzstd_spawn_process, read on a thread of its own while
+// the caller reads stdout: a pipe holds 4 KiB, and a child with more to say
+// on the stream read second blocked in its write forever while the parent
+// waited for its exit (2026-11-23). CreateThread is GC_CreateThread here, so
+// the thread may allocate the output's GC block.
+typedef struct {
+  HANDLE handle;
+  char* data;
+} hzstd_pipe_reader_t;
+
+static DWORD WINAPI hzstd_pipe_reader_thread(LPVOID arg)
+{
+  hzstd_pipe_reader_t* reader = arg;
+  reader->data = read_all_handle(reader->handle);
+  return 0;
+}
+
 static inline char* process_build_error_message_gc(DWORD err)
 {
   LPSTR msg = NULL;
@@ -699,6 +716,23 @@ int hzstd_spawn_process(hzstd_str_t exe,
     SetHandleInformation(stdout_read, HANDLE_FLAG_INHERIT, 0);
     SetHandleInformation(stderr_read, HANDLE_FLAG_INHERIT, 0);
   }
+  // Started before the child: if it cannot start, no child is left running.
+  // Until the write ends close below, it waits in its first read.
+  hzstd_pipe_reader_t stderr_reader = { .handle = stderr_read, .data = NULL };
+  HANDLE reader_thread = NULL;
+  if (!inherit_stdio) {
+    reader_thread = CreateThread(NULL, 0, hzstd_pipe_reader_thread, &stderr_reader, 0, NULL);
+    if (reader_thread == NULL) {
+      DWORD err = GetLastError();
+      free(cmdline);
+      CloseHandle(stdout_read);
+      CloseHandle(stdout_write);
+      CloseHandle(stderr_read);
+      CloseHandle(stderr_write);
+      process_set_error_message(out, err);
+      return err;
+    }
+  }
 
   STARTUPINFOA si = { 0 };
   si.cb = sizeof(si);
@@ -719,14 +753,29 @@ int hzstd_spawn_process(hzstd_str_t exe,
   BOOL created = CreateProcessA(NULL, cmdline, NULL, NULL, TRUE, flags, NULL, cwd.length > 0 ? cwd_c : NULL, &si, &pi);
   DWORD createErr = created ? 0 : GetLastError();
   free(cmdline);
+  if (!inherit_stdio) {
+    // The child holds its own copies: the reads end when it does.
+    CloseHandle(stdout_write);
+    CloseHandle(stderr_write);
+  }
   if (!created) {
+    if (!inherit_stdio) {
+      WaitForSingleObject(reader_thread, INFINITE);
+      CloseHandle(reader_thread);
+      CloseHandle(stdout_read);
+      CloseHandle(stderr_read);
+    }
     process_set_error_message(out, createErr);
     return createErr;
   }
 
   if (!inherit_stdio) {
-    CloseHandle(stdout_write);
-    CloseHandle(stderr_write);
+    out->stdout_data = read_all_handle(stdout_read);
+    WaitForSingleObject(reader_thread, INFINITE);
+    CloseHandle(reader_thread);
+    out->stderr_data = stderr_reader.data;
+    CloseHandle(stdout_read);
+    CloseHandle(stderr_read);
   }
 
   WaitForSingleObject(pi.hProcess, INFINITE);
@@ -734,13 +783,6 @@ int hzstd_spawn_process(hzstd_str_t exe,
   DWORD exit_code = 0;
   GetExitCodeProcess(pi.hProcess, &exit_code);
   out->exit_code = (int)exit_code;
-
-  if (!inherit_stdio) {
-    out->stdout_data = read_all_handle(stdout_read);
-    out->stderr_data = read_all_handle(stderr_read);
-    CloseHandle(stdout_read);
-    CloseHandle(stderr_read);
-  }
 
   CloseHandle(pi.hProcess);
   CloseHandle(pi.hThread);
