@@ -365,6 +365,8 @@ export class NativeParserServer {
     reject: (e: Error) => void;
   } | null = null;
   private queue: { run: () => void; reject: (e: Error) => void }[] = [];
+  /** Requests not answered yet (in flight or queued). */
+  private outstanding = 0;
 
   constructor(private readonly repoRoot: string) {}
 
@@ -379,8 +381,11 @@ export class NativeParserServer {
     );
 
     // The parser must never keep the compiler process alive on its own; it is
-    // shut down explicitly when the command finishes (see main.ts).
-    this.proc.unref();
+    // shut down explicitly when the command finishes (see main.ts). While a
+    // request waits for its answer it must, though: on Linux Bun ends a process
+    // whose only pending work is an unref'd child's output, with status 0, in
+    // the middle of the build (a --quiet build has no printer timer to hold it).
+    this.holdOpen();
 
     this.proc.stdout.on("data", (chunk: Buffer) => {
       this.buffer = Buffer.concat([this.buffer, chunk]);
@@ -391,6 +396,15 @@ export class NativeParserServer {
       this.proc = null;
       this.failAll(new Error("native parser exited"));
     });
+  }
+
+  /** Refs the process while requests are outstanding, unrefs it when idle. */
+  private holdOpen(): void {
+    if (this.outstanding > 0) {
+      this.proc?.ref();
+    } else {
+      this.proc?.unref();
+    }
   }
 
   /** Fail the in-flight request and everything still queued behind it. */
@@ -489,8 +503,22 @@ export class NativeParserServer {
    */
   private request(payload: Buffer): Promise<string> {
     this.start();
+    this.outstanding++;
+    this.holdOpen();
+    const settled = () => {
+      this.outstanding--;
+      this.holdOpen();
+    };
 
-    return new Promise<string>((resolve, reject) => {
+    return new Promise<string>((resolveRequest, rejectRequest) => {
+      const resolve = (v: string) => {
+        settled();
+        resolveRequest(v);
+      };
+      const reject = (e: Error) => {
+        settled();
+        rejectRequest(e);
+      };
       const run = () => {
         this.start();
         if (!this.proc) {
