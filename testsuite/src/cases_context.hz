@@ -708,10 +708,10 @@ fn main(): int {
         s.run(
             "context: creating a context on a thread Haze does not manage panics (C505)",
             """
-__c__("#include <pthread.h>\nstatic void *haze_unmanaged(void *arg) { (void)arg; hzstd_context_t c = hzstd_context_for_current_thread(); (void)c; return NULL; }");
+__c__("#ifdef _WIN32\n#include <windows.h>\nstatic DWORD WINAPI haze_unmanaged(LPVOID arg) { (void)arg; hzstd_context_t c = hzstd_context_for_current_thread(); (void)c; return 0; }\nstatic void run_unmanaged(void) { HANDLE t = CreateThread(NULL, 0, haze_unmanaged, NULL, 0, NULL); WaitForSingleObject(t, INFINITE); CloseHandle(t); }\n#else\n#include <pthread.h>\nstatic void *haze_unmanaged(void *arg) { (void)arg; hzstd_context_t c = hzstd_context_for_current_thread(); (void)c; return NULL; }\nstatic void run_unmanaged(void) { pthread_t t; pthread_create(&t, NULL, haze_unmanaged, NULL); pthread_join(t, NULL); }\n#endif");
 
 fn child(): int {
-    do unsafe { __c__("pthread_t t; pthread_create(&t, NULL, haze_unmanaged, NULL); pthread_join(t, NULL);"); };
+    do unsafe { __c__("run_unmanaged();"); };
     fmt.println("the unmanaged thread got a context");
     return 0;
 }
