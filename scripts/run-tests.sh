@@ -23,7 +23,7 @@ bun test scripts/parser-bootstrap.test.ts
 # the native parser must reject even where no file in the tree spells it (the
 # equivalence check below only sees the tree).
 echo "==> Running the parser tests"
-bun test src/Parser/Parser.test.ts
+bun test src/Parser/Parser.test.ts src/Parser/AntlrGrammar.test.ts
 
 # What an incremental build skips, and that the skipped work would have changed
 # nothing. Builds with the dev compiler, like the bootstrap check above.

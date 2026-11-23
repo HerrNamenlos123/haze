@@ -39,6 +39,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import chalk from "chalk";
+import { ensureAntlrParserCurrent } from "../src/Parser/AntlrGrammar";
 import {
   NATIVE_PARSER_BUILD_FLAGS,
   stampNativeParser,
@@ -171,33 +172,21 @@ function parseArgs(argv: string[]): Options {
 
 /**
  * The ANTLR parser is only the fallback path now, but it is compiled into the
- * binary, so a missing autogen/ breaks the bundle outright. It is generated on
- * demand rather than every time: regeneration needs a JVM, and a checkout that
- * already has a current autogen/ should not depend on one.
+ * binary and bootstraps the native parser, so it must match the grammar: the
+ * same check and regeneration the build uses (ensureAntlrParserCurrent, which
+ * compares the grammar's hash with the stamp and writes the stamp). A checkout
+ * whose autogen/ is current needs no JVM. `--regen-antlr` regenerates it
+ * anyway.
  */
 function ensureAntlrParser(options: Options): void {
   heading("ANTLR parser sources");
-  const generated = join(
-    REPO_ROOT,
-    "src/Parser/grammar/autogen/HazeParser.ts"
-  );
-  if (existsSync(generated) && !options.regenAntlr) {
-    ok("autogen/ present (pass --regen-antlr to rebuild it)");
-    return;
+  const failure = ensureAntlrParserCurrent(REPO_ROOT, {
+    force: options.regenAntlr,
+  });
+  if (failure) {
+    fail(failure);
   }
-  info("running antlr4ng-cli...");
-  if (run("bun", ["run", "generate-parser"])) {
-    ok("generated");
-    return;
-  }
-  if (existsSync(generated)) {
-    warn("regeneration failed; keeping the existing autogen/");
-    return;
-  }
-  fail(
-    "The ANTLR parser sources are missing and could not be generated.\n" +
-      "  'bun run generate-parser' needs a working Java runtime."
-  );
+  ok(options.regenAntlr ? "regenerated" : "autogen/ matches the grammar");
 }
 
 /**

@@ -104,8 +104,12 @@ export function regenerateAntlrParser(repoRoot: string): {
  * disk changes nothing until the process restarts. Such a caller should report
  * staleness rather than try to repair it -- see Parser.parseWithANTLR.
  */
-export function ensureAntlrParserCurrent(repoRoot: string): string {
-  if (isAntlrParserCurrent(repoRoot)) {
+export function ensureAntlrParserCurrent(
+  repoRoot: string,
+  options: { force?: boolean } = {}
+): string {
+  // `force`: regenerate even a current one (the installer's --regen-antlr).
+  if (!options.force && isAntlrParserCurrent(repoRoot)) {
     return "";
   }
   const result = regenerateAntlrParser(repoRoot);
