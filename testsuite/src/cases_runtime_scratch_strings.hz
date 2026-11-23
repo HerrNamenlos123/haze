@@ -28,9 +28,6 @@ namespace cases_runtime_scratch_strings {
         s.runExitCode(
             "runtime strings: filesystem calls do not copy their path to the GC heap",
             """
-fn profiler(): Profiler {
-    return Profiler({ samplingRate: 0, memoryInstrumentation: true, memoryInstrumentationStacktraces: false });
-}
 fn main(): int {
     let dir = "/tmp/haze-testsuite-scratch-strings";
     let made = fs.createDirectory(dir);
@@ -38,24 +35,10 @@ fn main(): int {
     let copyTo = f"{dir}/b.txt";
     let missing = f"{dir}/missing.txt";
 
-    let p1 = profiler();
-    let w = fs.writeText(path, "hello");
-    let r1 = p1.stop();
-    let p2 = profiler();
-    let t = fs.readText(path);
-    let r2 = p2.stop();
-    let p3 = profiler();
-    let m = fs.readText(missing);
-    let r3 = p3.stop();
-    let p4 = profiler();
-    let c = fs.copyFile(path, copyTo, { overwrite: true });
-    let r4 = p4.stop();
-
-    // The Profiler object itself is the one allocation every window has.
-    let writes = r1.memoryInstrumentationFrames.length - 1;
-    let reads = r2.memoryInstrumentationFrames.length - 1;
-    let fails = r3.memoryInstrumentationFrames.length - 1;
-    let copies = r4.memoryInstrumentationFrames.length - 1;
+    let writes = sys.traceAllocations(() => { let w = fs.writeText(path, "hello"); }).count;
+    let reads = sys.traceAllocations(() => { let t = fs.readText(path); }).count;
+    let fails = sys.traceAllocations(() => { let m = fs.readText(missing); }).count;
+    let copies = sys.traceAllocations(() => { let c = fs.copyFile(path, copyTo, { overwrite: true }); }).count;
     assert(writes == 0, f"writeText allocated {writes}");
     assert(reads <= 1, f"readText allocated {reads} (only the contents may be)");
     assert(fails == 0, f"a failing readText allocated {fails}");

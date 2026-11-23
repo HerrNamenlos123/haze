@@ -51,15 +51,6 @@ ref struct State {
     }
 }
 
-// Cumulative bytes the collector has handed out -- see the zero-allocation
-// checks at the end.
-fn allocatedBytes(): int :: final {
-    do unsafe {
-        let result: int = 0;
-        __c__("{ extern size_t GC_get_total_bytes(void); result = (hzstd_int_t)GC_get_total_bytes(); }");
-        return result;
-    };
-}
 
 fn buttonName(b: ui_components.PointerButton): str {
     if b == ui_components.PointerButton.Right { return "right"; }
@@ -535,20 +526,20 @@ fn main(): int {
     // plain state, checked before the frame gate.
     frame(0.016);
     frame(0.016);
-    let idleBefore = allocatedBytes();
-    for (let i = 0; i < 1000; i++) {
-        frame(0.016);
-    }
-    let idleBytes = allocatedBytes() - idleBefore;
+    let idleBytes = sys.traceAllocations(() => {
+        for (let i = 0; i < 1000; i++) {
+            frame(0.016);
+        }
+    }).bytes;
     state.check("1000 idle frames allocate nothing", idleBytes == 0, f"{idleBytes} bytes");
     finger(1, true, Pressed, 50.0, 50.0);
     frame(0.016);
     frame(0.001);
-    let restBefore = allocatedBytes();
-    for (let i = 0; i < 100; i++) {
-        frame(0.001);
-    }
-    let restBytes = allocatedBytes() - restBefore;
+    let restBytes = sys.traceAllocations(() => {
+        for (let i = 0; i < 100; i++) {
+            frame(0.001);
+        }
+    }).bytes;
     state.check("a resting finger allocates nothing while it waits", restBytes == 0, f"{restBytes} bytes");
     finger(1, true, Released, 50.0, 50.0);
     frame(0.016);

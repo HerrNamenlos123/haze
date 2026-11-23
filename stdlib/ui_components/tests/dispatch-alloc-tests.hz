@@ -15,14 +15,10 @@ import ui_elements
 // dblclick, auxclick, contextmenu), wheel, key presses and text input. One has
 // handlers on the innermost level only, the other on all 16 levels, capture
 // and bubble. The deep one fires 16 times as many handlers; after a warm-up
-// it must not allocate more for them. The collector's byte count moves in
-// batches (thread-local free lists), so identical windows differ by a few KB;
-// the bound is therefore less than one byte per extra handler on average,
-// which any allocation per handler (at least a 16-byte granule) exceeds
-// sixteenfold.
+// it must not allocate more for them (sys.traceAllocations counts exactly).
 //
 // With the harness's own buffers reused (as a real host's are), a round of
-// all that input then allocates 0 bytes in either context.
+// all that input then allocates nothing in either context.
 //
 // It also checks every kind against stopPropagation(): a capture handler on
 // the outermost level that stops the event leaves every later handler of
@@ -56,15 +52,6 @@ ref struct Counter {
     fired: int = 0;
     // When set, the outermost level's capture handlers stop their event.
     stopAtOuterCapture: bool = false;
-}
-
-// Cumulative bytes the collector has handed out.
-fn allocatedBytes(): int :: final {
-    do unsafe {
-        let result: int = 0;
-        __c__("{ extern size_t GC_get_total_bytes(void); result = (hzstd_int_t)GC_get_total_bytes(); }");
-        return result;
-    };
 }
 
 fn level(ctx: ui_components.UIContext, depth: int, everywhere: bool, c: Counter, refs: []ui_components.ElementRef<ui_elements.DivElement>): void :: final {
@@ -232,12 +219,12 @@ fn main(): int {
 
     let firedShallow0 = shallow.counter.fired;
     let firedDeep0 = deep.counter.fired;
-    let b0 = allocatedBytes();
-    for (let i = 0; i < ROUNDS; i++) { round(shallow, i); }
-    let shallowBytes = allocatedBytes() - b0;
-    let b1 = allocatedBytes();
-    for (let i = 0; i < ROUNDS; i++) { round(deep, i); }
-    let deepBytes = allocatedBytes() - b1;
+    let shallowBytes = sys.traceAllocations(() => {
+        for (let i = 0; i < ROUNDS; i++) { round(shallow, i); }
+    }).bytes;
+    let deepBytes = sys.traceAllocations(() => {
+        for (let i = 0; i < ROUNDS; i++) { round(deep, i); }
+    }).bytes;
     let firedShallow = shallow.counter.fired - firedShallow0;
     let firedDeep = deep.counter.fired - firedDeep0;
 

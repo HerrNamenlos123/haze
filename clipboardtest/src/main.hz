@@ -47,12 +47,6 @@ fn section(name: str) {
     fmt.println(f"— {name}");
 }
 
-fn totalAllocatedBytes(): int {
-    let n = 0;
-    __c__("n = (hzstd_int_t)GC_get_total_bytes();");
-    return n;
-}
-
 fn contains(list: []str, wanted: str): bool {
     for item in list {
         if item == wanted {
@@ -548,24 +542,26 @@ fn testInterop() {
     }
 }
 
+ref struct Hits { hits: int = 0; }
+
 fn testAllocation() {
     section("allocation");
     clipboard.writeText("steady");
     // Warm up: the first call fills the types cache.
     clipboard.has("text/plain");
     clipboard.changeCount();
-    let start = totalAllocatedBytes();
-    let hits = 0;
-    for (let i = 0; i < 10000; i++) {
-        if clipboard.has("text/plain") && !clipboard.has("image/png") {
-            hits = hits + 1;
+    let counted = Hits {};
+    let allocated = sys.traceAllocations(() => {
+        for (let i = 0; i < 10000; i++) {
+            if clipboard.has("text/plain") && !clipboard.has("image/png") {
+                counted.hits = counted.hits + 1;
+            }
+            clipboard.changeCount();
+            clipboard.isOwner();
+            clipboard.isAvailable();
         }
-        clipboard.changeCount();
-        clipboard.isOwner();
-        clipboard.isAvailable();
-    }
-    let allocated = totalAllocatedBytes() - start;
-    checkEqInt(hits, 10000, "has() answers correctly from the cache");
+    }).bytes;
+    checkEqInt(counted.hits, 10000, "has() answers correctly from the cache");
     checkEqInt(allocated, 0, "per-frame queries allocate nothing (bytes over 10000 frames)");
 }
 

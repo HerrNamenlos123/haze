@@ -1241,37 +1241,36 @@ fn runAllocationTest() {
         session.poll();
     }
 
-    let before = claude.totalAllocatedBytes();
-    for (let i = 0; i < 20000; i++) {
-        session.poll();
-    }
-    let after = claude.totalAllocatedBytes();
-    let grew = after - before;
+    let grew = sys.traceAllocations(() => {
+        for (let i = 0; i < 20000; i++) {
+            session.poll();
+        }
+    }).bytes;
 
     fmt.println(f"  20000 idle polls allocated {grew} bytes");
     checkEqInt(grew, 0, "an idle poll allocates nothing");
 
     // The read-side queries a renderer runs every frame must be free too.
     let conversation = session.conversation;
-    let beforeReads = claude.totalAllocatedBytes();
-    let seen = 0;
-    for (let i = 0; i < 20000; i++) {
-        for message in conversation.messages {
-            if conversation.isVisible(message) {
+    let readsGrew = sys.traceAllocations(() => {
+        let seen = 0;
+        for (let i = 0; i < 20000; i++) {
+            for message in conversation.messages {
+                if conversation.isVisible(message) {
+                    seen = seen + 1;
+                }
+                if message.isUserPrompt() {
+                    seen = seen + 1;
+                }
+            }
+            if conversation.hasRunningToolCalls() {
                 seen = seen + 1;
             }
-            if message.isUserPrompt() {
+            if conversation.usage.fraction() > 0.5 {
                 seen = seen + 1;
             }
         }
-        if conversation.hasRunningToolCalls() {
-            seen = seen + 1;
-        }
-        if conversation.usage.fraction() > 0.5 {
-            seen = seen + 1;
-        }
-    }
-    let readsGrew = claude.totalAllocatedBytes() - beforeReads;
+    }).bytes;
     fmt.println(f"  20000 render-side scans allocated {readsGrew} bytes");
     checkEqInt(readsGrew, 0, "the render-side queries allocate nothing");
 

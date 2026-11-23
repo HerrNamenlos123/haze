@@ -18,6 +18,13 @@ namespace ffi {
         status: int;
     };
     extern C noemit fn hzstd_stdin_read(dest: cptr, count: int): int :: final;
+
+    extern C noemit struct hzstd_alloc_stats_t {
+        count: int;
+        bytes: int;
+    };
+    extern C noemit fn hzstd_alloc_window_open(max_count: int, max_bytes: int, location: SourceLocation): int :: final;
+    extern C noemit fn hzstd_alloc_window_close(window: int): hzstd_alloc_stats_t :: final;
     extern C noemit fn hzstd_stdin_read_line_part(dest: cptr, room: int): hzstd_stdin_line_part_t :: final;
 }
 
@@ -70,6 +77,51 @@ namespace sys {
     // hzstd_release_idle_memory for when that is.
     export fn releaseIdleMemory(): void {
         ffi.hzstd_release_idle_memory();
+    }
+
+    // What sys.traceAllocations saw: GC allocations and their bytes, as
+    // asked for. An arena's chunks are GC allocations, its suballocations
+    // are not.
+    export struct AllocationStats {
+        count: int;
+        bytes: int;
+    }
+
+    export struct AllocationLimits {
+        count: int | none = none;
+        bytes: int | none = none;
+    }
+
+    // Counts the GC allocations `body` makes in this task, also in what it
+    // calls and while it is suspended, but not those of other tasks or
+    // threads. Windows nest: every open one counts.
+    export fn traceAllocations(body: immediate () => void, location: SourceLocation = SourceLocation()): AllocationStats {
+        let window = ffi.hzstd_alloc_window_open(-1, -1, location);
+        body();
+        let stats = ffi.hzstd_alloc_window_close(window);
+        return AllocationStats { count: stats.count, bytes: stats.bytes };
+    }
+
+    // Runs `body` like sys.traceAllocations, and panics at the first
+    // allocation that would take it past a limit, before that allocation
+    // happens: its stack trace is the offending allocation's.
+    export fn limitAllocations(limits: AllocationLimits, body: immediate () => void, location: SourceLocation = SourceLocation()): void {
+        let count = limits.count;
+        let bytes = limits.bytes;
+        if count is none && bytes is none {
+            sys.panic("sys.limitAllocations: set a count, bytes, or both", 1);
+        }
+        if count is int && count < 0 {
+            sys.panic(f"sys.limitAllocations: the count limit cannot be negative ({count})", 1);
+        }
+        if bytes is int && bytes < 0 {
+            sys.panic(f"sys.limitAllocations: the bytes limit cannot be negative ({bytes})", 1);
+        }
+        let maxCount = count ?? -1;
+        let maxBytes = bytes ?? -1;
+        let window = ffi.hzstd_alloc_window_open(maxCount, maxBytes, location);
+        body();
+        ffi.hzstd_alloc_window_close(window);
     }
 }
 

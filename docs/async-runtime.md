@@ -552,8 +552,8 @@ BDWGC never scans malloc memory, and libuv keeps pointers to our handles in mall
 
 1. **libuv memory never keeps anything alive.** Every GC object libuv may touch has an independent
    GC-visible owner while libuv may touch it: requests live on the suspended task's stack (scanned);
-   handles (timer, tcp, pipe, fs_event, process, signal, async) are `GC_malloc_uncollectable` from
-   init until `close_cb` frees them, so `handle->data` and the callback stay alive (an open handle
+   handles (timer, tcp, pipe, fs_event, process, signal, async) are uncollectable
+   (`hzstd_uncollectable_allocate`) from init until `close_cb` frees them, so `handle->data` and the callback stay alive (an open handle
    keeps its callback alive, close is explicit); the loop sits in the per-thread scheduler struct.
 2. BDWGC never moves objects, so addresses held by libuv or the kernel stay valid without pinning.
 3. A frame owning an in-flight request is never unwound.
@@ -567,6 +567,14 @@ While a thread runs its SIGSEGV handler on the altstack, BDWGC scans only the al
 interrupted stack (BDWGC's FIXME). With recovery, a collection during the handler could free objects
 only the interrupted stack references. Fix in the push hook: the handler records the interrupted sp
 first thing, and the hook pushes the interrupted stack from there.
+
+### 8.4 Allocation windows
+
+`sys.traceAllocations(() => {...})` counts the GC allocations and bytes of the calling task while
+its lambda runs; `sys.limitAllocations({ count?, bytes? }, () => {...})` panics in the first
+allocation past a limit. Every GC allocation goes through one place in hzstd_memory.c; windows
+belong to the task (other tasks and threads never count), nest, and close when a panic unwinds
+past them. Decisions A-1 to A-10 in docs/async-decisions.md.
 
 ---
 

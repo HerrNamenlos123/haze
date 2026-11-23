@@ -44,7 +44,6 @@ namespace ccffi {
 
     export extern C fn haze_claude_read_head_tail(allocator: Allocator, path: str, limit: int): haze_claude_head_tail_t :: final;
     export extern C fn haze_claude_append_text(path: str, text: str): bool :: final;
-    export extern C fn haze_claude_total_allocated_bytes(): int :: final;
     export extern C fn haze_claude_json_delete_key(object: cptr, name: str) :: final;
     export extern C fn haze_claude_unix_millis(): int :: final;
 }
@@ -597,17 +596,6 @@ export fn readHeadTail(path: str, limit: int): HeadTail | none {
 // transcript format is an append-only log.
 export fn appendText(path: str, text: str): bool {
     return ccffi.haze_claude_append_text(path, text);
-}
-
-// Cumulative bytes the collector has handed out since the process started.
-//
-// A diagnostic, not a runtime facility. This module guarantees that an idle
-// `Session.poll()` -- one where no bytes arrived and nothing needed answering
-// -- performs no heap allocation at all, so that a chat UI polling at frame
-// rate produces no garbage while the user is reading. The test suite asserts
-// that by sampling this either side of a few thousand polls.
-export fn totalAllocatedBytes(): int {
-    return ccffi.haze_claude_total_allocated_bytes();
 }
 
 export fn processId(): int {

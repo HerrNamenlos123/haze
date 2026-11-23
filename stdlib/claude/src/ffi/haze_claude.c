@@ -579,17 +579,6 @@ hzstd_bool_t haze_claude_append_text(hzstd_str_t path, hzstd_str_t text)
   return ok;
 }
 
-#include <gc/gc.h>
-
-// Cumulative bytes the garbage collector has handed out since the process
-// started. Strictly a diagnostic: it exists so this module's own test suite can
-// assert that an idle poll() allocates nothing at all, which is a guarantee
-// worth defending with a test rather than a comment.
-hzstd_int_t haze_claude_total_allocated_bytes(void)
-{
-  return (hzstd_int_t)GC_get_total_bytes();
-}
-
 // ---------------------------------------------------------------------------
 // JSON object key removal
 // ---------------------------------------------------------------------------

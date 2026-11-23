@@ -540,21 +540,20 @@ extern C fn enter(n: int): int {
 
 fn main(): int {
     let a = 1;
-    let p = Profiler({ samplingRate: 0, memoryInstrumentation: true, memoryInstrumentationStacktraces: false });
-    let total = 0;
-    for (let i = 0; i < 50; i++) {
-        let b = i;
-        total = total + context.clone(() => {
-            setHeld(b);
-            return a + held();
-        });
-        total = total + context.clone(() => enter(b + 1));
-    }
-    let result = p.stop();
-    assert(total == 2550, f"wrong total {total}");
+    let allocations = sys.traceAllocations(() => {
+        let total = 0;
+        for (let i = 0; i < 50; i++) {
+            let b = i;
+            total = total + context.clone(() => {
+                setHeld(b);
+                return a + held();
+            });
+            total = total + context.clone(() => enter(b + 1));
+        }
+        assert(total == 2550, "wrong total");
+    }).count;
     assert(held() == 0, "the caller's context changed");
-    // The Profiler object itself is the one allocation inside the window.
-    assert(result.memoryInstrumentationFrames.length == 1, f"expected no allocations from clone or the entry, got {result.memoryInstrumentationFrames.length - 1}");
+    assert(allocations == 0, f"expected no allocations from clone or the entry, got {allocations}");
     return 0;
 }
 """,

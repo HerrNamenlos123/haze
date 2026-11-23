@@ -331,18 +331,11 @@ optional 3 -1
 """);
 
         // A dispatched call binds no method value and copies nothing, and a union
-        // result is a value on the stack, so none of it may touch the heap. Measured
-        // with the collector's own counter.
+        // result is a value on the stack, so none of it may touch the heap.
         s.run(
             "union member access: dispatched calls, field writes and union results allocate nothing",
             """
-__c__("size_t GC_get_total_bytes(void);");
-
-fn allocatedBytes(): int {
-    let n = 0;
-    __c__("n = (hzstd_int_t)GC_get_total_bytes();");
-    return n;
-}
+ref struct Totals { ints: int = 0; }
 
 struct A {
     value: real = 1.0;
@@ -365,32 +358,32 @@ struct C {
 fn main(): int {
     let items: mut [](A | B) = [A {}, B {}, A {}, B {}];
     let mixed: [](A | B | C) = [A {}, B {}, C {}];
-    let sum = 0.0;
-    let ints = 0;
-    let before = allocatedBytes();
-    for (let round = 0; round < 1000; round++) {
-        for (let i = 0; i < items.length; i++) {
-            items[i].bump(0.5);
-            items[i].value -= 0.25;
-            sum += items[i].area(2.0) + items[i].value;
-            // Differing types: a union result, and a write per variant.
-            items[i].weight += 2;
-            let h = items[i].half();
-            if h is int { ints += h; }
+    let totals = Totals {};
+    let stats = sys.traceAllocations(() => {
+        let sum = 0.0;
+        for (let round = 0; round < 1000; round++) {
+            for (let i = 0; i < items.length; i++) {
+                items[i].bump(0.5);
+                items[i].value -= 0.25;
+                sum += items[i].area(2.0) + items[i].value;
+                // Differing types: a union result, and a write per variant.
+                items[i].weight += 2;
+                let h = items[i].half();
+                if h is int { totals.ints += h; }
+            }
+            for (let i = 0; i < mixed.length; i++) {
+                let w = mixed[i].weight;
+                if w is none { totals.ints += 1; }
+            }
         }
-        for (let i = 0; i < mixed.length; i++) {
-            let w = mixed[i].weight;
-            if w is none { ints += 1; }
-        }
-    }
-    let after = allocatedBytes();
-    fmt.println(f"allocated {after - before}");
-    fmt.println(f"values {items[0].value} {items[1].value} ints {ints}");
+    });
+    fmt.println(f"allocated {stats.count} {stats.bytes}");
+    fmt.println(f"values {items[0].value} {items[1].value} ints {totals.ints}");
     return 0;
 }
 """,
             """
-allocated 0
+allocated 0 0
 values 251 753 ints 1002000
 """);
 

@@ -633,6 +633,53 @@ Runtime: `stdlib/core/src/hzstd/src/hzstd_sched.c`; Haze API: `stdlib/core/src/t
   second overflow in the same task, stall traces once per stack, a panic after `sys.exit` keeps
   its status. The harness drops CR before comparing output.
 
+## Allocation windows and GC memory in hzstd (2026-11-23; the user's go: "Do all of this now")
+
+The user's design: a counter a program registers, counting GC allocations and their bytes (never
+arena suballocations), several of them may overlap; and a second function on the same mechanism
+that panics in the allocation itself once a count or a byte limit is passed, so the trace names the
+offending allocation. Names (user): `sys.traceAllocations` (more features later),
+`sys.limitAllocations`. Scope per task (user). "GC_malloc should have never been used, the allocator
+interface exists for this; in hzstd prefer raw malloc over the GC whenever possible" (user).
+
+- **A-1. One place calls the collector's allocation functions** (`hz_gc_malloc`, `_atomic`,
+  `_realloc`, `hzstd_uncollectable_allocate` in hzstd_memory.c): every GC block counts there. The
+  profiler's hook stays in the public entry points, which know the allocation's kind; the arena's
+  own blocks still bypass it (it reports its create and chunk events itself) but not the count.
+- **A-2. A window counts every GC block with the bytes asked for**: arena chunk headers too, which
+  the profiler leaves out as bookkeeping. Realloc counts as one allocation of its new size.
+- **A-3. The windows are an array per task** (`hzstd_task_t.alloc_windows`, malloc memory; a thread
+  running no task has a thread-local one), a window is its index. The first version kept each
+  window in the caller's frame; the compiler rejects inline C in a function with an `immediate`
+  parameter (H7196), and a recovery would have read windows in unwound frames. A recovery frame
+  saves the depth; `HAZE_ATTEMPT` restores it before anything else can allocate.
+- **A-4. Nothing is counted while no window is open**: one relaxed load of a process-wide count of
+  task windows and one thread-local load.
+- **A-5. A limit that trips is spent** (set to none), so the panic report and code recovering
+  inside the window do not trip it again. The innermost window past a limit is the one reported.
+- **A-6. The watchdog opens a limit of 0 for its whole life**: its "no GC memory" rule is enforced
+  (proven: putting back the arena print panics on the watchdog thread at that allocation).
+- **A-7. libuv handles stay uncollectable** (section 8.2, rule 1), now through
+  `hzstd_uncollectable_allocate`: a sleep is one allocation of its timer. Embedding the timer in
+  the task was rejected: a killed sleeping task would then be kept alive only by libuv's links
+  until the close callback. `sched_t` goes the same way; single_instance's mailbox is static
+  memory (scanned, no allocation); regex replacement builds in malloc memory and makes one GC
+  string at the end.
+- **A-8. The old probes moved**: `GC_get_total_bytes` (user: "zero requirement", an old hack for
+  rough process usage) is gone from every test, and `claude.totalAllocatedBytes` with it; the
+  testsuite cases that counted through the profiler (minus one for the profiler object) count
+  with `sys.traceAllocations`. Tests that check the profiler's own events (arena labels, list-dir
+  chunk events, allocation markers) and the per-kind tally in element-memory-tests keep the
+  profiler hook. Process memory introspection (how much the app uses, GC against malloc) is
+  needed, later, as a feature of its own (user).
+- **A-9. Found by the exact counts**: a task's first stackref scope makes its slot table (64
+  bytes, once per task); the old bytebuffer count missed it because constructing the Profiler had
+  opened a scope before the window.
+- **A-10. The stall trace deduplication stays by stack hash** (section 10); its case looked at the
+  clock every step, so most traces were caught inside `time.now()` and counted as another stack
+  (3 reports instead of 2 on Linux). The loops look at the clock every million steps. Which stall
+  identity is right for a loop that spends most of its time in a call is open (ledger).
+
 ## Tooling
 
 - **G-1. The parser-equivalence sweep reads what the commit and the run decide** (user,

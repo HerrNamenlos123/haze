@@ -50,7 +50,9 @@ typedef struct {
   int exitCode;
 } haze_si_mailbox_t;
 
-static haze_si_mailbox_t *g_mailbox = 0;
+// Static: the collector scans it, so the value it holds stays alive.
+static haze_si_mailbox_t g_mailbox_storage;
+static haze_si_mailbox_t *const g_mailbox = &g_mailbox_storage;
 
 // The payload parser: an extern C function defined in Haze, and the opaque
 // thunk it is called with (a GC object; a static is a root, so this keeps it
@@ -844,7 +846,6 @@ haze_si_acquire_result_t haze_si_acquire(hzstd_str_t key, hzstd_str_t mangledNam
   g_prettyName = haze_si_dup(prettyName, &g_prettyLen);
   g_fingerprint = fingerprint;
 
-  g_mailbox = (haze_si_mailbox_t *)GC_MALLOC_UNCOLLECTABLE(sizeof(haze_si_mailbox_t));
   memset(g_mailbox, 0, sizeof(haze_si_mailbox_t));
 
 #if defined(HAZE_PLATFORM_WIN32)

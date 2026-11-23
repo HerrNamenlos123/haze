@@ -1,0 +1,256 @@
+// ============================================================================
+// sys.traceAllocations and sys.limitAllocations: GC allocations counted in
+// windows that belong to the task that opened them (hzstd_memory.c). Every GC
+// allocation counts, with the bytes asked for; an arena's chunks do, its
+// suballocations do not. A limit panics in the allocation that would go past
+// it, so the trace names that allocation.
+// ============================================================================
+
+namespace cases_alloc_windows {
+
+    // Allocations of known sizes, made from C so nothing else is in them.
+    fn helpers(): str {
+        return """
+__c__("static void gc_scanned(void) { (void)hzstd_heap_allocate(100, NULL); }");
+fn allocA(): void { do unsafe { __c__("gc_scanned();"); }; }
+fn allocB(): void { do unsafe { __c__("gc_scanned();"); }; }
+fn allocC(): void { do unsafe { __c__("gc_scanned();"); }; }
+""";
+    }
+
+    export fn register(s: mut testsuite.Suite) {
+        s.run(
+            "allocation windows: every kind of GC allocation counts, with the bytes asked for",
+            helpers() + """
+fn main(): int {
+    let stats = sys.traceAllocations(() => {
+        do unsafe {
+            __c__("void *p = hzstd_heap_allocate_unscanned(40, NULL); (void)p;");
+            __c__("void *q = hzstd_heap_allocate(100, NULL); q = hzstd_heap_realloc(q, 300, NULL); (void)q;");
+            __c__("void *u = hzstd_uncollectable_allocate(24); hzstd_uncollectable_free(u);");
+        };
+    });
+    let idle = sys.traceAllocations(() => {
+        let x = 0;
+        for (let i = 0; i < 1000; i++) { x = x + i; }
+    });
+    fmt.println(f"{stats.count} {stats.bytes} {idle.count} {idle.bytes}");
+    return 0;
+}
+""",
+            "4 464 0 0");
+
+        s.run(
+            "allocation windows: they nest, and every open one counts",
+            helpers() + """
+ref struct Seen {
+    inner: sys.AllocationStats = sys.AllocationStats { count: -1, bytes: -1 };
+    empty: sys.AllocationStats = sys.AllocationStats { count: -1, bytes: -1 };
+}
+fn main(): int {
+    let seen = Seen {};
+    let outer = sys.traceAllocations(() => {
+        allocA();
+        seen.inner = sys.traceAllocations(() => {
+            allocB();
+            allocC();
+        });
+        seen.empty = sys.traceAllocations(() => {});
+        allocA();
+    });
+    fmt.println(f"{outer.count} {outer.bytes} {seen.inner.count} {seen.inner.bytes} {seen.empty.count}");
+    return 0;
+}
+""",
+            "4 400 2 200 0");
+
+        s.run(
+            "allocation windows: an arena counts its chunks, never its suballocations",
+            """
+__c__("static void arena_work(int n) { hzstd_arena_t *a = hzstd_arena_create(HZSTD_ARENA_OPTIONS(\\"t\\")); for (int i = 0; i < n; i++) { (void)hzstd_arena_allocate(a, 16); } }");
+__c__("static long long arena_expected(void) { hzstd_arena_options_t o = HZSTD_ARENA_OPTIONS(\\"t\\"); return (long long)(sizeof(hzstd_arena_t) + o.scanned.first_bytes); }");
+fn main(): int {
+    let one = sys.traceAllocations(() => { do unsafe { __c__("arena_work(1);"); }; });
+    let many = sys.traceAllocations(() => { do unsafe { __c__("arena_work(50);"); }; });
+    let expected = 0;
+    do unsafe { __c__("expected = arena_expected();"); };
+    fmt.println(f"{one.count} {many.count} {one.bytes == expected} {many.bytes == expected}");
+    return 0;
+}
+""",
+            "2 2 true true");
+
+        s.run(
+            "allocation windows: a limit reached exactly does not panic",
+            helpers() + """
+fn main(): int {
+    sys.limitAllocations({ count: 3 }, () => { allocA(); allocB(); allocC(); });
+    sys.limitAllocations({ bytes: 300 }, () => { allocA(); allocB(); allocC(); });
+    sys.limitAllocations({ count: 0, bytes: 0 }, () => {});
+    fmt.println("held");
+    return 0;
+}
+""",
+            "held");
+
+        // The panic happens in the allocation past the limit: its trace names
+        // allocC, and allocA and allocB never appear in it.
+        s.run(
+            "allocation windows: the first allocation past a count limit panics, in itself",
+            helpers() + """
+fn main(): int {
+    let args = sys.args();
+    if args.length > 1 && args[1] == "child" {
+        sys.limitAllocations({ count: 2 }, () => { allocA(); allocB(); allocC(); });
+        return 0;
+    }
+    let r = process.runCaptured(args[0], ["child"]);
+    let e = r.stderrResult;
+    fmt.println(f"{r.exitCode} {e.contains("this allocation of 100 bytes makes 3 allocations and 300 bytes, over the limit of 2 allocations set at")} {e.contains("allocC")} {e.contains("allocB")} {e.contains("allocA")}");
+    return 0;
+}
+""",
+            "255 true true false false");
+
+        s.run(
+            "allocation windows: the first allocation past a bytes limit panics, in itself",
+            helpers() + """
+fn main(): int {
+    let args = sys.args();
+    if args.length > 1 && args[1] == "child" {
+        sys.limitAllocations({ bytes: 150 }, () => { allocA(); allocB(); allocC(); });
+        return 0;
+    }
+    let r = process.runCaptured(args[0], ["child"]);
+    let e = r.stderrResult;
+    fmt.println(f"{r.exitCode} {e.contains("makes 2 allocations and 200 bytes, over the limit of 150 bytes set at")} {e.contains("allocB")} {e.contains("allocC")}");
+    return 0;
+}
+""",
+            "255 true true false");
+
+        // An outer window's limit trips at an allocation inside an inner one.
+        s.run(
+            "allocation windows: an outer limit holds inside an inner window",
+            helpers() + """
+fn main(): int {
+    let args = sys.args();
+    if args.length > 1 && args[1] == "child" {
+        sys.limitAllocations({ count: 1 }, () => {
+            allocA();
+            let inner = sys.traceAllocations(() => { allocB(); });
+        });
+        return 0;
+    }
+    let r = process.runCaptured(args[0], ["child"]);
+    fmt.println(f"{r.exitCode} {r.stderrResult.contains("over the limit of 1 allocations")} {r.stderrResult.contains("allocB")}");
+    return 0;
+}
+""",
+            "255 true true");
+
+        // A recovered panic closes the windows it unwound; one around it stays
+        // open and counts on, and a spent limit does not trip again.
+        s.run(
+            "allocation windows: a recovered panic closes the windows it unwound",
+            helpers() + """
+ref struct Seen {
+    recovered: int = 0;
+    after: sys.AllocationStats = sys.AllocationStats { count: -1, bytes: -1 };
+}
+fn main(): int {
+    // Known only at run time, so the lambdas below are no `noreturn` ones.
+    let boom = sys.args().length > 0;
+    let seen = Seen {};
+    let outer = sys.traceAllocations(() => {
+        allocA();
+        seen.recovered = attempt {
+            let inner = sys.traceAllocations(() => {
+                allocB();
+                if boom { sys.panic("boom"); }
+            });
+            0
+        } recover e {
+            1
+        };
+        seen.after = sys.traceAllocations(() => { allocC(); });
+    });
+    let spent = attempt {
+        sys.limitAllocations({ count: 1 }, () => {
+            allocA();
+            let r = attempt { allocB(); 0 } recover e { 1 };
+            allocC();
+            if r == 1 { sys.panic("recovered inside"); }
+        });
+        0
+    } recover e {
+        2
+    };
+    fmt.println(f"{seen.recovered} {seen.after.count} {seen.after.bytes} {outer.count >= 3} {spent}");
+    return 0;
+}
+""",
+            "1 1 100 true 2");
+
+        // The window is the task's: another task's allocations stay out, also
+        // those it makes while this one is suspended inside the window.
+        s.run(
+            "allocation windows: another task's allocations never count, also across a suspension",
+            helpers() + """
+fn spawnAndJoin(work: int): sys.AllocationStats {
+    return sys.traceAllocations(() => {
+        let t = task.spawn(() => {
+            for (let i = 0; i < work; i++) { allocA(); }
+            return 0;
+        });
+        let r = t.join();
+    });
+}
+fn main(): int {
+    let idle = spawnAndJoin(0);
+    let busy = spawnAndJoin(5);
+    let other = task.spawn(() => {
+        for (let i = 0; i < 5; i++) { allocB(); time.sleep(0.001); }
+        return 0;
+    });
+    let sleeping = sys.traceAllocations(() => { time.sleep(0.02); });
+    let r = other.join();
+    fmt.println(f"{idle.count == busy.count} {idle.bytes == busy.bytes} {sleeping.count}");
+    return 0;
+}
+""",
+            "true true 1");
+
+        s.run(
+            "allocation windows: a limit with neither count nor bytes panics",
+            """
+fn main(): int {
+    let args = sys.args();
+    if args.length > 1 && args[1] == "child" {
+        sys.limitAllocations({}, () => {});
+        return 0;
+    }
+    let r = process.runCaptured(args[0], ["child"]);
+    fmt.println(f"{r.exitCode} {r.stderrResult.contains("set a count, bytes, or both")}");
+    return 0;
+}
+""",
+            "255 true");
+
+        s.run(
+            "allocation windows: a negative limit panics",
+            """
+fn main(): int {
+    let args = sys.args();
+    if args.length > 1 && args[1] == "child" {
+        sys.limitAllocations({ count: -1 }, () => {});
+        return 0;
+    }
+    let r = process.runCaptured(args[0], ["child"]);
+    fmt.println(f"{r.exitCode} {r.stderrResult.contains("the count limit cannot be negative (-1)")}");
+    return 0;
+}
+""",
+            "255 true");
+    }
+}

@@ -151,8 +151,6 @@ fn main(): int {
 3: 21
 """);
 
-        // The profiler writes its progress to stdout, so the allocation count
-        // is asserted rather than compared as output.
         s.runExitCode(
             "immediate / inferred non-escaping: a lambda literal argument allocates nothing",
             """
@@ -162,16 +160,15 @@ fn inferred(f: () => int): int { return f(); }
 fn withArg(f: immediate (x: int) => int, x: int): int { return f(x) * 2; }
 fn main(): int {
     let a = 1;
-    let p = Profiler({ samplingRate: 0, memoryInstrumentation: true, memoryInstrumentationStacktraces: false });
-    let total = 0;
-    for (let i = 0; i < 50; i++) {
-        let b = i;
-        total = total + run(() => { return a + b; }) + inferred(() => { return b; }) + runOpt(() => { return b; }) + withArg((x: int) => { return x + b; }, 1);
-    }
-    let result = p.stop();
-    assert(total == 6275, "wrong total");
-    // The Profiler object itself is the one allocation inside the window.
-    assert(result.memoryInstrumentationFrames.length == 1, f"expected no closure allocations, got {result.memoryInstrumentationFrames.length - 1}");
+    let allocations = sys.traceAllocations(() => {
+        let total = 0;
+        for (let i = 0; i < 50; i++) {
+            let b = i;
+            total = total + run(() => { return a + b; }) + inferred(() => { return b; }) + runOpt(() => { return b; }) + withArg((x: int) => { return x + b; }, 1);
+        }
+        assert(total == 6275, "wrong total");
+    }).count;
+    assert(allocations == 0, f"expected no closure allocations, got {allocations}");
     return 0;
 }
 """,

@@ -1,0 +1,58 @@
+// ============================================================================
+// regex.replace: every match replaced, zero-length matches stepped over, and
+// the result is one GC string (the builder grows in malloc memory).
+// ============================================================================
+
+namespace cases_regex {
+
+    export fn register(s: mut testsuite.Suite) {
+        s.run(
+            "regex.replace: every match, zero-length matches, no match, empty text, long results",
+            """
+fn replaced(pattern: str, text: str, replacement: str): str {
+    let re = regex.runtime(pattern);
+    if re {
+        return regex.replace(re, text, replacement);
+    }
+    return "<bad pattern>";
+}
+fn main(): int {
+    fmt.println(f"[{replaced("o", "foo boo", "0")}]");
+    fmt.println(f"[{replaced("x", "abc", "y")}]");
+    fmt.println(f"[{replaced("a", "", "b")}]");
+    fmt.println(f"[{replaced("^", "abc", ">")}]");
+    fmt.println(f"[{replaced("b*", "abc", "-")}]");
+    let input = "";
+    for (let i = 0; i < 300; i++) { input = f"{input}ab"; }
+    let out = replaced("b", input, "BBBB");
+    fmt.println(f"{out.length} {out.slice(0, 10)}");
+    return 0;
+}
+""",
+            """
+[f00 b00]
+[abc]
+[]
+[>abc]
+[-a--c-]
+1500 aBBBBaBBBB
+""");
+
+        s.run(
+            "regex.replace: the result is the one allocation",
+            """
+fn main(): int {
+    let re = regex.runtime("o");
+    if re {
+        let input = "";
+        for (let i = 0; i < 300; i++) { input = f"{input}oo"; }
+        let small = sys.traceAllocations(() => { let r = regex.replace(re, "foo", "0"); });
+        let grown = sys.traceAllocations(() => { let r = regex.replace(re, input, "000"); });
+        fmt.println(f"{small.count} {small.bytes} {grown.count} {grown.bytes}");
+    }
+    return 0;
+}
+""",
+            "1 4 1 1801");
+    }
+}

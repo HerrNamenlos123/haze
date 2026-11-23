@@ -5,8 +5,8 @@
 #include "../include/hzstd_memory.h"
 #include "../include/hzstd_runtime.h"
 #include "../include/hzstd_string.h"
-#include "gc/gc.h"
-
+#include <stdlib.h>
+#include <string.h>
 
 #define PCRE2_CODE_UNIT_WIDTH 8
 #include <pcre2.h>
@@ -204,7 +204,8 @@ hzstd_regex_find_one_result_t hzstd_regex_find(hzstd_allocator_t allocator,
   return result;
 }
 
-// String builder helper for replacement
+// String builder for a replacement: malloc memory while it grows, one GC
+// string at the end (hzstd_regex_replace).
 typedef struct {
   char *data;
   size_t len;
@@ -223,7 +224,7 @@ static void sb_append(hzstd_sb_t *sb, const char *data, size_t len) {
     while (new_cap < sb->len + len + 1) {
       new_cap *= 2;
     }
-    sb->data = GC_realloc(sb->data, new_cap);
+    sb->data = realloc(sb->data, new_cap);
     if (!sb->data) {
       hzstd_panic_fmt("System out of memory error while allocating buffer for "
                       "Regex replacement");
@@ -290,7 +291,10 @@ hzstd_str_t hzstd_regex_replace(hzstd_regex_t regex, hzstd_str_t text,
 
   pcre2_match_data_free(md);
 
-  hzstd_str_t result = {.data = sb.data, .length = sb.len};
+  char *data = hzstd_heap_allocate_unscanned(sb.len + 1, "Regex replacement");
+  memcpy(data, sb.data, sb.len + 1);
+  free(sb.data);
+  hzstd_str_t result = {.data = data, .length = sb.len};
   return result;
 }
 

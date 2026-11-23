@@ -351,9 +351,6 @@ fn main(): int {
         s.runExitCode(
             "bytebuffer: rotate allocates nothing, whichever way it parks the shorter side",
             """
-fn profiler(): Profiler {
-    return Profiler({ samplingRate: 0, memoryInstrumentation: true, memoryInstrumentationStacktraces: false });
-}
 fn main(): int {
     let stackref small = ByteBuffer(100);
     small.push("0123456789");
@@ -364,16 +361,15 @@ fn main(): int {
     for (let i = 0; i < 1999; i++) { full.push(97 as u8); }
     full.push("c");
 
-    let p = profiler();
-    small.rotate(2, 5, 9);
-    spare.rotate(0, 1000, 2001);
-    full.rotate(0, 1000, 2000);
-    let r = p.stop();
+    let count = sys.traceAllocations(() => {
+        small.rotate(2, 5, 9);
+        spare.rotate(0, 1000, 2001);
+        full.rotate(0, 1000, 2000);
+    }).count;
 
     assert(small.cloneString() == "0156782349", "small");
     assert(spare.getAt(1000) == 98 && spare.getAt(2000) == 97, "spare");
     assert(full.getAt(999) == 99 && full.getAt(1999) == 97, "full");
-    let count = r.memoryInstrumentationFrames.length - 1;
     assert(count == 0, f"rotate allocated {count}");
     return 0;
 }
@@ -517,10 +513,6 @@ fn main(): int {
             """
 ref struct Doc { body: ByteBuffer; }
 
-fn profiler(): Profiler {
-    return Profiler({ samplingRate: 0, memoryInstrumentation: true, memoryInstrumentationStacktraces: false });
-}
-
 fn main(): int {
     let n = 12345;
     let r = 2.25;
@@ -532,12 +524,12 @@ fn main(): int {
 
     let stackref m = ByteBuffer.measuring();
 
-    let p = profiler();
-    b.pushFmt("n=", n, " r=", r, " ", true, " ", -3);
-    doc.body.pushFmt(n, " ", r);
-    s.appendFmt(n, " ", r, " ", false);
-    m.pushFmt(r, " ", true, n);
-    let res = p.stop();
+    let count = sys.traceAllocations(() => {
+        b.pushFmt("n=", n, " r=", r, " ", true, " ", -3);
+        doc.body.pushFmt(n, " ", r);
+        s.appendFmt(n, " ", r, " ", false);
+        m.pushFmt(r, " ", true, n);
+    }).count;
 
     b.commit();
     doc.body.commit();
@@ -545,7 +537,6 @@ fn main(): int {
     assert(doc.body.string() == "12345 2.25", "field");
     assert(s.cloneString() == "start 12345 2.25 false", "string");
     assert(m.length() == 14, f"measured {m.length()}");
-    let count = res.memoryInstrumentationFrames.length - 1;
     assert(count == 0, f"formatting allocated {count}");
     return 0;
 }
@@ -741,80 +732,75 @@ fn main(): int {
 
         // ── Allocation counts ────────────────────────────────────────────────
         //
-        // Each window is measured with the memory profiler; the Profiler
-        // object itself is the one allocation every window contains.
+        // Each window is measured with sys.traceAllocations. What a window
+        // makes is checked inside it, with plain messages: an f-string message
+        // would allocate even when the assertion holds.
         s.runExitCode(
             "bytebuffer: allocation counts are part of the contract",
             """
-fn profiler(): Profiler {
-    return Profiler({ samplingRate: 0, memoryInstrumentation: true, memoryInstrumentationStacktraces: false });
-}
+ref struct Kept { s: String | none = none; }
 fn main(): int {
     let src = "borrowed source";
+    // A task's first stackref scope makes its slot table (once per task):
+    // here, before the windows, which count only the buffers.
+    let stackref warm = ByteBuffer.measuring();
 
     // Borrow, commit, view: nothing.
-    let p1 = profiler();
-    let a = ByteBuffer(src);
-    a.commit();
-    let av = a.string();
-    let r1 = p1.stop();
+    let c1 = sys.traceAllocations(() => {
+        let a = ByteBuffer(src);
+        a.commit();
+        assert(a.string() == src, "borrowed view");
+    }).count;
 
     // Exact size: one allocation; pushing within it, committing and viewing
     // add none.
-    let p2 = profiler();
-    let b = ByteBuffer(16);
-    b.push("0123456789");
-    b.push(Bytes("abcdef"));
-    b.commit();
-    let bs = b.string();
-    let bb = b.bytes();
-    let r2 = p2.stop();
+    let c2 = sys.traceAllocations(() => {
+        let b = ByteBuffer(16);
+        b.push("0123456789");
+        b.push(Bytes("abcdef"));
+        b.commit();
+        assert(b.string() == "0123456789abcdef" && b.bytes().length == 16, "exact view");
+    }).count;
 
     // Measure (nothing), then write exactly (one).
-    let p3 = profiler();
-    let stackref m = ByteBuffer.measuring();
-    m.push("measured ");
-    m.push(src);
-    let stackref x = ByteBuffer(m.length());
-    x.push("measured ");
-    x.push(src);
-    x.commit();
-    let xs = x.string();
-    let r3 = p3.stop();
+    let c3 = sys.traceAllocations(() => {
+        let stackref m = ByteBuffer.measuring();
+        m.push("measured ");
+        m.push(src);
+        let stackref x = ByteBuffer(m.length());
+        x.push("measured ");
+        x.push(src);
+        x.commit();
+        assert(x.string() == "measured borrowed source", "measured view");
+    }).count;
 
     // Growth from empty: 1000 single bytes is one allocation plus at most
     // log2(1000) reallocations.
-    let p4 = profiler();
-    let g = ByteBuffer();
-    for (let i = 0; i < 1000; i++) { g.push(97 as u8); }
-    g.commit();
-    let r4 = p4.stop();
+    let c4 = sys.traceAllocations(() => {
+        let g = ByteBuffer();
+        for (let i = 0; i < 1000; i++) { g.push(97 as u8); }
+        g.commit();
+        assert(g.length() == 1000, "growth length");
+    }).count;
 
     // Formatting allocates exactly the resulting string.
     let n = 42;
-    let p5 = profiler();
-    let formatted = fmt.format("n=", n, " src=", src);
-    let r5 = p5.stop();
+    let c5 = sys.traceAllocations(() => {
+        let formatted = fmt.format("n=", n, " src=", src);
+        assert(formatted == "n=42 src=borrowed source", "formatted");
+    }).count;
 
-    // A String is its object plus its storage once edited.
-    let p6 = profiler();
-    let s = String("abc");
-    s.append("def");
-    let r6 = p6.stop();
+    // A String is its object plus its storage once edited; it is kept for
+    // the check after the window (reading it whole copies it).
+    let kept = Kept {};
+    let c6 = sys.traceAllocations(() => {
+        let made = String("abc");
+        made.append("def");
+        kept.s = made;
+    }).count;
+    let s = kept.s;
+    assert(s is String && s.cloneString() == "abcdef", "string");
 
-    assert(av == src, "borrowed view");
-    assert(bs == "0123456789abcdef" && bb.length == 16, "exact view");
-    assert(xs == "measured borrowed source", "measured view");
-    assert(g.length() == 1000, "growth length");
-    assert(formatted == "n=42 src=borrowed source", "formatted");
-    assert(s.cloneString() == "abcdef", "string");
-
-    let c1 = r1.memoryInstrumentationFrames.length - 1;
-    let c2 = r2.memoryInstrumentationFrames.length - 1;
-    let c3 = r3.memoryInstrumentationFrames.length - 1;
-    let c4 = r4.memoryInstrumentationFrames.length - 1;
-    let c5 = r5.memoryInstrumentationFrames.length - 1;
-    let c6 = r6.memoryInstrumentationFrames.length - 1;
     assert(c1 == 0, f"borrow+commit+view allocated {c1}");
     assert(c2 == 1, f"exact buffer allocated {c2}");
     assert(c3 == 1, f"measure+exact allocated {c3}");

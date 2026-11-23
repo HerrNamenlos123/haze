@@ -73,8 +73,7 @@ per block, a streaming reply re-renders the one block that is growing.
 
 ## Allocation
 
-Measured with `GC_get_total_bytes` (`claude.totalAllocatedBytes()`), not
-asserted by inspection:
+Measured with `sys.traceAllocations`, not asserted by inspection:
 
 | | |
 |---|---|

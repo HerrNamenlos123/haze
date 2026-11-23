@@ -444,6 +444,35 @@ typedef struct {
   hzstd_int_t _column; /* 0 = absent */
 } hzstd_source_location_t;
 
+// ── Allocation windows (sys.traceAllocations, sys.limitAllocations) ─────────
+//
+// One open window: every GC allocation the code running in its task makes
+// while it is open counts in it, and in every window opened before it. A limit
+// of -1 is none; the first allocation past a limit panics before it happens
+// (hzstd_memory.c).
+typedef struct {
+  hzstd_int_t count;
+  hzstd_int_t bytes;
+  hzstd_int_t max_count;
+  hzstd_int_t max_bytes;
+  hzstd_source_location_t where; // where the limit was set
+} hzstd_alloc_window_t;
+
+// The open windows of a task (or of a thread running none), outermost first:
+// a window is its index. Malloc memory, grown when a window opens past the
+// capacity; a panic recovery only sets the depth back.
+typedef struct {
+  hzstd_alloc_window_t *windows;
+  size_t depth;
+  size_t capacity;
+} hzstd_alloc_windows_t;
+
+// What a closed window saw.
+typedef struct {
+  hzstd_int_t count;
+  hzstd_int_t bytes;
+} hzstd_alloc_stats_t;
+
 // ── Stack frame / panic ──────────────────────────────────────────────────────
 
 typedef struct {
@@ -555,6 +584,8 @@ typedef struct {
   size_t saved_stackref_count;
   // Same reason, for the reactive core.
   hzstd_reactive_state_t saved_reactive;
+  // Same reason, for the task's open allocation windows: how many there were.
+  size_t saved_alloc_window_depth;
 } hzstd_panic_recovery_frame_t;
 
 // ── Generational stack references ────────────────────────────────────────────
@@ -746,6 +777,8 @@ struct hzstd_task_t {
   hzstd_future_core_t *future;       // ends when the task ends
   hzstd_future_core_t *waiting_on;   // the future it waits for, if suspended in a join
   void *sleep_timer;                 // its uv_timer_t, if suspended in time.sleep
+  // Its open allocation windows.
+  hzstd_alloc_windows_t alloc_windows;
 };
 
 // ── Meta ─────────────────────────────────────────────────────────────────────

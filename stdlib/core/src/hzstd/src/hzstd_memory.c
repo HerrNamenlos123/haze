@@ -154,6 +154,217 @@ hz_profiler_instrumentation_try_get(hzstd_memory_instrumentation_callback_t *out
   return true;
 }
 
+// ── Allocation windows (hzstd_memory.h) ─────────────────────────────────────
+
+// How many windows are open in tasks, process-wide. While none is, an
+// allocation never looks up the current task. Relaxed: what matters to a
+// task is its own open, which comes before its allocations on its own thread.
+static _Atomic size_t hz_alloc_task_windows_open = 0;
+// The windows of a thread while it runs no task: a runtime thread such as the
+// stall watchdog, or a Haze thread between its tasks.
+static _Thread_local hzstd_alloc_windows_t hz_alloc_thread_windows = { 0 };
+
+static hzstd_alloc_windows_t *hz_alloc_windows_slot(void)
+{
+  hzstd_task_t *task = hzstd_current_task();
+  return task != NULL ? &task->alloc_windows : &hz_alloc_thread_windows;
+}
+
+static void hz_alloc_windows_moved(hzstd_alloc_windows_t *slot, int64_t delta)
+{
+  if (slot != &hz_alloc_thread_windows) {
+    atomic_fetch_add_explicit(&hz_alloc_task_windows_open, (size_t)delta, memory_order_relaxed);
+  }
+}
+
+hzstd_int_t hzstd_alloc_window_open(hzstd_int_t max_count, hzstd_int_t max_bytes, hzstd_source_location_t where)
+{
+  hzstd_alloc_windows_t *slot = hz_alloc_windows_slot();
+  if (slot->depth == slot->capacity) {
+    size_t capacity = slot->capacity ? slot->capacity * 2 : 4;
+    hzstd_alloc_window_t *grown = realloc(slot->windows, capacity * sizeof(hzstd_alloc_window_t));
+    if (grown == NULL) {
+      hzstd_panic("System Out Of Memory while opening an allocation window");
+    }
+    slot->windows = grown;
+    slot->capacity = capacity;
+  }
+  slot->windows[slot->depth] = (hzstd_alloc_window_t) {
+    .count = 0,
+    .bytes = 0,
+    .max_count = max_count,
+    .max_bytes = max_bytes,
+    .where = where,
+  };
+  slot->depth += 1;
+  hz_alloc_windows_moved(slot, 1);
+  return (hzstd_int_t)(slot->depth - 1);
+}
+
+hzstd_alloc_stats_t hzstd_alloc_window_close(hzstd_int_t window)
+{
+  hzstd_alloc_windows_t *slot = hz_alloc_windows_slot();
+  if (slot->depth == 0 || window != (hzstd_int_t)(slot->depth - 1)) {
+    hzstd_panic("An allocation window was closed while it was not the innermost open one");
+  }
+  slot->depth -= 1;
+  hz_alloc_windows_moved(slot, -1);
+  hzstd_alloc_window_t *w = &slot->windows[slot->depth];
+  return (hzstd_alloc_stats_t) { .count = w->count, .bytes = w->bytes };
+}
+
+size_t hzstd_alloc_window_depth(void)
+{
+  return hz_alloc_windows_slot()->depth;
+}
+
+void hzstd_alloc_windows_restore(size_t depth)
+{
+  hzstd_alloc_windows_t *slot = hz_alloc_windows_slot();
+  if (depth > slot->depth) {
+    hzstd_panic("A panic recovery restored allocation windows that are not open");
+  }
+  int64_t closed = (int64_t)(slot->depth - depth);
+  slot->depth = depth;
+  hz_alloc_windows_moved(slot, -closed);
+}
+
+void hzstd_alloc_windows_release(hzstd_alloc_windows_t *windows)
+{
+  if (windows->depth != 0) {
+    hzstd_panic("A task ended with an allocation window still open");
+  }
+  free(windows->windows);
+  *windows = (hzstd_alloc_windows_t) { 0 };
+}
+
+static bool hz_alloc_window_past(const hzstd_alloc_window_t *w)
+{
+  return (w->max_count >= 0 && w->count > w->max_count) || (w->max_bytes >= 0 && w->bytes > w->max_bytes);
+}
+
+// "12 allocations", "4096 bytes" or both, for the limit panic.
+static void hz_alloc_window_format_limit(char *out, size_t cap, hzstd_int_t max_count, hzstd_int_t max_bytes)
+{
+  if (max_count >= 0 && max_bytes >= 0) {
+    snprintf(out, cap, "%lld allocations and %lld bytes", (long long)max_count, (long long)max_bytes);
+  }
+  else if (max_count >= 0) {
+    snprintf(out, cap, "%lld allocations", (long long)max_count);
+  }
+  else {
+    snprintf(out, cap, "%lld bytes", (long long)max_bytes);
+  }
+}
+
+static void hz_alloc_windows_count_slow(size_t size)
+{
+  hzstd_alloc_windows_t *slot = hz_alloc_windows_slot();
+  hzstd_alloc_window_t *over = NULL;
+  for (size_t i = slot->depth; i-- > 0;) {
+    hzstd_alloc_window_t *w = &slot->windows[i];
+    w->count += 1;
+    w->bytes += (hzstd_int_t)size;
+    if (over == NULL && hz_alloc_window_past(w)) {
+      over = w;
+    }
+  }
+  if (over == NULL) {
+    return;
+  }
+  // The innermost window past its limit is reported. A limit that is past is
+  // spent: the panic's own report, and code that recovers from it inside the
+  // window, must not trip it again.
+  char limit[96];
+  hz_alloc_window_format_limit(limit, sizeof(limit), over->max_count, over->max_bytes);
+  hzstd_int_t count = over->count;
+  hzstd_int_t bytes = over->bytes;
+  hzstd_source_location_t where = over->where;
+  for (size_t i = 0; i < slot->depth; i++) {
+    if (hz_alloc_window_past(&slot->windows[i])) {
+      slot->windows[i].max_count = -1;
+      slot->windows[i].max_bytes = -1;
+    }
+  }
+  if (where._filename.length > 0) {
+    hzstd_panic_fmt("Allocation limit exceeded: this allocation of %zu bytes makes %lld allocations and %lld bytes, "
+                    "over the limit of %s set at %.*s:%lld:%lld",
+                    size,
+                    (long long)count,
+                    (long long)bytes,
+                    limit,
+                    (int)where._filename.length,
+                    where._filename.data,
+                    (long long)where._line,
+                    (long long)where._column);
+  }
+  hzstd_panic_fmt("Allocation limit exceeded: this allocation of %zu bytes makes %lld allocations and %lld bytes, "
+                  "over the limit of %s",
+                  size,
+                  (long long)count,
+                  (long long)bytes,
+                  limit);
+}
+
+static inline void hz_alloc_windows_count(size_t size)
+{
+  if (atomic_load_explicit(&hz_alloc_task_windows_open, memory_order_relaxed) == 0 && hz_alloc_thread_windows.depth == 0) {
+    return;
+  }
+  hz_alloc_windows_count_slow(size);
+}
+
+// ── The collector's allocation functions ────────────────────────────────────
+//
+// The only calls to them in the repository's C: every GC allocation counts in
+// the open windows here. The profiler's hook is called by the public entry
+// points below, which know the allocation's kind.
+
+static void *hz_gc_malloc(size_t size)
+{
+  hz_alloc_windows_count(size);
+  void *ptr = GC_malloc(size);
+  if (!ptr) {
+    hzstd_panic_fmt("System Out Of Memory while allocating %zu bytes", size);
+  }
+  return ptr;
+}
+
+static void *hz_gc_malloc_atomic(size_t size)
+{
+  hz_alloc_windows_count(size);
+  void *ptr = GC_malloc_atomic(size);
+  if (!ptr) {
+    hzstd_panic_fmt("System Out Of Memory while allocating %zu bytes", size);
+  }
+  return ptr;
+}
+
+static void *hz_gc_realloc(void *buffer, size_t size)
+{
+  hz_alloc_windows_count(size);
+  void *ptr = GC_realloc(buffer, size);
+  if (!ptr) {
+    hzstd_panic_fmt("System Out Of Memory while allocating %zu bytes", size);
+  }
+  return ptr;
+}
+
+void *hzstd_uncollectable_allocate(size_t size)
+{
+  hz_alloc_windows_count(size);
+  void *ptr = GC_malloc_uncollectable(size);
+  if (!ptr) {
+    hzstd_panic_fmt("System Out Of Memory while allocating %zu bytes", size);
+  }
+  return ptr;
+}
+
+void hzstd_uncollectable_free(void *block)
+{
+  GC_free(block);
+}
+
 // skip_n_frames follows this codebase's standard "_n" convention (see the
 // big comment on this declaration in hzstd_memory.h, and
 // sys.panic/sys.unreachable in system.hz for the Haze-level precedent) --
@@ -178,11 +389,7 @@ void *hzstd_heap_allocate_n(size_t size, const char *dataType, int skip_n_frames
     fn(hz_profiler_instrument_allocation_type_heap, size, dataType, 1 + skip_n_frames, data);
   }
 
-  void *ptr = GC_malloc(size);
-  if (!ptr) {
-    hzstd_panic_fmt("System Out Of Memory while allocating %zu bytes", size);
-  }
-  return ptr;
+  return hz_gc_malloc(size);
 }
 
 void *hzstd_heap_allocate(size_t size, const char *dataType)
@@ -198,11 +405,7 @@ void *hzstd_heap_allocate_unscanned_n(size_t size, const char *dataType, int ski
     fn(hz_profiler_instrument_allocation_type_heap_unscanned, size, dataType, 1 + skip_n_frames, data);
   }
 
-  void *ptr = GC_malloc_atomic(size);
-  if (!ptr) {
-    hzstd_panic_fmt("System Out Of Memory while allocating %zu bytes", size);
-  }
-  return ptr;
+  return hz_gc_malloc_atomic(size);
 }
 
 void *hzstd_heap_allocate_unscanned(size_t size, const char *dataType)
@@ -218,11 +421,7 @@ void *hzstd_heap_realloc_n(void *buffer, size_t size, const char *dataType, int 
     fn(hz_profiler_instrument_allocation_type_heap_realloc, size, dataType, 1 + skip_n_frames, data);
   }
 
-  void *ptr = GC_realloc(buffer, size);
-  if (!ptr) {
-    hzstd_panic_fmt("System Out Of Memory while allocating %zu bytes", size);
-  }
-  return ptr;
+  return hz_gc_realloc(buffer, size);
 }
 
 void *hzstd_heap_realloc(void *buffer, size_t size, const char *dataType)
@@ -352,11 +551,9 @@ hzstd_arena_t *hzstd_arena_create_n(hzstd_arena_options_t options, int skip_n_fr
   if (hz_profiler_instrumentation_try_get(&fn, &data)) {
     fn(hz_profiler_instrument_allocation_type_arena_create, sizeof(hzstd_arena_t), label, 1 + skip_n_frames, data);
   }
-  // GC_malloc directly: the event above is this allocation, reported once.
-  hzstd_arena_t *arena = (hzstd_arena_t *)GC_malloc(sizeof(hzstd_arena_t));
-  if (!arena) {
-    hzstd_panic_fmt("System Out Of Memory while allocating %zu bytes", sizeof(hzstd_arena_t));
-  }
+  // Not through hzstd_heap_allocate: the event above is this allocation,
+  // reported to the profiler once.
+  hzstd_arena_t *arena = (hzstd_arena_t *)hz_gc_malloc(sizeof(hzstd_arena_t));
   arena->label = label;
   hzstd_arena_chain_init(&arena->scanned, options.scanned);
   hzstd_arena_chain_init(&arena->unscanned, options.unscanned);
@@ -401,23 +598,24 @@ static hzstd_arena_chunk_t *hzstd_arena_new_chunk(hzstd_arena_t *arena,
        1 + skip_n_frames,
        data);
   }
-  // GC_malloc / GC_malloc_atomic directly: the event above is this chunk,
-  // reported once (header blocks are bookkeeping and not reported).
+  // Not through hzstd_heap_allocate: the event above is this chunk, reported
+  // to the profiler once (header blocks are bookkeeping and not reported
+  // there; allocation windows count every block).
   unsigned char *block;
   if (unscanned) {
-    block = GC_malloc_atomic(capacity);
-    if (block && !header) {
-      header = GC_malloc(sizeof(hzstd_arena_chunk_t));
+    block = hz_gc_malloc_atomic(capacity);
+    if (!header) {
+      header = hz_gc_malloc(sizeof(hzstd_arena_chunk_t));
     }
   }
   else if (header) {
-    block = GC_malloc(capacity);
+    block = hz_gc_malloc(capacity);
   }
   else {
     // Header and data in one scanned block. The header size is a multiple of
     // the alignment, so the data stays aligned.
     _Static_assert(sizeof(hzstd_arena_chunk_t) % alignof(max_align_t) == 0, "arena chunk header breaks alignment");
-    unsigned char *both = GC_malloc(sizeof(hzstd_arena_chunk_t) + capacity);
+    unsigned char *both = hz_gc_malloc(sizeof(hzstd_arena_chunk_t) + capacity);
     header = (hzstd_arena_chunk_t *)both;
     block = both ? both + sizeof(hzstd_arena_chunk_t) : NULL;
   }

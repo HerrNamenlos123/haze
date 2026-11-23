@@ -50,6 +50,35 @@ void *hzstd_heap_realloc_n(void *buffer, size_t size, const char *dataType, int 
 void hzstd_memzero(void *target, size_t size);
 void hzstd_init_gc();
 
+// Uncollectable GC memory: scanned, never collected, freed only explicitly.
+// For what must keep GC memory alive while only memory the collector cannot
+// see refers to it: libuv handles (docs/async-runtime.md section 8.2, rule
+// 1) and the per-thread scheduler. Counted like every GC allocation.
+void *hzstd_uncollectable_allocate(size_t size);
+void hzstd_uncollectable_free(void *block);
+
+// ── Allocation windows ──────────────────────────────────────────────────────
+//
+// Every GC allocation goes through one place in hzstd_memory.c (nothing else
+// calls the collector's allocation functions), which counts it in the open
+// windows of the code running now: the current task's, or, on a thread
+// running no task, that thread's own. Arena suballocations are no GC
+// allocations and never count; an arena's chunks do. With no window open
+// anywhere this costs one load and a branch per allocation.
+//
+// A window stays open until it is closed, in the same task, innermost first;
+// open returns its index. max_count / max_bytes: -1 for none; the first
+// allocation that would take the window past one panics before it happens,
+// so its stack trace is the offending allocation's. A panic that unwinds past
+// an open window closes it (the recovery frame restores the depth it saw).
+hzstd_int_t hzstd_alloc_window_open(hzstd_int_t max_count, hzstd_int_t max_bytes, hzstd_source_location_t where);
+hzstd_alloc_stats_t hzstd_alloc_window_close(hzstd_int_t window);
+// How many windows the code running now has open, and back to that many.
+size_t hzstd_alloc_window_depth(void);
+void hzstd_alloc_windows_restore(size_t depth);
+// A task's windows, once it ended (none may be open then).
+void hzstd_alloc_windows_release(hzstd_alloc_windows_t *windows);
+
 // Forces an immediate full Boehm collection (GC_gcollect) instead of waiting
 // for GC's own heap-growth-driven heuristics to decide one is due. Normally
 // callers should never need this -- letting GC run on its own schedule is

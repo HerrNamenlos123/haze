@@ -438,6 +438,7 @@ void hzstd_task_yield(hzstd_context_t *ctx)
 
 static void hzstd_task_end(hzstd_sched_t *s, hzstd_task_t *t)
 {
+  hzstd_alloc_windows_release(&t->alloc_windows);
   hzstd_registry_change(HZSTD_REGISTRY_REMOVE_TASK, s, t, (fiber_stack) { 0 });
   t->state = HZSTD_TASK_DONE;
   if (!t->background) {
@@ -630,8 +631,9 @@ static void hzstd_sched_loop(hzstd_sched_t *s)
 
 // ── Sleeping (section 5.1: start the request, suspend, the callback readies) ─
 //
-// A timer is a libuv handle: it lives in uncollectable memory from its init
-// until its close callback (section 8.2, rule 1), so its `data`, the task,
+// A timer is a libuv handle: it lives in uncollectable memory
+// (hzstd_uncollectable_allocate) from its init until its close callback
+// (section 8.2, rule 1), so its `data`, the task,
 // stays alive while libuv holds it. The task resumes only once the timer is
 // closed, so nothing of it is left in libuv when it runs again. Killing a
 // sleeping task closes its timer, whose close then readies nobody.
@@ -639,7 +641,7 @@ static void hzstd_sched_loop(hzstd_sched_t *s)
 static void hzstd_sleep_closed(uv_handle_t *handle)
 {
   hzstd_task_t *t = handle->data;
-  GC_FREE(handle);
+  hzstd_uncollectable_free(handle);
   if (t != NULL) {
     t->sleep_timer = NULL;
     t->state = HZSTD_TASK_READY;
@@ -656,10 +658,7 @@ void hzstd_task_sleep_ms(hzstd_context_t *ctx, uint64_t ms)
 {
   hzstd_task_t *t = ctx->task;
   hzstd_sched_t *s = ctx->thread->sched;
-  uv_timer_t *timer = GC_MALLOC_UNCOLLECTABLE(sizeof(uv_timer_t));
-  if (timer == NULL) {
-    hzstd_panic("Out of memory starting a timer");
-  }
+  uv_timer_t *timer = hzstd_uncollectable_allocate(sizeof(uv_timer_t));
   int rc = uv_timer_init(&s->loop, timer);
   if (rc != 0) {
     hzstd_panic_fmt("A timer could not be made: %s", uv_strerror(rc));
@@ -1025,9 +1024,11 @@ static void hzstd_stall_report(hzstd_sched_t *s, double ran, bool first)
   fflush(stderr);
 }
 
-// Runs no Haze code and allocates no GC memory.
+// Runs no Haze code and allocates no GC memory: a limit of none for its whole
+// life, so a GC allocation on this thread panics where it is made.
 static void hzstd_watchdog_main(void)
 {
+  hzstd_alloc_window_open(0, -1, (hzstd_source_location_t) { 0 });
   hzstd_watchdog_thread_begins();
   for (;;) {
     double seconds_per_tick = hzstd_watchdog_seconds_per_tick();
@@ -1240,10 +1241,7 @@ static void hzstd_sched_init_thread(hzstd_thread_t *thread)
 {
   // Uncollectable: never freed while the thread lives, and scanned, so the
   // tasks it holds stay alive.
-  hzstd_sched_t *s = GC_MALLOC_UNCOLLECTABLE(sizeof(hzstd_sched_t));
-  if (s == NULL) {
-    hzstd_panic("Out of memory creating a thread's scheduler");
-  }
+  hzstd_sched_t *s = hzstd_uncollectable_allocate(sizeof(hzstd_sched_t));
   memset(s, 0, sizeof(*s));
   s->thread = thread;
   int rc = uv_loop_init(&s->loop);

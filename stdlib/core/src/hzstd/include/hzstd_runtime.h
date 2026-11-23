@@ -254,6 +254,8 @@ _Noreturn void hzstd_panic_bad_stackref(hzstd_thread_t *thread, hzstd_stackref_t
       body;                                                                                                            \
     }                                                                                                                  \
     else if (__hz_jmp_##id == 1) {                                                                                     \
+      /* First: the allocation windows the longjmp left open are closed before anything can allocate. */             \
+      hzstd_alloc_windows_restore(__hz_frame_##id->saved_alloc_window_depth);                                          \
       /* the panic machinery already set the task's panic_info */                                                      \
       hzstd_panic_recovered(__hz_ctx);                                                                                 \
       /* The longjmp skipped every stackref scope exit between the panic site and here. */                             \
