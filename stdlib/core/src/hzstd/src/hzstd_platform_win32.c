@@ -334,8 +334,22 @@ static hzstd_dynamic_array_t *hzstd_walk_and_name(const CONTEXT *context,
   memcpy(&sf2, &sf, sizeof(sf));
 
   size_t nextId = 1;
-  hzstd_dynamic_array_t* frameArray
-      = hzstd_dynamic_array_create(allocator, sizeof(hzstd_stackframe_t), numberOfFrames, "hzstd_stackframe_t");
+  // Control struct and buffer both from `allocator`: a dynamic array grows its
+  // buffer in GC memory whatever allocator made it, and the callers here must
+  // not touch the collector (the stall watchdog runs under a limit of none;
+  // the panic worker may report a thread that holds the collector's lock).
+  // Sized to the frames counted above, so the pushes below never grow it.
+  // Not GC memory, so marked as storage the array does not own: anything
+  // that grows it later copies out instead of calling GC_realloc on it.
+  hzstd_dynamic_array_t *frameArray = hzstd_allocate(allocator, sizeof(hzstd_dynamic_array_t), "hzstd_dynamic_array_t");
+  *frameArray = (hzstd_dynamic_array_t) {
+    .buffer = numberOfFrames > 0 ? hzstd_allocate(allocator, numberOfFrames * sizeof(hzstd_stackframe_t), NULL) : NULL,
+    .elem_size = sizeof(hzstd_stackframe_t),
+    .size = 0,
+    .capacity = numberOfFrames,
+    .elementTypeName = "hzstd_stackframe_t",
+    .borrowed_buffer = true,
+  };
 
   while (hzstd_dynamic_array_size(frameArray) < numberOfFrames &&
          StackWalk64(machineType, hProcess, hThread, &sf2, &ctx2, read, SymFunctionTableAccess64, SymGetModuleBase64, NULL)) {

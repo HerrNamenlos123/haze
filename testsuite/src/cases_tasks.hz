@@ -541,11 +541,18 @@ fn spin(seconds: real): int {
 fn main(): int {
     let args = sys.args();
     if args.length > 1 && args[1] == "child" {
+        // The same window twice, with and without a stall: what the profiler
+        // itself shows of its own allocations is the same in both (it is
+        // not the same on every platform).
+        let quiet = Profiler({ samplingRate: 0, memoryInstrumentation: true, memoryInstrumentationStacktraces: false });
+        let m = spin(0.001);
+        let calm = quiet.stop();
+        sys.yield();
         let p = Profiler({ samplingRate: 0, memoryInstrumentation: true, memoryInstrumentationStacktraces: false });
         let n = spin(0.06);
         let r = p.stop();
-        // The profiler reports on stdout: the count goes out as the status.
-        return r.memoryInstrumentationFrames.length - 1;
+        // The profiler reports on stdout: the difference goes out as the status.
+        return r.memoryInstrumentationFrames.length - calm.memoryInstrumentationFrames.length;
     }
     let r = process.runCaptured(args[0], ["child"]);
     fmt.println(f"{r.exitCode} {r.stderrResult.contains("It is currently at:")}");
