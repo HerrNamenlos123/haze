@@ -53,6 +53,7 @@ import {
 import { PluginHost } from "../Plugins/PluginInterface";
 import type { ASTRoot } from "../shared/AST";
 import { outputPathMapFlags } from "../shared/OutputPaths";
+import { assertSameHzstd, hzstdFingerprint } from "../shared/HzstdFingerprint";
 import {
   BUILD_SETTINGS_FILENAME,
   type BuildSettings,
@@ -264,6 +265,11 @@ export async function parseConfig(
 
 export async function getStdlibDirectory() {
   return requireDirectory(resolveStdlibDirectory(), "standard library");
+}
+
+/** stdlib/core/src: hzstd's home and the include directory of every module. */
+async function hzstdSourceDirectory() {
+  return join(await getStdlibDirectory(), "core", "src");
 }
 
 export async function getToolsDirectory() {
@@ -2131,6 +2137,7 @@ export class ModuleCompiler {
       const moduleMetadata: ModuleMetadata = {
         compilerVersion: version,
         fileformatVersion: 1,
+        hzstdFingerprint: await this.currentHzstdFingerprint(),
         name: this.config.name,
         id: this.config.id,
         version: this.config.version,
@@ -2540,10 +2547,14 @@ export class ModuleCompiler {
     // The build settings are part of the key, though each set of settings
     // has its own build directory and cache file anyway (see
     // buildVariantSuffix).
+    // The hzstd fingerprint is part of the key: a module built against
+    // another hzstd is rebuilt, and so is every module, once hzstd changes.
     const compilerKey =
       (compilerFingerprint
         ? `${version}:${compilerFingerprint}`
-        : `${version}`) + buildSettingsCacheKey(this.settings);
+        : `${version}`) +
+      `:hzstd=${await this.currentHzstdFingerprint()}` +
+      buildSettingsCacheKey(this.settings);
 
     await this.writeBuildSettingsSource();
 
@@ -2865,6 +2876,13 @@ export class ModuleCompiler {
 
   private async loadDependencyBinaries() {
     const metadata = await this.loadDependenciesMetadata();
+    // This module's C is compiled and linked against them now: each must have
+    // been built against the same hzstd (reading an interface, as the
+    // language server does, needs no such check).
+    const fingerprint = await this.currentHzstdFingerprint();
+    for (const meta of metadata) {
+      assertSameHzstd(meta, fingerprint);
+    }
 
     const archives: string[] = [];
     const linkerFlags = new PlatformStrings();
@@ -2954,6 +2972,11 @@ export class ModuleCompiler {
     return parseModuleMetadata(await readFile(file, "utf-8"));
   }
 
+  /** The fingerprint of the hzstd this build compiles against. */
+  private async currentHzstdFingerprint() {
+    return hzstdFingerprint(await hzstdSourceDirectory());
+  }
+
   async collectImports() {
     const collected = new Set<string>();
 
@@ -2996,7 +3019,7 @@ export class ModuleCompiler {
     //   join(await getStdlibDirectory(), "internal"),
     //   ECollectionMode.ImportUnderRootDirectly,
     // );
-    this.config.hzstdLocation = join(await getStdlibDirectory(), "core", "src");
+    this.config.hzstdLocation = await hzstdSourceDirectory();
     this.config.includeDirs.addAll(this.config.hzstdLocation);
   }
 }

@@ -283,6 +283,12 @@ export type ExportData = {
 export type ModuleMetadata = {
   compilerVersion: string;
   fileformatVersion: number;
+  /**
+   * The fingerprint of the hzstd the module was compiled against
+   * (HzstdFingerprint.ts); null in metadata written before compilers
+   * recorded it.
+   */
+  hzstdFingerprint: string | null;
   name: string;
   id: string;
   version: string;
@@ -382,6 +388,10 @@ export function parseModuleMetadata(metadata: string): ModuleMetadata {
   return {
     compilerVersion: getString(obj["compilerVersion"]),
     fileformatVersion: getNumber(obj["fileformatVersion"]),
+    hzstdFingerprint:
+      obj["hzstdFingerprint"] === undefined
+        ? null
+        : getString(obj["hzstdFingerprint"]),
     name: getString(obj["name"]),
     id: getString(obj["id"]),
     version: getString(obj["version"]),

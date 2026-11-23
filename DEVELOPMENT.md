@@ -420,6 +420,13 @@ only on its inputs (temp-id counters are per module, see `src/shared/store.ts`),
 `import.hz` stops the rebuild there. An executable whose own inputs are unchanged is only relinked
 when a library it links changed. `scripts/incremental-build.test.ts` pins all of this.
 
+Every module is also rebuilt when hzstd changes. Its fingerprint (`src/shared/HzstdFingerprint.ts`:
+every file `hzstd_main.c` and `hzstd.h` reach through quoted includes inside `stdlib/core/src`) is
+part of each module's build key and is written into its `metadata.json`. A dependency whose
+`metadata.json` names another fingerprint is an error when a module's C is compiled and linked
+against it: the dependency was not rebuilt from source and cannot be used. Reading only its
+interface (the language server) is not checked.
+
 ## What the test gate covers
 
 `./scripts/run-tests.sh` (`bun run test`) is the gate. It builds `dist/haze`, then runs, in order:

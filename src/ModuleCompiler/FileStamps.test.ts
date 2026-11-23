@@ -21,9 +21,15 @@ const dir = mkdtempSync(join(tmpdir(), "haze-stamps-"));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
 let counter = 0;
+/**
+ * A file with an mtime of whole seconds. NTFS keeps 100 ns ticks, and a
+ * fractional millisecond does not survive utimes, so a test that sets an
+ * mtime it read (or one derived from it) would otherwise move it.
+ */
 function fresh(content: string) {
   const file = join(dir, `f${counter++}.txt`);
   writeFileSync(file, content);
+  setMtime(file, 1_700_000_000_000 + counter * 1000);
   return file;
 }
 
@@ -93,13 +99,17 @@ describe("checkFile on what is not a regular file", () => {
     expect(checkFile(sub, first.stamp as FileStamp).changed).toBe(true);
   });
 
-  test("a dangling symlink is a stable thing, not a missing file", () => {
-    const link = join(dir, `l${counter++}`);
-    symlinkSync(join(dir, "nothing-here"), link);
-    const first = checkFile(link, undefined);
-    expect(first.stamp).not.toBeNull();
-    expect(checkFile(link, first.stamp as FileStamp).changed).toBe(false);
-  });
+  // Creating a symlink on Windows needs a privilege a normal user lacks.
+  test.skipIf(process.platform === "win32")(
+    "a dangling symlink is a stable thing, not a missing file",
+    () => {
+      const link = join(dir, `l${counter++}`);
+      symlinkSync(join(dir, "nothing-here"), link);
+      const first = checkFile(link, undefined);
+      expect(first.stamp).not.toBeNull();
+      expect(checkFile(link, first.stamp as FileStamp).changed).toBe(false);
+    }
+  );
 });
 
 describe("checkFiles", () => {
