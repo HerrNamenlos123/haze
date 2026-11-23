@@ -16,6 +16,7 @@
 #ifdef HAZE_PLATFORM_LINUX
 #include <elf.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <link.h>
 #include <linux/perf_event.h>
 #include <poll.h>
@@ -23,6 +24,7 @@
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/resource.h>
+#include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/types.h>
 #include <time.h>
@@ -81,10 +83,12 @@ extern int _Ux86_64_set_caching_policy(unw_addr_space_t, unw_caching_policy_t);
 
 // Source-location (file/line) resolution for arbitrary instruction pointers.
 // libunwind only knows unwind/CFI tables, not DWARF line tables, so this reads
-// .debug_line directly. The Haze codegen emits #line directives pointing back
-// at the original .hz files, and the build always passes -g, so this resolves
-// all the way back to original Haze source locations, not just the generated C.
-#include "libdwarf.h"
+// .debug_line directly, with hzstd's own reader (stdlib/core/src/dwarfline,
+// tested against llvm-dwarfdump). The Haze codegen emits #line directives
+// pointing back at the original .hz files, and the build always passes -g, so
+// this resolves all the way back to original Haze source locations.
+#define DWARFLINE_IMPLEMENTATION
+#include "../../dwarfline/dwarfline.h"
 #elif defined(HAZE_PLATFORM_WIN32)
 // WARNING: windows.h MUST ALWAYS BE THE FIRST IMPORT!
 #define WIN32_LEAN_AND_MEAN
@@ -97,7 +101,7 @@ extern int _Ux86_64_set_caching_policy(unw_addr_space_t, unw_caching_policy_t);
 // the same primitive the panic handler's StackWalk64 path in
 // hzstd_platform_win32.c uses for crash unwinding. Source-location and symbol
 // resolution likewise reuse dbghelp (SymFromAddr / SymGetLineFromAddr64)
-// instead of the custom libunwind+libdwarf path used on Linux.
+// instead of the custom libunwind+dwarfline path used on Linux.
 #endif
 
 // ── Cross-platform mutex ────────────────────────────────────────────────────
@@ -2246,8 +2250,8 @@ hzstd_profiling_start(int sampling_rate_hz, bool memoryInstrumentation, bool mem
 // this resolves all the way back to original Haze source locations.
 
 typedef struct {
-  Dwarf_Addr address; // link-time address (i.e. relative to this module's load bias)
-  Dwarf_Addr sequence_end; // end of the contiguous code range this row belongs
+  uint64_t address; // link-time address (i.e. relative to this module's load bias)
+  uint64_t sequence_end; // end of the contiguous code range this row belongs
                            // to (exclusive)
   hzstd_str_t filename;
   hzstd_int_t line;
@@ -2299,126 +2303,109 @@ static int hzstd_profiling_dwarf_line_compare(const void *a, const void *b)
   return 0;
 }
 
+// The table being built: the callback of dwarfline_run adds one unit's rows.
+typedef struct {
+  hzstd_allocator_t allocator;
+  hzstd_profiling_dwarf_line_t *lines;
+  size_t count;
+  size_t capacity;
+  // DWARF line tables are a series of contiguous code ranges ("sequences"),
+  // each terminated by an end_sequence row. Addresses are only meaningfully
+  // comparable within the same sequence: a function with no debug info at all
+  // (crt startup code, a vendored dependency without -g, ...) leaves a gap that
+  // a naive "nearest address below" search would otherwise bridge, attributing
+  // it to whatever unrelated function happens to sort right before it. Where
+  // the current sequence's rows begin, backfilled with its end address once
+  // the end_sequence row is seen.
+  size_t sequence_start;
+  // The current unit's file paths by file index, resolved once per unit (an
+  // empty one could not be resolved: its rows are left out).
+  hzstd_str_t *paths;
+  size_t path_count;
+} hzstd_profiling_line_builder_t;
+
+static int hzstd_profiling_dwarf_add_row(void *user, const dwarfline_row *row)
+{
+  hzstd_profiling_line_builder_t *b = user;
+  if (row->flags & DWARFLINE_END_SEQUENCE) {
+    for (size_t k = b->sequence_start; k < b->count; k++) {
+      b->lines[k].sequence_end = row->address;
+    }
+    b->sequence_start = b->count;
+    return 0;
+  }
+  if (row->file >= b->path_count || b->paths[row->file].length == 0) {
+    return 0;
+  }
+  if (b->count >= b->capacity) {
+    b->capacity *= 2;
+    hzstd_profiling_dwarf_line_t *grown
+        = hzstd_allocate(b->allocator, b->capacity * sizeof(hzstd_profiling_dwarf_line_t), NULL);
+    memcpy(grown, b->lines, b->count * sizeof(hzstd_profiling_dwarf_line_t));
+    b->lines = grown;
+  }
+  b->lines[b->count].address = row->address;
+  b->lines[b->count].sequence_end = 0; // backfilled once this sequence's end_sequence row is seen
+  b->lines[b->count].filename = b->paths[row->file];
+  b->lines[b->count].line = (hzstd_int_t)row->line;
+  b->count++;
+  return 0;
+}
+
 static void hzstd_profiling_dwarf_build_line_table(void)
 {
   g_dwarf_init_done = true; // only ever try once, even if this fails
 
   dl_iterate_phdr(hzstd_profiling_find_main_module, NULL);
 
-  char exePath[4096];
-  ssize_t pathLen = readlink("/proc/self/exe", exePath, sizeof(exePath) - 1);
-  if (pathLen <= 0) {
+  int fd = open("/proc/self/exe", O_RDONLY | O_CLOEXEC);
+  if (fd < 0) {
     return;
   }
-  exePath[pathLen] = '\0';
-
-  Dwarf_Debug dbg = NULL;
-  Dwarf_Error error = NULL;
-  if (dwarf_init_path(exePath, NULL, 0, DW_GROUPNUMBER_ANY, NULL, NULL, &dbg, &error) != DW_DLV_OK) {
+  struct stat st;
+  if (fstat(fd, &st) != 0 || st.st_size <= 0) {
+    close(fd);
+    return;
+  }
+  size_t imageSize = (size_t)st.st_size;
+  void *image = mmap(NULL, imageSize, PROT_READ, MAP_PRIVATE, fd, 0);
+  close(fd);
+  if (image == MAP_FAILED) {
     return;
   }
 
-  hzstd_allocator_t allocator = hzstd_make_heap_allocator();
-  size_t capacity = 1024;
-  size_t count = 0;
-  hzstd_profiling_dwarf_line_t *lines
-      = hzstd_allocate(allocator, capacity * sizeof(hzstd_profiling_dwarf_line_t), NULL);
+  hzstd_profiling_line_builder_t b = { 0 };
+  b.allocator = hzstd_make_heap_allocator();
+  b.capacity = 1024;
+  b.lines = hzstd_allocate(b.allocator, b.capacity * sizeof(hzstd_profiling_dwarf_line_t), NULL);
 
-  Dwarf_Unsigned cuHeaderLength, abbrevOffset, typeOffset, nextCuHeaderOffset;
-  Dwarf_Half versionStamp, addressSize, lengthSize, extensionSize, headerCuType;
-  Dwarf_Sig8 typeSignature;
-
-  while (dwarf_next_cu_header_d(dbg,
-                                true,
-                                &cuHeaderLength,
-                                &versionStamp,
-                                &abbrevOffset,
-                                &addressSize,
-                                &lengthSize,
-                                &extensionSize,
-                                &typeSignature,
-                                &typeOffset,
-                                &nextCuHeaderOffset,
-                                &headerCuType,
-                                &error)
-         == DW_DLV_OK) {
-    Dwarf_Die cuDie = NULL;
-    if (dwarf_siblingof_b(dbg, NULL, true, &cuDie, &error) != DW_DLV_OK) {
-      continue;
-    }
-
-    Dwarf_Unsigned lineVersion;
-    Dwarf_Small lineTableCount;
-    Dwarf_Line_Context lineContext = NULL;
-    if (dwarf_srclines_b(cuDie, &lineVersion, &lineTableCount, &lineContext, &error) == DW_DLV_OK) {
-      Dwarf_Line *lineBuf = NULL;
-      Dwarf_Signed lineCount = 0;
-      if (dwarf_srclines_from_linecontext(lineContext, &lineBuf, &lineCount, &error) == DW_DLV_OK) {
-        // DWARF line tables are a series of contiguous code ranges
-        // ("sequences"), each terminated by a synthetic end_sequence row.
-        // Addresses are only meaningfully comparable within the same sequence —
-        // a function with no debug info at all (crt startup code, a vendored
-        // dependency without -g, ...) leaves a gap that a naive "nearest
-        // address below" search would otherwise bridge, attributing it to
-        // whatever unrelated function happens to sort right before it.
-        // `sequenceStart` tracks where the current sequence's entries begin in
-        // `lines`, backfilled with the real end address once the end_sequence
-        // row for that range is seen.
-        size_t sequenceStart = count;
-        for (Dwarf_Signed i = 0; i < lineCount; i++) {
-          Dwarf_Addr addr = 0;
-          if (dwarf_lineaddr(lineBuf[i], &addr, &error) != DW_DLV_OK) {
-            continue;
-          }
-
-          Dwarf_Bool isEndSequence = false;
-          if (dwarf_lineendsequence(lineBuf[i], &isEndSequence, &error) != DW_DLV_OK) {
-            isEndSequence = false;
-          }
-          if (isEndSequence) {
-            for (size_t k = sequenceStart; k < count; k++) {
-              lines[k].sequence_end = addr;
-            }
-            sequenceStart = count;
-            continue;
-          }
-
-          Dwarf_Unsigned lineno = 0;
-          char *filename = NULL;
-          if (dwarf_lineno(lineBuf[i], &lineno, &error) != DW_DLV_OK) {
-            continue;
-          }
-          if (dwarf_linesrc(lineBuf[i], &filename, &error) != DW_DLV_OK) {
-            continue;
-          }
-
-          if (count >= capacity) {
-            capacity *= 2;
-            hzstd_profiling_dwarf_line_t *grown
-                = hzstd_allocate(allocator, capacity * sizeof(hzstd_profiling_dwarf_line_t), NULL);
-            memcpy(grown, lines, count * sizeof(hzstd_profiling_dwarf_line_t));
-            lines = grown;
-          }
-
-          lines[count].address = addr;
-          lines[count].sequence_end = 0; // backfilled once this sequence's end_sequence row is seen
-          lines[count].filename = hzstd_str_from_cstr_dup(allocator, filename);
-          lines[count].line = (hzstd_int_t)lineno;
-          count++;
-        }
+  dwarfline_sections sections;
+  if (dwarfline_elf_sections(image, imageSize, &sections) == DWARFLINE_OK) {
+    uint64_t offset = 0;
+    dwarfline_unit unit;
+    // A unit that cannot be read ends the walk (where the next one starts is
+    // unknown then); a program that fails part way keeps the rows it made.
+    while (dwarfline_unit_at(&sections, offset, &unit) == DWARFLINE_OK) {
+      b.path_count = (size_t)(unit.first_file_index + unit.file_count);
+      b.paths = hzstd_allocate(b.allocator, (b.path_count ? b.path_count : 1) * sizeof(hzstd_str_t), NULL);
+      for (size_t i = (size_t)unit.first_file_index; i < b.path_count; i++) {
+        char path[4096];
+        size_t length;
+        b.paths[i] = dwarfline_file_path(&sections, &unit, i, path, sizeof(path), &length) == DWARFLINE_OK
+                         ? hzstd_str_from_cstr_dup(b.allocator, path)
+                         : HZSTD_STRING(NULL, 0);
       }
-      dwarf_srclines_dealloc_b(lineContext);
+      b.sequence_start = b.count;
+      dwarfline_run(&sections, &unit, hzstd_profiling_dwarf_add_row, &b);
+      offset = unit.next_offset;
     }
-
-    dwarf_dealloc_die(cuDie);
   }
+  munmap(image, imageSize);
 
-  dwarf_finish(dbg);
+  qsort(b.lines, b.count, sizeof(hzstd_profiling_dwarf_line_t), hzstd_profiling_dwarf_line_compare);
 
-  qsort(lines, count, sizeof(hzstd_profiling_dwarf_line_t), hzstd_profiling_dwarf_line_compare);
-
-  g_dwarf_lines = lines;
-  g_dwarf_line_count = count;
+  g_dwarf_lines = b.lines;
+  g_dwarf_line_count = b.count;
 }
 
 // Binary search for the nearest line at or below `address` (the standard
@@ -2442,7 +2429,7 @@ static hzstd_source_location_t hzstd_profiling_resolve_sourceloc(void *address)
     return absent;
   }
 
-  Dwarf_Addr target = (Dwarf_Addr)((uintptr_t)address - g_dwarf_module_base);
+  uint64_t target = (uint64_t)((uintptr_t)address - g_dwarf_module_base);
 
   size_t lo = 0, hi = g_dwarf_line_count;
   while (lo < hi) {
@@ -2941,7 +2928,7 @@ static hzstd_profiling_frame_t hzstd_profiling_resolve_frame(void *address, bool
 //
 // Unlike Linux, Windows debug info (PDB) is already indexed by dbghelp, so
 // there is no need for a hand-rolled .debug_line reader here: SymFromAddr and
-// SymGetLineFromAddr64 do the equivalent of the libunwind+libdwarf path above.
+// SymGetLineFromAddr64 do the equivalent of the libunwind+dwarfline path above.
 // This mirrors what the panic handler in hzstd_platform_win32.c already does
 // for crash stacktraces.
 

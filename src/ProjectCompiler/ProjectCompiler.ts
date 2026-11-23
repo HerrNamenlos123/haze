@@ -922,7 +922,10 @@ export class ProjectCompiler {
         winNinja: HAZE_CACHE + "/win-ninja",
         systemPackagesInstall: HAZE_CACHE + "/system-packages-install",
         linuxNinja: HAZE_CACHE + "/linux-ninja",
-        libunwind: HAZE_CACHE + "/libunwind",
+        // -v2: built with --disable-zlibdebuginfo. hzstd no longer links zlib
+        // (it went with libdwarf), so an install holding the old build, whose
+        // libunwind calls into zlib, must rebuild it.
+        libunwind: HAZE_CACHE + "/libunwind-v2",
         cmakeToolchain: HAZE_CACHE + "/cmake-toolchain",
         bdwgc: HAZE_CACHE + "/bdgwc",
         regexEngine: HAZE_CACHE + "/regex-engine",
@@ -946,11 +949,7 @@ export class ProjectCompiler {
         console.info("Installing required system packages...");
         const packageManager = await detectPackageManager();
         if (packageManager === "debian") {
-          exec(
-            `sudo apt install autoconf libtool-bin cmake libdwarf-dev liblzma-dev`
-          );
-        } else if (packageManager === "fedora") {
-          exec(`sudo apt install libdwarf-static zlib-static libzstd-static`);
+          exec(`sudo apt install autoconf libtool-bin cmake liblzma-dev`);
         }
         this.markStepDone(MARKERS.systemPackagesInstall);
         console.info("Installing required system packages... Done");
@@ -1116,7 +1115,7 @@ export class ProjectCompiler {
         // perf-sample unwinding -- siglongjmps straight out and never
         // re-enters libunwind.
         execInherit(
-          `cd ${builddir} && CFLAGS="-fPIC" CPPFLAGS="-DDWARF_DEFAULT_LOG_UNW_CACHE_SIZE=15" CXXFLAGS="-fPIC" ./configure --prefix=${outdir} -disable-tests -disable-shared --disable-block-signals`
+          `cd ${builddir} && CFLAGS="-fPIC" CPPFLAGS="-DDWARF_DEFAULT_LOG_UNW_CACHE_SIZE=15" CXXFLAGS="-fPIC" ./configure --prefix=${outdir} -disable-tests -disable-shared --disable-block-signals --disable-zlibdebuginfo`
         );
         execInherit(`cd ${builddir} && make -j`);
         execInherit(`cd ${builddir} && make install`);

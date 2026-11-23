@@ -99,4 +99,16 @@ set +e
 exit_code=$?
 set -e
 
+# hzstd's DWARF line-table reader against llvm-dwarfdump and llvm-symbolizer:
+# its unit tests, its fixtures, and every ELF executable this run has built
+# (the cases above included). After the suite, so they all exist.
+echo "==> Checking the DWARF line-table reader (stdlib/core/src/dwarfline)"
+set +e
+bun "$REPO_ROOT/stdlib/core/src/dwarfline/tests/run.ts"
+dwarfline_exit=$?
+set -e
+if [ "$exit_code" -eq 0 ]; then
+  exit_code=$dwarfline_exit
+fi
+
 exit "$exit_code"

@@ -33,6 +33,7 @@ and against which commit it was verified; re-check a note against the code befor
 - [codeeditor panels and agent](codeeditor-panels-and-agent.md) - file tree, splitters, process-wide agent session
 - [Component crash recovery](component-crash-recovery.md) - runComponentCode isolates panics per component
 - [Fiber library](fiber-stack-switching-library.md) - fiber.h stack switching, targets, tests, Windows lessons
+- [dwarfline reader](dwarfline-reader.md) - own DWARF line-table reader for the Linux profiler; oracle llvm-dwarfdump; replaces libdwarf
 - [fs.exists truthiness](fs-exists-result-truthiness.md) - if fs.exists(p) tests the call, not the bool
 - [Gotchas (verified subset)](haze-compiler-and-stdlib-gotchas.md) - reserved words, math.min/max, H7214/H7215, lambdas, narrowing
 - [haze-notes create/keep/show-all](haze-notes-create-keep-showall.md) - create notes, .hznotekeep, ghosts, trash, not-a-note
