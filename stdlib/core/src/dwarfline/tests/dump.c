@@ -81,7 +81,7 @@ int main(int argc, char **argv)
   int r = dwarfline_elf_sections(image, (size_t)size, &s);
   if (r != DWARFLINE_OK) {
     printf("error %d sections\n", r);
-    return 1;
+    goto fail;
   }
   uint64_t offset = 0;
   for (;;) {
@@ -92,7 +92,7 @@ int main(int argc, char **argv)
     }
     if (r != DWARFLINE_OK) {
       printf("error %d unit 0x%08llx\n", r, (unsigned long long)offset);
-      return 1;
+      goto fail;
     }
     printf("unit 0x%08llx version %u %s", (unsigned long long)u.offset, (unsigned)u.version,
            u.offset_size == 8 ? "DWARF64" : "DWARF32");
@@ -105,7 +105,7 @@ int main(int argc, char **argv)
       r = dwarfline_dir(&s, &u, i, &d);
       if (r != DWARFLINE_OK) {
         printf("error %d dir %llu\n", r, (unsigned long long)i);
-        return 1;
+        goto fail;
       }
       printf("dir %llu ", (unsigned long long)i);
       print_str(d);
@@ -116,7 +116,7 @@ int main(int argc, char **argv)
       r = dwarfline_file_entry(&s, &u, i, &fe);
       if (r != DWARFLINE_OK) {
         printf("error %d file %llu\n", r, (unsigned long long)i);
-        return 1;
+        goto fail;
       }
       printf("file %llu ", (unsigned long long)i);
       print_str(fe.name);
@@ -134,7 +134,7 @@ int main(int argc, char **argv)
         r = dwarfline_file_path(&s, &u, i, buf, sizeof(buf), &len);
         if (r != DWARFLINE_OK) {
           printf("error %d path %llu\n", r, (unsigned long long)i);
-          return 1;
+          goto fail;
         }
         printf("path %llu \"%s\"\n", (unsigned long long)i, buf);
       }
@@ -142,10 +142,15 @@ int main(int argc, char **argv)
     r = dwarfline_run(&s, &u, print_row, NULL);
     if (r != DWARFLINE_OK) {
       printf("error %d program 0x%08llx\n", r, (unsigned long long)offset);
-      return 1;
+      goto fail;
     }
     offset = u.next_offset;
   }
   free(image);
   return 0;
+
+fail:
+  /* Freed here too: under LeakSanitizer a leak ends the process before stdout is flushed. */
+  free(image);
+  return 1;
 }
