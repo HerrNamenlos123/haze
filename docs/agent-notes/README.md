@@ -10,6 +10,7 @@ and against which commit it was verified; re-check a note against the code befor
 - [Value vs shared state](feedback_value_vs_shared_state.md) - never mix value fields and handles in one copied struct
 - [Zero allocation per frame](feedback_zero_allocation_rule.md) - standing requirement and coding rules
 - [Allocation windows](allocation-windows.md) - sys.traceAllocations/limitAllocations: per task, every GC block, one allocation site in hzstd_memory.c; test traps
+- [Profiler timelines](profiler-timelines.md) - per-thread runs, loop turns, GC, off-CPU in the trace; DevTools tree and label traps; oracle test needs trace_engine
 - [Editor click vs drag](reference_editor_mouse_drag_detection.md) - detect drags in pixels; pass the font to measureText
 - [Array insert/remove and string loops](reference_haze_array_string_mutation.md) - in-place edits, element mutability is part of the array type, quadratic concat
 - [No glyph fallback](reference_haze_ui_font_glyphs.md) - tofu for uncovered chars; tabs have no glyph

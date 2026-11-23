@@ -16,6 +16,32 @@ namespace ffi {
         frames: mut []int;
         truncated: bool;
         lost_before: int;
+        thread: int;
+        cpu: real;
+    };
+
+    // The scheduler's record (docs/profiler-timelines.md). The numbers mirror
+    // hzstd_sched_event_kind_t and hzstd_sched_run_end_t (hzstd_types.h).
+    export extern C noemit opaque struct hzstd_profiling_thread_t {
+        id: int;
+        os_tid: int;
+    };
+
+    export extern C noemit opaque struct hzstd_profiling_task_t {
+        id: int;
+        parent: int;
+        thread: int;
+        spawned_at: SourceLocation;
+        background: bool;
+    };
+
+    export extern C noemit opaque struct hzstd_profiling_sched_event_t {
+        thread: int;
+        time: real;
+        kind: int;
+        task: int;
+        reason: int;
+        cpu: real;
     };
 
     export extern C noemit opaque struct hzstd_memory_instrumentation_frame_t {
@@ -33,6 +59,9 @@ namespace ffi {
         samples: []hzstd_profiling_sample_t;
         sampling_rate_hz: int;
         memoryInstrumentationFrames: []hzstd_memory_instrumentation_frame_t;
+        threads: []hzstd_profiling_thread_t;
+        tasks: []hzstd_profiling_task_t;
+        schedEvents: []hzstd_profiling_sched_event_t;
     };
 }
 
@@ -198,6 +227,7 @@ namespace profiling {
         frameRefs: []ChromeTrace.FrameRef,
         allocationLeaves: []str,
         allocationSampleTimesUs: mut []real,
+        thread: int,
     ): void {
         let nominalIntervalUs = 1000000.0 / (result.sampling_rate_hz as real);
         let offCpuThresholdUs = nominalIntervalUs * 4.0;
@@ -250,6 +280,11 @@ namespace profiling {
         let haveActivity = false;
 
         while cpuIndex < result.samples.length || allocIndex < allocationLeaves.length {
+            // Another thread's sample belongs to that thread's profile.
+            if cpuIndex < result.samples.length && result.samples[cpuIndex].thread != thread {
+                cpuIndex++;
+                continue;
+            }
             // Whichever stream's next entry is older goes first.
             let takeCpuSample = true;
             if cpuIndex >= result.samples.length {
@@ -383,7 +418,7 @@ namespace profiling {
         let noAllocationSampleTimes: mut []real = [];
         let builder = ChromeTrace.CpuProfileBuilder();
         builder.reserveSamples(result.samples.length);
-        addSamplesToProfile(builder, result, frameRefs, noAllocationLeaves, noAllocationSampleTimes);
+        addSamplesToProfile(builder, result, frameRefs, noAllocationLeaves, noAllocationSampleTimes, mainThreadTid);
         return builder.build();
     }
 
@@ -396,6 +431,332 @@ namespace profiling {
     // pid/tid layout mirrors real Chrome traces (one process, one main thread/track within it)
     // and leaves room to grow -- e.g. a future second Haze process (worker/subprocess) would get
     // pid 2 rather than requiring these ids to be renumbered.
+    // ── The scheduler's timeline (docs/profiler-timelines.md) ───────────────
+    //
+    // Per Haze thread: a bar per task run above the run's samples, the event
+    // loop's turns between runs, collections, and (Linux, from the kernel's
+    // switch records) every stretch the thread was off its CPU. The same runs
+    // and stretches go to extension tracks, with colours and properties.
+    //
+    // The numbers of hzstd_sched_event_kind_t and hzstd_sched_run_end_t.
+    const eventRunBegin = 0;
+    const eventRunEnd = 1;
+    const eventLoopBegin = 2;
+    const eventLoopEnd = 3;
+    const eventGcBegin = 4;
+    const eventGcEnd = 5;
+    const eventWorldStopped = 6;
+    const eventWorldStarted = 7;
+    const eventStall = 8;
+    const eventOsOut = 9;
+    const eventOsIn = 10;
+    const eventKilled = 12;
+
+    const extensionGroup = "Haze";
+
+    fn runEndName(reason: int): str {
+        if reason == 0 { return "yield"; }
+        if reason == 1 { return "join"; }
+        if reason == 2 { return "sleep"; }
+        if reason == 3 { return "suspend"; }
+        if reason == 4 { return "end"; }
+        return "session end";
+    }
+
+    // "1.25 ms", to the hundredth.
+    fn millis(seconds: real): str {
+        let hundredths = (seconds * 100000.0 + 0.5) as int;
+        let frac = hundredths % 100;
+        return f"{hundredths / 100}.{frac < 10 ? "0" : ""}{frac} ms";
+    }
+
+    fn fileName(path: str): str {
+        let start = 0;
+        for (let i = 0; i < path.length; i++) {
+            let c = path.slice(i, i + 1);
+            if c == "/" || c == "\\" {
+                start = i + 1;
+            }
+        }
+        return path.slice(start, path.length);
+    }
+
+    export fn threadName(thread: int): str {
+        return thread == 1 ? "main" : f"thread {thread}";
+    }
+
+    // The tasks' indices, sorted by id, for taskAt.
+    fn taskOrder(result: ProfilingResult): []int {
+        let order: mut []int = [];
+        order.reserve(result.tasks.length);
+        for (let i = 0; i < result.tasks.length; i++) {
+            order.push(i);
+        }
+        order.sort((a: int, b: int) => {
+            let ia = result.tasks[a].id;
+            let ib = result.tasks[b].id;
+            return ia < ib ? -1 : (ia > ib ? 1 : 0);
+        });
+        return order;
+    }
+
+    // The index of the task with this id in result.tasks, -1 if unknown.
+    fn taskAt(result: ProfilingResult, order: []int, id: int): int {
+        let lo = 0;
+        let hi = order.length - 1;
+        while lo <= hi {
+            let mid = lo + (hi - lo) / 2;
+            let found = result.tasks[order[mid]].id;
+            if found == id {
+                return order[mid];
+            }
+            if found < id {
+                lo = mid + 1;
+            } else {
+                hi = mid - 1;
+            }
+        }
+        return -1;
+    }
+
+    export fn taskLabel(result: ProfilingResult, index: int, id: int): str {
+        if index < 0 {
+            return f"task {id}";
+        }
+        let task = result.tasks[index];
+        let file = task.spawned_at.filename();
+        if file {
+            return f"task {id} {fileName(file)}:{task.spawned_at.line() ?? 0}";
+        }
+        return task.parent == 0 && id == 1 ? "task 1 main" : f"task {id} runtime";
+    }
+
+    fn spawnSite(result: ProfilingResult, index: int): str {
+        if index < 0 {
+            return "unknown";
+        }
+        let at = result.tasks[index].spawned_at;
+        let file = at.filename();
+        return file ? f"{file}:{at.line() ?? 0}:{at.column() ?? 0}" : "the runtime";
+    }
+
+    // The extension palette (devtools-frontend models/trace/types/Extensions.ts),
+    // without the two colours that mean something: error and warning.
+    fn taskColor(id: int): str {
+        let palette: []str = [
+            "primary", "secondary", "tertiary", "primary-light", "secondary-light",
+            "tertiary-light", "primary-dark", "secondary-dark", "tertiary-dark",
+        ];
+        return palette[id % palette.length];
+    }
+
+    struct Bar {
+        beginUs: real;
+        endUs: real;
+        data: ChromeTrace.TraceEventDispatch.Args.Data;
+    }
+
+    // The thread's bars, and its extension track entries straight into the
+    // builder. A run, a loop turn, a collection and an off-CPU stretch nest by
+    // time; see addBars for how they are kept a tree.
+    fn threadBars(builder: mut ChromeTrace.TraceBuilder, result: ProfilingResult, order: []int, thread: int): mut []Bar {
+        let bars: mut []Bar = [];
+        let name = threadName(thread);
+        let tasksTrack = f"{name} tasks";
+        let cpuTrack = f"{name} CPU";
+        let runCounts: mut []int = [];
+        for (let i = 0; i < result.tasks.length; i++) {
+            runCounts.push(0);
+        }
+        let runBegin = -1.0;
+        let runTask = 0;
+        let runCpu = -1.0;
+        let runNote = "";
+        let loopBegin = -1.0;
+        let loopWaits = false;
+        let gcBegin = -1.0;
+        let worldBegin = -1.0;
+        let osOut = -1.0;
+        let osPreempted = false;
+        for e in result.schedEvents {
+            if e.thread != thread {
+                continue;
+            }
+            let us = e.time * 1000000.0;
+            if e.kind == eventRunBegin {
+                runBegin = us;
+                runTask = e.task;
+                runCpu = e.cpu;
+                runNote = "";
+            } else if e.kind == eventRunEnd && runBegin >= 0.0 && e.task == runTask {
+                let index = taskAt(result, order, runTask);
+                let run = 0;
+                if index >= 0 {
+                    runCounts[index] = runCounts[index] + 1;
+                    run = runCounts[index];
+                }
+                let label = taskLabel(result, index, runTask);
+                let wall = (us - runBegin) / 1000000.0;
+                let cpu = runCpu >= 0.0 && e.cpu >= 0.0 ? e.cpu - runCpu : -1.0;
+                let off = cpu >= 0.0 && wall > cpu ? wall - cpu : 0.0;
+                let parent = index >= 0 ? result.tasks[index].parent : 0;
+                bars.push(Bar {
+                    beginUs: runBegin,
+                    endUs: us,
+                    data: {
+                        type: label,
+                        task: runTask,
+                        spawnedAt: spawnSite(result, index),
+                        spawnedBy: parent,
+                        run: run,
+                        endedBy: runNote.length > 0 ? f"{runEndName(e.reason)} ({runNote})" : runEndName(e.reason),
+                        cpuMs: cpu >= 0.0 ? cpu * 1000.0 : none,
+                        wallMs: wall * 1000.0,
+                        offCpuMs: cpu >= 0.0 ? off * 1000.0 : none,
+                    },
+                });
+                let properties: mut [][]str = [
+                    ["task", f"{runTask}"],
+                    ["spawned at", spawnSite(result, index)],
+                    ["spawned by", parent == 0 ? "the runtime" : f"task {parent}"],
+                    ["run", f"{run}"],
+                    ["ended by", runEndName(e.reason)],
+                    ["wall", millis(wall)],
+                ];
+                if cpu >= 0.0 {
+                    properties.push(["CPU", millis(cpu)]);
+                    properties.push(["off CPU", millis(off)]);
+                }
+                if runNote.length > 0 {
+                    properties.push(["note", runNote]);
+                }
+                builder.addExtensionEntry(thread, runBegin, us - runBegin, label, extensionGroup, tasksTrack,
+                    taskColor(runTask), properties, label);
+                runBegin = -1.0;
+            } else if e.kind == eventLoopBegin {
+                loopBegin = us;
+                loopWaits = e.reason == 1;
+            } else if e.kind == eventLoopEnd && loopBegin >= 0.0 {
+                bars.push(Bar { beginUs: loopBegin, endUs: us, data: { type: loopWaits ? "event loop, waiting" : "event loop" } });
+                loopBegin = -1.0;
+            } else if e.kind == eventGcBegin {
+                gcBegin = us;
+            } else if e.kind == eventGcEnd && gcBegin >= 0.0 {
+                bars.push(Bar { beginUs: gcBegin, endUs: us, data: { type: "GC" } });
+                gcBegin = -1.0;
+            } else if e.kind == eventWorldStopped {
+                worldBegin = us;
+            } else if e.kind == eventWorldStarted && worldBegin >= 0.0 {
+                bars.push(Bar { beginUs: worldBegin, endUs: us, data: { type: "GC, world stopped" } });
+                worldBegin = -1.0;
+            } else if e.kind == eventStall {
+                runNote = f"stall warning after {e.reason} ms";
+            } else if e.kind == eventOsOut {
+                osOut = us;
+                osPreempted = e.reason == 1;
+            } else if e.kind == eventOsIn && osOut >= 0.0 {
+                let label = osPreempted ? "off CPU, preempted" : "off CPU, waiting";
+                bars.push(Bar { beginUs: osOut, endUs: us, data: { type: label, evidence: "the kernel's switch records" } });
+                builder.addExtensionEntry(thread, osOut, us - osOut, label, extensionGroup, cpuTrack,
+                    osPreempted ? "error" : "secondary", [["off CPU", millis((us - osOut) / 1000000.0)]], label);
+                osOut = -1.0;
+            } else if e.kind == eventKilled {
+                let index = taskAt(result, order, e.task);
+                let label = f"{taskLabel(result, index, e.task)} killed";
+                builder.addExtensionEntry(thread, us, 1.0, label, extensionGroup, tasksTrack, "error",
+                    [["task", f"{e.task}"], ["spawned at", spawnSite(result, index)]], label);
+            }
+        }
+        addInferredOffCpu(builder, result, thread, cpuTrack);
+        return bars;
+    }
+
+    // Windows has no unprivileged record of context switches: between two
+    // samples of the thread, the part of the wall time its CPU clock did not
+    // advance (less the sample's own suspension) was spent off its CPU,
+    // somewhere in between. Only to the extension track: the stretch's
+    // position is not known, and as a bar it would cover the samples.
+    fn addInferredOffCpu(builder: mut ChromeTrace.TraceBuilder, result: ProfilingResult, thread: int, cpuTrack: str): void {
+        let previous = -1;
+        for (let i = 0; i < result.samples.length; i++) {
+            let sample = result.samples[i];
+            if sample.thread != thread || sample.cpu < 0.0 {
+                continue;
+            }
+            if previous >= 0 {
+                let before = result.samples[previous];
+                let wall = sample.timestamp - before.timestamp;
+                let off = wall - (sample.cpu - before.cpu) - before.sampling_duration;
+                if off > 0.0005 && off > wall * 0.25 {
+                    let label = f"off CPU {millis(off)} of {millis(wall)}";
+                    builder.addExtensionEntry(thread, before.timestamp * 1000000.0, wall * 1000000.0, label,
+                        extensionGroup, cpuTrack, "warning",
+                        [["off CPU", millis(off)], ["between samples", millis(wall)], ["evidence", "the thread's CPU clock between two samples"]],
+                        label);
+                }
+            }
+            previous = i;
+        }
+    }
+
+    // DevTools builds each thread's tree by time and silently drops an event
+    // that begins inside another and ends after it (devtools-frontend
+    // 91506af6, models/trace/helpers/TreeHelpers.ts treify). So the bars go
+    // in by begin, the longer one first, each clipped to the end of the one
+    // it begins inside: a tree by construction. A bar begins at the whole
+    // microsecond at or before its time, after the end of the bar before it:
+    // DevTools places a sample at the whole microsecond at or before its own
+    // time (CpuProfileBuilder), so every sample of a run lands inside its bar.
+    fn addBars(builder: mut ChromeTrace.TraceBuilder, tid: int, bars: mut []Bar): void {
+        bars.sort((a: Bar, b: Bar) => {
+            if a.beginUs < b.beginUs { return -1; }
+            if a.beginUs > b.beginUs { return 1; }
+            if a.endUs > b.endUs { return -1; }
+            if a.endUs < b.endUs { return 1; }
+            return 0;
+        });
+        // Per depth: the open bar's begin and end, and where the last bar
+        // placed at that depth ended (its siblings come after it).
+        let begins: mut []real = [];
+        let ends: mut []real = [];
+        let siblingEnds: mut []real = [];
+        let depth = 0;
+        for bar in bars {
+            while depth > 0 && ends[depth - 1] <= bar.beginUs {
+                depth--;
+            }
+            let begin = (bar.beginUs as int) as real;
+            if depth > 0 && begin < begins[depth - 1] {
+                begin = begins[depth - 1];
+            }
+            if depth < siblingEnds.length && begin < siblingEnds[depth] {
+                begin = siblingEnds[depth];
+            }
+            let end = bar.endUs;
+            if depth > 0 && end > ends[depth - 1] {
+                end = ends[depth - 1];
+            }
+            if end <= begin {
+                continue;
+            }
+            builder.addBar(tid, begin, end - begin, bar.data);
+            if depth < ends.length {
+                begins[depth] = begin;
+                ends[depth] = end;
+                siblingEnds[depth] = end;
+            } else {
+                begins.push(begin);
+                ends.push(end);
+                siblingEnds.push(end);
+            }
+            // The new bar's children start inside it, after nothing.
+            if depth + 1 < siblingEnds.length {
+                siblingEnds[depth + 1] = begin;
+            }
+            depth++;
+        }
+    }
+
     const hazeProcessPid = 1;
     // Owns everything: the "Profile"/"RunTask" stream (like Chrome's CrRendererMain), the
     // allocation leaves merged into that same profile, and the allocation marker events that
@@ -461,7 +822,6 @@ namespace profiling {
                 + result.samples.length / samplesPerProfileChunk
                 + 16,
         );
-        builder.addThread(mainThreadTid, "CrRendererMain", true);
         builder.addFrame(mainThreadTid, "HZFRAME0", "file:///haze");
 
         // Built once and shared by everything below -- see buildFrameRefTable.
@@ -519,21 +879,48 @@ namespace profiling {
             fmt.print(f"\r  naming allocations {allocationCount} / {allocationCount}\n");
         }
 
-        // ONE profile on ONE thread, carrying the CPU samples and the allocations together.
-        let profileBuilder = ChromeTrace.CpuProfileBuilder();
-        profileBuilder.reserveSamples(result.samples.length + allocationLeaves.length);
+        // ONE profile per Haze thread, carrying its CPU samples; the main thread's also the
+        // allocations (they are not attributed to threads yet). The thread's track id is its
+        // Haze id: the main thread is 1 (mainThreadTid), every other thread is a
+        // "DedicatedWorker thread", the name DevTools shows as a worker track after the main
+        // one (devtools-frontend 91506af6, models/trace/handlers/Threads.ts).
+        let order = taskOrder(result);
+        let noLeaves: mut []str = [];
         let allocationSampleTimesUs: mut []real = [];
         allocationSampleTimesUs.reserve(allocationLeaves.length);
-        addSamplesToProfile(profileBuilder, result, frameRefs, allocationLeaves, allocationSampleTimesUs);
-        let profile = profileBuilder.build();
+        let threads: mut []int = [];
+        for t in result.threads {
+            threads.push(t.id);
+        }
+        if threads.length == 0 {
+            threads.push(mainThreadTid);
+        }
+        for tid in threads {
+            builder.addThread(tid, tid == mainThreadTid ? "CrRendererMain" : "DedicatedWorker thread", tid == mainThreadTid);
+            let isMain = tid == mainThreadTid;
+            let profileBuilder = ChromeTrace.CpuProfileBuilder();
+            profileBuilder.reserveSamples(result.samples.length + (isMain ? allocationLeaves.length : 0));
+            addSamplesToProfile(profileBuilder, result, frameRefs, isMain ? allocationLeaves : noLeaves, allocationSampleTimesUs, tid);
+            let profile = profileBuilder.build();
+            let bars = threadBars(builder, result, order, tid);
+
+            // This "task" block is what gives the flame chart somewhere to render into (see
+            // ChromeTrace's file header) and anchors the sample ordering invariant; the profiled
+            // session is represented as a single task spanning its whole duration, and every
+            // bar of the thread.
+            let sessionBegin = profile.startTime;
+            let sessionEnd = profile.endTime;
+            for bar in bars {
+                let begin = (bar.beginUs as int) as real;
+                if begin < sessionBegin { sessionBegin = begin; }
+                if bar.endUs > sessionEnd { sessionEnd = bar.endUs; }
+            }
+            builder.addTask(tid, sessionBegin, sessionEnd - sessionBegin);
+            builder.addCpuProfileSamples(tid, profile.startTime, profile);
+            addBars(builder, tid, bars);
+        }
         assert(allocationSampleTimesUs.length == allocationCount,
             "every allocation capture must have been emitted as exactly one sample");
-
-        // This "task" block is what gives the flame chart somewhere to render into (see
-        // ChromeTrace's file header) and anchors the sample ordering invariant; the profiled
-        // session is represented as a single task spanning its whole duration.
-        builder.addTask(mainThreadTid, profile.startTime, profile.endTime - profile.startTime);
-        builder.addCpuProfileSamples(mainThreadTid, profile.startTime, profile);
 
         // The Timings-track half (2. above). Stackless, so this is just one small event per
         // capture, reusing the name already computed for the flame-chart leaf.

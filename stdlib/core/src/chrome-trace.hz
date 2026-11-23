@@ -822,6 +822,91 @@ namespace ChromeTrace {
         args: Args;
     }
 
+    // ── Labelled bars in a thread (docs/profiler-timelines.md) ───────────────
+    //
+    // DevTools draws an `X` event in a thread's flame chart only if it knows
+    // the name (devtools-frontend 91506af6, CompatibilityTracksAppender.ts
+    // entryIsVisibleInTimeline), and titles `EventDispatch` "Event: " +
+    // args.data.type (models/trace/Name.ts forEntry): the one known event
+    // whose label is free text. Samples nest under it by time, so a bar per
+    // task run is the row above that run's frames. The other fields show in
+    // the event's summary.
+    export struct TraceEventDispatch {
+        pid: int;
+        tid: int;
+        ts: real;
+        dur: real;
+        ph: str = "X";
+        cat: str = "devtools.timeline";
+        name: str = "EventDispatch";
+
+        struct Args {
+            struct Data {
+                type: str;
+                task?: int;
+                spawnedAt?: str;
+                spawnedBy?: int;
+                run?: int;
+                endedBy?: str;
+                cpuMs?: real;
+                wallMs?: real;
+                offCpuMs?: real;
+                evidence?: str;
+            }
+            data: Data;
+        }
+        args: Args;
+    }
+
+    // ── Extension tracks ────────────────────────────────────────────────────
+    //
+    // A `performance.measure`, the shape DevTools turns into an entry of a
+    // track it does not otherwise know (models/trace/types/Extensions.ts,
+    // handlers/ExtensionTraceDataHandler.ts): the track, its group, a palette
+    // colour, properties and a tooltip ride in a JSON string under
+    // args.detail. Placed after every thread track.
+    export struct TraceLocalId {
+        local: str;
+    }
+
+    export struct ExtensionEntryDevtools {
+        dataType: str = "track-entry";
+        track: str;
+        trackGroup: str;
+        color: str;
+        properties: [][]str;
+        tooltipText: str;
+    }
+
+    export struct ExtensionEntryDetail {
+        devtools: ExtensionEntryDevtools;
+    }
+
+    export struct TraceUserTimingBegin {
+        pid: int;
+        tid: int;
+        ts: real;
+        ph: str = "b";
+        cat: str = "blink.user_timing";
+        name: str;
+        id2: TraceLocalId;
+
+        struct Args {
+            detail: str;
+        }
+        args: Args;
+    }
+
+    export struct TraceUserTimingEnd {
+        pid: int;
+        tid: int;
+        ts: real;
+        ph: str = "e";
+        cat: str = "blink.user_timing";
+        name: str;
+        id2: TraceLocalId;
+    }
+
     // json.stringify dumps a union purely by runtime `is Variant` match (no
     // discriminator needed for dump, only for parse), so a heterogeneous
     // JSON Array Format trace can be one flat []TraceEvent serialized in a
@@ -833,7 +918,10 @@ namespace ChromeTrace {
         TraceEventProfileChunk |
         TraceTracingStartedInBrowser |
         TraceEventComplete |
-        TraceEventInstantMarker;
+        TraceEventInstantMarker |
+        TraceEventDispatch |
+        TraceUserTimingBegin |
+        TraceUserTimingEnd;
 
     // ── TraceBuilder ─────────────────────────────────────────────────────────
     //
@@ -852,6 +940,7 @@ namespace ChromeTrace {
         pid: int;
         events: mut []TraceEvent = [];
         nextProfileId: int = 1;
+        nextMeasureId: int = 1;
 
         fn constructor(pid: int = 1) {
             let builder = TraceBuilder { pid: pid };
@@ -909,6 +998,25 @@ namespace ChromeTrace {
         // needs to render at all (see that struct's own doc comment) --
         // call this once, before the first addTask/addCpuProfileSamples on
         // whichever thread should own the frame/URL association.
+        // A labelled bar in thread `tid` (see TraceEventDispatch); times in
+        // microseconds.
+        mut fn addBar(tid: int, ts: real, dur: real, data: TraceEventDispatch.Args.Data): void {
+            this.events.push(TraceEventDispatch { pid: this.pid, tid: tid, ts: ts, dur: dur, args: { data: data } });
+        }
+
+        // An entry of the extension track `track` in group `group` (see
+        // ExtensionEntryDevtools); times in microseconds.
+        mut fn addExtensionEntry(tid: int, ts: real, dur: real, name: str, group: str, track: str, color: str,
+                                 properties: [][]str, tooltip: str): void {
+            let id = TraceLocalId { local: f"0x{this.nextMeasureId}" };
+            this.nextMeasureId += 1;
+            let detail = json.stringify<ExtensionEntryDetail>(ExtensionEntryDetail {
+                devtools: { track: track, trackGroup: group, color: color, properties: properties, tooltipText: tooltip },
+            });
+            this.events.push(TraceUserTimingBegin { pid: this.pid, tid: tid, ts: ts, name: name, id2: id, args: { detail: detail } });
+            this.events.push(TraceUserTimingEnd { pid: this.pid, tid: tid, ts: ts + dur, name: name, id2: id });
+        }
+
         mut fn addFrame(tid: int, frame: str, url: str): void {
             this.events.push(TraceTracingStartedInBrowser(this.pid, tid, frame, url));
         }

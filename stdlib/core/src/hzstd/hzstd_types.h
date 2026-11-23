@@ -473,6 +473,57 @@ typedef struct {
   hzstd_int_t bytes;
 } hzstd_alloc_stats_t;
 
+// ── Scheduler timeline (the profiler, docs/profiler-timelines.md) ──────────
+//
+// What a profiling session records of the scheduler, per Haze thread. Mirrored
+// in profiling.hz: keep the numbers.
+typedef enum {
+  HZSTD_SCHED_EVENT_RUN_BEGIN = 0,     // a task starts running (task)
+  HZSTD_SCHED_EVENT_RUN_END = 1,       // it stopped (task, reason: hzstd_sched_run_end_t)
+  HZSTD_SCHED_EVENT_LOOP_BEGIN = 2,    // an event loop turn (reason 1: it may wait)
+  HZSTD_SCHED_EVENT_LOOP_END = 3,
+  HZSTD_SCHED_EVENT_GC_BEGIN = 4,      // this thread runs a collection
+  HZSTD_SCHED_EVENT_GC_END = 5,
+  HZSTD_SCHED_EVENT_WORLD_STOPPED = 6, // ...and holds every other thread stopped
+  HZSTD_SCHED_EVENT_WORLD_STARTED = 7,
+  HZSTD_SCHED_EVENT_STALL = 8,         // the watchdog reported the running task (reason: ms it had run)
+  HZSTD_SCHED_EVENT_OS_OUT = 9,        // the OS took the thread off its CPU (reason 1: preempted)
+  HZSTD_SCHED_EVENT_OS_IN = 10,        // ...and put it back
+  HZSTD_SCHED_EVENT_SPAWN = 11,        // a task was spawned (task: the new one)
+  HZSTD_SCHED_EVENT_KILLED = 12,       // a task ended without running to its end
+} hzstd_sched_event_kind_t;
+
+typedef enum {
+  HZSTD_SCHED_RUN_YIELD = 0,   // sys.yield / yieldAfter: ready again at once
+  HZSTD_SCHED_RUN_JOIN = 1,    // waits for a future
+  HZSTD_SCHED_RUN_SLEEP = 2,   // time.sleep
+  HZSTD_SCHED_RUN_SUSPEND = 3, // waits for something else
+  HZSTD_SCHED_RUN_END = 4,     // returned
+  HZSTD_SCHED_RUN_SESSION = 5, // still running when the session ended
+} hzstd_sched_run_end_t;
+
+typedef struct {
+  hzstd_int_t id;     // the Haze thread's id (1: main)
+  hzstd_int_t os_tid; // the operating system's thread id
+} hzstd_profiling_thread_t;
+
+typedef struct {
+  hzstd_int_t id;
+  hzstd_int_t parent;  // 0: spawned by the runtime
+  hzstd_int_t thread;  // the Haze thread's id
+  hzstd_source_location_t spawned_at;
+  bool background;
+} hzstd_profiling_task_t;
+
+typedef struct {
+  hzstd_int_t thread;  // the Haze thread's id
+  hzstd_real_t time;   // seconds since the session started, as samples
+  hzstd_int_t kind;    // hzstd_sched_event_kind_t
+  hzstd_int_t task;    // the task's id, 0 for none
+  hzstd_int_t reason;
+  hzstd_real_t cpu;    // the thread's CPU time in seconds at a run's begin and end, else -1
+} hzstd_profiling_sched_event_t;
+
 // ── Stack frame / panic ──────────────────────────────────────────────────────
 
 typedef struct {
@@ -777,6 +828,12 @@ struct hzstd_task_t {
   hzstd_future_core_t *future;       // ends when the task ends
   hzstd_future_core_t *waiting_on;   // the future it waits for, if suspended in a join
   void *sleep_timer;                 // its uv_timer_t, if suspended in time.sleep
+  // Identity, for the profiler (docs/profiler-timelines.md): process-unique,
+  // never reused, the main task 1; the task that spawned it (0: the runtime)
+  // and where task.spawn was called.
+  uint64_t id;
+  uint64_t parent_id;
+  hzstd_source_location_t spawned_at;
   // Its open allocation windows.
   hzstd_alloc_windows_t alloc_windows;
 };
@@ -994,6 +1051,9 @@ typedef struct {
   hzstd_dynamic_array_t *frames;
   bool truncated;
   hzstd_int_t lost_before;
+  hzstd_int_t thread; // the sampled Haze thread's id
+  hzstd_real_t cpu;   // Windows: the thread's CPU time in seconds when sampled; Linux: -1 (it has
+                      // the kernel's switch records instead)
 } hzstd_profiling_sample_t;
 
 // This struct is the final result of profiling after postprocessing,
@@ -1003,6 +1063,9 @@ typedef struct {
   hzstd_dynamic_array_t *samples; /* hzstd_profiling_sample_t[] */
   hzstd_int_t sampling_rate_hz;
   hzstd_dynamic_array_t *memoryInstrumentationFrames; // []hzstd_memory_instrumentation_frame_t
+  hzstd_dynamic_array_t *threads;     // []hzstd_profiling_thread_t, the Haze threads of the session
+  hzstd_dynamic_array_t *tasks;       // []hzstd_profiling_task_t, every task that ran or was spawned
+  hzstd_dynamic_array_t *schedEvents; // []hzstd_profiling_sched_event_t, per thread in time order
 } hzstd_profiling_result_t;
 
 // ── Reactive ─────────────────────────────────────────────────────────────────

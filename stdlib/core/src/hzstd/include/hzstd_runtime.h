@@ -28,7 +28,18 @@ int32_t hzstd_sched_run_main(int32_t (*main_fn)(hzstd_context_t *ctx), void (*en
 // copy of the context's settings and of the task's task-local values; it
 // starts when the spawner suspends (C384). `future` (or NULL) is settled as
 // killed or never ran if the task is killed; the entry completes it otherwise.
-void hzstd_task_spawn(hzstd_context_t *ctx, hzstd_task_entry_t entry, void *arg, bool background, hzstd_future_core_t *future);
+// The profiler's record of the scheduler (hzstd_sched.c, docs/profiler-timelines.md).
+void hzstd_sched_trace_begin(void);
+void hzstd_sched_trace_end(hzstd_profiling_result_t *result, double time_ref);
+// Seconds per tick of the threads' CPU clocks (Windows: the TSC, learnt by the watchdog).
+double hzstd_cpu_seconds_per_tick(void);
+
+void hzstd_task_spawn(hzstd_context_t *ctx,
+                      hzstd_task_entry_t entry,
+                      void *arg,
+                      bool background,
+                      hzstd_future_core_t *future,
+                      hzstd_source_location_t spawned_at);
 // Lets every task that is ready run first (C243).
 void hzstd_task_yield(hzstd_context_t *ctx);
 // Suspends the calling task for `ms` milliseconds of the thread's event loop

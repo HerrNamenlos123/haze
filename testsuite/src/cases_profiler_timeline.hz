@@ -1,0 +1,209 @@
+// ============================================================================
+// The profiler's record of the scheduler (docs/profiler-timelines.md): task
+// runs and why each ended, loop turns, spawns, each run's CPU time against its
+// wall time, and (Linux) the kernel's switch records with forced ones marked.
+// The profiler reports on stdout too, so a child prints its results on
+// marked lines and the parent keeps only those.
+// ============================================================================
+
+namespace cases_profiler_timeline {
+
+    fn eventNames(): str {
+        return """
+fn kindName(kind: int, reason: int): str {
+    if kind == 0 { return "+"; }
+    if kind == 1 {
+        if reason == 0 { return "-yield"; }
+        if reason == 1 { return "-join"; }
+        if reason == 2 { return "-sleep"; }
+        if reason == 3 { return "-suspend"; }
+        if reason == 4 { return "-end"; }
+        return "-session";
+    }
+    if kind == 11 { return "spawn"; }
+    return "?";
+}
+fn profiler(): Profiler {
+    return Profiler({ samplingRate: 0, memoryInstrumentation: false, memoryInstrumentationStacktraces: false });
+}
+""";
+    }
+
+    export fn register(s: mut testsuite.Suite) {
+        // The main task (1) spawns 2 and 3 and joins them: 2 yields once, 3
+        // sleeps. The order is the scheduler's (first come, first served; a
+        // yield goes back to the event loop; a non-waiting loop turn while
+        // tasks are ready, a waiting one when none is, none once the loop
+        // holds nothing). The sleep takes two waiting turns: the first fires
+        // the timer, which closes it; the close readies the task in the next.
+        s.run(
+            "profiler timeline: runs, their ends, spawns and loop turns, in order",
+            eventNames() + """
+fn work(n: int): int {
+    let x = 0;
+    for (let i = 0; i < n; i++) { x = x + i; }
+    return x;
+}
+fn main(): int {
+    let args = sys.args();
+    if args.length > 1 && args[1] == "child" {
+        let p = profiler();
+        let a = task.spawn(() => {
+            let x = work(1000);
+            sys.yield();
+            return work(1000);
+        });
+        let b = task.spawn(() => {
+            time.sleep(0.005);
+            return 2;
+        });
+        let ra = a.join();
+        let rb = b.join();
+        let r = p.stop();
+        let line = "";
+        for e in r.schedEvents {
+            if e.kind == 0 || e.kind == 1 || e.kind == 11 {
+                line = f"{line} {e.task}{kindName(e.kind, e.reason)}";
+            }
+            if e.kind == 2 {
+                line = f"{line} {e.reason == 1 ? "W" : "L"}";
+            }
+        }
+        let tasks = "";
+        for t in r.tasks {
+            tasks = f"{tasks} {t.id}<{t.parent}@{t.spawned_at.line() ?? 0}:{t.thread}";
+        }
+        let threads = "";
+        for t in r.threads {
+            threads = f"{threads} {t.id}";
+        }
+        let mismatched = 0;
+        for e in r.schedEvents {
+            if e.thread != 1 { mismatched = mismatched + 1; }
+        }
+        fmt.println(f"EVENTS{line}");
+        fmt.println(f"TASKS{tasks}");
+        fmt.println(f"THREADS{threads} {mismatched}");
+        return 0;
+    }
+    let r = process.runCaptured(args[0], ["child"]);
+    let out = "";
+    for line in r.stdoutResult.split("\\n") {
+        if line.startsWith("EVENTS") || line.startsWith("TASKS") || line.startsWith("THREADS") {
+            out = f"{out}{line}\\n";
+        }
+    }
+    fmt.print(out);
+    return r.exitCode;
+}
+""",
+            """
+EVENTS 1+ 2spawn 3spawn 1-join 2+ 2-yield 3+ 3-sleep L 2+ 2-end L 1+ 1-join W W 3+ 3-end 1+ 1-session
+TASKS 1<0@0:1 2<1@25:1 3<1@30:1
+THREADS 1 0
+""");
+
+        // A run that blocks in C for 30 ms: its wall time holds the block,
+        // its CPU time does not (the thread's own CPU clock at both ends, on
+        // both platforms). On Linux the kernel also records the block as one
+        // voluntary switch out of the CPU inside that run.
+        s.run(
+            "profiler timeline: a run's CPU time against its wall time, and the kernel's voluntary switch",
+            eventNames() + """
+__c__("#ifdef _WIN32\\n#include <windows.h>\\nstatic void block_ms(int ms) { Sleep((DWORD)ms); }\\n#else\\n#include <time.h>\\nstatic void block_ms(int ms) { struct timespec t = { ms / 1000, (long)(ms % 1000) * 1000000L }; nanosleep(&t, NULL); }\\n#endif");
+fn main(): int {
+    let args = sys.args();
+    if args.length > 1 && args[1] == "child" {
+        let p = profiler();
+        let t = task.spawn(() => {
+            do unsafe { __c__("block_ms(30);"); };
+            return 1;
+        });
+        let r1 = t.join();
+        let r = p.stop();
+        let begin = -1.0;
+        let beginCpu = -1.0;
+        let wall = -1.0;
+        let cpu = -1.0;
+        let voluntaryInRun = 0;
+        let runBegin = 0.0;
+        let runEnd = 0.0;
+        for e in r.schedEvents {
+            if e.kind == 0 && e.task == 2 { begin = e.time; beginCpu = e.cpu; }
+            if e.kind == 1 && e.task == 2 { wall = e.time - begin; cpu = e.cpu - beginCpu; runBegin = begin; runEnd = e.time; }
+        }
+        for e in r.schedEvents {
+            if e.kind == 9 && e.reason == 0 && e.time >= runBegin && e.time <= runEnd { voluntaryInRun = voluntaryInRun + 1; }
+        }
+        let kernelOk = sys.isLinux() ? voluntaryInRun >= 1 : voluntaryInRun == 0;
+        fmt.println(f"RESULT {wall >= 0.029} {cpu >= 0.0} {cpu < 0.010} {kernelOk}");
+        return 0;
+    }
+    let r = process.runCaptured(args[0], ["child"]);
+    let out = "";
+    for line in r.stdoutResult.split("\\n") {
+        if line.startsWith("RESULT") { out = f"{out}{line}\\n"; }
+    }
+    fmt.print(out);
+    return r.exitCode;
+}
+""",
+            """
+RESULT true true true true
+""");
+
+        // More spinning threads than CPUs keep taking the CPU from the main
+        // thread: the kernel marks those switches out as forced. Linux only
+        // (Windows has no unprivileged record of them; its samples carry the
+        // thread's CPU time instead, checked here to advance).
+        s.run(
+            "profiler timeline: the kernel marks forced switches as preempted; Windows samples carry CPU time",
+            eventNames() + """
+__c__("#ifdef _WIN32\\n#include <windows.h>\\nstatic volatile LONG stop_spin = 0;\\nstatic DWORD WINAPI spin(LPVOID a) { (void)a; volatile unsigned long long x = 0; while (!stop_spin) { x++; } return 0; }\\nstatic void start_spinners(int n) { for (int i = 0; i < n; i++) CloseHandle(CreateThread(NULL, 0, spin, NULL, 0, NULL)); }\\nstatic void stop_spinners(void) { stop_spin = 1; }\\nstatic int cpus(void) { SYSTEM_INFO si; GetSystemInfo(&si); return (int)si.dwNumberOfProcessors; }\\n#else\\n#include <pthread.h>\\n#include <unistd.h>\\nstatic volatile int stop_spin = 0;\\nstatic void *spin(void *a) { (void)a; volatile unsigned long long x = 0; while (!stop_spin) { x++; } return NULL; }\\nstatic void start_spinners(int n) { for (int i = 0; i < n; i++) { pthread_t t; pthread_create(&t, NULL, spin, NULL); pthread_detach(t); } }\\nstatic void stop_spinners(void) { stop_spin = 1; }\\nstatic int cpus(void) { return (int)sysconf(_SC_NPROCESSORS_ONLN); }\\n#endif");
+fn main(): int {
+    let args = sys.args();
+    if args.length > 1 && args[1] == "child" {
+        // 1000 Hz: on Windows a sample carries the thread's CPU time, and
+        // the sampler has to keep sampling under the load it measures.
+        let p = Profiler({ samplingRate: 1000, memoryInstrumentation: false, memoryInstrumentationStacktraces: false });
+        do unsafe { __c__("start_spinners(cpus() * 2);"); };
+        let start = time.now();
+        let x = 0;
+        while time.now() - start < 0.3 {
+            for (let i = 0; i < 100000; i++) { x = x + i; }
+            sys.yield();
+        }
+        do unsafe { __c__("stop_spinners();"); };
+        let r = p.stop();
+        let preempted = 0;
+        for e in r.schedEvents {
+            if e.kind == 9 && e.reason == 1 { preempted = preempted + 1; }
+        }
+        let cpuSamples = 0;
+        let advancing = true;
+        let last = -1.0;
+        for sample in r.samples {
+            if sample.cpu >= 0.0 {
+                cpuSamples = cpuSamples + 1;
+                if sample.cpu < last { advancing = false; }
+                last = sample.cpu;
+            }
+        }
+        let ok = sys.isLinux() ? preempted >= 1 && cpuSamples == 0 : preempted == 0 && cpuSamples >= 10 && advancing;
+        fmt.println(f"RESULT {ok}");
+        return 0;
+    }
+    let r = process.runCaptured(args[0], ["child"]);
+    let out = "";
+    for line in r.stdoutResult.split("\\n") {
+        if line.startsWith("RESULT") { out = f"{out}{line}\\n"; }
+    }
+    fmt.print(out);
+    return r.exitCode;
+}
+""",
+            """
+RESULT true
+""");
+    }
+}

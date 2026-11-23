@@ -77,9 +77,9 @@ export opaque ref struct Future<T> {
     }
 
     // Runs `body` as a new task that completes this future.
-    mut fn _spawn(body: () => T, background: bool) {
+    mut fn _spawn(body: () => T, background: bool, location: SourceLocation) {
         let me = this;
-        task._spawnThunk(task._Thunk { run: () => { me.complete(body()); } }, background, this.core);
+        task._spawnThunk(task._Thunk { run: () => { me.complete(body()); } }, background, this.core, location);
     }
 }
 
@@ -96,9 +96,9 @@ namespace task {
     // result (C250, C257). The task starts once the calling task suspends
     // (C384), with a copy of the caller's context (C406) and of its
     // task-local values (C285).
-    export fn spawn<T>(body: () => T, options: SpawnOptions = SpawnOptions {}): Future<T> {
+    export fn spawn<T>(body: () => T, options: SpawnOptions = SpawnOptions {}, location: SourceLocation = SourceLocation()): Future<T> {
         let future = Future<T>();
-        future._spawn(body, options.background);
+        future._spawn(body, options.background, location);
         return future;
     }
 
@@ -123,11 +123,11 @@ namespace task {
 
     // Not generic, so it is compiled here: Future._spawn is re-elaborated in
     // the importing module, which cannot name the entry.
-    export fn _spawnThunk(thunk: _Thunk, background: bool, core: cptr) {
+    export fn _spawnThunk(thunk: _Thunk, background: bool, core: cptr, location: SourceLocation) {
         let entry = __hz_task_run_thunk;
         let ctx = sys.contextPtr();
         do unsafe {
-            __c__("hzstd_task_spawn((hzstd_context_t *)ctx, entry, (void *)thunk, background, (hzstd_future_core_t *)core);");
+            __c__("hzstd_task_spawn((hzstd_context_t *)ctx, entry, (void *)thunk, background, (hzstd_future_core_t *)core, location);");
         };
     }
 }

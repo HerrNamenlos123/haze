@@ -32,6 +32,8 @@
 #if !FIBER__WINDOWS
 #include <pthread.h>
 #include <signal.h>
+#include <sys/syscall.h>
+#include <unistd.h>
 #endif
 
 #define HZSTD_TASK_STACK_SIZE ((size_t)8 << 20)
@@ -89,6 +91,13 @@ struct hzstd_sched_t {
   fiber_stack pool[HZSTD_TASK_STACK_POOL];
   size_t pool_len;
   hzstd_sched_t *next; // g_hzstd_scheds
+  uint64_t os_tid;     // the operating system's id of the thread
+  // A profiling session's record of this thread (hzstd_sched_trace_*); only
+  // this thread writes it while a session runs.
+  struct hzstd_trace_chunk_t *trace_head;
+  struct hzstd_trace_chunk_t *trace_tail;
+  struct hzstd_trace_task_chunk_t *trace_tasks_head;
+  struct hzstd_trace_task_chunk_t *trace_tasks_tail;
 };
 
 struct hzstd_future_core_t {
@@ -410,6 +419,351 @@ hzstd_int_t hzstd_future_wait(hzstd_context_t *ctx, hzstd_future_core_t *core)
   return (hzstd_int_t)core->state;
 }
 
+// ── The profiler's record of the scheduler (docs/profiler-timelines.md) ────
+//
+// While a profiling session runs, every switch, loop turn, spawn and
+// collection of a thread is appended to its scheduler's buffer: malloc memory
+// in chunks, never GC memory (a session must not change what
+// sys.traceAllocations counts) and never a lock on the thread's own path. A
+// stall report comes from the watchdog's thread and goes to a list of its own
+// under a lock. Without a session this costs one relaxed load per event.
+
+#define HZSTD_TRACE_CHUNK_EVENTS 1024
+#define HZSTD_TRACE_CHUNK_TASKS 256
+
+typedef struct {
+  double time;    // hzstd_time_now()
+  uint64_t cpu;   // the thread's CPU clock in its ticks at a run's begin and end, else 0
+  uint64_t task;
+  uint32_t kind;
+  uint32_t reason;
+} hzstd_trace_event_t;
+
+typedef struct hzstd_trace_chunk_t {
+  struct hzstd_trace_chunk_t *next;
+  size_t count;
+  hzstd_trace_event_t events[HZSTD_TRACE_CHUNK_EVENTS];
+} hzstd_trace_chunk_t;
+
+typedef struct {
+  uint64_t id;
+  uint64_t parent;
+  char *file; // a copy (malloc), NULL when the spawn site is unknown
+  hzstd_int_t line;
+  hzstd_int_t column;
+  bool background;
+} hzstd_trace_task_t;
+
+typedef struct hzstd_trace_task_chunk_t {
+  struct hzstd_trace_task_chunk_t *next;
+  size_t count;
+  hzstd_trace_task_t tasks[HZSTD_TRACE_CHUNK_TASKS];
+} hzstd_trace_task_chunk_t;
+
+typedef struct {
+  uint64_t os_tid;
+  hzstd_trace_event_t event;
+} hzstd_trace_foreign_event_t;
+
+static _Atomic bool g_hzstd_trace_on = false;
+static _Atomic uint64_t g_hzstd_next_task_id = 1;
+// Events another thread reports about a thread (the watchdog's stall
+// reports): rare, under a spin lock.
+static atomic_flag g_hzstd_trace_foreign_lock = ATOMIC_FLAG_INIT;
+static hzstd_trace_foreign_event_t *g_hzstd_trace_foreign = NULL;
+static size_t g_hzstd_trace_foreign_count = 0;
+static size_t g_hzstd_trace_foreign_capacity = 0;
+
+static uint64_t hzstd_this_thread_cpu_ticks(void);
+static double hzstd_watchdog_seconds_per_tick(void);
+
+static inline bool hzstd_sched_tracing(void)
+{
+  return atomic_load_explicit(&g_hzstd_trace_on, memory_order_relaxed);
+}
+
+static hzstd_trace_chunk_t *hzstd_trace_new_chunk(void)
+{
+  hzstd_trace_chunk_t *chunk = malloc(sizeof(hzstd_trace_chunk_t));
+  if (chunk == NULL) {
+    hzstd_trap_ccstr("Out of memory recording the scheduler for the profiler");
+  }
+  chunk->next = NULL;
+  chunk->count = 0;
+  return chunk;
+}
+
+// Room for `n` more events without allocating (a collection appends while
+// the world is stopped, where malloc may wait for a stopped thread's lock).
+static void hzstd_trace_reserve(hzstd_sched_t *s, size_t n)
+{
+  if (s->trace_tail == NULL) {
+    s->trace_head = s->trace_tail = hzstd_trace_new_chunk();
+  }
+  if (HZSTD_TRACE_CHUNK_EVENTS - s->trace_tail->count < n) {
+    hzstd_trace_chunk_t *chunk = hzstd_trace_new_chunk();
+    s->trace_tail->next = chunk;
+    s->trace_tail = chunk;
+  }
+}
+
+// `reserved`: the caller made room with hzstd_trace_reserve and must not allocate.
+static void hzstd_trace_append(hzstd_sched_t *s, uint32_t kind, uint64_t task, uint32_t reason, uint64_t cpu, bool reserved)
+{
+  if (!reserved) {
+    hzstd_trace_reserve(s, 1);
+  }
+  else if (s->trace_tail == NULL || s->trace_tail->count == HZSTD_TRACE_CHUNK_EVENTS) {
+    hzstd_trap_ccstr("Internal Runtime Error: a scheduler event had no room reserved");
+  }
+  s->trace_tail->events[s->trace_tail->count++] = (hzstd_trace_event_t) {
+    .time = hzstd_time_now(),
+    .cpu = cpu,
+    .task = task,
+    .kind = kind,
+    .reason = reason,
+  };
+}
+
+static void hzstd_trace_note(hzstd_sched_t *s, uint32_t kind, uint64_t task, uint32_t reason)
+{
+  if (hzstd_sched_tracing()) {
+    hzstd_trace_append(s, kind, task, reason, 0, false);
+  }
+}
+
+static void hzstd_trace_note_spawn(hzstd_sched_t *s, const hzstd_task_t *t)
+{
+  if (!hzstd_sched_tracing()) {
+    return;
+  }
+  if (s->trace_tasks_tail == NULL || s->trace_tasks_tail->count == HZSTD_TRACE_CHUNK_TASKS) {
+    hzstd_trace_task_chunk_t *chunk = malloc(sizeof(hzstd_trace_task_chunk_t));
+    if (chunk == NULL) {
+      hzstd_trap_ccstr("Out of memory recording the scheduler for the profiler");
+    }
+    chunk->next = NULL;
+    chunk->count = 0;
+    if (s->trace_tasks_tail == NULL) {
+      s->trace_tasks_head = chunk;
+    }
+    else {
+      s->trace_tasks_tail->next = chunk;
+    }
+    s->trace_tasks_tail = chunk;
+  }
+  char *file = NULL;
+  if (t->spawned_at._filename.length > 0) {
+    file = malloc((size_t)t->spawned_at._filename.length + 1);
+    if (file == NULL) {
+      hzstd_trap_ccstr("Out of memory recording the scheduler for the profiler");
+    }
+    memcpy(file, t->spawned_at._filename.data, (size_t)t->spawned_at._filename.length);
+    file[t->spawned_at._filename.length] = '\0';
+  }
+  s->trace_tasks_tail->tasks[s->trace_tasks_tail->count++] = (hzstd_trace_task_t) {
+    .id = t->id,
+    .parent = t->parent_id,
+    .file = file,
+    .line = t->spawned_at._line,
+    .column = t->spawned_at._column,
+    .background = t->background,
+  };
+  hzstd_trace_append(s, HZSTD_SCHED_EVENT_SPAWN, t->id, 0, 0, false);
+}
+
+// From another thread (the watchdog): a stall report about the task `s` runs.
+static void hzstd_trace_note_foreign(hzstd_sched_t *s, uint32_t kind, uint64_t task, uint32_t reason)
+{
+  if (!hzstd_sched_tracing()) {
+    return;
+  }
+  while (atomic_flag_test_and_set_explicit(&g_hzstd_trace_foreign_lock, memory_order_acquire)) {
+  }
+  if (g_hzstd_trace_foreign_count == g_hzstd_trace_foreign_capacity) {
+    size_t capacity = g_hzstd_trace_foreign_capacity ? g_hzstd_trace_foreign_capacity * 2 : 64;
+    hzstd_trace_foreign_event_t *grown = realloc(g_hzstd_trace_foreign, capacity * sizeof(hzstd_trace_foreign_event_t));
+    if (grown == NULL) {
+      hzstd_trap_ccstr("Out of memory recording the scheduler for the profiler");
+    }
+    g_hzstd_trace_foreign = grown;
+    g_hzstd_trace_foreign_capacity = capacity;
+  }
+  g_hzstd_trace_foreign[g_hzstd_trace_foreign_count++] = (hzstd_trace_foreign_event_t) {
+    .os_tid = s->os_tid,
+    .event = { .time = hzstd_time_now(), .cpu = 0, .task = task, .kind = kind, .reason = reason },
+  };
+  atomic_flag_clear_explicit(&g_hzstd_trace_foreign_lock, memory_order_release);
+}
+
+static void hzstd_trace_free(hzstd_sched_t *s)
+{
+  for (hzstd_trace_chunk_t *c = s->trace_head; c != NULL;) {
+    hzstd_trace_chunk_t *next = c->next;
+    free(c);
+    c = next;
+  }
+  for (hzstd_trace_task_chunk_t *c = s->trace_tasks_head; c != NULL;) {
+    hzstd_trace_task_chunk_t *next = c->next;
+    for (size_t i = 0; i < c->count; i++) {
+      free(c->tasks[i].file);
+    }
+    free(c);
+    c = next;
+  }
+  s->trace_head = s->trace_tail = NULL;
+  s->trace_tasks_head = s->trace_tasks_tail = NULL;
+}
+
+// The running task's identity, for a task that ran before the session began.
+static void hzstd_trace_note_known(hzstd_sched_t *s, const hzstd_task_t *t);
+
+// Begins a session's record. On the thread that starts the session; every
+// other thread's (stage 5) needs a handover still.
+void hzstd_sched_trace_begin(void)
+{
+  for (hzstd_sched_t *s = atomic_load(&g_hzstd_scheds); s != NULL; s = s->next) {
+    hzstd_trace_free(s);
+  }
+  while (atomic_flag_test_and_set_explicit(&g_hzstd_trace_foreign_lock, memory_order_acquire)) {
+  }
+  g_hzstd_trace_foreign_count = 0;
+  atomic_flag_clear_explicit(&g_hzstd_trace_foreign_lock, memory_order_release);
+  atomic_store(&g_hzstd_trace_on, true);
+  // The tasks that exist already: spawned before the session, they are known
+  // by id and spawn site all the same. The running one first.
+  for (hzstd_sched_t *s = atomic_load(&g_hzstd_scheds); s != NULL; s = s->next) {
+    for (hzstd_task_t *t = s->live; t != NULL; t = t->next_live) {
+      hzstd_trace_note_known(s, t);
+    }
+    hzstd_task_t *running = s->thread->current_task;
+    if (running != NULL) {
+      hzstd_trace_append(s, HZSTD_SCHED_EVENT_RUN_BEGIN, running->id, 0, hzstd_this_thread_cpu_ticks(), false);
+    }
+  }
+}
+
+static void hzstd_trace_note_known(hzstd_sched_t *s, const hzstd_task_t *t)
+{
+  hzstd_trace_note_spawn(s, t);
+  // Not spawned now: the event says when it became known, which is the
+  // session's start; the exporter keeps it out of the timeline.
+  s->trace_tail->events[s->trace_tail->count - 1].reason = 1;
+}
+
+static void hzstd_trace_export_into(hzstd_dynamic_array_t *events, const hzstd_trace_event_t *e, hzstd_int_t thread,
+                                    double time_ref, double seconds_per_tick)
+{
+  hzstd_profiling_sched_event_t out = {
+    .thread = thread,
+    .time = e->time - time_ref,
+    .kind = (hzstd_int_t)e->kind,
+    .task = (hzstd_int_t)e->task,
+    .reason = (hzstd_int_t)e->reason,
+    .cpu = (e->kind == HZSTD_SCHED_EVENT_RUN_BEGIN || e->kind == HZSTD_SCHED_EVENT_RUN_END)
+               ? (double)e->cpu * seconds_per_tick
+               : -1.0,
+  };
+  HZSTD_DYNAMIC_ARRAY_PUSH(events, out);
+}
+
+// Ends the session's record and hands it out, times relative to `time_ref`
+// (hzstd_time_now() at the session's start). The running task's run is closed
+// at the end: it is still running.
+void hzstd_sched_trace_end(hzstd_profiling_result_t *result, double time_ref)
+{
+  for (hzstd_sched_t *s = atomic_load(&g_hzstd_scheds); s != NULL; s = s->next) {
+    hzstd_task_t *running = s->thread->current_task;
+    if (running != NULL) {
+      hzstd_trace_append(s, HZSTD_SCHED_EVENT_RUN_END, running->id, HZSTD_SCHED_RUN_SESSION, hzstd_this_thread_cpu_ticks(), false);
+    }
+  }
+  atomic_store(&g_hzstd_trace_on, false);
+  double seconds_per_tick = hzstd_watchdog_seconds_per_tick();
+  hzstd_allocator_t heap = hzstd_make_heap_allocator();
+  result->threads = HZSTD_DYNAMIC_ARRAY_CREATE(heap, hzstd_profiling_thread_t, 4, "hzstd_profiling_thread_t");
+  result->tasks = HZSTD_DYNAMIC_ARRAY_CREATE(heap, hzstd_profiling_task_t, 16, "hzstd_profiling_task_t");
+  result->schedEvents = HZSTD_DYNAMIC_ARRAY_CREATE(heap, hzstd_profiling_sched_event_t, 256, "hzstd_profiling_sched_event_t");
+  for (hzstd_sched_t *s = atomic_load(&g_hzstd_scheds); s != NULL; s = s->next) {
+    hzstd_int_t thread = (hzstd_int_t)s->thread->id;
+    hzstd_profiling_thread_t info = { .id = thread, .os_tid = (hzstd_int_t)s->os_tid };
+    HZSTD_DYNAMIC_ARRAY_PUSH(result->threads, info);
+    for (hzstd_trace_task_chunk_t *c = s->trace_tasks_head; c != NULL; c = c->next) {
+      for (size_t i = 0; i < c->count; i++) {
+        const hzstd_trace_task_t *t = &c->tasks[i];
+        hzstd_source_location_t at = { 0 };
+        if (t->file != NULL) {
+          at._filename = hzstd_str_from_cstr_dup(heap, t->file);
+          at._line = t->line;
+          at._column = t->column;
+        }
+        hzstd_profiling_task_t task = {
+          .id = (hzstd_int_t)t->id,
+          .parent = (hzstd_int_t)t->parent,
+          .thread = thread,
+          .spawned_at = at,
+          .background = t->background,
+        };
+        HZSTD_DYNAMIC_ARRAY_PUSH(result->tasks, task);
+      }
+    }
+    // The thread's own events and the reports about it, merged in time order.
+    size_t foreign = 0;
+    for (hzstd_trace_chunk_t *c = s->trace_head; c != NULL; c = c->next) {
+      for (size_t i = 0; i < c->count; i++) {
+        const hzstd_trace_event_t *e = &c->events[i];
+        if (e->kind == HZSTD_SCHED_EVENT_SPAWN && e->reason == 1) {
+          continue; // known before the session: no spawn in it
+        }
+        for (; foreign < g_hzstd_trace_foreign_count; foreign++) {
+          const hzstd_trace_foreign_event_t *f = &g_hzstd_trace_foreign[foreign];
+          if (f->event.time > e->time) {
+            break;
+          }
+          if (f->os_tid == s->os_tid) {
+            hzstd_trace_export_into(result->schedEvents, &f->event, thread, time_ref, seconds_per_tick);
+          }
+        }
+        hzstd_trace_export_into(result->schedEvents, e, thread, time_ref, seconds_per_tick);
+      }
+    }
+    for (; foreign < g_hzstd_trace_foreign_count; foreign++) {
+      const hzstd_trace_foreign_event_t *f = &g_hzstd_trace_foreign[foreign];
+      if (f->os_tid == s->os_tid) {
+        hzstd_trace_export_into(result->schedEvents, &f->event, thread, time_ref, seconds_per_tick);
+      }
+    }
+    hzstd_trace_free(s);
+  }
+  g_hzstd_trace_foreign_count = 0;
+}
+
+double hzstd_cpu_seconds_per_tick(void)
+{
+  return hzstd_watchdog_seconds_per_tick();
+}
+
+// Why a run ended, from the state the task left in.
+static uint32_t hzstd_trace_run_end_reason(const hzstd_task_t *t)
+{
+  switch (t->state) {
+  case HZSTD_TASK_READY:
+    return HZSTD_SCHED_RUN_YIELD;
+  case HZSTD_TASK_DONE:
+    return HZSTD_SCHED_RUN_END;
+  case HZSTD_TASK_SUSPENDED:
+    if (t->waiting_on != NULL) {
+      return HZSTD_SCHED_RUN_JOIN;
+    }
+    if (t->sleep_timer != NULL) {
+      return HZSTD_SCHED_RUN_SLEEP;
+    }
+    return HZSTD_SCHED_RUN_SUSPEND;
+  default:
+    hzstd_trap_ccstr("Internal Runtime Error: a run ended in a state a task cannot leave in");
+  }
+}
+
 // ── Switching ────────────────────────────────────────────────────────────────
 
 // Back to the scheduler; returns once something readied the task and the
@@ -472,9 +826,15 @@ static void hzstd_sched_run_task(hzstd_sched_t *s, hzstd_task_t *t)
       hzstd_panic_fmt("Out of memory: a new task's stack could not be prepared (error %d)", error);
     }
   }
+  if (hzstd_sched_tracing()) {
+    hzstd_trace_append(s, HZSTD_SCHED_EVENT_RUN_BEGIN, t->id, 0, hzstd_this_thread_cpu_ticks(), false);
+  }
   hzstd_watchdog_switch_in(s);
   fiber_switch(&s->native, &t->fiber, NULL);
   hzstd_watchdog_switch_out(s);
+  if (hzstd_sched_tracing()) {
+    hzstd_trace_append(s, HZSTD_SCHED_EVENT_RUN_END, t->id, hzstd_trace_run_end_reason(t), hzstd_this_thread_cpu_ticks(), false);
+  }
   s->thread->current_task = NULL;
   if (s->ended != NULL) {
     hzstd_stack_release(s, &s->ended->stack);
@@ -516,7 +876,8 @@ static hzstd_task_t *hzstd_sched_spawn(hzstd_sched_t *s,
                                        hzstd_task_entry_t entry,
                                        void *arg,
                                        bool background,
-                                       hzstd_future_core_t *future)
+                                       hzstd_future_core_t *future,
+                                       hzstd_source_location_t spawned_at)
 {
   // Scanned GC memory: it holds the entry's argument, the task-local blocks,
   // the future and the context's settings.
@@ -528,19 +889,28 @@ static hzstd_task_t *hzstd_sched_spawn(hzstd_sched_t *s,
   t->entry_arg = arg;
   t->settings = settings;
   t->future = future;
+  t->id = atomic_fetch_add_explicit(&g_hzstd_next_task_id, 1, memory_order_relaxed);
+  t->parent_id = parent != NULL ? parent->id : 0;
+  t->spawned_at = spawned_at;
   hzstd_task_copy_task_locals(t, parent);
   hzstd_registry_change(HZSTD_REGISTRY_ADD_TASK, s, t, (fiber_stack) { 0 });
   if (!background) {
     s->pending++;
   }
   hzstd_ready_push(s, t);
+  hzstd_trace_note_spawn(s, t);
   return t;
 }
 
-void hzstd_task_spawn(hzstd_context_t *ctx, hzstd_task_entry_t entry, void *arg, bool background, hzstd_future_core_t *future)
+void hzstd_task_spawn(hzstd_context_t *ctx,
+                      hzstd_task_entry_t entry,
+                      void *arg,
+                      bool background,
+                      hzstd_future_core_t *future,
+                      hzstd_source_location_t spawned_at)
 {
   // The new task's context is a copy of its creator's (C406).
-  hzstd_sched_spawn(ctx->thread->sched, ctx->task, ctx->settings, entry, arg, background, future);
+  hzstd_sched_spawn(ctx->thread->sched, ctx->task, ctx->settings, entry, arg, background, future, spawned_at);
 }
 
 // ── The loop and the end of a thread ─────────────────────────────────────────
@@ -572,6 +942,7 @@ static void hzstd_task_kill(hzstd_sched_t *s, hzstd_task_t *t)
   }
   hzstd_context_t ctx = { .task = t, .thread = s->thread };
   hzstd_stackref_unwind_to(&ctx, 0);
+  hzstd_trace_note(s, HZSTD_SCHED_EVENT_KILLED, t->id, 0);
   hzstd_task_end(s, t);
   if (t->stack.top != NULL) {
     hzstd_stack_release(s, &t->stack);
@@ -601,11 +972,15 @@ static void hzstd_sched_loop(hzstd_sched_t *s)
     }
     if (s->ready_head != NULL) {
       if (uv_loop_alive(&s->loop)) {
+        hzstd_trace_note(s, HZSTD_SCHED_EVENT_LOOP_BEGIN, 0, 0);
         uv_run(&s->loop, UV_RUN_NOWAIT);
+        hzstd_trace_note(s, HZSTD_SCHED_EVENT_LOOP_END, 0, 0);
       }
     }
     else if (uv_loop_alive(&s->loop)) {
+      hzstd_trace_note(s, HZSTD_SCHED_EVENT_LOOP_BEGIN, 0, 1);
       uv_run(&s->loop, UV_RUN_ONCE);
+      hzstd_trace_note(s, HZSTD_SCHED_EVENT_LOOP_END, 0, 1);
     }
     else {
       // Every task that keeps the thread alive waits, and nothing that could
@@ -1021,6 +1396,10 @@ static void hzstd_stall_report(hzstd_sched_t *s, double ran, bool first)
     // Kept, like the trace: a report is rare (once per stack).
     hzstd_print_stacktrace_without_gc(trace);
   }
+  if (first) {
+    hzstd_task_t *running = s->thread->current_task;
+    hzstd_trace_note_foreign(s, HZSTD_SCHED_EVENT_STALL, running != NULL ? running->id : 0, (uint32_t)(ran * 1000.0));
+  }
   fflush(stderr);
 }
 
@@ -1171,6 +1550,26 @@ static void GC_CALLBACK hzstd_gc_event(GC_EventType event)
   else if (event == GC_EVENT_POST_START_WORLD) {
     t_hzstd_gc_stopped += hzstd_wall_seconds() - t_hzstd_gc_stop_start;
   }
+  // The profiler's record (no allocation while the world is stopped: room for
+  // the four events is made when the collection starts).
+  if (hzstd_sched_tracing() && hzstd_current_thread != NULL && hzstd_current_thread->sched != NULL) {
+    hzstd_sched_t *traced = hzstd_current_thread->sched;
+    hzstd_task_t *running = hzstd_current_thread->current_task;
+    uint64_t task = running != NULL ? running->id : 0;
+    if (event == GC_EVENT_START) {
+      hzstd_trace_reserve(traced, 4);
+      hzstd_trace_append(traced, HZSTD_SCHED_EVENT_GC_BEGIN, task, 0, 0, true);
+    }
+    else if (event == GC_EVENT_PRE_STOP_WORLD) {
+      hzstd_trace_append(traced, HZSTD_SCHED_EVENT_WORLD_STOPPED, task, 0, 0, true);
+    }
+    else if (event == GC_EVENT_POST_START_WORLD) {
+      hzstd_trace_append(traced, HZSTD_SCHED_EVENT_WORLD_STARTED, task, 0, 0, true);
+    }
+    else if (event == GC_EVENT_END) {
+      hzstd_trace_append(traced, HZSTD_SCHED_EVENT_GC_END, task, 0, 0, false);
+    }
+  }
   if (event == GC_EVENT_START || event == GC_EVENT_END) {
     hzstd_thread_t *thread = hzstd_current_thread;
     if (thread != NULL && thread->sched != NULL) {
@@ -1254,6 +1653,7 @@ static void hzstd_sched_init_thread(hzstd_thread_t *thread)
   s->native_lo = (char *)lo;
   s->native_hi = (char *)hi;
   s->tid = GetCurrentThreadId();
+  s->os_tid = s->tid;
   if (!DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(), &s->handle, 0, FALSE, DUPLICATE_SAME_ACCESS)) {
     hzstd_panic("Could not open a handle to the current thread for the collector");
   }
@@ -1268,6 +1668,7 @@ static void hzstd_sched_init_thread(hzstd_thread_t *thread)
   s->native_lo = addr;
   s->native_hi = (char *)addr + size;
   s->pthread = pthread_self();
+  s->os_tid = (uint64_t)syscall(SYS_gettid);
   if (pthread_getcpuclockid(s->pthread, &s->cpu_clock) != 0) {
     hzstd_panic("Could not read the current thread's CPU clock");
   }
@@ -1386,12 +1787,12 @@ int32_t hzstd_sched_run_main(int32_t (*main_fn)(hzstd_context_t *ctx), void (*en
   call = (hzstd_main_call_t) { .main_fn = main_fn, .end_fn = end_fn, .exit_code = 0 };
   // `main` is a task like any other (C216); returning from it does not end
   // the thread while other tasks still keep it alive (C237).
-  hzstd_sched_spawn(s, NULL, hzstd_context_settings_default(), hzstd_main_task_entry, &call, false, NULL);
+  hzstd_sched_spawn(s, NULL, hzstd_context_settings_default(), hzstd_main_task_entry, &call, false, NULL, (hzstd_source_location_t) { 0 });
   hzstd_sched_loop(s);
   if (end_fn != NULL) {
     // The thread's last task, also after sys.exit (a graceful exit).
     s->exiting = false;
-    hzstd_sched_spawn(s, NULL, hzstd_context_settings_default(), hzstd_main_end_entry, &call, false, NULL);
+    hzstd_sched_spawn(s, NULL, hzstd_context_settings_default(), hzstd_main_end_entry, &call, false, NULL, (hzstd_source_location_t) { 0 });
     hzstd_sched_loop(s);
   }
   hzstd_watchdog_wait_for_reports();

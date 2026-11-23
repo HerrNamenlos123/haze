@@ -144,6 +144,7 @@ typedef struct {
                   // chosen per-session by hzstd_profiling_choose_stack_size)
                   // before reaching a natural end -- `pcs`/`depth` hold only
                   // the innermost frames that fit, real but incomplete.
+  uint64_t cpu_ticks; // Windows only: the thread's cycle time when it was sampled (0: unknown)
   uint64_t lost_before; // Linux only: how many samples the kernel reports it
                         // lost (PERF_RECORD_LOST) immediately before this one
                         // -- 0 if none. Unlike `truncated`, this is a hard
@@ -241,8 +242,21 @@ typedef struct hzstd_profiling_memory_capture_chunk_t {
   hzstd_memory_instrumentation_raw_frame_t *entries; // separate unscanned allocation, see `entries` above
 } hzstd_profiling_memory_capture_chunk_t;
 
+// One PERF_RECORD_SWITCH of the profiled thread (Linux).
+typedef struct {
+  uint64_t time_ns; // CLOCK_MONOTONIC
+  bool out;         // switched out (else in)
+  bool preempted;   // out because the OS preempted it
+} hzstd_profiling_os_switch_t;
+
 struct hzstd_profiling_context_t {
+  hzstd_int_t haze_thread; // the profiled Haze thread's id
 #ifdef HAZE_PLATFORM_LINUX
+  // The kernel's switch records of the profiled thread, in order (malloc
+  // memory; only the reader thread appends, the end reads after joining it).
+  hzstd_profiling_os_switch_t *os_switches;
+  size_t os_switch_count;
+  size_t os_switch_capacity;
   hzstd_process_id_t pid;
   hzstd_thread_id_t tid;
   pthread_t reader_thread;
@@ -339,6 +353,7 @@ struct hzstd_profiling_context_t {
   // Real (non-pseudo) handle to the thread being profiled, so the scheduler
   // thread can SuspendThread/ResumeThread it from the outside.
   HANDLE profiled_thread_handle;
+  uint64_t sample_cpu_ticks; // the profiled thread's cycle time when it was suspended for a sample
   HANDLE stackwalker_thread;
   HANDLE scheduler_thread;
   CONTEXT unwind_context;
@@ -1567,6 +1582,26 @@ static void hzstd_profiling_drain_perf_ring(hzstd_profiling_context_t *context, 
     else if (header.type == PERF_RECORD_THROTTLE) {
       context->perf_throttle_count++;
     }
+    else if (header.type == PERF_RECORD_SWITCH) {
+      // The body is only the sample_id: PERF_SAMPLE_TIME.
+      uint64_t timeNs = 0;
+      hzstd_profiling_perf_ring_read(data, data_size, &tail, &timeNs, sizeof(timeNs));
+      if (context->os_switch_count == context->os_switch_capacity) {
+        size_t capacity = context->os_switch_capacity ? context->os_switch_capacity * 2 : 1024;
+        hzstd_profiling_os_switch_t *grown
+            = realloc(context->os_switches, capacity * sizeof(hzstd_profiling_os_switch_t));
+        if (grown == NULL) {
+          hzstd_trap_ccstr("Out of memory recording the profiled thread's context switches");
+        }
+        context->os_switches = grown;
+        context->os_switch_capacity = capacity;
+      }
+      context->os_switches[context->os_switch_count++] = (hzstd_profiling_os_switch_t) {
+        .time_ns = timeNs,
+        .out = (header.misc & PERF_RECORD_MISC_SWITCH_OUT) != 0,
+        .preempted = (header.misc & PERF_RECORD_MISC_SWITCH_OUT_PREEMPT) != 0,
+      };
+    }
     else if (header.type == PERF_RECORD_UNTHROTTLE) {
       context->perf_unthrottle_count++;
     }
@@ -1661,6 +1696,7 @@ static DWORD WINAPI hzstd_profiling_stackwalker_thread(LPVOID _context)
 
     hzstd_profiling_raw_sample_t sample = { 0 };
     sample.timestamp = context->sample_started_at;
+    sample.cpu_ticks = context->sample_cpu_ticks;
 
     while (StackWalk64(machineType,
                        hProcess,
@@ -1742,6 +1778,8 @@ static void hzstd_profiling_invoke_sampling(hzstd_profiling_context_t *context)
   // Taken as close to the suspension point as possible.
   double startedAt = hzstd_time_now();
   context->sample_started_at = startedAt;
+  ULONG64 cycles = 0;
+  context->sample_cpu_ticks = QueryThreadCycleTime(context->profiled_thread_handle, &cycles) ? cycles : 0;
 
   context->unwind_context.ContextFlags = CONTEXT_FULL;
   if (!GetThreadContext(context->profiled_thread_handle, &context->unwind_context)) {
@@ -1780,14 +1818,24 @@ static DWORD WINAPI hzstd_profiling_scheduler_thread(LPVOID _context)
 {
   hzstd_profiling_context_t *context = _context;
   hzstd_setup_panic_handler();
+  // One high-resolution timer for the whole session: a plain waitable timer
+  // waits in the clock's 15.6 ms steps, which caps the rate near 64 Hz.
+  HANDLE timer = CreateWaitableTimerExW(NULL, NULL, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+  if (timer == NULL) {
+    hzstd_panic("Could not create the sampling profiler's timer");
+  }
   while (!atomic_load(&context->stop_scheduler)) {
     uint64_t interval_ns = 1000000000ull / context->sampling_rate_hz;
-    hzstd_os_thread_block_ns(interval_ns);
+    LARGE_INTEGER due;
+    due.QuadPart = -(int64_t)(interval_ns / 100);
+    SetWaitableTimer(timer, &due, 0, NULL, NULL, FALSE);
+    WaitForSingleObject(timer, INFINITE);
     hzstd_profiling_invoke_sampling(context);
     // This thread is never suspended for sampling, so growing `samples` here is
     // always safe.
     hzstd_profiling_drain_ring(context);
   }
+  CloseHandle(timer);
   hzstd_profiling_drain_ring(context);
   return 0;
 }
@@ -1986,6 +2034,11 @@ hzstd_profiling_start(int sampling_rate_hz, bool memoryInstrumentation, bool mem
   // on the first sample drained, by hzstd_profiling_samples_append.
   hzstd_profiling_context_t newContext = { 0 };
   newContext.session_start_time = hzstd_time_now();
+  hzstd_task_t *startingTask = hzstd_current_task();
+  if (startingTask == NULL) {
+    hzstd_panic("A profiling session can only start in a task");
+  }
+  newContext.haze_thread = (hzstd_int_t)startingTask->thread->id;
 #ifdef HAZE_PLATFORM_LINUX
   newContext.tid = hzstd_profiling_get_current_thread_id();
   newContext.pid = hzstd_profiling_get_current_process_id();
@@ -2133,6 +2186,13 @@ hzstd_profiling_start(int sampling_rate_hz, bool memoryInstrumentation, bool mem
   // Every single sample makes the fd immediately pollable -- see
   // hzstd_profiling_reader_thread.
   attr.wakeup_events = 1;
+  // The thread's context switches (docs/profiler-timelines.md): a
+  // PERF_RECORD_SWITCH per switch in and out, with the time (sample_id_all
+  // appends the sample_type's PERF_SAMPLE_TIME to every record that is not a
+  // sample) and PERF_RECORD_MISC_SWITCH_OUT_PREEMPT for a forced one.
+  // Unprivileged for the process's own threads.
+  attr.context_switch = 1;
+  attr.sample_id_all = 1;
 
   long fd = syscall(SYS_perf_event_open, &attr, (pid_t)context->tid, -1, -1, PERF_FLAG_FD_CLOEXEC);
   if (fd < 0) {
@@ -2287,10 +2347,17 @@ hzstd_profiling_start(int sampling_rate_hz, bool memoryInstrumentation, bool mem
   if (context->scheduler_thread == NULL) {
     hzstd_panic("Failed to create profiling scheduler thread");
   }
+  // The sampler must take the CPU from the code it samples, or a busy program
+  // (the very thing to profile) starves it: with more busy threads than CPUs
+  // it got 1 to 23 of 300 samples in 0.3 s. Time critical is the highest
+  // priority of the normal class, no rights needed.
+  SetThreadPriority(context->scheduler_thread, THREAD_PRIORITY_TIME_CRITICAL);
+  SetThreadPriority(context->stackwalker_thread, THREAD_PRIORITY_TIME_CRITICAL);
 
   g_profiling_context = context;
 #endif
 
+  hzstd_sched_trace_begin();
   return context;
 }
 
@@ -3261,7 +3328,8 @@ static size_t hzstd_profiling_intern_frame(hzstd_profiling_frame_table_t *frames
 // walked them in).
 static hzstd_profiling_sample_t hzstd_profiling_build_sample(hzstd_profiling_frame_table_t *resultFrames,
                                                              hzstd_profiling_frame_index_t *frameIndex,
-                                                             hzstd_profiling_raw_sample_t raw)
+                                                             hzstd_profiling_raw_sample_t raw,
+                                                             hzstd_int_t thread)
 {
   hzstd_dynamic_array_t *frameIndices
       = HZSTD_DYNAMIC_ARRAY_CREATE(hzstd_make_heap_allocator(), hzstd_int_t, raw.depth, NULL);
@@ -3277,7 +3345,44 @@ static hzstd_profiling_sample_t hzstd_profiling_build_sample(hzstd_profiling_fra
     .frames = frameIndices,
     .truncated = raw.truncated,
     .lost_before = (hzstd_int_t)raw.lost_before,
+    .thread = thread,
+    .cpu = raw.cpu_ticks != 0 ? (double)raw.cpu_ticks * hzstd_cpu_seconds_per_tick() : -1.0,
   };
+}
+
+// By thread, then time; equal times keep their order (the merge sort is
+// stable): a run that ends and the next that begins at the same instant stay
+// in the order they happened.
+static void hzstd_profiling_sort_sched_events(hzstd_dynamic_array_t *events)
+{
+  size_t n = hzstd_dynamic_array_size(events);
+  if (n < 2) {
+    return;
+  }
+  hzstd_profiling_sched_event_t *a = (hzstd_profiling_sched_event_t *)events->buffer;
+  hzstd_profiling_sched_event_t *tmp = malloc(n * sizeof(hzstd_profiling_sched_event_t));
+  if (tmp == NULL) {
+    hzstd_trap_ccstr("Out of memory sorting the scheduler's record");
+  }
+  for (size_t width = 1; width < n; width *= 2) {
+    for (size_t lo = 0; lo < n; lo += 2 * width) {
+      size_t mid = lo + width < n ? lo + width : n;
+      size_t hi = lo + 2 * width < n ? lo + 2 * width : n;
+      size_t i = lo, j = mid, k = lo;
+      while (i < mid && j < hi) {
+        bool takeRight = a[j].thread < a[i].thread || (a[j].thread == a[i].thread && a[j].time < a[i].time);
+        tmp[k++] = takeRight ? a[j++] : a[i++];
+      }
+      while (i < mid) {
+        tmp[k++] = a[i++];
+      }
+      while (j < hi) {
+        tmp[k++] = a[j++];
+      }
+    }
+    memcpy(a, tmp, n * sizeof(hzstd_profiling_sched_event_t));
+  }
+  free(tmp);
 }
 
 hzstd_profiling_result_t hzstd_profiling_end(hzstd_profiling_context_t *context)
@@ -3320,6 +3425,30 @@ hzstd_profiling_result_t hzstd_profiling_end(hzstd_profiling_context_t *context)
 #endif
 
   hzstd_pop_memory_instrumentation(context->prevMemoryInstrumentationState);
+
+  // The scheduler's record, on the samples' timeline, with the kernel's
+  // switch records of the profiled thread (Linux), each thread's events in
+  // time order.
+  hzstd_profiling_result_t timeline = { 0 };
+  hzstd_sched_trace_end(&timeline, context->memoryInstrumentationTimeRef);
+#ifdef HAZE_PLATFORM_LINUX
+  for (size_t i = 0; i < context->os_switch_count; i++) {
+    const hzstd_profiling_os_switch_t *sw = &context->os_switches[i];
+    hzstd_profiling_sched_event_t event = {
+      .thread = context->haze_thread,
+      .time = (double)((int64_t)sw->time_ns - (int64_t)context->perf_time_ref_ns) / 1e9,
+      .kind = sw->out ? HZSTD_SCHED_EVENT_OS_OUT : HZSTD_SCHED_EVENT_OS_IN,
+      .task = 0,
+      .reason = sw->out && sw->preempted ? 1 : 0,
+      .cpu = -1.0,
+    };
+    HZSTD_DYNAMIC_ARRAY_PUSH(timeline.schedEvents, event);
+  }
+  free(context->os_switches);
+  context->os_switches = NULL;
+  context->os_switch_count = context->os_switch_capacity = 0;
+#endif
+  hzstd_profiling_sort_sched_events(timeline.schedEvents);
 
   // Taken right here, not after the postprocessing below -- sampling has
   // truly stopped by this point (the reader thread, and on Windows the
@@ -3520,7 +3649,7 @@ hzstd_profiling_result_t hzstd_profiling_end(hzstd_profiling_context_t *context)
     raw.timestamp = (double)((int64_t)timeNs - (int64_t)context->perf_time_ref_ns) / 1e9;
     raw.lost_before = lostBefore;
 
-    hzstd_profiling_sample_t sample = hzstd_profiling_build_sample(&frameTable, &frameIndex, raw);
+    hzstd_profiling_sample_t sample = hzstd_profiling_build_sample(&frameTable, &frameIndex, raw, context->haze_thread);
     HZSTD_DYNAMIC_ARRAY_PUSH(samples, sample);
     processedCount++;
     HZSTD_PROFILING_REPORT_PROGRESS(processedCount == context->sample_count);
@@ -3539,7 +3668,8 @@ hzstd_profiling_result_t hzstd_profiling_end(hzstd_profiling_context_t *context)
 #elif defined(HAZE_PLATFORM_WIN32)
   for (hzstd_profiling_sample_chunk_t *chunk = context->samples_head; chunk != NULL; chunk = chunk->next) {
     for (size_t i = 0; i < chunk->count; i++) {
-      hzstd_profiling_sample_t sample = hzstd_profiling_build_sample(&frameTable, &frameIndex, chunk->entries[i]);
+      hzstd_profiling_sample_t sample
+          = hzstd_profiling_build_sample(&frameTable, &frameIndex, chunk->entries[i], context->haze_thread);
       HZSTD_DYNAMIC_ARRAY_PUSH(samples, sample);
       processedCount++;
       HZSTD_PROFILING_REPORT_PROGRESS(processedCount == context->sample_count);
@@ -3823,5 +3953,8 @@ hzstd_profiling_result_t hzstd_profiling_end(hzstd_profiling_context_t *context)
     .samples = samples,
     .sampling_rate_hz = achievedRateHz,
     .memoryInstrumentationFrames = memoryInstrumentationFrames,
+    .threads = timeline.threads,
+    .tasks = timeline.tasks,
+    .schedEvents = timeline.schedEvents,
   };
 }
