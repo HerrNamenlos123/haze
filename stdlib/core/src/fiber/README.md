@@ -207,9 +207,9 @@ hzstd uses the library since stage 3 of `docs/async-implementation-plan.md`
 (`stdlib/core/src/hzstd/src/hzstd_sched.c`; decisions S3-* in `docs/async-decisions.md`).
 
 1. **Windows x64: done** (a23e0f60). `--deep` passes on a real Windows x64 machine: 85 checks,
-   39 of them mutants. Still open there: the check "compiles inside Haze's generated stdlib
-   module" is NOT RUN until a Haze program is built in that checkout. Windows ARM64 has never run
-   (it needs an ARM64 Windows machine, same command).
+   39 of them mutants. The check "compiles inside Haze's generated stdlib module" passed there
+   on 2026-11-23 (default suite, after a Haze build in that checkout). Windows ARM64 has never
+   run (it needs an ARM64 Windows machine, same command).
 2. **Compiled into hzstd: done** (`hzstd_main.c`).
 3. **Compiler flags: done** on Linux: `-fstack-clash-protection` (ModuleCompiler.ts). Never add
    `-fcf-protection=return|full`, `-mbranch-protection=standard` (GCS) or `-fsanitize=thread`: the
