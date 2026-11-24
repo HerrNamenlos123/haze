@@ -112,8 +112,6 @@ struct hzstd_sched_t {
   hzstd_task_t *_Atomic inbox_head;
   hzstd_task_t *inbox_tail;
   uv_async_t wake;
-  // Under g_hzstd_threads_lock: the thread waits for nothing but other threads.
-  bool idle;
   hzstd_sched_t *next; // g_hzstd_scheds
   uint64_t os_tid;     // the operating system's id of the thread
   // Where the panic worker writes the report of a panic on this thread that a
@@ -2082,11 +2080,9 @@ static void hzstd_threads_live_enter(void)
 static void hzstd_sched_idle_wait(hzstd_sched_t *s)
 {
   uv_mutex_lock(&g_hzstd_threads_lock);
-  s->idle = true;
   g_hzstd_threads_idle++;
   if (g_hzstd_threads_idle == g_hzstd_threads_live && hzstd_exit_status() < 0 && !hzstd_some_inbox_holds_tasks()) {
     bool alone = g_hzstd_threads_live == 1;
-    s->idle = false;
     g_hzstd_threads_idle--;
     uv_mutex_unlock(&g_hzstd_threads_lock);
     if (alone) {
@@ -2101,7 +2097,6 @@ static void hzstd_sched_idle_wait(hzstd_sched_t *s)
   hzstd_trace_note(s, HZSTD_SCHED_EVENT_LOOP_END, 0, 1);
   uv_unref((uv_handle_t *)&s->wake);
   uv_mutex_lock(&g_hzstd_threads_lock);
-  s->idle = false;
   g_hzstd_threads_idle--;
   uv_mutex_unlock(&g_hzstd_threads_lock);
 }
