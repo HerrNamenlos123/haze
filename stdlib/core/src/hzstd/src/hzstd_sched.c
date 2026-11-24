@@ -12,9 +12,17 @@
 // once no task that keeps it alive is left (C236, C434); the background tasks
 // still there are killed then (C435, C437).
 //
-// Stacks come from fiber.h (8 MiB reserved, 64 KiB guard, committed on first
-// touch; section 7), reused through a small per-thread pool. A task gets its
-// stack when it first runs, so tasks that never run never reserve one.
+// Threads (S5-10, S5-11): every thread.spawn starts an OS thread with its own
+// scheduler; a task never leaves its thread (C220). Threads meet only in the
+// future, mutex and flag cores, which are locked; a task readied by another
+// thread goes through its own thread's inbox ("Locks and cross-thread
+// wake-ups"). The process ends once every thread has ("Threads of the
+// process").
+//
+// Stacks come from fiber.h (8 MiB reserved unless thread.spawn's stackSize
+// says otherwise, 64 KiB guard, committed on first touch; section 7), reused
+// through a small per-thread pool. A task gets its stack when it first runs,
+// so tasks that never run never reserve one.
 //
 // The GC (section 8): BDWGC scans each thread's own stack from the stack
 // pointer it captured. On a task stack that pointer belongs to another
@@ -111,8 +119,7 @@ struct hzstd_sched_t {
   // Where the panic worker writes the report of a panic on this thread that a
   // task can recover from, and of sys.buildStacktrace (hzstd_types.h, raw
   // reports): malloc memory owned by the scheduler, never reachable from
-  // Haze. Made with the scheduler; a thread's scheduler lives as long as the
-  // thread (stage 5 frees it with the thread).
+  // Haze. Made with the scheduler, freed with it when the thread ends.
   hzstd_raw_report_t *panic_report;
   // A profiling session's record of this thread (hzstd_sched_trace_*); only
   // this thread writes it while a session runs.

@@ -958,6 +958,105 @@ task-local storage (TL-1 to TL-7), `private` members (S0-17), the `tasklocal`/`g
   core are `unsafe crossthread` wrappers of their C cores (S5-4); `Future<T>` is an atomic opaque
   ref struct with that core and an unsafe result field (S5-8).
 
+### Runtime lane (2026-11-24, branch stage5-runtime; decided while building, for review)
+
+- **S5-R1. Cross-thread wake-ups: a lock per core, an inbox per scheduler, readying under the
+  core's lock.** Every future, mutex and flag core has a spin lock (`hzstd_core_lock`: it gives the
+  CPU away after 64 spins, in case the holder was preempted), held for every change of the core and
+  its wait queues, and while the tasks the change wakes are readied: a task of the calling thread
+  goes into its ready queue, one of another thread into that thread's inbox (a list under a
+  `uv_mutex_t`, which the pusher holds across `uv_async_send`). So a waiting task is always in its
+  queue or its thread's inbox under a lock, never between them; the kill path relies on that. A
+  scheduler drains its inbox only at the top of a loop turn, between tasks, and only the task's own
+  thread changes its state (READY when drained). A task keeps `waiting_in` until it resumes
+  (`in_queue` says whether it is still linked), so a kill that takes the queue's lock knows a push
+  into its inbox is done. A thread that ends first takes every task out of its queue, then drains
+  its inbox, then kills (`hzstd_sched_kill_all`), then leaves the scheduler list, and only then
+  closes its wake-up handle and loop. Mutex fields only the owner touches (`depth`, `locked_at`,
+  `poisoned` while it holds the mutex) need no lock; whether the caller owns it is one atomic load
+  (only the owner makes itself the owner or stops being it). The profiler's "why the run ended"
+  reads `wait_reason`, which the waiting task sets, not `waiting_in`, which another thread may be
+  changing. Rejected: pushing into the inbox after the core lock is released (needs an in-flight
+  count per scheduler for the kill path); a `uv_mutex_t` per core (Windows' CRITICAL_SECTION needs
+  a destructor, cores are GC memory); a lock-free inbox (an append under an uncontended lock, and
+  pushes are rare next to local readies). Found while building, test-first: the kill took a task
+  that another thread had just taken out of its queue without that queue's lock, so the thread could
+  end before the push into its inbox (red under ASan with the push delayed 200 us: `uv_mutex_lock`
+  aborted on the ended thread's inbox); and the end closed its wake-up handle while an exit
+  broadcast could still reach it.
+- **S5-R2. When a thread is unwakeable.** A thread is idle when nothing on it is ready, its event
+  loop holds no work (the wake-up handle is unreferenced except while idle) and its inbox is empty:
+  only another thread can wake it. Whoever makes every live thread idle while no inbox holds a task
+  and no exit has begun panics with a deadlock: no code runs anywhere that could ready a task. With
+  one thread this is exactly the stage 3 rule and message; with several the message says "every
+  task on every thread". Live threads (`g_hzstd_threads_live`): a spawned thread from its spawn
+  (counted by the spawner, so the main thread never sees zero in between) until it has ended
+  completely; the main thread until its loop ends, and again while its end hook runs. A thread that
+  ends wakes the idle ones, which check again. Rejected: a thread blocking forever while any other
+  thread exists (a deadlock across threads would hang instead of failing loudly, C419).
+- **S5-R3. Per-thread globals reuse the task-local mechanism**, not a parallel one: the same
+  descriptor (`hzstd_tl_desc_t`), the same registry type and block lookup (`hzstd_block_slow`) with
+  a second index space (`g_tg_registry`), the block table first in `hzstd_thread_t`
+  (`global_blocks`, `global_capacity`, as TL-4 has it in the task), `HZSTD_TG_FIELD` beside
+  `HZSTD_TL_FIELD`; one emitter in CodeGenerator.ts (`emitStorageBlock`) for both blocks, and
+  `storage: "task" | "thread"` on the lowered symbol (was `taskLocal`). HZSTD_TL_ABI_VERSION is 2.
+  What is per thread: a module-level `let`. A `const` stays one C global, as does `global let`
+  (atomic, lane C) and `global const`. Reading one outside a function is H7236
+  (`TaskLocalOutsideFunction`, a message of its own): the same mistake as for a task-local, and
+  ErrorCodes.ts is lane C's; integration may give it a code of its own (the code's comment names
+  task-locals only). Across modules no module knows another's layout: each module's code finds its
+  own block through its own descriptor, and another module reads a library's global through the
+  library's functions. Found, not changed (outside this lane's files): a library's exported global
+  cannot be named from another module at all (H7105): Collect drops `export` and `extern` on
+  global variables (SymbolCollection.ts `collectGlobalDirective`, SemanticBuilder `variableSymbol`
+  sets them to false), and Export.ts writes no globals into import.hz; so `extern C let` is a plain
+  `let` too and is per thread now (the only one, filesystem.hz `_globalFilesystemContext`, is Haze
+  state that is right per thread). Initializers stay C constant images: `let xs: mut []str = [];`
+  at module level never compiled (a statement expression at file scope) and still does not.
+- **S5-R4. stackSize is 64 KiB to 1 GiB**, checked at the spawn in hzstd (the message names the
+  option and the bounds). 64 KiB: the Windows fiber minimum, room for hzstd's own frames and the
+  signal frames that run on a task stack (the stall signal, the collector's suspend signal).
+  1 GiB: against typos; a stack is reserved address space, committed on first touch. Every task of
+  the thread gets it (the thread's stack pool holds only that size).
+- **S5-R5. The panic gate waits for another thread's report.** A panic while another thread's
+  recoverable panic was being reported parked the thread forever (red: 3 of 4 threads parked in
+  `hzstd_block_thread_forever` from `hzstd_panic_with_stacktrace`). Now a request waits for the
+  gate; it parks only when the report in progress ends the process, or is its own thread's (a
+  fault inside the panic path). Linux and Windows the same.
+- **S5-R6. The profiler's record with several threads** (docs/profiler-timelines.md P-10). Only a
+  thread writes its own buffer: it joins a session at its first event in it (its old record goes,
+  its tasks are noted as known, a task it was running when the session began gets a run from the
+  session's start with the CPU clock the session's start read for it). A thread that ends during a
+  session hands its record over under the list lock. The session's end stops every writer by a
+  handshake (`trace_writing` against `g_hzstd_trace_on`, both sequentially consistent), closes the
+  run another thread still has open (reason "session", that thread's CPU clock), and merges every
+  record. A spawn is noted before the task enters the registry, so a thread joining at its first
+  task's spawn does not note it twice. Not done: the sampler still samples only the thread that
+  started the session (CPU samples of other threads, P-10's remainder).
+- **S5-R7. Future.complete boxes the value, claims the future, stores the value, settles it**
+  (S5-14). The claim (under the core's lock) keeps C444's "the first value stays" across threads: a
+  second complete panics before it overwrites anything; boxing first means an allocation that fails
+  changes nothing. A kill leaves a claimed future to its completer. Red before: a joiner polling
+  `isDone` on another thread read no value ("Unreachable code path was reached" in `join`, 8 of 8
+  runs with a 520-byte value).
+- **S5-R8. sys.exit and an uncaught panic across threads.** sys.exit sets the status (first wins),
+  then under the list lock sets every scheduler's `stopping` and wakes it; a scheduler registered
+  later starts stopped. Each stops at its next switch and kills its tasks; the main thread waits for
+  every thread, runs its end hook (its own flag reset first) and returns the status. An uncaught
+  panic on any thread ends the process as on the main thread: the worker prints the report and ends
+  it with 255 (or the started exit's status), at once. "The cleanup of every thread" (C227) has
+  nothing to run yet: the public cleanup API does not exist (contract section 2). Rejected:
+  stopping every thread first (a thread that never switches would keep a failed process alive, and
+  the other threads would go on after a failure).
+- **S5-R9. A spawned thread's own structures** (`hzstd_thread_t`, the start record) are
+  uncollectable GC memory, scanned, freed by the thread when it ends; the spawner assigns the
+  thread's id (ids follow spawn order). The new thread sets up its own signal stack
+  (`hzstd_setup_panic_handler`, per thread; on Windows its vectored handler is now registered once
+  per process: every Haze thread calls the function, and each registration ran the handler once
+  more per exception) and its scheduler, then spawns the body as its first task with the default
+  settings (C479). Windows: written from the existing win32 code (CreateThread is GC_CreateThread
+  there), not built or run (no Windows here).
+
 ## Tooling
 
 - **G-1. The parser-equivalence sweep reads what the commit and the run decide** (user,
@@ -975,6 +1074,12 @@ task-local storage (TL-1 to TL-7), `private` members (S0-17), the `tasklocal`/`g
   behaviour; nothing here decides C454.
 
 ## What no longer compiles on this branch
+
+**After stage 5 (runtime lane):** nothing more stops compiling (no `__c__` in the tree names a
+Haze symbol by its C name, so none names a module-level `let`, which is no C global any more; and
+an initializer reading a `let` never compiled: it was a C error, now it is H7236). What changed in
+behaviour, for every program: every module-level `let` exists once per thread, and the process ends
+only once every thread has ended.
 
 **After stage 3:** nothing more stops compiling (no code outside stdlib/core named
 `os_sleep_ns` or `hzstd_reserve_panic_recovery_frames`; a C function named `yieldAfter` would

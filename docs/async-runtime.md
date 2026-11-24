@@ -106,8 +106,9 @@ only where noted.
   keep its thread alive (C304, C435).
 * `thread.spawn(() => { ... }, { stallWarning: true, stackSize })` returns a `Future<T>` that
   completes when the lambda returns (C572). Options: `stallWarning` (default `true`; the warning names
-  this option, C290 to C292) and `stackSize` (overrides the default stack size). The new thread starts
-  blank (C479, C518). Logging to the parent (C514) is not part of the first implementation.
+  this option, C290 to C292) and `stackSize` (the stack of every task of the thread instead of the
+  default 8 MiB; 64 KiB to 1 GiB, docs/async-decisions.md S5-R4). The new thread starts blank (C479,
+  C518). Logging to the parent (C514) is not part of the first implementation.
 * `Future<T>`: one type for tasks and threads (C387), roughly Java's API unless real use shows a need
   for something else: `join()` suspends only the joining task (C256) and returns a result whose error
   case covers a killed task and a function that never ran (C438, C561); it must be impossible to
@@ -355,10 +356,13 @@ initializes each slot (C285 copies the parent's values; runtime state such as th
 watcher must not be inherited) belongs to the same design. The implementer designs and builds it
 right after stage 1 and reports the design afterwards (user, 2026-11-17).
 
-**Per-thread globals** start from their initial values on every new thread (C518). Initializers
-are C constant expressions today (`src/Semantic/Elaborate.ts` ~14829), so a new thread copies a
-constant image: no initializer code runs and no access is checked. Revisit when C570 allows
-initializers to call functions.
+**Per-thread globals** start from their initial values on every new thread (C518). [Fact, stage 5,
+docs/async-decisions.md S5-R3] A module-level `let` is a field of its module's per-thread block,
+found like a task-local block (two loads and two checks inline) in the thread's own table, with an
+index space of its own; a thread's block is made from the module's initial image on its first
+access. Initializers are C constant expressions (`src/Semantic/Elaborate.ts` ~14829), so the image
+is constant: no initializer code runs, and reading a per-thread variable in one is an error
+(H7236). Revisit when C570 allows initializers to call functions.
 
 User direction (2026-10-20):
 * Per-task globals live behind the context's runtime data, a fixed C type usable everywhere; task
@@ -490,9 +494,12 @@ static void on_fs_done(uv_fs_t *req) { hzstd_task_ready(req->data); }   // insid
 * Optimization: when a task suspends and another is ready, switch task to task directly.
 
 **Spawning (C384):** `task.spawn` only enqueues the new task; it starts when the spawner suspends.
-**Cross-thread:** each scheduler has an inbox (MPSC queue) plus a `uv_async_t`. Another thread pushes a
-message (spawn this, this task is ready because the future it joined was completed) and calls
-`uv_async_send`, the only thread-safe libuv function.
+**Cross-thread:** each scheduler has an inbox plus a `uv_async_t`. [Fact, stage 5,
+docs/async-decisions.md S5-R1] The inbox is a locked list of tasks other threads readied (a task is
+readied out of a future's, mutex's or flag's wait queue, under that core's lock); the pusher calls
+`uv_async_send`, the only thread-safe libuv function, which ends the loop's wait. The scheduler drains
+the inbox into its ready queue between tasks only. Nothing else crosses: a thread spawns tasks only
+on itself.
 
 ### 5.2 Events and the main thread
 
@@ -524,7 +531,10 @@ int32_t main(int argc, const char *argv[]) {
   only their cleanup runs (C437). The process ends on exit or when all threads have ended (C237).
 * `thread.spawn(fn)` creates a GC-registered thread with a blank context (C479), initializes its
   scheduler and runs `fn` as its first task; the thread's future completes when `fn` returns
-  (C572).
+  (C572). The main thread, once its own loop has ended, waits for every other thread to end, then
+  runs its end hook and returns the exit status (docs/async-decisions.md S5-R2, S5-R8). A thread
+  with nothing to do waits for other threads; when every live thread does and none can be woken, the
+  process panics with a deadlock (S5-R2).
 
 ### 5.4 Blocking calls
 
