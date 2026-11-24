@@ -1,0 +1,452 @@
+// ============================================================================
+// The crossing rule (docs/async-decisions.md S5-1 to S5-4; Axiom C147, C264,
+// C274 to C277, C462 to C467, C591 to C603): which values may reach another
+// thread, every place the compiler checks it, the queries, `crossthread`.
+//
+// The probe is a function taking a `crossthread` closure, the parameter type
+// thread.spawn has: converting a lambda to it checks every capture, every
+// parameter and the result. Each kind of data that must not cross gets its own
+// compile-fail case with the code and the path the message names; what does
+// cross is bundled into run() cases.
+// ============================================================================
+
+namespace cases_crossing {
+
+    // Fails with exactly one H7238 whose message contains every `parts`.
+    fn noCross(s: mut testsuite.Suite, name: str, source: str, parts: []str) {
+        let checks: mut []testsuite.ErrorCheck = [
+            testsuite.exactCount(errorcodes.Code.CannotCrossThreads, 1),
+            testsuite.totalErrors(1),
+        ];
+        for p in parts {
+            checks.push(testsuite.messageContains(p));
+        }
+        s.compileFails(name, source, checks);
+    }
+
+    fn fails(s: mut testsuite.Suite, name: str, source: str, code: errorcodes.Code, part: str) {
+        s.compileFails(name, source, [
+            testsuite.exactCount(code, 1),
+            testsuite.totalErrors(1),
+            testsuite.messageContains(part),
+        ]);
+    }
+
+    export fn register(s: mut testsuite.Suite) {
+
+        // ── S5-1: what crosses ──────────────────────────────────────────────
+        s.run("crossing: values, const data, atomic data, promised structs, crossthread closures, recursive and generic types", """
+enum Mode { A, B }
+struct Point { x: int; y: real; }
+struct Line { start: Point; end: Point; label: str; mode: Mode; }
+ref struct Config { name: str = "cfg"; limits: []int = [1, 2]; }
+atomic opaque ref struct Counter {
+    n: atomic int = 0;
+    const label: str = "c";
+    fn constructor(): mut Counter { return Counter {}; }
+}
+// A C handle its author vouches for (S5-4, C171).
+unsafe crossthread struct Handle { raw: cptr; }
+// Recursive through const data and through an atomic struct (coinductive).
+ref struct Tree { value: int = 0; children: []Tree = []; }
+atomic opaque ref struct Chain {
+    const value: int = 0;
+    links: mut atomic []Chain = [];
+    fn constructor(): mut Chain { return Chain {}; }
+}
+struct Pair<A, B> { a: A; b: B; }
+fn twice(x: int): int { return x * 2; }
+
+fn send<T>(body: crossthread () => T): T { return body(); }
+
+fn main(): int {
+    let i = 40;
+    let r = 0.5;
+    let b = true;
+    let text = "hi";
+    let mode = Mode.B;
+    let line = Line { start: Point { x: 1, y: 0.0 }, end: Point { x: 2, y: 1.0 }, label: "l", mode: Mode.A };
+    let fixed: [2]Point = [Point { x: 3, y: 0.0 }, Point { x: 4, y: 0.0 }];
+    let either: int | str = "e";
+    let cfg: const Config = Config {};
+    let numbers: const []int = [5, 6];
+    let counter = Counter();
+    let handle = Handle { raw: none };
+    let tree: const Tree = Tree { value: 7, children: [Tree { value: 8 }] };
+    let chain = Chain();
+    chain.links.push(Chain());
+    let pair: Pair<int, str> = { a: 9, b: "p" };
+    let job: crossthread () => int = () => i + 1;
+    let fnValue: (x: int) -> int = twice;
+    let total = send(() => {
+        counter.n += 1;
+        return i + line.end.x + fixed[1].x + numbers[1] + cfg.limits[0] + tree.children[0].value + pair.a + job() + fnValue(1) + counter.n;
+    });
+    let words = send(() => f"{text} {r} {b} {mode == Mode.B} {either is str} {cfg.name} {handle.raw is cptr} {chain.links.length}");
+    fmt.println(f"{total} {words}");
+    return 0;
+}
+""", "114 hi 0.5 true true true cfg true 1");
+
+        s.run("crossing: the queries", """
+ref struct Box { v: int = 0; }
+atomic opaque ref struct Counter { n: atomic int = 0; }
+unsafe crossthread struct Handle { raw: cptr; }
+atomic opaque ref struct Cell<T> {
+    private unsafe value: T;
+}
+struct Holder { s: stackref Box; }
+type ConstBox = const Box;
+type Ints = []int;
+type AtomicInts = atomic []int;
+type ConstInts = const []int;
+type Closure = () => int;
+type Job = crossthread () => int;
+type Either = int | Box;
+type StackBox = stackref Box;
+type Holders = []Holder;
+type MaybeStack = int | stackref Box;
+type IntCell = Cell<int>;
+type IntsCell = Cell<[]int>;
+type CounterCell = Cell<Counter>;
+fn yes(b: bool): str { return b ? "y" : "n"; }
+
+fn main(): int {
+    // T.crossesThreads (S5-1, S5-3)
+    fmt.println(f"{yes(int.crossesThreads)}{yes(str.crossesThreads)}{yes(cptr.crossesThreads)}{yes(Box.crossesThreads)}{yes(ConstBox.crossesThreads)}{yes(Counter.crossesThreads)}{yes(Handle.crossesThreads)}{yes(Ints.crossesThreads)}{yes(AtomicInts.crossesThreads)}{yes(ConstInts.crossesThreads)}{yes(Closure.crossesThreads)}{yes(Job.crossesThreads)}{yes(Either.crossesThreads)}");
+    // An atomic struct crosses when its generic arguments do (S5-8).
+    fmt.println(f"{yes(IntCell.crossesThreads)}{yes(IntsCell.crossesThreads)}{yes(CounterCell.crossesThreads)}");
+    // T.isAtomic: atomic arrays and atomic structs; an atomic field reads as
+    // its plain type.
+    fmt.println(f"{yes(Counter.isAtomic)}{yes(AtomicInts.isAtomic)}{yes(Ints.isAtomic)}{yes(Box.isAtomic)}{yes(int.isAtomic)}");
+    // T.capturableByTask: no stack reference anywhere in it.
+    fmt.println(f"{yes(Box.capturableByTask)}{yes(StackBox.capturableByTask)}{yes(Holder.capturableByTask)}{yes(Holders.capturableByTask)}{yes(MaybeStack.capturableByTask)}");
+    return 0;
+}
+""", "yynnyyynyynyn\nyny\nyynnn\nynnnn");
+
+        // ── S5-1: what never crosses, one case per kind ─────────────────────
+        noCross(s, "crossing: a cptr never crosses", """
+fn send(body: crossthread () => none) { body(); }
+fn main(): int {
+    let p: cptr = none;
+    send(() => { let q = p; }); // <- H7238
+    return 0;
+}
+""", ["its capture 'p' is 'cptr', a raw C pointer, which never crosses threads"]);
+
+        noCross(s, "crossing: a C string pointer never crosses", """
+struct Named { name: ccstr; }
+fn send(body: crossthread () => none) { body(); }
+fn main(): int {
+    let n = Named { name: "x" };
+    send(() => { let m = n; }); // <- H7238
+    return 0;
+}
+""", ["its capture 'n' is", "whose field 'name' is 'ccstr', a raw C pointer"]);
+
+        noCross(s, "crossing: a regular expression never crosses", """
+fn send(body: crossthread () => none) { body(); }
+fn main(): int {
+    let re = r"a+b";
+    send(() => { let x = re; }); // <- H7238
+    return 0;
+}
+""", ["its capture 're' is 'Regex', a regular expression, which is not known to be thread safe"]);
+
+        noCross(s, "crossing: a value struct fails on a member, with the path", """
+ref struct Logger { lines: []str = []; }
+struct Job { id: int; log: mut ref Logger; }
+fn send(body: crossthread () => none) { body(); }
+fn main(): int {
+    let job = Job { id: 1, log: Logger {} };
+    send(() => { let j = job; }); // <- H7238
+    return 0;
+}
+""", ["its capture 'job' is", "whose field 'log' is 'mut ref ", ".Logger', a reference to a struct that is not atomic"]);
+
+        noCross(s, "crossing: a reference to a struct that is not atomic", """
+ref struct Box { v: int = 0; }
+fn send(body: crossthread () => none) { body(); }
+fn main(): int {
+    let b = Box {};
+    send(() => { let w = b.v; }); // <- H7238
+    return 0;
+}
+""", ["its capture 'b' is", "a reference to a struct that is not atomic"]);
+
+        noCross(s, "crossing: const data fails on what its members hold as const", """
+ref struct Native { raw: cptr = none; }
+ref struct Wrapper { inner: Native = Native {}; }
+fn send(body: crossthread () => none) { body(); }
+fn main(): int {
+    let w: const Wrapper = Wrapper {};
+    send(() => { let x = w; }); // <- H7238
+    return 0;
+}
+""", ["its capture 'w' is 'const ", "whose field 'inner' is", "whose field 'raw' is", "a raw C pointer"]);
+
+        noCross(s, "crossing: a stack reference never crosses (as a parameter)", """
+struct Point { x: int; }
+fn send(body: crossthread (p: stackref Point) => none) {}
+fn main(): int {
+    send((p: stackref Point) => {}); // <- H7238
+    return 0;
+}
+""", ["its parameter 1 is 'stackref ", "a stack reference, which never leaves its thread"]);
+
+        noCross(s, "crossing: a plain dynamic array never crosses", """
+fn send(body: crossthread () => none) { body(); }
+fn main(): int {
+    let xs: []int = [1, 2];
+    send(() => { let n = xs.length; }); // <- H7238
+    return 0;
+}
+""", ["its capture 'xs' is '[](int)', a dynamic array that is neither atomic nor const"]);
+
+        noCross(s, "crossing: a fixed array fails on its element", """
+ref struct Box { v: int = 0; }
+fn send(body: crossthread () => none) { body(); }
+fn main(): int {
+    let boxes: [2]Box = [Box {}, Box {}];
+    send(() => { let b = boxes; }); // <- H7238
+    return 0;
+}
+""", ["its capture 'boxes' is", "whose element is", "a reference to a struct that is not atomic"]);
+
+        noCross(s, "crossing: a union fails on a variant", """
+ref struct Box { v: int = 0; }
+fn send(body: crossthread () => none) { body(); }
+fn main(): int {
+    let u: int | Box = 3;
+    send(() => { let w = u; }); // <- H7238
+    return 0;
+}
+""", ["its capture 'u' is", "whose variant is", "a reference to a struct that is not atomic"]);
+
+        noCross(s, "crossing: a tagged union fails on a variant, by its tag", """
+type Value = union { Num: int, Raw: cptr };
+fn send(body: crossthread () => none) { body(); }
+fn main(): int {
+    let t: Value = Value.Num(1);
+    send(() => { let w = t; }); // <- H7238
+    return 0;
+}
+""", ["its capture 't' is", "whose variant 'Raw' is 'cptr', a raw C pointer"]);
+
+        noCross(s, "crossing: a captured closure that is not crossthread", """
+fn send(body: crossthread () => none) { body(); }
+fn main(): int {
+    let n = 1;
+    let f = () => n;
+    send(() => { let x = f(); }); // <- H7238
+    return 0;
+}
+""", ["its capture 'f' is", "a closure whose type is not 'crossthread'"]);
+
+        noCross(s, "crossing: a closure value whose type is only a signature (C592)", """
+fn send(body: crossthread () => none) { body(); }
+fn main(): int {
+    let f = () => {};
+    send(f); // <- H7238
+    return 0;
+}
+""", ["its type is only a signature, which says nothing about what it captured (C592)"]);
+
+        noCross(s, "crossing: reactive state never crosses", """
+fn send(body: crossthread () => none) { body(); }
+fn main(): int {
+    let r = rx.reactive<int>(1);
+    send(() => { let v = r; }); // <- H7238
+    return 0;
+}
+""", ["its capture 'r' is", "reactive state, which belongs to one thread"]);
+
+        noCross(s, "crossing: the context fails on its members", """
+fn send(body: crossthread () => none) { body(); }
+fn main(): int {
+    let c = context;
+    send(() => { let d = c; }); // <- H7238
+    return 0;
+}
+""", ["its capture 'c' is 'Context', whose field 'allocator' is 'Allocator', a struct defined in C that shows none of what it holds"]);
+
+        noCross(s, "crossing: a TypeErasedBox fails on its members", """
+fn send(body: crossthread () => none) { body(); }
+fn main(): int {
+    let box = TypeErasedBox<int>(5);
+    send(() => { let b = box; }); // <- H7238
+    return 0;
+}
+""", ["its capture 'box' is 'TypeErasedBox', whose field"]);
+
+        noCross(s, "crossing: a parameter that cannot cross", """
+fn send(body: crossthread (xs: []int) => none) {}
+fn main(): int {
+    send((xs: []int) => {}); // <- H7238
+    return 0;
+}
+""", ["its parameter 1 is '[](int)', a dynamic array that is neither atomic nor const"]);
+
+        noCross(s, "crossing: a result that cannot cross", """
+fn send(body: crossthread () => []int) {}
+fn main(): int {
+    send(() => [1]); // <- H7238
+    return 0;
+}
+""", ["its result is '[](int)', a dynamic array that is neither atomic nor const"]);
+
+        noCross(s, "crossing: a generic argument is checked where it is instantiated", """
+struct Pair<A, B> { a: A; b: B; }
+fn send(body: crossthread () => none) { body(); }
+fn main(): int {
+    let p: Pair<int, cptr> = { a: 1, b: none };
+    send(() => { let q = p; }); // <- H7238
+    return 0;
+}
+""", ["whose field 'b' is 'cptr', a raw C pointer"]);
+
+        noCross(s, "crossing: generic code calling a crossthread parameter is checked per instantiation", """
+ref struct Box { v: int = 0; }
+fn send(body: crossthread () => none) { body(); }
+fn later<T>(value: T) { send(() => { let v = value; }); } // <- H7238
+fn main(): int {
+    later(1);
+    later(Box {});
+    return 0;
+}
+""", ["its capture 'value' is", "a reference to a struct that is not atomic"]);
+
+        noCross(s, "crossing: a closure in a union with a crossthread closure is checked too", """
+ref struct Box { v: int = 0; }
+fn send(body: (crossthread () => none) | none) {}
+fn main(): int {
+    let b = Box {};
+    let f: (crossthread () => none) | none = () => { let w = b; }; // <- H7238
+    return 0;
+}
+""", ["a reference to a struct that is not atomic"]);
+
+        // ── S5-2: crossthread closure conversions that work ─────────────────
+        s.run("crossing: crossthread closures convert from lambdas and to each other", """
+type Job = crossthread () => int;
+fn run(body: crossthread () => int): int { return body(); }
+fn runPlain(body: () => int): int { return body(); }
+fn runAlias(body: Job): int { return body(); }
+fn keep(body: crossthread () => int): crossthread () => int { return body; }
+
+fn main(): int {
+    let n = 2;
+    let job: Job = () => n;
+    let stored = keep(() => n + 1);
+    let jobs: []crossthread () => int = [() => 4, job];
+    // crossthread to crossthread, to a plain closure, through an alias.
+    fmt.println(f"{run(job)} {runPlain(job)} {runAlias(() => 5)} {stored()} {jobs[0]() + jobs[1]()}");
+    return 0;
+}
+""", "2 2 5 3 6");
+
+        // ── S5-4: crossthread and unsafe crossthread structs ────────────────
+        s.compileOk("crossing: a crossthread struct that crosses", """
+enum Kind { A, B }
+crossthread struct Job { id: int; name: str; kind: Kind; weights: [2]real; }
+atomic opaque ref crossthread struct Counter { n: atomic int = 0; }
+crossthread struct Holder { counter: Counter; numbers: const []int; }
+fn main(): int { return 0; }
+""");
+
+        noCross(s, "crossing: a crossthread struct that does not cross", """
+crossthread struct Job { id: int; raw: cptr; } // <- H7238
+fn main(): int { return 0; }
+""", [".Job' is declared 'crossthread', but it cannot cross threads: its field 'raw' is 'cptr', a raw C pointer"]);
+
+        noCross(s, "crossing: a crossthread ref struct that is not atomic", """
+crossthread ref struct Shared { n: int = 0; } // <- H7238
+fn main(): int { return 0; }
+""", ["is declared 'crossthread', but it cannot cross threads: it is a reference to a struct that is not atomic"]);
+
+        noCross(s, "crossing: a generic crossthread struct is checked per instantiation", """
+crossthread struct Box<T> { v: T; }
+fn main(): int {
+    let ok: Box<int> = { v: 1 };
+    let bad: Box<cptr> = { v: none }; // <- H7238
+    return 0;
+}
+""", ["is declared 'crossthread', but it cannot cross threads: its field 'v' is 'cptr'"]);
+
+        fails(s, "crossing: crossthread and unsafe crossthread together", """
+crossthread unsafe crossthread struct Both { n: int; } // <- H7246
+fn main(): int { return 0; }
+""", errorcodes.Code.CrossthreadModifierConflict, "is declared both 'crossthread' (checked by the compiler) and 'unsafe crossthread'");
+
+        // ── crossthread on what is not a closure type ───────────────────────
+        fails(s, "crossing: crossthread on an int", """
+fn f(x: crossthread int) {} // <- H7241
+fn main(): int { return 0; }
+""", errorcodes.Code.CrossthreadModifierOnNonClosure, "'crossthread' applies to closure types '(...) => T', not to 'int'");
+
+        fails(s, "crossing: crossthread on a struct type", """
+struct Job { id: int; }
+fn f(x: crossthread Job) {} // <- H7241
+fn main(): int { return 0; }
+""", errorcodes.Code.CrossthreadModifierOnNonClosure, "; a struct is declared 'crossthread struct'");
+
+        fails(s, "crossing: crossthread on a function type", """
+fn f(x: crossthread (n: int) -> int) {} // <- H7241
+fn main(): int { return 0; }
+""", errorcodes.Code.CrossthreadModifierOnNonClosure, "is a function type, which has no environment and crosses threads already");
+
+        fails(s, "crossing: crossthread on a stack reference closure", """
+fn f(x: crossthread stackref () => int) {} // <- H7241
+fn main(): int { return 0; }
+""", errorcodes.Code.CrossthreadModifierOnNonClosure, "a stack reference never crosses threads");
+
+        // ── Across a module boundary: the interface keeps every modifier ────
+        s.runWithModules("crossing: modifiers survive a module interface", [
+            testsuite.TestModule {
+                name: "shared",
+                source: """
+export atomic opaque ref struct Counter {
+    n: atomic int = 0;
+    const label: str = "c";
+    private unsafe log: []int = [];
+    fn constructor(): mut Counter { return Counter {}; }
+    mut fn add(k: int) { this.n += k; }
+}
+export unsafe crossthread struct Handle { raw: cptr; }
+export crossthread struct Job { id: int; }
+export fn run(body: crossthread () => int): int { return body(); }
+""",
+            },
+        ], """
+import shared;
+fn main(): int {
+    let c = shared.Counter();
+    let h = shared.Handle { raw: none };
+    let j = shared.Job { id: 3 };
+    let total = shared.run(() => { c.add(2); return c.n + j.id; });
+    fmt.println(f"{total} {shared.Counter.isAtomic} {shared.Handle.crossesThreads} {h.raw is cptr}");
+    return 0;
+}
+""", "5 true true true");
+
+        s.compileFailsWithModules("crossing: a crossthread parameter of another module is checked at the call", [
+            testsuite.TestModule {
+                name: "pool",
+                source: """
+export fn run(body: crossthread () => none) { body(); }
+""",
+            },
+        ], """
+import pool;
+fn main(): int {
+    let xs: mut []int = [];
+    pool.run(() => { xs.push(1); }); // <- H7238
+    return 0;
+}
+""", [
+            testsuite.exactCount(errorcodes.Code.CannotCrossThreads, 1),
+            testsuite.messageContains("its capture 'xs' is 'mut [](int)', a dynamic array that is neither atomic nor const"),
+        ]);
+    }
+}

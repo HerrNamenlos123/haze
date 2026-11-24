@@ -6,6 +6,7 @@ import {
   EExternLanguage,
   EOverloadedOperator,
   EStorageClass,
+  EVariableMutability,
 } from "../shared/AST";
 import {
   EPrimitive,
@@ -300,19 +301,24 @@ export function ExportTypeDef(
         // interface, not an implementation detail that stops at the boundary.
         const privateKeyword = content.private ? "private " : "";
         const unsafeKeyword = content.unsafe === true ? "unsafe " : "";
+        // A const member is never written after construction (C166): the
+        // consumer must see it so, and an atomic struct's const fields are
+        // what make it valid there (S5-7).
+        const constKeyword =
+          content.mutability === EVariableMutability.Const ? "const " : "";
         // `n: atomic int` (S5-6): the atomicity is the storage's, the type is
         // the plain primitive.
         const atomicKeyword = content.atomic === true ? "atomic " : "";
         if (defaultValue) {
           file.writeLine(
-            `${privateKeyword}${unsafeKeyword}${content.name}: ${atomicKeyword}${Semantic.serializeTypeUse(
+            `${privateKeyword}${unsafeKeyword}${constKeyword}${content.name}: ${atomicKeyword}${Semantic.serializeTypeUse(
               sr,
               content.type
             )} = ${Semantic.serializeExpr(sr, defaultValue.value)};`
           );
         } else {
           file.writeLine(
-            `${privateKeyword}${unsafeKeyword}${content.name}: ${atomicKeyword}${Semantic.serializeTypeUse(sr, content.type)};`
+            `${privateKeyword}${unsafeKeyword}${constKeyword}${content.name}: ${atomicKeyword}${Semantic.serializeTypeUse(sr, content.type)};`
           );
         }
       }

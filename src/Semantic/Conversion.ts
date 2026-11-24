@@ -2084,6 +2084,9 @@ export namespace Conversion {
     if (
       resolvedTargetTypeDef.variant === Semantic.ENode.UntaggedUnionDatatype
     ) {
+      // Why a closure did not become a crossthread member it matches in
+      // signature (S5-2): the reason, if no member takes it.
+      let crossing: string | null = null;
       const matching = resolvedTargetTypeDef.members.findIndex((m) => {
         // Check Direct match against the resolved (alias-canonicalized) source type
         if (sr.e.resolveAlias(m) === resolvedSourceTypeUseId) {
@@ -2115,12 +2118,20 @@ export namespace Conversion {
             const tType = sr.typeDefNodes.get(mDef.functionType);
             assert(fType.variant === Semantic.ENode.FunctionDatatype);
             assert(tType.variant === Semantic.ENode.FunctionDatatype);
-            return (
-              checkFunctionDatatypeCompatibility(sr, fType, "", tType, "") ===
-                "success" &&
-              crossthreadConversionError(sr, sourceExpr, sDef, mDef, "") ===
-                null
+            if (
+              checkFunctionDatatypeCompatibility(sr, fType, "", tType, "") !==
+              "success"
+            ) {
+              return false;
+            }
+            crossing = crossthreadConversionError(
+              sr,
+              sourceExpr,
+              sDef,
+              mDef,
+              Semantic.serializeTypeUse(sr, m)
             );
+            return crossing === null;
           }
           return false;
         }
@@ -2154,6 +2165,13 @@ export namespace Conversion {
         return {
           kind: "value-to-union",
           index: matching,
+        };
+      }
+      if (crossing !== null) {
+        return {
+          kind: "error",
+          message: crossing,
+          code: HazeErrorCode.CannotCrossThreads,
         };
       }
 

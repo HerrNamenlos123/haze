@@ -1,4 +1,8 @@
-import { EDatatypeMutability, EStorageClass } from "../shared/AST";
+import {
+  EDatatypeMutability,
+  EExternLanguage,
+  EStorageClass,
+} from "../shared/AST";
 import { EPrimitive, EStructCrossthread } from "../shared/common";
 import { InternalError } from "../shared/Errors";
 import { Semantic } from "./SemanticTypes";
@@ -108,8 +112,15 @@ export namespace Crossing {
   ): Failure | null {
     const use = sr.typeUseNodes.get(sr.e.resolveAlias(typeUseId));
     const def = sr.typeDefNodes.get(use.type);
-    // Const is deep (C603): what is reached through const data is const.
-    const isConst = asConst || use.mutability === EDatatypeMutability.Const;
+    // Const is deep (C603): what is reached through const data is const. Only
+    // a struct's or an array's use says const data; a union's or a
+    // primitive's is const by default and says nothing about its variants.
+    const isConst =
+      asConst ||
+      (use.mutability === EDatatypeMutability.Const &&
+        (def.variant === Semantic.ENode.StructDatatype ||
+          def.variant === Semantic.ENode.DynamicArrayDatatype ||
+          def.variant === Semantic.ENode.FixedArrayDatatype));
 
     // A stack reference carries its owning thread and never leaves it
     // (C264, C277, C280), whatever it points to.
@@ -239,6 +250,20 @@ export namespace Crossing {
     // The author promises it is thread safe; nothing inside is checked (C171).
     if (def.crossthread === EStructCrossthread.Unsafe) {
       return null;
+    }
+    // A struct C defines that declares none of its members (Logger,
+    // Allocator, UserBox) hides everything it holds: nothing is known about
+    // it, as of a raw pointer (S5-C1).
+    if (
+      def.noemit &&
+      def.extern !== EExternLanguage.None &&
+      !def.members.some(
+        (m) => sr.symbolNodes.get(m).variant === Semantic.ENode.VariableSymbol
+      )
+    ) {
+      return fail(
+        "a struct defined in C that shows none of what it holds, which never crosses threads unless it is declared 'unsafe crossthread'"
+      );
     }
     if (use.storage === EStorageClass.Ref && !def.atomic && !isConst) {
       return fail("a reference to a struct that is not atomic");
