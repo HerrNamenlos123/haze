@@ -1,0 +1,568 @@
+// ============================================================================
+// sys.Mutex, sys.Flag, sys.joinAll and the suspension windows
+// (sys.traceSuspensions, sys.limitSuspensions): stage 4 of
+// docs/async-implementation-plan.md (Axiom C151, C177 to C184, C340, C525,
+// C526, C537 to C539, C559, C560; docs/async-decisions.md S4-*).
+//
+// Compiling is the slow part of this harness, so each case bundles many
+// checks; the scenarios that end in a panic run as children of one program.
+// ============================================================================
+
+namespace cases_sync {
+
+    export fn register(s: mut testsuite.Suite) {
+
+        s.run(
+            "sync: mutex exclusion, order, reentrancy, conditions, flags, joinAll",
+            """
+fn main(): int {
+    let m = sys.Mutex();
+    let log: mut []str = [];
+
+    // A lock region that suspends keeps every other task out (C151, C526),
+    // and the waiters get the lock in the order they asked.
+    let holder = task.spawn(() => {
+        m.lock(() => {
+            log.push("h-in");
+            time.sleep(0.01);
+            log.push("h-out");
+        });
+        return 0;
+    });
+    let c1 = task.spawn(() => { m.lock(() => { log.push("c1"); }); return 1; });
+    let c2 = task.spawn(() => { m.lock(() => { log.push("c2"); }); return 2; });
+    let c3 = task.spawn(() => { m.lock(() => { log.push("c3"); }); return 3; });
+    let all: []Future<int> = [holder, c1, c2, c3];
+    let values = sys.joinAll(all);
+    fmt.println(f"order {log[0]} {log[1]} {log[2]} {log[3]} {log[4]}");
+    fmt.println(f"joinAll {values[0]} {values[1]} {values[2]} {values[3]}");
+
+    // The body's value, and a reentrant lock that just runs (C184) and is no
+    // suspension point.
+    let seven = m.lock(() => 7);
+    let depth: mut ref Box<int> = { value: 0 };
+    let nested = sys.traceSuspensions(() => {
+        m.lock(() => { m.lock(() => { depth.value = 2; }); });
+    });
+    fmt.println(f"value {seven} nested {depth.value} points {nested.count} suspended {nested.suspended}");
+
+    // lockWhen: the consumer waits; the end of the producer's lock region
+    // re-checks it, no notify.
+    let jobs: mut []int = [];
+    let consumer = task.spawn(() => {
+        return m.lockWhen(() => jobs.length > 0, () => jobs.pop());
+    });
+    sys.yield();
+    m.lock(() => { jobs.push(42); });
+    let got = consumer.join();
+    let job = 0;
+    if got is int { job = got; }
+    // A condition that holds at once never waits.
+    let quick = sys.traceSuspensions(() => {
+        let k = m.lockWhen(() => true, () => 1);
+    });
+    fmt.println(f"lockWhen {job} points {quick.count} suspended {quick.suspended}");
+
+    // Only the end of a lock region of the same mutex re-checks a condition:
+    // a change made outside one is not seen until a region ends.
+    let flagBox: mut ref Box<int> = { value: 0 };
+    let woke: mut ref Box<int> = { value: 0 };
+    let watcher = task.spawn(() => {
+        m.waitUntil(() => flagBox.value > 0);
+        woke.value = 1;
+    });
+    sys.yield();
+    flagBox.value = 1;
+    sys.yield();
+    sys.yield();
+    let beforeRegion = woke.value;
+    m.lock(() => {});
+    sys.yield();
+    fmt.println(f"outside {beforeRegion} after region {woke.value}");
+
+    // Two watchers with different conditions: each wakes when its own holds,
+    // a failed re-check wakes nobody (no endless ping-pong).
+    let x: mut ref Box<int> = { value: 0 };
+    let order: mut []str = [];
+    let w1 = task.spawn(() => { m.lockWhen(() => x.value >= 1, () => { order.push("w1"); }); });
+    let w2 = task.spawn(() => { m.lockWhen(() => x.value >= 2, () => { order.push("w2"); }); });
+    sys.yield();
+    m.lock(() => { x.value = 1; });
+    sys.yield();
+    sys.yield();
+    let afterOne = order.length;
+    m.lock(() => { x.value = 2; });
+    let r1 = w1.join();
+    let r2 = w2.join();
+    fmt.println(f"watchers {afterOne} {order[0]} {order[1]}");
+
+    // Flags: set, clear, wait at once when set, every waiter wakes on set,
+    // also when the flag is cleared again before they run.
+    let flag = sys.Flag();
+    let before = flag.isSet();
+    flag.set();
+    let afterSet = flag.isSet();
+    flag.wait();
+    flag.clear();
+    let woken: mut ref Box<int> = { value: 0 };
+    let f1 = task.spawn(() => { flag.wait(); woken.value = woken.value + 1; });
+    let f2 = task.spawn(() => { flag.wait(); woken.value = woken.value + 1; });
+    let f3 = task.spawn(() => { flag.wait(); woken.value = woken.value + 1; });
+    sys.yield();
+    let waiting = woken.value;
+    flag.set();
+    flag.clear();
+    let fs: []Future<none> = [f1, f2, f3];
+    let done = sys.joinAll(fs);
+    fmt.println(f"flag {before} {afterSet} {flag.isSet()} {waiting} {woken.value}");
+    return 0;
+}
+""",
+            "order h-in h-out c1 c2 c3\njoinAll 0 1 2 3\nvalue 7 nested 2 points 1 suspended 0\nlockWhen 42 points 1 suspended 0\noutside 0 after region 1\nwatchers 1 w1 w2\nflag false true false 0 3");
+
+        s.run(
+            "sync: suspension windows count every call that can suspend",
+            """
+fn sample(): int { return 9; }
+
+fn main(): int {
+    let m = sys.Mutex();
+    let flag = sys.Flag();
+    let done = task.spawn(() => 5);
+    let r0 = done.join();
+
+    let y = sys.traceSuspensions(() => { sys.yield(); });
+    // yieldAfter counts on every call, also when it does not yield.
+    let ya = sys.traceSuspensions(() => {
+        for (let i = 0; i < 3; i++) { sys.yieldAfter(1000.0); }
+    });
+    let sl = sys.traceSuspensions(() => { time.sleep(0.01); });
+    let joinedDone = sys.traceSuspensions(() => { let r = done.join(); });
+    let pending = task.spawn(() => 6);
+    let joinedPending = sys.traceSuspensions(() => { let r = pending.join(); });
+    let locked = sys.traceSuspensions(() => { m.lock(() => {}); });
+    flag.set();
+    let flagSet = sys.traceSuspensions(() => { flag.wait(); });
+    flag.clear();
+    let setter = task.spawn(() => { flag.set(); });
+    let flagWait = sys.traceSuspensions(() => { flag.wait(); });
+    let r1 = setter.join();
+    // Spawning and isDone never suspend.
+    let quiet = sys.traceSuspensions(() => {
+        let t = task.spawn(() => 1);
+        let d = t.isDone();
+    });
+    fmt.println(f"yield {y.count}/{y.suspended} yieldAfter {ya.count}/{ya.suspended} sleep {sl.count}/{sl.suspended} {sl.seconds >= 0.009}");
+    fmt.println(f"join {joinedDone.count}/{joinedDone.suspended} {joinedPending.count}/{joinedPending.suspended} lock {locked.count}/{locked.suspended} flag {flagSet.count}/{flagSet.suspended} {flagWait.count}/{flagWait.suspended} quiet {quiet.count}");
+
+    // Windows nest: every open one counts.
+    let inner: mut ref Box<int> = { value: 0 };
+    let outer = sys.traceSuspensions(() => {
+        sys.yield();
+        let i = sys.traceSuspensions(() => { sys.yield(); sys.yield(); });
+        inner.value = i.count;
+    });
+    fmt.println(f"nested {outer.count} {inner.value}");
+
+    // A limit is not reached by exactly as many points.
+    sys.limitSuspensions({ count: 2 }, () => { sys.yield(); sys.yield(); });
+    // A recovered limit panic closes the windows the panic skipped: the
+    // count goes on right, and yieldAfter outside any window counts nothing.
+    let recovered = attempt {
+        sys.limitSuspensions({ count: 0 }, () => { sys.yield(); });
+        0
+    } recover e { 1 };
+    let after = sys.traceSuspensions(() => { sys.yield(); });
+    // A limit that tripped is spent: code recovering inside the window may
+    // suspend again.
+    let spent: mut ref Box<int> = { value: 0 };
+    sys.limitSuspensions({ count: 0 }, () => {
+        let again = attempt { sys.yield(); 0 } recover e { 1 };
+        sys.yield();
+        spent.value = again;
+    });
+    fmt.println(f"recovered {recovered} after {after.count} spent {spent.value} {sample()}");
+    return 0;
+}
+""",
+            "yield 1/1 yieldAfter 3/0 sleep 1/1 true\njoin 1/0 1/1 lock 1/0 flag 1/0 1/1 quiet 0\nnested 3 2\nrecovered 1 after 1 spent 1 9");
+
+        s.run(
+            "sync: hand-over order, re-checks, deep holds",
+            """
+fn main(): int {
+    let m = sys.Mutex();
+
+    // The lock goes to the oldest waiter, also when the task that let go of
+    // it asks again at once (no overtaking).
+    let log: mut []str = [];
+    let first = task.spawn(() => {
+        m.lock(() => { log.push("h1"); time.sleep(0.005); });
+        m.lock(() => { log.push("h2"); });
+    });
+    let second = task.spawn(() => { m.lock(() => { log.push("w"); }); });
+    let both: []Future<none> = [first, second];
+    sys.joinAll(both);
+    fmt.println(f"handover {log[0]} {log[1]} {log[2]}");
+
+    // A region end re-checks every watcher once; a failed re-check wakes
+    // nobody, so two false conditions never wake each other.
+    let x: mut ref Box<int> = { value: 0 };
+    let checks: mut ref Box<int> = { value: 0 };
+    let a = task.spawn(() => { m.waitUntil(() => { checks.value = checks.value + 1; return x.value >= 5; }); });
+    let b = task.spawn(() => { m.waitUntil(() => { checks.value = checks.value + 1; return x.value >= 6; }); });
+    sys.yield();
+    let initial = checks.value;
+    m.lock(() => {});
+    for (let i = 0; i < 5; i++) { sys.yield(); }
+    let afterOne = checks.value;
+    m.lock(() => { x.value = 6; });
+    let ab: []Future<none> = [a, b];
+    sys.joinAll(ab);
+    fmt.println(f"rechecks {initial} {afterOne} {checks.value}");
+
+    // A lockWhen that waits several times is one suspension point.
+    let y: mut ref Box<int> = { value: 0 };
+    let counts: mut ref Box<sys.SuspensionStats> = { value: sys.SuspensionStats { count: 0, suspended: 0, seconds: 0.0 } };
+    let waiter = task.spawn(() => {
+        counts.value = sys.traceSuspensions(() => { m.waitUntil(() => y.value >= 2); });
+    });
+    sys.yield();
+    m.lock(() => { y.value = 1; });
+    sys.yield();
+    m.lock(() => { y.value = 2; });
+    let w = waiter.join();
+    fmt.println(f"rewait {counts.value.count} {counts.value.suspended >= 2}");
+
+    // More holds than the task keeps inline: 20 nested, 12 mutexes.
+    let many: mut []sys.Mutex = [];
+    for (let i = 0; i < 12; i++) { many.push(sys.Mutex()); }
+    let depth: mut ref Box<int> = { value: 0 };
+    m.lock(() => { m.lock(() => { m.lock(() => { m.lock(() => { m.lock(() => {
+    m.lock(() => { m.lock(() => { m.lock(() => { m.lock(() => { m.lock(() => {
+    many[0].lock(() => { many[1].lock(() => { many[2].lock(() => { many[3].lock(() => {
+    many[4].lock(() => { many[5].lock(() => { many[6].lock(() => { many[7].lock(() => {
+    many[8].lock(() => { many[9].lock(() => { many[10].lock(() => { many[11].lock(() => {
+        depth.value = 22;
+    }); }); }); });
+    }); }); }); });
+    }); }); }); });
+    }); }); }); }); });
+    }); }); }); }); });
+    let other = task.spawn(() => {
+        m.lock(() => {});
+        many[11].lock(() => {});
+        return 1;
+    });
+    let r = other.join();
+    let ok = 0;
+    if r is int { ok = r; }
+    fmt.println(f"deep {depth.value} {ok}");
+    return 0;
+}
+""",
+            "handover h1 w h2\nrechecks 2 4 6\nrewait 1 true\ndeep 22 1");
+
+        // Everything that panics, each in a child process (the panic ends it):
+        // the parent prints the exit status, whether stderr names the cause,
+        // and what the child printed.
+        s.run(
+            "sync: what panics, and what it says",
+            """
+__c__("#include <stdlib.h>\nhzstd_none_t atExitRun(hzstd_context_t *ctx, void *hook);\nstatic hzstd_thread_t *exit_thread;\nstatic void *exit_hook;\nstatic void run_at_exit(void) { hzstd_context_t c = { 0 }; hzstd_task_t t = { 0 }; t.thread = exit_thread; c.task = &t; c.thread = exit_thread; c.settings = hzstd_context_settings_default(); atExitRun(&c, exit_hook); }");
+
+// What runs after the thread ended, under a stand-in task (cases_tasks.hz
+// does the same): the only place a killed task's effects can be seen.
+ref struct AtExit {
+    run: () => none;
+}
+
+extern C fn atExitRun(hook: cptr) {
+    let h = do unsafe {
+        let a: AtExit = uninitialized;
+        __c__("a = hook;");
+        a
+    };
+    h.run();
+}
+
+fn atExit(run: () => none) {
+    let hook = AtExit { run: run };
+    let p = sys.contextPtr();
+    // Static C memory is scanned by the collector: the hook stays alive.
+    do unsafe { __c__("exit_thread = ((hzstd_context_t *)p)->thread; exit_hook = (void *)hook; atexit(run_at_exit);"); };
+}
+
+fn child(name: str): int {
+    let m = sys.Mutex();
+    // A lambda that always panics is noreturn: the panics depend on `fail`.
+    let fail: mut ref Box<bool> = { value: name.length > 0 };
+    if name == "limit0" {
+        sys.limitSuspensions({ count: 0 }, () => { sys.yield(); });
+    }
+    if name == "limitN" {
+        sys.limitSuspensions({ count: 2 }, () => { sys.yield(); sys.yield(); sys.yield(); });
+    }
+    if name == "yieldAfter" {
+        sys.limitSuspensions({ count: 0 }, () => { sys.yieldAfter(1000.0); });
+    }
+    if name == "negative" {
+        sys.limitSuspensions({ count: -1 }, () => {});
+    }
+    if name == "computed" {
+        let n = rx.reactive<int>(1);
+        let c = rx.computed(() => {
+            sys.yield();
+            return n;
+        });
+        let v = c == 1;
+    }
+    // yieldAfter in a computed panics whether or not it would yield.
+    if name == "computedYieldAfter" {
+        let n = rx.reactive<int>(1);
+        let c = rx.computed(() => {
+            sys.yieldAfter(1000.0);
+            return n;
+        });
+        let v = c == 1;
+        fmt.println("not reached");
+    }
+    if name == "watchGetter" {
+        let n = rx.reactive<int>(1);
+        let sync: rx.WatchOptions = { scheduler: (job: rx.WatchJob): none => { job.run(); } };
+        let h = rx.watch(() => m.lock(() => 1) + n, (v, old) => {}, sync);
+    }
+    if name == "condition" {
+        m.lockWhen(() => { sys.yield(); return true; }, () => {});
+    }
+    if name == "conditionYieldAfter" {
+        m.lockWhen(() => { sys.yieldAfter(1000.0); return true; }, () => {});
+        fmt.println("not reached");
+    }
+    // A condition that recovers from its own panic still cannot suspend.
+    if name == "conditionRecovered" {
+        m.lockWhen(() => {
+            let r = attempt { sys.yield(); 0 } recover e { 1 };
+            sys.yield();
+            return true;
+        }, () => {});
+        fmt.println("not reached");
+    }
+    if name == "heldWhen" {
+        m.lock(() => { m.waitUntil(() => true); });
+    }
+    if name == "poisoned" {
+        let r = attempt {
+            m.lock(() => { if fail.value { sys.panic("half way"); } });
+            0
+        } recover e { 1 };
+        m.lock(() => {});
+    }
+    if name == "poisonedReentrant" {
+        m.lock(() => {
+            let r = attempt {
+                m.lock(() => { if fail.value { sys.panic("half way"); } });
+                0
+            } recover e { 1 };
+            m.lock(() => {});
+        });
+    }
+    if name == "poisonedLockWhen" {
+        let r = attempt {
+            m.lock(() => { if fail.value { sys.panic("half way"); } });
+            0
+        } recover e { 1 };
+        m.lockWhen(() => true, () => {});
+    }
+    // A condition that poisons its own mutex (a recovered panic in a
+    // reentrant lock) and does not hold: it must panic, never wait forever.
+    if name == "poisonedInCondition" {
+        m.waitUntil(() => {
+            let ok = attempt {
+                m.lock(() => { if fail.value { sys.panic("half way"); } });
+                true
+            } recover e { false };
+            return ok;
+        });
+        fmt.println("not reached");
+    }
+    if name == "conditionPanicPoisons" {
+        let r = attempt {
+            m.waitUntil(() => {
+                if fail.value { sys.panic("in the condition"); }
+                return true;
+            });
+            0
+        } recover e { 1 };
+        m.lock(() => {});
+    }
+    if name == "poisonedWaiter" {
+        let a = task.spawn(() => {
+            let r = attempt {
+                m.lock(() => { sys.yield(); if fail.value { sys.panic("half way"); } });
+                0
+            } recover e { 1 };
+            return r;
+        });
+        let b = task.spawn(() => { m.lock(() => {}); return 0; });
+        let all: []Future<int> = [a, b];
+        let values = sys.joinAll(all);
+    }
+    if name == "poisonedWatcher" {
+        let w = task.spawn(() => { m.waitUntil(() => false); return 0; });
+        sys.yield();
+        let r = attempt {
+            m.lock(() => { if fail.value { sys.panic("half way"); } });
+            0
+        } recover e { 1 };
+        let all: []Future<int> = [w];
+        let values = sys.joinAll(all);
+    }
+    if name == "poisonedByKill" {
+        let bg = task.spawn(() => {
+            m.lock(() => {
+                let forever = Future<int>();
+                let r = forever.join();
+            });
+            return 0;
+        }, { background: true });
+        sys.yield();
+        atExit(() => { m.lock(() => {}); });
+    }
+    if name == "exitInLock" {
+        atExit(() => { m.lock(() => {}); });
+        m.lock(() => { if fail.value { sys.exit(7); } });
+    }
+    // The lock is handed to a background task that never runs again: the
+    // kill gives it back unpoisoned.
+    if name == "handedThenKilled" {
+        m.lock(() => {
+            let bg = task.spawn(() => { m.lock(() => { fmt.println("bg ran"); }); return 0; }, { background: true });
+            sys.yield();
+        });
+        atExit(() => { m.lock(() => { fmt.println("relocked"); }); });
+    }
+    // Killed while waiting for a flag, a condition and a lock: gone from
+    // every queue, so setting the flag and ending regions afterwards finds
+    // no dead task there (a dead one would make the queue panic).
+    if name == "killedWaiters" {
+        let flag = sys.Flag();
+        let other = sys.Mutex();
+        let holder = task.spawn(() => {
+            other.lock(() => {
+                let forever = Future<int>();
+                let r = forever.join();
+            });
+        }, { background: true });
+        let free = sys.Mutex();
+        let locker = task.spawn(() => { other.lock(() => {}); }, { background: true });
+        let watcher = task.spawn(() => { free.waitUntil(() => false); }, { background: true });
+        let flagger = task.spawn(() => { flag.wait(); }, { background: true });
+        sys.yield();
+        atExit(() => {
+            flag.set();
+            free.lock(() => {});
+            free.lock(() => {});
+            fmt.println("queues clean");
+        });
+    }
+    if name == "joinAllKilled" {
+        let killed = task.spawn(() => {
+            let forever = Future<int>();
+            let r = forever.join();
+            return 1;
+        }, { background: true });
+        sys.yield();
+        atExit(() => {
+            let fs: []Future<int> = [killed];
+            let values = sys.joinAll(fs);
+        });
+    }
+    if name == "joinAllNeverRan" {
+        let never = task.spawn(() => 1, { background: true });
+        atExit(() => {
+            let fs: []Future<int> = [never];
+            let values = sys.joinAll(fs);
+        });
+    }
+    // An allocation that fails while a lock is taken (the ninth nested hold
+    // makes the held list grow) leaves the mutex as it was: another task can
+    // take it afterwards. Reentrant, and on a free mutex.
+    if name == "holdAllocationFails" {
+        let others: mut []sys.Mutex = [];
+        for (let i = 0; i < 8; i++) { others.push(sys.Mutex()); }
+        let reentrant: mut ref Box<int> = { value: -1 };
+        let fresh: mut ref Box<int> = { value: -1 };
+        m.lock(() => { m.lock(() => { m.lock(() => { m.lock(() => {
+        m.lock(() => { m.lock(() => { m.lock(() => { m.lock(() => {
+            reentrant.value = attempt {
+                sys.limitAllocations({ count: 0 }, () => { m.lock(() => {}); });
+                0
+            } recover e { 1 };
+        }); }); }); });
+        }); }); }); });
+        others[0].lock(() => { others[1].lock(() => { others[2].lock(() => { others[3].lock(() => {
+        others[4].lock(() => { others[5].lock(() => { others[6].lock(() => { others[7].lock(() => {
+            fresh.value = attempt {
+                sys.limitAllocations({ count: 0 }, () => { m.lock(() => {}); });
+                0
+            } recover e { 1 };
+        }); }); }); });
+        }); }); }); });
+        let t = task.spawn(() => { m.lock(() => {}); return 1; });
+        let all: []Future<int> = [t];
+        let values = sys.joinAll(all);
+        fmt.println(f"{reentrant.value} {fresh.value} {values[0]}");
+    }
+    return 0;
+}
+
+fn check(self: str, name: str, expect: str) {
+    let r = process.runCaptured(self, ["child", name]);
+    let out = r.stdoutResult.trim();
+    if out.length > 0 {
+        fmt.println(f"{name} {r.exitCode} {r.stderrResult.contains(expect)} {out}");
+    }
+    else {
+        fmt.println(f"{name} {r.exitCode} {r.stderrResult.contains(expect)}");
+    }
+}
+
+fn main(): int {
+    let args = sys.args();
+    if args.length > 2 && args[1] == "child" {
+        return child(args[2]);
+    }
+    let me = args[0];
+    check(me, "limit0", "over the limit of 0 set at");
+    check(me, "limitN", "is suspension point 3, over the limit of 2");
+    check(me, "yieldAfter", "over the limit of 0");
+    check(me, "negative", "cannot be negative");
+    check(me, "computed", "a computed cannot");
+    check(me, "computedYieldAfter", "a computed cannot");
+    check(me, "watchGetter", "a computed cannot");
+    check(me, "condition", "a lockWhen or waitUntil condition cannot");
+    check(me, "conditionYieldAfter", "a lockWhen or waitUntil condition cannot");
+    check(me, "conditionRecovered", "a lockWhen or waitUntil condition cannot");
+    check(me, "heldWhen", "cannot wait on a mutex this task holds");
+    check(me, "poisoned", "a panic left the lock region");
+    check(me, "poisonedReentrant", "This mutex is poisoned");
+    check(me, "poisonedLockWhen", "This mutex is poisoned");
+    check(me, "poisonedInCondition", "This mutex is poisoned");
+    check(me, "conditionPanicPoisons", "This mutex is poisoned");
+    check(me, "poisonedWaiter", "This mutex is poisoned");
+    check(me, "poisonedWatcher", "This mutex is poisoned");
+    check(me, "poisonedByKill", "its task was killed inside the lock region");
+    check(me, "exitInLock", "its task was killed inside the lock region");
+    check(me, "handedThenKilled", "");
+    check(me, "killedWaiters", "");
+    check(me, "joinAllKilled", "future 0 has no value: its task was killed");
+    check(me, "joinAllNeverRan", "future 0 has no value: its task never ran");
+    check(me, "holdAllocationFails", "");
+    return 0;
+}
+""",
+            "limit0 255 true\nlimitN 255 true\nyieldAfter 255 true\nnegative 255 true\ncomputed 255 true\ncomputedYieldAfter 255 true\nwatchGetter 255 true\ncondition 255 true\nconditionYieldAfter 255 true\nconditionRecovered 255 true\nheldWhen 255 true\npoisoned 255 true\npoisonedReentrant 255 true\npoisonedLockWhen 255 true\npoisonedInCondition 255 true\nconditionPanicPoisons 255 true\npoisonedWaiter 255 true\npoisonedWatcher 255 true\npoisonedByKill 255 true\nexitInLock 7 true\nhandedThenKilled 0 true relocked\nkilledWaiters 0 true queues clean\njoinAllKilled 255 true\njoinAllNeverRan 255 true\nholdAllocationFails 0 true 1 1 1");
+
+    }
+}

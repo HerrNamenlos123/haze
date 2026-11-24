@@ -107,9 +107,28 @@ struct hzstd_sched_t {
 
 struct hzstd_future_core_t {
   hzstd_future_state_t state;
-  hzstd_task_t *waiters_head; // tasks suspended in hzstd_future_wait, in order
-  hzstd_task_t *waiters_tail;
+  hzstd_wait_queue_t waiters; // tasks suspended in hzstd_future_wait
 };
+
+// A sys.Mutex (stdlib/core/src/sync.hz; docs/async-decisions.md S4-*). Held by
+// at most one task at a time, any number of times by that one (C184), only for
+// the length of a callback (C178). GC memory, scanned: it holds tasks.
+struct hzstd_mutex_core_t {
+  hzstd_task_t *owner; // NULL while free
+  size_t depth;        // how many lock calls of the owner hold it
+  bool poisoned;       // a panic or a kill left a lock region (C560): every take panics
+  bool poisoned_by_kill;
+  hzstd_source_location_t locked_at;   // the owner's outermost lock call
+  hzstd_source_location_t poisoned_at; // the lock call of the region that poisoned it
+  hzstd_wait_queue_t lockers;  // tasks waiting to take it, in order
+  hzstd_wait_queue_t watchers; // tasks in lockWhen/waitUntil whose condition did not hold
+};
+
+// A sys.Flag: set, cleared, waited for. GC memory, scanned.
+typedef struct {
+  bool set;
+  hzstd_wait_queue_t waiters; // tasks waiting for the next set()
+} hzstd_flag_core_t;
 
 // Every scheduler of the process; changes only under the allocator lock.
 // Schedulers are uncollectable GC memory (scanned: they hold the tasks).
@@ -134,7 +153,7 @@ typedef struct {
 } hzstd_registry_change_t;
 
 static void hzstd_task_trampoline(void *transfer, void *user);
-static void hzstd_watchdog_switch_in(hzstd_sched_t *s);
+static void hzstd_watchdog_switch_in(hzstd_sched_t *s, bool gate_closed);
 static void hzstd_sleep_cancel(hzstd_task_t *t);
 static void hzstd_watchdog_switch_out(hzstd_sched_t *s);
 
@@ -368,6 +387,92 @@ static hzstd_task_t *hzstd_ready_pop(hzstd_sched_t *s)
   return t;
 }
 
+// ── Wait queues ──────────────────────────────────────────────────────────────
+
+static void hzstd_task_suspend(hzstd_context_t *ctx);
+
+// Puts the task at the end of `q`, suspended there for `reason` (an
+// hzstd_sched_run_end_t, which the profiler shows as why its run ended).
+static void hzstd_wait_push(hzstd_wait_queue_t *q, hzstd_task_t *t, uint32_t reason)
+{
+  t->next_ready = NULL;
+  if (q->tail != NULL) {
+    q->tail->next_ready = t;
+  }
+  else {
+    q->head = t;
+  }
+  q->tail = t;
+  t->waiting_in = q;
+  t->wait_reason = reason;
+  t->state = HZSTD_TASK_SUSPENDED;
+}
+
+// The oldest task waiting in `q`, taken out of it (still suspended), or NULL.
+static hzstd_task_t *hzstd_wait_pop(hzstd_wait_queue_t *q)
+{
+  hzstd_task_t *t = q->head;
+  if (t == NULL) {
+    return NULL;
+  }
+  if (t->state != HZSTD_TASK_SUSPENDED || t->waiting_in != q) {
+    hzstd_panic("Internal Runtime Error: a task in a wait queue is not waiting in it");
+  }
+  q->head = t->next_ready;
+  if (q->head == NULL) {
+    q->tail = NULL;
+  }
+  t->next_ready = NULL;
+  t->waiting_in = NULL;
+  return t;
+}
+
+static void hzstd_wait_ready(hzstd_task_t *t)
+{
+  t->state = HZSTD_TASK_READY;
+  hzstd_ready_push(t->thread->sched, t);
+}
+
+// Readies every task waiting in `q`, oldest first.
+static void hzstd_wait_ready_all(hzstd_wait_queue_t *q)
+{
+  hzstd_task_t *t;
+  while ((t = hzstd_wait_pop(q)) != NULL) {
+    hzstd_wait_ready(t);
+  }
+}
+
+// Takes a task that will never run again out of the queue it waits in.
+static void hzstd_wait_remove(hzstd_task_t *t)
+{
+  hzstd_wait_queue_t *q = t->waiting_in;
+  if (q == NULL) {
+    return;
+  }
+  hzstd_task_t **link = &q->head;
+  hzstd_task_t *previous = NULL;
+  while (*link != t) {
+    if (*link == NULL) {
+      hzstd_panic("Internal Runtime Error: a task is not in the wait queue it waits in");
+    }
+    previous = *link;
+    link = &(*link)->next_ready;
+  }
+  *link = t->next_ready;
+  if (q->tail == t) {
+    q->tail = previous;
+  }
+  t->next_ready = NULL;
+  t->waiting_in = NULL;
+}
+
+// Suspends the running task in `q` until something readies it.
+static void hzstd_wait_in(hzstd_context_t *ctx, hzstd_wait_queue_t *q, uint32_t reason)
+{
+  hzstd_wait_push(q, ctx->task, reason);
+  hzstd_task_suspend(ctx);
+}
+
 // ── Futures ──────────────────────────────────────────────────────────────────
 
 hzstd_future_core_t *hzstd_future_core_new(void)
@@ -384,19 +489,7 @@ hzstd_int_t hzstd_future_state(hzstd_future_core_t *core)
 static void hzstd_future_settle(hzstd_future_core_t *core, hzstd_future_state_t state)
 {
   core->state = state;
-  hzstd_task_t *w = core->waiters_head;
-  core->waiters_head = NULL;
-  core->waiters_tail = NULL;
-  while (w != NULL) {
-    hzstd_task_t *next = w->next_ready;
-    if (w->state != HZSTD_TASK_SUSPENDED || w->waiting_on != core) {
-      hzstd_panic("a future's waiter is not waiting for it");
-    }
-    w->waiting_on = NULL;
-    w->state = HZSTD_TASK_READY;
-    hzstd_ready_push(w->thread->sched, w);
-    w = next;
-  }
+  hzstd_wait_ready_all(&core->waiters);
 }
 
 void hzstd_future_complete(hzstd_context_t *ctx, hzstd_future_core_t *core)
@@ -408,25 +501,472 @@ void hzstd_future_complete(hzstd_context_t *ctx, hzstd_future_core_t *core)
   hzstd_future_settle(core, HZSTD_FUTURE_VALUE);
 }
 
-static void hzstd_task_suspend(hzstd_context_t *ctx);
-
 hzstd_int_t hzstd_future_wait(hzstd_context_t *ctx, hzstd_future_core_t *core)
 {
+  hzstd_suspension_point(ctx);
   while (core->state == HZSTD_FUTURE_PENDING) {
-    hzstd_task_t *t = ctx->task;
-    t->next_ready = NULL;
-    if (core->waiters_tail != NULL) {
-      core->waiters_tail->next_ready = t;
-    }
-    else {
-      core->waiters_head = t;
-    }
-    core->waiters_tail = t;
-    t->waiting_on = core;
-    t->state = HZSTD_TASK_SUSPENDED;
-    hzstd_task_suspend(ctx);
+    hzstd_wait_in(ctx, &core->waiters, HZSTD_SCHED_RUN_JOIN);
   }
   return (hzstd_int_t)core->state;
+}
+
+// ── Suspension points and windows (sys.limitSuspensions, sys.traceSuspensions) ─
+//
+// A suspension point is every call that can suspend the task, counted whether
+// or not it did, so that a limit's panic never depends on timing (C43, C419;
+// docs/async-decisions.md S4-*): sys.yield, sys.yieldAfter, time.sleep, a
+// join, a mutex lock that is not a reentrant one, lockWhen, waitUntil, a
+// flag's wait. Each calls hzstd_suspension_point once, first thing. Whether
+// the task then really left its thread, and for how long, is counted where
+// every suspension goes through: hzstd_task_suspend.
+//
+// While the running task has a window open or evaluates a computed, the
+// thread's yield gate is +infinity, so sys.yieldAfter's inline compare sends
+// every call to its slow path, which counts it (or panics in the computed).
+// The watchdog only ever replaces a finite gate (compare and swap), so it
+// never lifts that. yieldAfter(+infinity) and yieldAfter(NaN) never yield,
+// so they are no suspension points and pass even then.
+
+// Whether every yieldAfter of the task must reach the slow path: while it has
+// a suspension window open, or evaluates a computed (where any suspension
+// point panics, whether or not it would yield).
+static bool hzstd_yield_gate_closed(const hzstd_task_t *t)
+{
+  return t->suspension_windows.depth > 0 || t->reactive.evaluating != NULL;
+}
+
+void hzstd_yield_gate_refresh(hzstd_context_t *ctx)
+{
+  hzstd_thread_t *thread = ctx->thread;
+  if (hzstd_yield_gate_closed(ctx->task)) {
+    atomic_store_explicit(&thread->yield_gate, INFINITY, memory_order_relaxed);
+  }
+  else {
+    atomic_store_explicit(&thread->yield_gate, atomic_load_explicit(&thread->running_for, memory_order_relaxed), memory_order_relaxed);
+  }
+}
+
+static hzstd_int_t hzstd_suspension_window_push(hzstd_context_t *ctx, hzstd_int_t max_count, hzstd_source_location_t where, const char *reason)
+{
+  hzstd_suspension_windows_t *slot = &ctx->task->suspension_windows;
+  if (slot->depth == slot->capacity) {
+    size_t capacity = slot->capacity ? slot->capacity * 2 : 4;
+    hzstd_suspension_window_t *grown = realloc(slot->windows, capacity * sizeof(hzstd_suspension_window_t));
+    if (grown == NULL) {
+      hzstd_panic("System Out Of Memory while opening a suspension window");
+    }
+    slot->windows = grown;
+    slot->capacity = capacity;
+  }
+  slot->windows[slot->depth] = (hzstd_suspension_window_t) {
+    .count = 0,
+    .suspended = 0,
+    .seconds = 0.0,
+    .max_count = max_count,
+    .where = where,
+    .reason = reason,
+  };
+  slot->depth += 1;
+  if (slot->depth == 1) {
+    hzstd_yield_gate_refresh(ctx);
+  }
+  return (hzstd_int_t)(slot->depth - 1);
+}
+
+hzstd_int_t hzstd_suspension_window_open(hzstd_context_t *ctx, hzstd_int_t max_count, hzstd_source_location_t where)
+{
+  return hzstd_suspension_window_push(ctx, max_count, where, NULL);
+}
+
+// The window a lockWhen or waitUntil condition runs in: suspending panics there.
+hzstd_int_t hzstd_condition_window_open(hzstd_context_t *ctx)
+{
+  return hzstd_suspension_window_push(ctx, 0, (hzstd_source_location_t) { 0 }, "a lockWhen or waitUntil condition");
+}
+
+hzstd_suspension_stats_t hzstd_suspension_window_close(hzstd_context_t *ctx, hzstd_int_t window)
+{
+  hzstd_suspension_windows_t *slot = &ctx->task->suspension_windows;
+  if (slot->depth == 0 || window != (hzstd_int_t)(slot->depth - 1)) {
+    hzstd_panic("A suspension window was closed while it was not the innermost open one");
+  }
+  slot->depth -= 1;
+  if (slot->depth == 0) {
+    hzstd_yield_gate_refresh(ctx);
+  }
+  hzstd_suspension_window_t *w = &slot->windows[slot->depth];
+  return (hzstd_suspension_stats_t) { .count = w->count, .suspended = w->suspended, .seconds = w->seconds };
+}
+
+void hzstd_suspension_windows_restore(hzstd_context_t *ctx, size_t depth)
+{
+  hzstd_suspension_windows_t *slot = &ctx->task->suspension_windows;
+  if (depth > slot->depth) {
+    hzstd_panic("A panic recovery restored suspension windows that are not open");
+  }
+  slot->depth = depth;
+  // The gate follows in the recovery path, once the reactive state is back
+  // too (HAZE_ATTEMPT: hzstd_yield_gate_refresh).
+}
+
+static void hzstd_suspension_point_slow(hzstd_context_t *ctx)
+{
+  hzstd_suspension_windows_t *slot = &ctx->task->suspension_windows;
+  hzstd_suspension_window_t *over = NULL;
+  for (size_t i = slot->depth; i-- > 0;) {
+    hzstd_suspension_window_t *w = &slot->windows[i];
+    if (w->max_count >= 0 && w->count + 1 > w->max_count) {
+      over = w;
+      break;
+    }
+  }
+  if (over == NULL) {
+    for (size_t i = 0; i < slot->depth; i++) {
+      slot->windows[i].count += 1;
+    }
+    return;
+  }
+  // The innermost window the point would take past its limit is reported, and
+  // nothing suspends: no window counts it. A user's limit that would be
+  // passed is spent, so the panic's report and code recovering from it inside
+  // the window do not trip it again (as for allocation windows).
+  hzstd_int_t count = over->count + 1;
+  hzstd_int_t limit = over->max_count;
+  hzstd_source_location_t where = over->where;
+  const char *reason = over->reason;
+  // A runtime region (a lockWhen condition) is not spent: code that recovers
+  // inside it still must not suspend there.
+  for (size_t i = 0; i < slot->depth; i++) {
+    hzstd_suspension_window_t *w = &slot->windows[i];
+    if (w->reason == NULL && w->max_count >= 0 && w->count + 1 > w->max_count) {
+      w->max_count = -1;
+    }
+  }
+  if (reason != NULL) {
+    hzstd_panic_fmt_n(2, "This call can suspend, and %s cannot: a condition only looks at the data its lock guards", reason);
+  }
+  if (where._filename.length > 0) {
+    hzstd_panic_fmt_n(2,
+                      "Suspension limit exceeded: this call can suspend and is suspension point %lld, over the limit of %lld set at "
+                      "%.*s:%lld:%lld",
+                      (long long)count,
+                      (long long)limit,
+                      (int)where._filename.length,
+                      where._filename.data,
+                      (long long)where._line,
+                      (long long)where._column);
+  }
+  hzstd_panic_fmt_n(2, "Suspension limit exceeded: this call can suspend and is suspension point %lld, over the limit of %lld", (long long)count, (long long)limit);
+}
+
+void hzstd_suspension_point(hzstd_context_t *ctx)
+{
+  hzstd_task_t *t = ctx->task;
+  // A computed is evaluated in a region where suspending panics (C537, C539):
+  // the reactive core already knows when one is, for watchers' getters too.
+  if (__builtin_expect(t->reactive.evaluating != NULL, 0)) {
+    hzstd_panic_fmt_n(1, "This call can suspend, and a computed cannot: it derives its value at once. Read shared state in a watcher and copy it into a cell");
+  }
+  if (__builtin_expect(t->suspension_windows.depth > 0, 0)) {
+    hzstd_suspension_point_slow(ctx);
+  }
+}
+
+// sys.yieldAfter's slow path: its inline compare found the gate above
+// `seconds`, because the task has run that long or because a suspension window
+// is open (then every call is a suspension point).
+void hzstd_yield_after_slow(hzstd_context_t *ctx, hzstd_real_t seconds)
+{
+  hzstd_suspension_point(ctx);
+  if (atomic_load_explicit(&ctx->thread->running_for, memory_order_relaxed) > seconds) {
+    hzstd_task_t *t = ctx->task;
+    t->state = HZSTD_TASK_READY;
+    hzstd_ready_push(ctx->thread->sched, t);
+    hzstd_task_suspend(ctx);
+  }
+}
+
+// ── Mutexes (sys.Mutex) ──────────────────────────────────────────────────────
+//
+// Waiting suspends only the waiting task (C151); the lock goes to the waiters
+// in the order they asked, handed over directly so that nobody can overtake
+// them. Every lock call that holds the mutex is an entry of the task's held
+// list, a reentrant one too: a panic recovery or a kill releases exactly the
+// holds taken in the code it discards, and poisons their mutexes (C340, C525,
+// C559, C560).
+//
+// lockWhen and waitUntil: the condition is checked holding the lock. When it
+// does not hold, the task becomes a watcher and lets go of the lock; whenever
+// a lock region of the mutex ends, every watcher queues for the lock again and
+// re-checks. The data a condition reads only changes inside lock regions of
+// its mutex (C179), so no change can slip in between the check and the wait.
+// A watcher that re-checked in vain lets go without waking the others: its
+// check changed nothing.
+
+hzstd_mutex_core_t *hzstd_mutex_core_new(void)
+{
+  return hzstd_heap_allocate(sizeof(hzstd_mutex_core_t), "hzstd_mutex_core_t");
+}
+
+// Makes room for one more hold. Called before anything of the mutex changes:
+// growing allocates, which can panic (an allocation limit, no memory), and a
+// panic between changing the mutex and recording the hold would leave a hold
+// nothing ever releases.
+static void hzstd_held_reserve(hzstd_task_t *t)
+{
+  size_t i = t->held_lock_count;
+  if (i < HZSTD_HELD_LOCKS_INLINE) {
+    return;
+  }
+  size_t at = i - HZSTD_HELD_LOCKS_INLINE;
+  if (at < t->held_overflow_cap) {
+    return;
+  }
+  size_t capacity = t->held_overflow_cap ? t->held_overflow_cap * 2 : 8;
+  hzstd_mutex_core_t **grown = hzstd_heap_allocate(capacity * sizeof(hzstd_mutex_core_t *), "hzstd held mutexes");
+  if (t->held_overflow != NULL) {
+    memcpy(grown, t->held_overflow, at * sizeof(hzstd_mutex_core_t *));
+  }
+  t->held_overflow = grown;
+  t->held_overflow_cap = capacity;
+}
+
+// Records a hold in the room hzstd_held_reserve made: never allocates.
+static void hzstd_held_push(hzstd_task_t *t, hzstd_mutex_core_t *m)
+{
+  size_t i = t->held_lock_count;
+  if (i < HZSTD_HELD_LOCKS_INLINE) {
+    t->held_inline[i] = m;
+  }
+  else {
+    size_t at = i - HZSTD_HELD_LOCKS_INLINE;
+    if (at >= t->held_overflow_cap) {
+      hzstd_panic("Internal Runtime Error: a mutex hold was recorded without room reserved for it");
+    }
+    t->held_overflow[at] = m;
+  }
+  t->held_lock_count = i + 1;
+}
+
+static hzstd_mutex_core_t *hzstd_held_top(hzstd_task_t *t)
+{
+  size_t i = t->held_lock_count - 1;
+  return i < HZSTD_HELD_LOCKS_INLINE ? t->held_inline[i] : t->held_overflow[i - HZSTD_HELD_LOCKS_INLINE];
+}
+
+static hzstd_mutex_core_t *hzstd_held_pop(hzstd_task_t *t)
+{
+  if (t->held_lock_count == 0) {
+    hzstd_panic("Internal Runtime Error: a mutex was let go of that the task does not hold");
+  }
+  hzstd_mutex_core_t *m = hzstd_held_top(t);
+  size_t i = t->held_lock_count - 1;
+  if (i < HZSTD_HELD_LOCKS_INLINE) {
+    t->held_inline[i] = NULL;
+  }
+  else {
+    t->held_overflow[i - HZSTD_HELD_LOCKS_INLINE] = NULL;
+  }
+  t->held_lock_count = i;
+  return m;
+}
+
+// Hands the mutex to the next task waiting for it, or leaves it free. With
+// `wake_watchers` (a lock region ended), every watcher queues for it first, to
+// re-check its condition. A poisoned mutex readies every waiter: each panics.
+static void hzstd_mutex_release(hzstd_mutex_core_t *m, bool wake_watchers)
+{
+  m->owner = NULL;
+  m->depth = 0;
+  if (m->poisoned) {
+    hzstd_wait_ready_all(&m->lockers);
+    hzstd_wait_ready_all(&m->watchers);
+    return;
+  }
+  if (wake_watchers) {
+    hzstd_task_t *w;
+    while ((w = hzstd_wait_pop(&m->watchers)) != NULL) {
+      hzstd_wait_push(&m->lockers, w, HZSTD_SCHED_RUN_LOCK);
+    }
+  }
+  hzstd_task_t *next = hzstd_wait_pop(&m->lockers);
+  if (next != NULL) {
+    // Handed over: it holds the mutex from here on, before it runs again. If it
+    // is killed before that, the kill gives it back (hzstd_task_kill).
+    m->owner = next;
+    m->depth = 1;
+    next->handed_lock = m;
+    hzstd_wait_ready(next);
+  }
+}
+
+static _Noreturn void hzstd_mutex_panic_poisoned(hzstd_mutex_core_t *m)
+{
+  hzstd_source_location_t at = m->poisoned_at;
+  const char *how = m->poisoned_by_kill ? "its task was killed inside the lock region" : "a panic left the lock region";
+  if (at._filename.length > 0) {
+    hzstd_panic_fmt_n(2,
+                      "This mutex is poisoned: %s entered at %.*s:%lld:%lld, so the data it guards may be half updated",
+                      how,
+                      (int)at._filename.length,
+                      at._filename.data,
+                      (long long)at._line,
+                      (long long)at._column);
+  }
+  hzstd_panic_fmt_n(2, "This mutex is poisoned: %s, so the data it guards may be half updated", how);
+}
+
+// Back from a wait for the lock: it was handed over, or the mutex was poisoned.
+static void hzstd_mutex_resumed(hzstd_task_t *t, hzstd_mutex_core_t *m)
+{
+  if (t->handed_lock == m) {
+    t->handed_lock = NULL;
+    hzstd_held_push(t, m);
+    return;
+  }
+  if (!m->poisoned || m->owner == t) {
+    hzstd_panic("Internal Runtime Error: a task waiting for a mutex resumed without it");
+  }
+  hzstd_mutex_panic_poisoned(m);
+}
+
+void hzstd_mutex_lock(hzstd_context_t *ctx, hzstd_mutex_core_t *m, hzstd_source_location_t where)
+{
+  hzstd_task_t *t = ctx->task;
+  if (m->owner == t) {
+    // Reentrant (C184): it never waits, so it is no suspension point.
+    if (m->poisoned) {
+      hzstd_mutex_panic_poisoned(m);
+    }
+    hzstd_held_reserve(t);
+    m->depth += 1;
+    hzstd_held_push(t, m);
+    return;
+  }
+  hzstd_suspension_point(ctx);
+  if (m->poisoned) {
+    hzstd_mutex_panic_poisoned(m);
+  }
+  // Before waiting too: the hold is recorded when the task resumes with the
+  // mutex handed over, where nothing may fail any more.
+  hzstd_held_reserve(t);
+  if (m->owner == NULL) {
+    m->owner = t;
+    m->depth = 1;
+    m->locked_at = where;
+    hzstd_held_push(t, m);
+    return;
+  }
+  hzstd_wait_in(ctx, &m->lockers, HZSTD_SCHED_RUN_LOCK);
+  hzstd_mutex_resumed(t, m);
+  m->locked_at = where;
+}
+
+void hzstd_mutex_unlock(hzstd_context_t *ctx, hzstd_mutex_core_t *m)
+{
+  hzstd_task_t *t = ctx->task;
+  if (m->owner != t || t->held_lock_count == 0 || hzstd_held_top(t) != m) {
+    hzstd_panic("Internal Runtime Error: a mutex was let go of out of order");
+  }
+  hzstd_held_pop(t);
+  m->depth -= 1;
+  if (m->depth == 0) {
+    hzstd_mutex_release(m, true);
+  }
+}
+
+// lockWhen and waitUntil start here: a task that holds the mutex already
+// could only wait for a condition nothing can change while it waits.
+void hzstd_mutex_lock_when(hzstd_context_t *ctx, hzstd_mutex_core_t *m, hzstd_source_location_t where)
+{
+  if (m->owner == ctx->task) {
+    hzstd_panic_fmt_n(2, "lockWhen and waitUntil cannot wait on a mutex this task holds: nothing could change the condition while it waits");
+  }
+  hzstd_mutex_lock(ctx, m, where);
+}
+
+// The condition did not hold: lets go of the lock, waits until a lock region
+// of the mutex ends, and holds the lock again to re-check.
+void hzstd_mutex_wait_change(hzstd_context_t *ctx, hzstd_mutex_core_t *m)
+{
+  hzstd_task_t *t = ctx->task;
+  if (m->owner != t || m->depth != 1 || hzstd_held_top(t) != m) {
+    hzstd_panic("Internal Runtime Error: a condition wait without holding its mutex once");
+  }
+  // The condition itself poisoned it (a recovered panic in a reentrant lock):
+  // nothing would ever release it to wake this task again.
+  if (m->poisoned) {
+    hzstd_mutex_panic_poisoned(m);
+  }
+  hzstd_source_location_t where = m->locked_at;
+  hzstd_held_pop(t);
+  hzstd_mutex_release(m, false);
+  hzstd_wait_in(ctx, &m->watchers, HZSTD_SCHED_RUN_CONDITION);
+  hzstd_mutex_resumed(t, m);
+  m->locked_at = where;
+}
+
+// Poisons and releases the holds above `count`, newest first (C340, C525).
+static void hzstd_held_locks_release_to(hzstd_task_t *t, size_t count, bool by_kill)
+{
+  while (t->held_lock_count > count) {
+    hzstd_mutex_core_t *m = hzstd_held_pop(t);
+    if (!m->poisoned) {
+      m->poisoned = true;
+      m->poisoned_by_kill = by_kill;
+      m->poisoned_at = m->locked_at;
+    }
+    m->depth -= 1;
+    if (m->depth == 0) {
+      hzstd_mutex_release(m, true);
+    }
+  }
+}
+
+// A panic recovery: the holds of the lock regions it discarded.
+void hzstd_held_locks_restore(hzstd_context_t *ctx, size_t count)
+{
+  if (count > ctx->task->held_lock_count) {
+    hzstd_panic("A panic recovery restored mutex holds that are not held");
+  }
+  hzstd_held_locks_release_to(ctx->task, count, false);
+}
+
+// ── Flags (sys.Flag) ─────────────────────────────────────────────────────────
+
+void *hzstd_flag_core_new(void)
+{
+  return hzstd_heap_allocate(sizeof(hzstd_flag_core_t), "hzstd_flag_core_t");
+}
+
+void hzstd_flag_set(hzstd_context_t *ctx, void *flag)
+{
+  (void)ctx;
+  hzstd_flag_core_t *f = flag;
+  f->set = true;
+  hzstd_wait_ready_all(&f->waiters);
+}
+
+void hzstd_flag_clear(hzstd_context_t *ctx, void *flag)
+{
+  (void)ctx;
+  ((hzstd_flag_core_t *)flag)->set = false;
+}
+
+bool hzstd_flag_is_set(void *flag)
+{
+  return ((hzstd_flag_core_t *)flag)->set;
+}
+
+// Returns at once if the flag is set, else once a set() comes: every task
+// waiting then wakes, even if the flag is cleared again before it runs.
+void hzstd_flag_wait(hzstd_context_t *ctx, void *flag)
+{
+  hzstd_flag_core_t *f = flag;
+  hzstd_suspension_point(ctx);
+  if (!f->set) {
+    hzstd_wait_in(ctx, &f->waiters, HZSTD_SCHED_RUN_FLAG);
+  }
 }
 
 // ── The profiler's record of the scheduler (docs/profiler-timelines.md) ────
@@ -782,8 +1322,8 @@ static uint32_t hzstd_trace_run_end_reason(const hzstd_task_t *t)
   case HZSTD_TASK_DONE:
     return HZSTD_SCHED_RUN_END;
   case HZSTD_TASK_SUSPENDED:
-    if (t->waiting_on != NULL) {
-      return HZSTD_SCHED_RUN_JOIN;
+    if (t->waiting_in != NULL) {
+      return t->wait_reason;
     }
     if (t->sleep_timer != NULL) {
       return HZSTD_SCHED_RUN_SLEEP;
@@ -806,14 +1346,26 @@ static void hzstd_task_suspend(hzstd_context_t *ctx)
   if (t != s->thread->current_task) {
     hzstd_panic("a task suspended with a context of another task");
   }
+  // Open suspension windows count the suspension and its length (they cannot
+  // change while the task is away).
+  hzstd_suspension_windows_t *windows = &t->suspension_windows;
+  double left = windows->depth > 0 ? hzstd_time_now() : 0.0;
   fiber_switch(&t->fiber, &s->native, NULL);
   // Resumed (the README's rule: the current task is set on the resumed side).
   s->thread->current_task = t;
   t->state = HZSTD_TASK_RUNNING;
+  if (windows->depth > 0) {
+    double away = hzstd_time_now() - left;
+    for (size_t i = 0; i < windows->depth; i++) {
+      windows->windows[i].suspended += 1;
+      windows->windows[i].seconds += away;
+    }
+  }
 }
 
 void hzstd_task_yield(hzstd_context_t *ctx)
 {
+  hzstd_suspension_point(ctx);
   hzstd_task_t *t = ctx->task;
   t->state = HZSTD_TASK_READY;
   hzstd_ready_push(ctx->thread->sched, t);
@@ -823,6 +1375,14 @@ void hzstd_task_yield(hzstd_context_t *ctx)
 static void hzstd_task_end(hzstd_sched_t *s, hzstd_task_t *t)
 {
   hzstd_alloc_windows_release(&t->alloc_windows);
+  if (t->suspension_windows.depth != 0) {
+    hzstd_panic("A task ended with a suspension window still open");
+  }
+  free(t->suspension_windows.windows);
+  t->suspension_windows = (hzstd_suspension_windows_t) { 0 };
+  if (t->held_lock_count != 0 || t->handed_lock != NULL) {
+    hzstd_panic("Internal Runtime Error: a task ended holding a mutex");
+  }
   hzstd_registry_change(HZSTD_REGISTRY_REMOVE_TASK, s, t, (fiber_stack) { 0 });
   t->state = HZSTD_TASK_DONE;
   if (!t->background) {
@@ -859,7 +1419,7 @@ static void hzstd_sched_run_task(hzstd_sched_t *s, hzstd_task_t *t)
   if (hzstd_sched_tracing()) {
     hzstd_trace_append(s, HZSTD_SCHED_EVENT_RUN_BEGIN, t->id, 0, hzstd_this_thread_cpu_ticks(), false);
   }
-  hzstd_watchdog_switch_in(s);
+  hzstd_watchdog_switch_in(s, hzstd_yield_gate_closed(t));
   fiber_switch(&s->native, &t->fiber, NULL);
   hzstd_watchdog_switch_out(s);
   if (hzstd_sched_tracing()) {
@@ -951,22 +1511,18 @@ void hzstd_task_spawn(hzstd_context_t *ctx,
 static void hzstd_task_kill(hzstd_sched_t *s, hzstd_task_t *t)
 {
   bool ran = t->state != HZSTD_TASK_NEW;
-  hzstd_future_core_t *waited = t->waiting_on;
-  if (waited != NULL) {
-    // Out of the waiters of the future it joined: settling that one later
-    // must never ready a dead task.
-    hzstd_task_t **link = &waited->waiters_head;
-    hzstd_task_t *previous = NULL;
-    while (*link != t) {
-      previous = *link;
-      link = &(*link)->next_ready;
-    }
-    *link = t->next_ready;
-    if (waited->waiters_tail == t) {
-      waited->waiters_tail = previous;
-    }
-    t->waiting_on = NULL;
+  // Out of the queue it waits in: what it waits for must never ready a dead
+  // task.
+  hzstd_wait_remove(t);
+  // A mutex handed over to it that it never got to run with: given back
+  // as it was, nothing of it was touched.
+  if (t->handed_lock != NULL) {
+    hzstd_mutex_core_t *m = t->handed_lock;
+    t->handed_lock = NULL;
+    hzstd_mutex_release(m, false);
   }
+  // Every lock region it was inside: released, and poisoned (C525, C560).
+  hzstd_held_locks_release_to(t, 0, true);
   if (t->sleep_timer != NULL) {
     hzstd_sleep_cancel(t);
   }
@@ -974,6 +1530,7 @@ static void hzstd_task_kill(hzstd_sched_t *s, hzstd_task_t *t)
   hzstd_stackref_unwind_to(&ctx, 0);
   hzstd_trace_note(s, HZSTD_SCHED_EVENT_KILLED, t->id, 0);
   hzstd_alloc_windows_discard(&t->alloc_windows);
+  t->suspension_windows.depth = 0;
   hzstd_task_end(s, t);
   if (t->stack.top != NULL) {
     hzstd_stack_release(s, &t->stack);
@@ -1062,6 +1619,7 @@ static void hzstd_sleep_fired(uv_timer_t *timer)
 
 void hzstd_task_sleep_ms(hzstd_context_t *ctx, uint64_t ms)
 {
+  hzstd_suspension_point(ctx);
   hzstd_task_t *t = ctx->task;
   hzstd_sched_t *s = ctx->thread->sched;
   uv_timer_t *timer = hzstd_uncollectable_allocate(sizeof(uv_timer_t));
@@ -1462,6 +2020,12 @@ static void hzstd_watchdog_main(void)
       }
       double ran = cpu > s->wd_start ? cpu - s->wd_start : 0.0;
       atomic_store_explicit(&s->thread->running_for, ran, memory_order_relaxed);
+      // The gate only while it is finite: +infinity belongs to an open
+      // suspension window of the running task, which only that task lifts.
+      double gate = atomic_load_explicit(&s->thread->yield_gate, memory_order_relaxed);
+      if (gate != INFINITY) {
+        atomic_compare_exchange_strong_explicit(&s->thread->yield_gate, &gate, ran, memory_order_relaxed, memory_order_relaxed);
+      }
       bool due = ran > s->wd_next_report;
       if (due) {
         // Dekker with hzstd_watchdog_wait_for_reports: announced before the
@@ -1472,6 +2036,8 @@ static void hzstd_watchdog_main(void)
       if (atomic_load(&s->run_epoch) != epoch) {
         // The task switched meanwhile: the next run starts from 0.
         atomic_store_explicit(&s->thread->running_for, 0.0, memory_order_relaxed);
+        double stale = ran;
+        atomic_compare_exchange_strong_explicit(&s->thread->yield_gate, &stale, 0.0, memory_order_relaxed, memory_order_relaxed);
         atomic_store(&g_stall_report_busy, 0);
         continue;
       }
@@ -1632,9 +2198,10 @@ static void GC_CALLBACK hzstd_gc_event(GC_EventType event)
 
 // The switch's side of the watchdog: no clock, one store and one increment
 // (and a wake-up only when the watchdog sleeps because nothing ran).
-static void hzstd_watchdog_switch_in(hzstd_sched_t *s)
+static void hzstd_watchdog_switch_in(hzstd_sched_t *s, bool gate_closed)
 {
   atomic_store_explicit(&s->thread->running_for, 0.0, memory_order_relaxed);
+  atomic_store_explicit(&s->thread->yield_gate, gate_closed ? INFINITY : 0.0, memory_order_relaxed);
   atomic_fetch_add(&s->run_epoch, 1); // odd: a task runs
   if (atomic_load(&g_watchdog_sleeping) != 0 && atomic_exchange(&g_watchdog_sleeping, 0) != 0) {
     hzstd_watchdog_wake();

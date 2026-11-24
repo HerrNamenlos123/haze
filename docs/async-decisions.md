@@ -736,6 +736,111 @@ make sense and be easy for users to understand what is going on."
   not: a wall-clock spin gets less CPU time than it lasts on a loaded machine (once per place under
   ten busy loops: 38 of 60 runs failed before, 0 of 60 after).
 
+## Stage 4: locks, flags, suspension limits (2026-11-23, lenovo-yoga; the user's go: "ok yes to all, go")
+
+The API was agreed in chat first (contract section 2, "Locks, flags and waiting"): one Mutex type
+with `lock`, `lockWhen`, `waitUntil`; `sys.Flag`; `sys.joinAll`; `sys.limitSuspensions` and
+`sys.traceSuspensions` with the allocation windows' interface, counting every call that can
+suspend (user: "2a", "full tracing"); no locks in computeds (user). Decided while building:
+
+- **S4-1. One wait queue for every way to wait** (`hzstd_wait_queue_t`): a future's waiters, a
+  mutex's lockers and condition waiters, a flag's waiters. A task records the queue it waits in and
+  why (`waiting_in`, `wait_reason`, replacing the future-only `waiting_on`), so the kill path, the
+  profiler's "why the run ended" and the waking code each have one path. The profiler gets three
+  reasons: lock (6), condition (7), flag (8).
+- **S4-2. A Mutex is a C core plus an opaque ref struct** holding its pointer, like `Future`; its
+  methods are not `mut` (they guard data, they do not change it), and `lock<T>` and `lockWhen<T>`
+  are generic over the body's value (a `() => void` body works).
+- **S4-3. The lock is handed over in order.** Releasing gives the mutex straight to the oldest
+  waiter (it holds it before it runs again), so a task that comes later can never overtake it.
+  Rejected: waking the waiter to compete for a free lock (barging), which breaks "in the order they
+  asked".
+- **S4-4. Every lock call that holds a mutex is an entry of the task's held list**, a reentrant one
+  too, so a recovery or a kill releases exactly the holds of the code it discards. Eight entries
+  live in the task (GC memory, scanned); more go to a scanned overflow array, made on the ninth
+  nested hold (one counted GC allocation). Scanned, because a recovery's longjmp drops the frames
+  that referenced the mutexes, and in stage 5 another thread can start a collection at any time.
+- **S4-5. lockWhen and waitUntil.** A task whose condition does not hold becomes a watcher and lets
+  go of the lock. When a lock region ends, every watcher queues for the lock again (behind the tasks
+  already waiting) and re-checks with it held. A watcher whose re-check fails lets go without waking
+  the others: a check changes nothing, and waking them would let two false conditions wake each
+  other forever. Consequence, written in the doc comment: a condition must not change data. The
+  condition runs in a suspension window of limit 0 ("a lockWhen or waitUntil condition"), opened
+  and closed around each check in Haze.
+- **S4-6. lockWhen/waitUntil on a mutex the task holds panics**: its condition could only be
+  changed by the task itself, which is waiting.
+- **S4-7. Poisoning.** A mutex is poisoned when a recovery or a kill releases a hold of it. The
+  message names how (a panic, or the task's kill) and where the poisoned region's lock call was. A
+  reentrant lock of a poisoned mutex panics too ("every later attempt", C560); a panic in a
+  condition poisons like one in the body (it is inside the region).
+- **S4-8. The kill path** takes the task out of its wait queue, gives back a mutex handed to it that
+  it never ran with (unpoisoned: nothing of it was touched), and releases and poisons every hold.
+- **S4-9. Suspension windows are built like the allocation windows**: an array per task (malloc
+  memory), a window is its index, the recovery frame saves the depth and restores it, a tripped
+  limit is spent. Their own array, not shared with the allocation windows: a computed or a condition
+  opening a window must never send allocations to the slow path.
+- **S4-10. Where suspension points are counted**: first thing in each entry that can suspend
+  (`hzstd_task_yield`, the yieldAfter slow path, `hzstd_task_sleep_ms`, `hzstd_future_wait`,
+  `hzstd_mutex_lock` unless reentrant, `hzstd_mutex_lock_when`, `hzstd_flag_wait`), once per call:
+  lockWhen counts once however often it re-checks. Real suspensions and their length are counted in
+  `hzstd_task_suspend`, which every suspension goes through, with a clock read only while a window
+  is open. `seconds` is wall time from leaving the CPU to running again.
+- **S4-11. sys.yieldAfter stays one load and one compare.** It compares against a per-thread
+  `yield_gate` instead of `running_for`. The gate is `running_for` while no window is open, and
+  +infinity while the running task has one, so that every call reaches the slow path and counts.
+  Invariant: only the task's own thread writes +infinity (a window opens, or a task with windows is
+  switched in) and lifts it (its last window closes, or another task is switched in); the watchdog
+  only replaces a finite gate, by compare and swap. `sys.timeSinceTaskSwitch` reads `running_for`,
+  which is never forced.
+- **S4-12. Computeds need no window.** The reactive core already records, per task, the computed
+  being evaluated (`reactive.evaluating`), and the recovery frame already restores it; a suspension
+  point panics while it is set. That covers watchers' getters (computed nodes) and code a computed
+  calls; a watcher's callback runs after the evaluation and may suspend (the user's pattern: a
+  watcher locks the shared resource and copies it into a cell).
+- **S4-13. Global initializers and cleanup need nothing today.** Module globals are emitted as C
+  static initializers (CodeGenerator.ts, `loweredGlobalVariables`): no Haze code runs in them, so
+  nothing in them can suspend or spawn (C571). A kill runs no Haze code (C557); the public cleanup
+  API does not exist yet.
+- **S4-14. A Flag is a manual-reset flag**: `set()` wakes every task waiting at that moment, which
+  then return without re-checking, so a `set()` followed at once by `clear()` still wakes them (no
+  lost pulse). `set` and `clear` are `mut fn` (a write, as for reactive cells, S0-11, and
+  `Future.complete`); `isSet` and `wait` are not.
+- **S4-15. sys.joinAll** joins in order and panics naming the index of a future that has no value.
+  It needed a compiler fix: **S4-16. A generic parameter is deduced through a generic struct
+  type** (`fn f<T>(b: Box<T>)` with a `Box<int>`): `collectGenericDeductions` (Elaborate.ts)
+  matched arrays, slices, callables and reactive types, never structs, so `sys.joinAll(futures)`
+  with a `[]Future<int>` failed with H7169. Same struct (`originalCollectedSymbol`), each type
+  argument deduced in turn. Test-first: cases_generic_struct_deduction.hz, red before.
+- **S4-17. No zero-only shorthand** (the user left it open): `limitAllocations` has none either,
+  and `{ count: 0 }` reads clearly. `SuspensionLimits.count` is required.
+- **S4-20. Fixes from the independent review (2026-11-23, each test-first, seen red in
+  cases_sync.hz "what panics"):**
+  - A hold is never half taken: `hzstd_held_reserve` makes room in the held list (it may allocate,
+    so it may panic: an allocation limit, no memory) before anything of the mutex changes, also
+    before waiting for it; recording the hold never allocates. Before, a panic there left a depth
+    or an owner that nothing released (`holdAllocationFails`).
+  - yieldAfter in a computed panicked only once it had run long enough to reach the slow path: the
+    yield gate is closed while a computed is evaluated too (`hzstd_yield_gate_refresh` where
+    `reactive.evaluating` changes: the outermost evaluation, the recovery path), so S4-12's
+    "computeds need no window" holds for every suspension point (`computedYieldAfter`).
+  - A condition that poisons its own mutex (a recovered panic in a reentrant lock) and does not
+    hold waited forever: `hzstd_mutex_wait_change` panics on a poisoned mutex
+    (`poisonedInCondition`).
+  - A runtime region's window (a lockWhen condition) is never spent: a condition recovering from
+    its own suspension panic could then really suspend (`conditionRecovered`).
+  - Not changed: `yieldAfter(+infinity)` and `yieldAfter(NaN)` never yield, so they are no
+    suspension points and pass a limit of 0 (written in hzstd_sched.c).
+  - joinAll's two messages differ ("was killed", "never ran"), so the tests tell them apart.
+- **S4-19. Left for stage 5** (an independent review, 2026-11-23): the mutex and flag cores and the
+  wait queues are not synchronized, a waiter of another thread would be pushed into that thread's
+  ready queue directly, and `hzstd_mutex_wait_change` lets go of the lock and then queues the task
+  as two steps; with threads each needs the core's own lock (and the inbox plus `uv_async_t` of
+  contract section 5.1) or wake-ups get lost.
+- **S4-18. Tests and demos.** testsuite/src/cases_sync.hz (exclusion, order, reentrancy,
+  conditions, flags, joinAll, every counted point, nesting, recovery, spent limits, and every panic
+  with its message, kill poisoning observed from an `atexit` stand-in as in cases_tasks.hz);
+  examples/async (`./run`, `./run <demo>`): mutex, condition, flag, join, limits, poison.
+
 ## Tooling
 
 - **G-1. The parser-equivalence sweep reads what the commit and the run decide** (user,

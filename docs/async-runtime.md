@@ -132,17 +132,79 @@ only where noted.
   `hzstd_platform.h`) is renamed to `hzstd_os_thread_block_ns`, stays C-only and is never
   reachable as an ordinary sleep.
 
-**Locks and containers**
-* `sys.Mutex`; `mutex.lock(() => { ... })`: the only way to hold a lock (C178); reentrant per task (C184);
-  poisoned after a kill or a panic inside the region (C560).
-* Atomic containers: the plain container's operations, each atomic (C192); nothing ever hands out
-  a reference into the storage, an element update such as `arr[i].x += 1` is one atomic
-  operation, and iterating makes each element access atomic on its own (user, 2026-11-17); plus
-  `x.lock(() => { ... })` to hold the lock across several of them (C180, C182). Containers are never
-  closed: a waiter waits until an element arrives or the pending waiters are released, which can
-  happen any number of times (C260). `popFrontOrWait()` returns the element or nothing (an
-  optional, so a released waiter cannot ignore that it got none, C419);
-  `container.releaseWaiters()` releases every pending waiter.
+**Locks, flags and waiting** (user, 2026-11-23; built in stage 4, decisions S4-*). Every public
+API carries its usage examples in its doc comment, word for word as below: they are what the LSP
+hover shows (user, 2026-11-23).
+* `sys.Mutex`: a reference (every copy is the same mutex); held only for the length of a callback
+  (C178), never with a separate unlock or a guard object; nothing is handed to the callback (C182).
+  * `m.lock(() => ...)` returns the body's value; waiting suspends only the waiting task (C151),
+    waiters get it in the order they asked; reentrant per task (C184); the body may suspend (C526).
+  * `m.lockWhen(() => cond, () => ...)`: waits until `cond` holds, then runs the body in the same
+    lock region. `cond` runs holding the lock, with suspending forbidden, and is checked again
+    whenever a lock region of the mutex ends: no condition variable and no notify (this replaces
+    C296; the end of a region is the notify). It must only read what changes inside the mutex's
+    lock regions (C179); a change made elsewhere is not seen until a region ends.
+  * `m.waitUntil(() => cond)`: the same without a body, for conditions that stay true.
+  * lockWhen/waitUntil on a mutex the task holds panics (nothing could change the condition).
+  * A panic that leaves a lock region (recovered further up) or a kill of the holding task releases
+    and poisons the mutex (C340, C525, C559, C560): every later lock, lockWhen and waitUntil
+    panics, naming where the poisoned region was entered; tasks already waiting panic too. No
+    un-poison, no `isPoisoned()`.
+
+  ```haze
+  let m = sys.Mutex();
+  m.lock(() => {
+      let text = load(path);    // may suspend: no other task gets in
+      cache.set(path, text);
+  });
+  let total = m.lock(() => a + b);
+  let job = m.lockWhen(() => jobs.length > 0, () => jobs.pop());   // consumer
+  m.lock(() => jobs.push(job));      // producer: re-checks the consumer
+  m.waitUntil(() => loaded);
+  ```
+* `sys.Flag`: a reference; `set()` (wakes every task in `wait()`, also if the flag is cleared again
+  before they run), `clear()`, `isSet()` (never suspends), `wait()` (returns at once when set).
+
+  ```haze
+  let stop = sys.Flag();
+  task.spawn(() => { while !stop.isSet() { refresh(); time.sleep(1.0); } });
+  stop.set();
+
+  let ready = sys.Flag();
+  task.spawn(() => { load(); ready.set(); });
+  ready.wait();
+  ```
+* `sys.joinAll(futures)`: waits for every future in order and returns their values; panics if one
+  was killed or never ran (join each one to handle that).
+
+  ```haze
+  let results = sys.joinAll(futures);
+  ```
+* Atomic containers (stages 5 and 6): the plain container's operations, each atomic (C192);
+  nothing ever hands out a reference into the storage, an element update such as `arr[i].x += 1`
+  is one atomic operation, and iterating makes each element access atomic on its own (user,
+  2026-11-17); plus `x.lock(() => { ... })`, `x.lockWhen(...)` and `x.waitUntil(...)` exactly as
+  on a Mutex (C180, C182). Every container is waited on through those. The waiting operations of
+  their own are the queue's only:
+* `Queue<T>` (stage 6), plain and atomic; `Queue<T>({ capacity })` is the ring buffer (a plain
+  `push` on a full queue panics). The atomic form adds `popFrontOrWait()` (the element, or `none`
+  once the queue is closed and empty; an optional, so it cannot be ignored, C419), `pushOrWait(x)`
+  (bounded: waits for room), `close()` and `isClosed()`. `close()` replaces `releaseWaiters()`
+  (user, 2026-11-23, as Go, Rust, C#, Kotlin and Python 3.13 do it): no more elements will come;
+  waiters get the rest, then `none`; a `push` after it panics, as does a task in `pushOrWait`;
+  closing twice is harmless; a closed queue never opens again. Why: `releaseWaiters()` released
+  only the tasks waiting at that moment, so a worker busy with a job when the producer released
+  them waited forever afterwards: a pool could not be ended without a sentinel per worker.
+
+  ```haze
+  let jobs = atomic Queue<Job>();
+  while let job = jobs.popFrontOrWait() { job.run(); }    // worker
+  jobs.push(job);                                        // producer
+  jobs.close();                     // workers drain, then get none
+
+  let frames = atomic Queue<Frame>({ capacity: 8 });
+  frames.pushOrWait(frame);         // waits while 8 are queued
+  ```
 * Declarations: `atomic` structs and arrays (C170, C189), `unsafe` members (C172), `private` members
   (C174), atomic primitives (C599). Readonly members are wanted (C552) but how is open (C554).
 * Crossable types: a type, closure types included, can be declared crossable and then fails to
@@ -175,8 +237,25 @@ only where noted.
 * Uncaught failure: stack trace, cleanup of every thread, exit status 255 (C227, C521).
 * Once a graceful exit has started, its status is final: a later uncaught panic (for example on a
   lock poisoned by a killed task) is printed but changes nothing.
-* `sys.noSuspend(() => { ... })`: suspending inside panics (C538). Used by computeds (C539),
-  cleanup (C557) and global initializers (C571).
+* `sys.limitSuspensions({ count: n }, () => { ... })` and `sys.traceSuspensions(() => { ... })`
+  (user, 2026-11-23: the same interface as the allocation windows; replaces `sys.noSuspend`, a
+  limit of 0 is C538's region where suspending panics). A suspension point is every call that can
+  suspend (yield, yieldAfter, sleep, join, a lock that is not reentrant, lockWhen, waitUntil,
+  Flag.wait), counted whether or not it did, so a limit's panic never depends on timing (C43,
+  C419). The panic comes at the point that would cross the limit, before it suspends, and names
+  where the limit was set; a tripped limit is spent. Per task; windows nest. The stats: `count`
+  (points, what a limit counts), `suspended` (how often the task really left its thread),
+  `seconds` (time away, summed: waiting plus waiting for its turn). Suspending panics inside a
+  computed (C539; the reactive core knows when one is evaluated, watchers' getters included) and
+  inside a lockWhen/waitUntil condition. Global initializers are C static initializers (no Haze
+  code runs in them), and the kill of a task runs no Haze code, so C571 and C557 need nothing more
+  today.
+
+  ```haze
+  sys.limitSuspensions({ count: 0 }, () => { layout(); });
+  let s = sys.traceSuspensions(() => { sync(); });
+  fmt.println(f"{s.suspended} of {s.count} points suspended, {s.seconds} s away");
+  ```
 * **[Open]** The cleanup registration API (C546). The user rejects a closure-per-handler API,
   because registering one usually needs a heap allocation for the closure's environment. It must be
   redesigned with close to zero heap allocations per handler. Do not implement a public cleanup API

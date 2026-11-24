@@ -150,6 +150,11 @@ void* hzstd_computed_get(hzstd_context_t *ctx, hzstd_computed_node_t* comp)
   rs->current_computed = comp;
   comp->eval_parent = rs->evaluating;
   rs->evaluating = comp;
+  // The outermost evaluation closes sys.yieldAfter's gate: a suspension point
+  // panics in a computed (C539), also one that would not have yielded.
+  if (comp->eval_parent == NULL) {
+    hzstd_yield_gate_refresh(ctx);
+  }
 
   comp->dirty = 0;
   comp->cached = comp->entry(ctx, comp->thunk);
@@ -157,6 +162,9 @@ void* hzstd_computed_get(hzstd_context_t *ctx, hzstd_computed_node_t* comp)
   // The body ran under ctx, so its task is still this one.
   rs->evaluating = comp->eval_parent;
   rs->current_computed = prev;
+  if (rs->evaluating == NULL) {
+    hzstd_yield_gate_refresh(ctx);
+  }
 
   return comp->cached;
 }

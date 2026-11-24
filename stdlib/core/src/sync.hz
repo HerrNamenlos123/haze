@@ -1,0 +1,144 @@
+// ============================================================================
+// Synchronization: sys.Mutex and sys.Flag (docs/async-runtime.md section 2;
+// Axiom C151, C177 to C184, C340, C525, C526, C559, C560; docs/async-decisions.md
+// S4-*). The runtime side is hzstd_sched.c ("Mutexes", "Flags").
+//
+// Tasks on one thread switch only where they wait (C218), so they need a lock
+// only around work that suspends in the middle. A lock is held only for the
+// length of a callback (C178): there is no unlock, no guard object, nothing
+// handed to the callback (C182).
+// ============================================================================
+
+namespace ffi {
+    // Exported: the generic methods below are re-elaborated in every module
+    // that calls them.
+    export extern C noemit fn hzstd_mutex_core_new(): cptr :: final;
+    export extern C noemit fn hzstd_mutex_lock(ctx: cptr, core: cptr, location: SourceLocation) :: final;
+    export extern C noemit fn hzstd_mutex_unlock(ctx: cptr, core: cptr) :: final;
+    export extern C noemit fn hzstd_mutex_lock_when(ctx: cptr, core: cptr, location: SourceLocation) :: final;
+    export extern C noemit fn hzstd_mutex_wait_change(ctx: cptr, core: cptr) :: final;
+    export extern C noemit fn hzstd_condition_window_open(ctx: cptr): int :: final;
+
+    extern C noemit fn hzstd_flag_core_new(): cptr :: final;
+    extern C noemit fn hzstd_flag_set(ctx: cptr, core: cptr) :: final;
+    extern C noemit fn hzstd_flag_clear(ctx: cptr, core: cptr) :: final;
+    extern C noemit fn hzstd_flag_is_set(core: cptr): bool :: final;
+    extern C noemit fn hzstd_flag_wait(ctx: cptr, core: cptr) :: final;
+}
+
+namespace sys {
+    // A lock for work that other tasks and threads must not interleave
+    // with. A reference: every copy is the same mutex. It is held only
+    // for the duration of lock, lockWhen or waitUntil; there is no unlock.
+    //
+    //     let m = sys.Mutex();
+    //     m.lock(() => {
+    //         let text = load(path);    // may suspend: no other task gets in
+    //         cache.set(path, text);
+    //     });
+    export opaque ref struct Mutex {
+        private core: cptr;
+
+        fn constructor(): mut Mutex {
+            return Mutex { core: ffi.hzstd_mutex_core_new() };
+        }
+
+        // Runs `body` holding the lock and returns its value. While another
+        // task holds it, waits (only this task); waiters get it in the order
+        // they asked. A task that holds it already just runs `body`. `body`
+        // may suspend. A panic that leaves `body` releases and poisons the
+        // mutex: every later lock panics.
+        //
+        //     let total = m.lock(() => a + b);
+        fn lock<T>(body: immediate () => T, location: SourceLocation = SourceLocation()): T {
+            let ctx = sys.contextPtr();
+            ffi.hzstd_mutex_lock(ctx, this.core, location);
+            let result = body();
+            ffi.hzstd_mutex_unlock(ctx, this.core);
+            return result;
+        }
+
+        // Waits until `cond` holds, then runs `body` without releasing the
+        // lock in between, and returns body's value. `cond` is checked
+        // holding the lock, and again whenever a lock region of this mutex
+        // ends: nothing needs a notify. `cond` must only read what changes
+        // inside this mutex's lock regions, and cannot suspend.
+        //
+        //     let job = m.lockWhen(() => jobs.length > 0, () => jobs.pop());   // consumer
+        //     m.lock(() => jobs.push(job));      // producer: re-checks the consumer
+        fn lockWhen<T>(cond: immediate () => bool, body: immediate () => T, location: SourceLocation = SourceLocation()): T {
+            let ctx = sys.contextPtr();
+            ffi.hzstd_mutex_lock_when(ctx, this.core, location);
+            while true {
+                let window = ffi.hzstd_condition_window_open(ctx);
+                let holds = cond();
+                let seen = ffi.hzstd_suspension_window_close(ctx, window);
+                if holds {
+                    break;
+                }
+                ffi.hzstd_mutex_wait_change(ctx, this.core);
+            }
+            let result = body();
+            ffi.hzstd_mutex_unlock(ctx, this.core);
+            return result;
+        }
+
+        // Waits until `cond` holds (checked as in lockWhen), then returns with
+        // the lock released. Meant for conditions that stay true once they hold.
+        //
+        //     m.waitUntil(() => loaded);
+        fn waitUntil(cond: immediate () => bool, location: SourceLocation = SourceLocation()) {
+            let ctx = sys.contextPtr();
+            ffi.hzstd_mutex_lock_when(ctx, this.core, location);
+            while true {
+                let window = ffi.hzstd_condition_window_open(ctx);
+                let holds = cond();
+                let seen = ffi.hzstd_suspension_window_close(ctx, window);
+                if holds {
+                    break;
+                }
+                ffi.hzstd_mutex_wait_change(ctx, this.core);
+            }
+            ffi.hzstd_mutex_unlock(ctx, this.core);
+        }
+    }
+
+    // A flag that tasks and threads set, clear and wait for. A reference:
+    // every copy is the same flag.
+    //
+    //     let stop = sys.Flag();
+    //     task.spawn(() => { while !stop.isSet() { refresh(); time.sleep(1.0); } });
+    //     stop.set();
+    //
+    //     let ready = sys.Flag();
+    //     task.spawn(() => { load(); ready.set(); });
+    //     ready.wait();
+    export opaque ref struct Flag {
+        private core: cptr;
+
+        fn constructor(): mut Flag {
+            return Flag { core: ffi.hzstd_flag_core_new() };
+        }
+
+        // Sets it and wakes every task in wait().
+        mut fn set() {
+            ffi.hzstd_flag_set(sys.contextPtr(), this.core);
+        }
+
+        mut fn clear() {
+            ffi.hzstd_flag_clear(sys.contextPtr(), this.core);
+        }
+
+        // Whether it is set. Never suspends.
+        fn isSet(): bool {
+            return ffi.hzstd_flag_is_set(this.core);
+        }
+
+        // Returns at once if it is set, else waits for the next set(): every
+        // task waiting then wakes, even if the flag is cleared again before
+        // it runs.
+        fn wait() {
+            ffi.hzstd_flag_wait(sys.contextPtr(), this.core);
+        }
+    }
+}

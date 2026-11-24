@@ -171,6 +171,27 @@ namespace sys {
         ffi.hzstd_abort();
     }
 
+    // Waits for every future, in order, and returns their values. Panics if
+    // one was killed or never ran; join each one to handle that yourself.
+    //
+    //     let results = sys.joinAll(futures);
+    export fn joinAll<T>(futures: []Future<T>): []T {
+        let results: mut []T = [];
+        for (let i = 0; i < futures.length; i++) {
+            let r = futures[i].join();
+            if r is TaskError {
+                if r == TaskError.Killed {
+                    sys.panic(f"sys.joinAll: future {i} has no value: its task was killed", 1);
+                }
+                sys.panic(f"sys.joinAll: future {i} has no value: its task never ran", 1);
+            }
+            else {
+                results.push(r);
+            }
+        }
+        return results;
+    }
+
     // Seconds the current task has run since its last switch (C589): CPU
     // time, measured every 5 ms (so is its precision). Meant for code that
     // decides itself when to yield or hand off work.

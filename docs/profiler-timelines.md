@@ -38,7 +38,7 @@ Per Haze thread (decision P-2):
 2. In it, the session as one `RunTask` (as today), and inside it, one `EventDispatch` per task run:
    "Event: task <id> <spawn file:line>" (the main task: "Event: task 1 main"). Its samples nest under
    it: the frames above which the bar shows which task runs. Its args: task id, spawned at, spawned
-   by (task id), run number, why the run ended (yield, join, sleep, end, killed), the run's CPU time
+   by (task id), run number, why the run ended (yield, join, sleep, lock, condition, flag, end, killed), the run's CPU time
    and wall time.
 3. Between runs, the scheduler's own time: "Event: event loop, waiting" for a blocking turn
    (`uv_run` once; the thread sleeps voluntarily), "Event: event loop" for a turn that does not wait.

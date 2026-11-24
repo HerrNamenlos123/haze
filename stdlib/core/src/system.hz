@@ -25,6 +25,15 @@ namespace ffi {
     };
     extern C noemit fn hzstd_alloc_window_open(max_count: int, max_bytes: int, location: SourceLocation): int :: final;
     extern C noemit fn hzstd_alloc_window_close(window: int): hzstd_alloc_stats_t :: final;
+
+    export extern C noemit struct hzstd_suspension_stats_t {
+        count: int;
+        suspended: int;
+        seconds: real;
+    };
+    extern C noemit fn hzstd_suspension_window_open(ctx: cptr, max_count: int, location: SourceLocation): int :: final;
+    // Exported: sys.Mutex's generic methods close condition windows with it.
+    export extern C noemit fn hzstd_suspension_window_close(ctx: cptr, window: int): hzstd_suspension_stats_t :: final;
     extern C noemit fn hzstd_stdin_read_line_part(dest: cptr, room: int): hzstd_stdin_line_part_t :: final;
 }
 
@@ -122,6 +131,52 @@ namespace sys {
         let window = ffi.hzstd_alloc_window_open(maxCount, maxBytes, location);
         body();
         ffi.hzstd_alloc_window_close(window);
+    }
+
+    // What sys.traceSuspensions saw: the suspension points reached (`count`,
+    // what a limit counts), how often the task really left its thread
+    // (`suspended`), and how long it was away in total (`seconds`: waiting,
+    // plus waiting for its turn once woken).
+    export struct SuspensionStats {
+        count: int;
+        suspended: int;
+        seconds: real;
+    }
+
+    export struct SuspensionLimits {
+        count: int;
+    }
+
+    // Runs `body` and reports its suspension points (`count`, what a limit
+    // counts), how often the task really left the CPU (`suspended`), and
+    // the total time it was away (`seconds`, waiting plus waiting for its turn).
+    // Counts this task only, also in what it calls; windows nest.
+    //
+    //     let s = sys.traceSuspensions(() => { sync(); });
+    //     fmt.println(f"{s.suspended} of {s.count} points suspended, {s.seconds} s away");
+    export fn traceSuspensions(body: immediate () => void, location: SourceLocation = SourceLocation()): SuspensionStats {
+        let ctx = contextPtr();
+        let window = ffi.hzstd_suspension_window_open(ctx, -1, location);
+        body();
+        let stats = ffi.hzstd_suspension_window_close(ctx, window);
+        return SuspensionStats { count: stats.count, suspended: stats.suspended, seconds: stats.seconds };
+    }
+
+    // Runs `body` and panics at the first suspension point past
+    // `limits.count`, before it suspends: the stack trace names the call.
+    // A suspension point is every call that can suspend (yield, yieldAfter,
+    // sleep, join, lock, Flag.wait, ...), counted whether or not it did, so
+    // the panic never depends on timing. Counts this task only; limits nest.
+    //
+    //     sys.limitSuspensions({ count: 0 }, () => { layout(); });
+    export fn limitSuspensions(limits: SuspensionLimits, body: immediate () => void, location: SourceLocation = SourceLocation()): void {
+        if limits.count < 0 {
+            sys.panic(f"sys.limitSuspensions: the count limit cannot be negative ({limits.count})", 1);
+        }
+        let ctx = contextPtr();
+        let window = ffi.hzstd_suspension_window_open(ctx, limits.count, location);
+        body();
+        let stats = ffi.hzstd_suspension_window_close(ctx, window);
     }
 }
 

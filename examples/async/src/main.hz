@@ -1,0 +1,216 @@
+// Demos of tasks and their synchronization tools. `./run` runs every demo,
+// `./run <name>` one of them. Everything here runs on one thread: tasks take
+// turns, and switch only where they wait (time.sleep, join, lock, wait,
+// yield). Threads come with the next stage, with the same tools.
+
+// Pretends to load something slow: suspends this task for `seconds`.
+fn load(name: str, seconds: real): str {
+    time.sleep(seconds);
+    return f"<{name}>";
+}
+
+// ── mutex: keep other tasks out while an update waits halfway ───────────────
+
+struct Account {
+    balance: int;
+}
+
+fn demoMutex() {
+    // Without a lock: both tasks read the balance, wait (a slow check), and
+    // write back. The second write loses the first one's deposit.
+    let unguarded: mut ref Box<Account> = { value: Account { balance: 100 } };
+    let a = task.spawn(() => {
+        let read = unguarded.value.balance;
+        time.sleep(0.01);
+        unguarded.value.balance = read + 50;
+    });
+    let b = task.spawn(() => {
+        let read = unguarded.value.balance;
+        time.sleep(0.01);
+        unguarded.value.balance = read + 20;
+    });
+    let both: []Future<none> = [a, b];
+    sys.joinAll(both);
+    fmt.println(f"  without a lock: 100 + 50 + 20 = {unguarded.value.balance}");
+
+    // With one: the second task waits until the first one's region ends.
+    let m = sys.Mutex();
+    let locked: mut ref Box<Account> = { value: Account { balance: 100 } };
+    let c = task.spawn(() => {
+        m.lock(() => {
+            let read = locked.value.balance;
+            time.sleep(0.01);
+            locked.value.balance = read + 50;
+        });
+    });
+    let d = task.spawn(() => {
+        m.lock(() => {
+            let read = locked.value.balance;
+            time.sleep(0.01);
+            locked.value.balance = read + 20;
+        });
+    });
+    let both2: []Future<none> = [c, d];
+    sys.joinAll(both2);
+    fmt.println(f"  with m.lock:    100 + 50 + 20 = {locked.value.balance}");
+
+    // A lock region gives back its body's value; taking a mutex the task
+    // already holds just runs the body.
+    let total = m.lock(() => locked.value.balance * 2);
+    let again = m.lock(() => m.lock(() => 1));
+    fmt.println(f"  m.lock(() => balance * 2) = {total}, nested lock = {again}");
+}
+
+// ── condition: wait until something holds, no notify anywhere ──────────────
+
+fn demoCondition() {
+    let m = sys.Mutex();
+    let jobs: mut []str = [];
+    let closing: mut ref Box<bool> = { value: false };
+
+    // A worker waits until there is a job or the queue is closing. The
+    // condition is re-checked whenever a lock region of `m` ends.
+    let worker = (name: str): Future<int> => {
+        return task.spawn(() => {
+            let done = 0;
+            while true {
+                let job = m.lockWhen(() => jobs.length > 0 || closing.value, () => {
+                    if jobs.length > 0 {
+                        return jobs.remove(0);
+                    }
+                    return "";
+                });
+                if job == "" {
+                    return done;
+                }
+                fmt.println(f"  {name} runs {job}");
+                time.sleep(0.005);
+                done = done + 1;
+            }
+            return done;
+        });
+    };
+    let w1 = worker("worker 1");
+    let w2 = worker("worker 2");
+
+    for (let i = 1; i <= 5; i++) {
+        let job = f"job {i}";
+        m.lock(() => { jobs.push(job); });   // ending this region wakes a worker
+        time.sleep(0.002);
+    }
+    m.lock(() => { closing.value = true; });
+
+    let workers: []Future<int> = [w1, w2];
+    let counts = sys.joinAll(workers);
+    fmt.println(f"  worker 1 ran {counts[0]}, worker 2 ran {counts[1]}");
+
+    // waitUntil: for a condition that stays true once it holds.
+    let loaded: mut ref Box<bool> = { value: false };
+    let loader = task.spawn(() => {
+        let text = load("config", 0.01);
+        m.lock(() => { loaded.value = true; });
+    });
+    m.waitUntil(() => loaded.value);
+    fmt.println("  waitUntil: the config is loaded");
+}
+
+// ── flag: stop a loop, or wait until something happened ─────────────────────
+
+fn demoFlag() {
+    let stop = sys.Flag();
+    let refreshes: mut ref Box<int> = { value: 0 };
+    let refresher = task.spawn(() => {
+        while !stop.isSet() {
+            refreshes.value = refreshes.value + 1;
+            time.sleep(0.01);
+        }
+    });
+
+    let ready = sys.Flag();
+    let starter = task.spawn(() => {
+        let text = load("index", 0.035);
+        ready.set();
+    });
+    ready.wait();
+    fmt.println(f"  ready after about {refreshes.value} refreshes");
+
+    stop.set();
+    let r = refresher.join();
+    fmt.println(f"  the refresher stopped after {refreshes.value} refreshes");
+}
+
+// ── join: start several tasks, wait for all of their results ────────────────
+
+fn demoJoin() {
+    let started = time.now();
+    let futures: []Future<str> = [
+        task.spawn(() => load("a", 0.03)),
+        task.spawn(() => load("b", 0.02)),
+        task.spawn(() => load("c", 0.01)),
+    ];
+    let results = sys.joinAll(futures);
+    let took = time.now() - started;
+    fmt.println(f"  {results[0]} {results[1]} {results[2]}, together in about {(took * 1000.0) as int} ms, not 60");
+}
+
+// ── limits: count suspensions, or forbid them ───────────────────────────────
+
+fn demoLimits() {
+    let m = sys.Mutex();
+    let s = sys.traceSuspensions(() => {
+        let text = load("data", 0.01);   // suspends
+        m.lock(() => {});                // could have, nobody held it
+        sys.yieldAfter(1000.0);          // could have, had it run that long
+    });
+    fmt.println(f"  {s.count} suspension points, {s.suspended} suspended, away about {(s.seconds * 1000.0) as int} ms");
+
+    // A region that must never suspend: the first call that could panics,
+    // whether or not it would have suspended this time.
+    let message = attempt {
+        sys.limitSuspensions({ count: 0 }, () => {
+            m.lock(() => {});
+        });
+        "no panic"
+    } recover e { e.message };
+    fmt.println(f"  limitSuspensions(count 0) around m.lock: {message}");
+}
+
+// ── poison: a panic inside a lock region ────────────────────────────────────
+
+fn demoPoison() {
+    let m = sys.Mutex();
+    let half: mut ref Box<int> = { value: 0 };
+    let first = attempt {
+        m.lock(() => {
+            half.value = 1;
+            if half.value == 1 {
+                sys.panic("failed halfway through the update");
+            }
+            half.value = 2;
+        });
+        "no panic"
+    } recover e { e.message };
+    fmt.println(f"  the update: {first}");
+    let second = attempt {
+        m.lock(() => {});
+        "no panic"
+    } recover e { e.message };
+    fmt.println(f"  the next lock: {second}");
+}
+
+fn main(): int {
+    let args = sys.args();
+    let only = args.length > 1 ? args[1] : "";
+    let ran = false;
+    if only == "" || only == "mutex" { fmt.println("mutex"); demoMutex(); ran = true; }
+    if only == "" || only == "condition" { fmt.println("condition"); demoCondition(); ran = true; }
+    if only == "" || only == "flag" { fmt.println("flag"); demoFlag(); ran = true; }
+    if only == "" || only == "join" { fmt.println("join"); demoJoin(); ran = true; }
+    if only == "" || only == "limits" { fmt.println("limits"); demoLimits(); ran = true; }
+    if only == "" || only == "poison" { fmt.println("poison"); demoPoison(); ran = true; }
+    if !ran {
+        fmt.println(f"no demo named {only}: mutex, condition, flag, join, limits, poison");
+        return 1;
+    }
+    return 0;
+}

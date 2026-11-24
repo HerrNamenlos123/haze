@@ -1094,6 +1094,8 @@ hzstd_panic_recovery_frame_t *hzstd_push_panic_recovery_frame(hzstd_context_t *c
   frame->saved_stackref_count = ctx->task->held_len;
   hzstd_reactive_save_state(ctx, &frame->saved_reactive);
   frame->saved_alloc_window_depth = ctx->task->alloc_windows.depth;
+  frame->saved_suspension_window_depth = ctx->task->suspension_windows.depth;
+  frame->saved_held_lock_count = ctx->task->held_lock_count;
 
   HZSTD_DYNAMIC_ARRAY_PUSH(frames, frame);
   return frame;

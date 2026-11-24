@@ -460,6 +460,9 @@ namespace profiling {
         if reason == 2 { return "sleep"; }
         if reason == 3 { return "suspend"; }
         if reason == 4 { return "end"; }
+        if reason == 6 { return "lock"; }
+        if reason == 7 { return "condition"; }
+        if reason == 8 { return "flag"; }
         return "session end";
     }
 

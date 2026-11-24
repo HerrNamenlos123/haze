@@ -1,0 +1,8 @@
+name = "async-demos"
+id = "aSyNcD01"
+version = "0.1.0"
+description = "Demos of tasks and their synchronization tools: Mutex, Flag, joinAll, suspension limits"
+license = "MIT"
+authors = []
+src = "src"
+type = "exe"

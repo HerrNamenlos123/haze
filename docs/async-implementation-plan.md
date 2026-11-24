@@ -150,8 +150,13 @@ it against the same loop without the call).
 Claims C151, C177 to C184, C340, C525, C526, C537 to C539, C557 to C560, C571.
 
 * `mutex.lock(() => { ... })`, reentrant per task, waiting suspends; poisoned after a kill or a
-  panic inside the region.
-* `sys.noSuspend(() => { ... })`; computeds, cleanup and global initializers run inside one.
+  panic inside the region. Also `lockWhen`, `waitUntil`, `sys.Flag` and `sys.joinAll` (user,
+  2026-11-23; contract section 2).
+* `sys.limitSuspensions({ count })` and `sys.traceSuspensions` (replacing `sys.noSuspend`; user,
+  2026-11-23); computeds and lockWhen conditions run at a limit of 0 (global initializers and
+  cleanup run no Haze code today: decisions S4-13).
+
+Built 2026-11-23 (decisions S4-*).
 
 Done: tests for reentrancy, for waiting across tasks, for poisoning after a panic and after a
 kill, for a suspension inside each kind of suspension-free region.

@@ -40,7 +40,7 @@ void hzstd_task_spawn(hzstd_context_t *ctx,
                       bool background,
                       hzstd_future_core_t *future,
                       hzstd_source_location_t spawned_at);
-// Lets every task that is ready run first (C243).
+// Lets every task that is ready run first (C243). A suspension point.
 void hzstd_task_yield(hzstd_context_t *ctx);
 // Suspends the calling task for `ms` milliseconds of the thread's event loop
 // (time.sleep, C301): a libuv timer readies it.
@@ -51,20 +51,60 @@ hzstd_int_t hzstd_future_state(hzstd_future_core_t *core);
 // Settles a pending future with its value; panics if it is settled (C444).
 void hzstd_future_complete(hzstd_context_t *ctx, hzstd_future_core_t *core);
 // Suspends the calling task until the future is settled; returns its state.
+// A suspension point.
 hzstd_int_t hzstd_future_wait(hzstd_context_t *ctx, hzstd_future_core_t *core);
+
+// Suspension points and windows (sys.limitSuspensions, sys.traceSuspensions;
+// hzstd_sched.c). Every call that can suspend calls hzstd_suspension_point
+// first: it panics inside a computed (C539), counts the point in the task's
+// open windows and panics, before anything suspends, when one would pass its
+// limit (-1: none).
+void hzstd_suspension_point(hzstd_context_t *ctx);
+hzstd_int_t hzstd_suspension_window_open(hzstd_context_t *ctx, hzstd_int_t max_count, hzstd_source_location_t where);
+// The window of a lockWhen/waitUntil condition: suspending panics in it.
+hzstd_int_t hzstd_condition_window_open(hzstd_context_t *ctx);
+hzstd_suspension_stats_t hzstd_suspension_window_close(hzstd_context_t *ctx, hzstd_int_t window);
+// A panic recovery: back to the windows open when its frame was pushed.
+void hzstd_suspension_windows_restore(hzstd_context_t *ctx, size_t depth);
+// Sets the thread's yield gate from the running task's state: closed while it
+// has a suspension window open or evaluates a computed. Called where either
+// changes (hzstd_reactive.c, the recovery path).
+void hzstd_yield_gate_refresh(hzstd_context_t *ctx);
+
+// sys.Mutex's core (hzstd_sched.c, "Mutexes"). Lock and unlock pair up per
+// lock region; hzstd_mutex_lock_when starts a lockWhen/waitUntil (it panics on
+// a mutex the task holds), hzstd_mutex_wait_change waits, while the condition
+// does not hold, for the end of a lock region of the mutex.
+hzstd_mutex_core_t *hzstd_mutex_core_new(void);
+void hzstd_mutex_lock(hzstd_context_t *ctx, hzstd_mutex_core_t *m, hzstd_source_location_t where);
+void hzstd_mutex_unlock(hzstd_context_t *ctx, hzstd_mutex_core_t *m);
+void hzstd_mutex_lock_when(hzstd_context_t *ctx, hzstd_mutex_core_t *m, hzstd_source_location_t where);
+void hzstd_mutex_wait_change(hzstd_context_t *ctx, hzstd_mutex_core_t *m);
+// A panic recovery: releases and poisons the holds taken after its frame (C340).
+void hzstd_held_locks_restore(hzstd_context_t *ctx, size_t count);
+
+// sys.Flag's core.
+void *hzstd_flag_core_new(void);
+void hzstd_flag_set(hzstd_context_t *ctx, void *flag);
+void hzstd_flag_clear(hzstd_context_t *ctx, void *flag);
+bool hzstd_flag_is_set(void *flag);
+void hzstd_flag_wait(hzstd_context_t *ctx, void *flag);
 // For the fault handler: where it interrupted (NULL clears it), and the stack
 // of the running task (NULL if none). Both async-signal-safe.
 void hzstd_sched_note_interrupted_sp(void *sp);
 const fiber_stack *hzstd_current_task_stack(void);
 
+void hzstd_yield_after_slow(hzstd_context_t *ctx, hzstd_real_t seconds);
 // sys.yieldAfter (docs/async-runtime.md section 2), called inline by
 // generated code under its Haze name: one load and one compare, no clock
 // read, no call, unless the task has run longer than `seconds` since its last
 // switch (as the stall watchdog measured it, 5 ms precision); then it yields.
+// While the task has a suspension window open the gate is +infinity: every
+// call goes to the slow path, which counts it as a suspension point.
 static inline void yieldAfter(hzstd_context_t *ctx, hzstd_real_t seconds)
 {
-  if (__builtin_expect(atomic_load_explicit(&ctx->thread->running_for, memory_order_relaxed) > seconds, 0)) {
-    hzstd_task_yield(ctx);
+  if (__builtin_expect(atomic_load_explicit(&ctx->thread->yield_gate, memory_order_relaxed) > seconds, 0)) {
+    hzstd_yield_after_slow(ctx, seconds);
   }
 }
 // sys.exit: a graceful exit with `status` (0 to 255, else it panics): this
@@ -269,10 +309,14 @@ _Noreturn void hzstd_panic_bad_stackref(hzstd_thread_t *thread, hzstd_stackref_t
       /* First: the allocation windows the longjmp left open are closed before anything can allocate. */             \
       hzstd_alloc_windows_restore(__hz_frame_##id->saved_alloc_window_depth);                                          \
       hzstd_panic_recovered(__hz_ctx);                                                                                 \
+      /* The suspension windows and the mutex holds of the discarded code (holds: released, poisoned). */             \
+      hzstd_suspension_windows_restore(__hz_ctx, __hz_frame_##id->saved_suspension_window_depth);                     \
+      hzstd_held_locks_restore(__hz_ctx, __hz_frame_##id->saved_held_lock_count);                                      \
       /* The longjmp skipped every stackref scope exit between the panic site and here. */                             \
       hzstd_stackref_unwind_to(__hz_ctx, __hz_frame_##id->saved_stackref_count);                                       \
       /* ...and every computed evaluation and write delivery: see hzstd_reactive_state_t. */                           \
       hzstd_reactive_restore_state(__hz_ctx, &__hz_frame_##id->saved_reactive);                                        \
+      hzstd_yield_gate_refresh(__hz_ctx);                                                                              \
       hzstd_panic_recovery_frame_run_cleanup(__hz_frame_##id);                                                         \
       hzstd_pop_panic_recovery_frame(__hz_ctx);                                                                        \
       /* Last: the report into GC memory, with the frame gone (a failure here goes to the next one out). */          \

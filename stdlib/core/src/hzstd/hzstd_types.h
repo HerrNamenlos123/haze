@@ -473,6 +473,39 @@ typedef struct {
   hzstd_int_t bytes;
 } hzstd_alloc_stats_t;
 
+// ── Suspension windows (sys.traceSuspensions, sys.limitSuspensions) ────────
+//
+// The same shape as the allocation windows: one open window counts every
+// suspension point the code running in its task reaches while it is open, in
+// it and in every window opened before it. A suspension point is a call that
+// can suspend, counted whether or not it did (hzstd_sched.c). A limit of -1 is
+// none; the first point past a limit panics before it suspends.
+typedef struct {
+  hzstd_int_t count;     // suspension points reached
+  hzstd_int_t suspended; // how often the task really left its thread
+  double seconds;        // how long it was away, summed
+  hzstd_int_t max_count;
+  hzstd_source_location_t where; // where the limit was set
+  // Why the runtime opened it (a lockWhen condition), NULL for a user's.
+  const char *reason;
+} hzstd_suspension_window_t;
+
+// The open windows of a task, outermost first: a window is its index. Malloc
+// memory, grown when a window opens past the capacity; a panic recovery only
+// sets the depth back.
+typedef struct {
+  hzstd_suspension_window_t *windows;
+  size_t depth;
+  size_t capacity;
+} hzstd_suspension_windows_t;
+
+// What a closed window saw.
+typedef struct {
+  hzstd_int_t count;
+  hzstd_int_t suspended;
+  hzstd_real_t seconds;
+} hzstd_suspension_stats_t;
+
 // ── Scheduler timeline (the profiler, docs/profiler-timelines.md) ──────────
 //
 // What a profiling session records of the scheduler, per Haze thread. Mirrored
@@ -500,6 +533,9 @@ typedef enum {
   HZSTD_SCHED_RUN_SUSPEND = 3, // waits for something else
   HZSTD_SCHED_RUN_END = 4,     // returned
   HZSTD_SCHED_RUN_SESSION = 5, // still running when the session ended
+  HZSTD_SCHED_RUN_LOCK = 6,      // waits for a mutex another task holds
+  HZSTD_SCHED_RUN_CONDITION = 7, // waits in lockWhen/waitUntil for its condition
+  HZSTD_SCHED_RUN_FLAG = 8,      // waits for a flag to be set
 } hzstd_sched_run_end_t;
 
 typedef struct {
@@ -676,6 +712,11 @@ typedef struct {
   hzstd_reactive_state_t saved_reactive;
   // Same reason, for the task's open allocation windows: how many there were.
   size_t saved_alloc_window_depth;
+  // ...its open suspension windows...
+  size_t saved_suspension_window_depth;
+  // ...and the mutex holds it had (hzstd_task_t.held_locks): every hold taken
+  // after this frame is released and its mutex poisoned (C340, C560).
+  size_t saved_held_lock_count;
 } hzstd_panic_recovery_frame_t;
 
 // ── Generational stack references ────────────────────────────────────────────
@@ -809,6 +850,18 @@ typedef enum {
   HZSTD_FUTURE_NEVER_RAN = 3, // its task was killed before it started (C561)
 } hzstd_future_state_t;
 typedef struct hzstd_future_core_t hzstd_future_core_t;
+typedef struct hzstd_mutex_core_t hzstd_mutex_core_t;
+
+// Tasks suspended until something readies them, oldest first, linked through
+// hzstd_task_t.next_ready. Every way to wait uses one: a future's waiters, a
+// mutex's lockers and condition waiters, a flag's waiters (hzstd_sched.c).
+typedef struct {
+  hzstd_task_t *head;
+  hzstd_task_t *tail;
+} hzstd_wait_queue_t;
+
+// How many mutex holds a task keeps inline before it needs an overflow array.
+#define HZSTD_HELD_LOCKS_INLINE 8
 struct hzstd_thread_t {
   uint64_t id; // process-unique, never reused; the main thread is 1
   // The task running on this thread, NULL while the scheduler runs. Set on the
@@ -818,8 +871,12 @@ struct hzstd_thread_t {
   hzstd_sched_t *sched; // the thread's scheduler (hzstd_sched.c)
   // Seconds of CPU time the running task has run since its last switch, as
   // the stall watchdog last measured it (5 ms precision, never more than the
-  // truth); 0 again at every switch. sys.yieldAfter reads it inline.
+  // truth); 0 again at every switch. sys.timeSinceTaskSwitch reads it.
   _Atomic double running_for;
+  // What sys.yieldAfter compares against inline: `running_for`, or +infinity
+  // while the running task has a suspension window open, so that every call
+  // takes the slow path and counts as a suspension point (hzstd_sched.c).
+  _Atomic double yield_gate;
 };
 
 // What a task runs: an `extern C` function defined in Haze (so it returns
@@ -858,14 +915,18 @@ struct hzstd_task_t {
   fiber_stack stack;  // all zero until the task first runs (it gets one then)
   hzstd_task_state_t state;
   bool background;    // does not keep its thread alive (C304, C435)
-  hzstd_task_t *next_ready;  // the ready queue, or a future's waiters
+  hzstd_task_t *next_ready;  // the ready queue, or the wait queue it is in
   hzstd_task_t *prev_live;   // the scheduler's registry of unfinished tasks
   hzstd_task_t *next_live;
   hzstd_task_entry_t entry;
   void *entry_arg;
   hzstd_context_settings_t settings; // the context it starts with (C406)
   hzstd_future_core_t *future;       // ends when the task ends
-  hzstd_future_core_t *waiting_on;   // the future it waits for, if suspended in a join
+  // The wait queue it is in while suspended there (a future's waiters, a
+  // mutex's lockers or condition waiters, a flag's waiters), and why: an
+  // hzstd_sched_run_end_t, HZSTD_SCHED_RUN_JOIN to HZSTD_SCHED_RUN_FLAG.
+  hzstd_wait_queue_t *waiting_in;
+  uint32_t wait_reason;
   void *sleep_timer;                 // its uv_timer_t, if suspended in time.sleep
   // Identity, for the profiler (docs/profiler-timelines.md): process-unique,
   // never reused, the main task 1; the task that spawned it (0: the runtime)
@@ -875,6 +936,20 @@ struct hzstd_task_t {
   hzstd_source_location_t spawned_at;
   // Its open allocation windows.
   hzstd_alloc_windows_t alloc_windows;
+  // Its open suspension windows.
+  hzstd_suspension_windows_t suspension_windows;
+  // Every mutex hold it has, outermost first, one entry per lock call (a
+  // reentrant one too): released in this order's reverse, and by a panic
+  // recovery or a kill (C340, C525). The first HZSTD_HELD_LOCKS_INLINE live
+  // in the task, the rest in held_overflow (GC memory, scanned: the entries
+  // keep their mutexes alive), NULL until needed.
+  hzstd_mutex_core_t *held_inline[HZSTD_HELD_LOCKS_INLINE];
+  hzstd_mutex_core_t **held_overflow;
+  size_t held_overflow_cap;
+  size_t held_lock_count;
+  // A mutex handed over to it while it waited, until it runs again and
+  // takes it as a hold (a kill before that gives it back unpoisoned).
+  hzstd_mutex_core_t *handed_lock;
 };
 
 // ── Meta ─────────────────────────────────────────────────────────────────────
