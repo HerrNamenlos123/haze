@@ -581,6 +581,7 @@ static void hzstd_queue_append(hzstd_wait_queue_t *q, hzstd_task_t *t)
   }
   q->tail = t;
   atomic_store_explicit(&t->waiting_in, q, memory_order_relaxed);
+  t->in_queue = true;
 }
 
 // The running task goes to the end of `q`, suspended there for `reason` (an
@@ -601,7 +602,7 @@ static hzstd_task_t *hzstd_wait_pop(hzstd_wait_queue_t *q)
   }
   // Its state was written under this lock when it began to wait, and only it
   // changes it again, after it left the queue.
-  if (t->state != HZSTD_TASK_SUSPENDED || atomic_load_explicit(&t->waiting_in, memory_order_relaxed) != q) {
+  if (t->state != HZSTD_TASK_SUSPENDED || !t->in_queue || atomic_load_explicit(&t->waiting_in, memory_order_relaxed) != q) {
     hzstd_panic("Internal Runtime Error: a task in a wait queue is not waiting in it");
   }
   q->head = t->next_ready;
@@ -609,7 +610,9 @@ static hzstd_task_t *hzstd_wait_pop(hzstd_wait_queue_t *q)
     q->tail = NULL;
   }
   t->next_ready = NULL;
-  atomic_store_explicit(&t->waiting_in, NULL, memory_order_relaxed);
+  // waiting_in stays until the task resumes: a kill on its thread takes this
+  // queue's lock and so knows the push into its inbox is done.
+  t->in_queue = false;
   return t;
 }
 
@@ -624,8 +627,9 @@ static void hzstd_wait_ready_all(hzstd_thread_t *self, hzstd_wait_queue_t *q)
 
 // Takes a task that will never run again out of the queue it waits in, on its
 // own thread, without holding any lock. Another thread may take it out (to
-// ready it) or move it to the core's other queue meanwhile: the queue is
-// looked up again under its lock.
+// ready it: it pushes it into this thread's inbox under the queue's lock, so
+// once this function held that lock the push is done) or move it to the
+// core's other queue (under the same lock) meanwhile.
 static void hzstd_wait_remove(hzstd_task_t *t)
 {
   for (;;) {
@@ -637,6 +641,10 @@ static void hzstd_wait_remove(hzstd_task_t *t)
     if (atomic_load_explicit(&t->waiting_in, memory_order_relaxed) != q) {
       hzstd_core_unlock(q->lock);
       continue;
+    }
+    if (!t->in_queue) {
+      hzstd_core_unlock(q->lock); // readied: it is in the inbox now
+      return;
     }
     hzstd_task_t **link = &q->head;
     hzstd_task_t *previous = NULL;
@@ -652,6 +660,7 @@ static void hzstd_wait_remove(hzstd_task_t *t)
       q->tail = previous;
     }
     t->next_ready = NULL;
+    t->in_queue = false;
     atomic_store_explicit(&t->waiting_in, NULL, memory_order_relaxed);
     hzstd_core_unlock(q->lock);
     return;
@@ -1789,6 +1798,8 @@ static void hzstd_task_suspend(hzstd_context_t *ctx)
   // Resumed (the README's rule: the current task is set on the resumed side).
   s->thread->current_task = t;
   t->state = HZSTD_TASK_RUNNING;
+  // Out of any queue now, readied by whoever (hzstd_wait_pop keeps these).
+  atomic_store_explicit(&t->waiting_in, NULL, memory_order_relaxed);
   atomic_store_explicit(&t->wait_reason, 0, memory_order_relaxed);
   if (windows->depth > 0) {
     double away = hzstd_time_now() - left;
@@ -2910,24 +2921,24 @@ typedef struct {
 } hzstd_thread_start_t;
 
 // Everything a thread that has ended owns is given back. Its tasks are gone
-// and out of every queue, so no other thread can push into its inbox; once
-// its scheduler is out of the list, none wakes it or reads it either.
+// and out of every queue, so no other thread pushes into its inbox any more
+// (a push for one of them finished under the queue's lock, before the kill
+// took it out). First its scheduler leaves the list: from then on no exit,
+// wake-up, watchdog or profiler reads it, and its wake-up handle and loop can
+// close.
 static void hzstd_thread_end(hzstd_sched_t *s)
 {
   hzstd_thread_t *thread = s->thread;
+  uv_mutex_lock(&g_hzstd_sched_list_lock);
+  hzstd_trace_retire(s);
+  hzstd_registry_change(HZSTD_REGISTRY_REMOVE_SCHED, s, NULL, (fiber_stack) { 0 });
+  uv_mutex_unlock(&g_hzstd_sched_list_lock);
+  uv_mutex_destroy(&s->inbox_lock);
   uv_close((uv_handle_t *)&s->wake, NULL);
   uv_run(&s->loop, UV_RUN_NOWAIT);
   if (uv_loop_close(&s->loop) != 0) {
     hzstd_panic("a thread's event loop could not be closed after its last task ended");
   }
-  // Waits for a pusher that may still hold the lock (hzstd_inbox_push).
-  uv_mutex_lock(&s->inbox_lock);
-  uv_mutex_unlock(&s->inbox_lock);
-  uv_mutex_destroy(&s->inbox_lock);
-  uv_mutex_lock(&g_hzstd_sched_list_lock);
-  hzstd_trace_retire(s);
-  hzstd_registry_change(HZSTD_REGISTRY_REMOVE_SCHED, s, NULL, (fiber_stack) { 0 });
-  uv_mutex_unlock(&g_hzstd_sched_list_lock);
   for (size_t i = 0; i < s->pool_len; i++) {
     fiber_stack_destroy(&s->pool[i]);
   }

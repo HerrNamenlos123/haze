@@ -944,14 +944,18 @@ struct hzstd_task_t {
   void *entry_arg;
   hzstd_context_settings_t settings; // the context it starts with (C406)
   hzstd_future_core_t *future;       // ends when the task ends
-  // The wait queue it is in while suspended there (a future's waiters, a
-  // mutex's lockers or condition waiters, a flag's waiters), and why: an
-  // hzstd_sched_run_end_t, HZSTD_SCHED_RUN_JOIN to HZSTD_SCHED_RUN_FLAG, or 0
-  // while it waits in no queue (the profiler's reason why the run ended).
-  // Both are written holding that queue's lock, possibly by another thread
-  // (which readies the task, or moves it from a mutex's watchers to its
-  // lockers), and waiting_in is read without it to find the queue.
+  // The wait queue it waits in (a future's waiters, a mutex's lockers or
+  // condition waiters, a flag's waiters), or was readied out of and has not
+  // resumed since, NULL otherwise; `in_queue`: it is linked in that queue
+  // right now. And why it waits: an hzstd_sched_run_end_t, HZSTD_SCHED_RUN_JOIN
+  // to HZSTD_SCHED_RUN_FLAG, or 0 while it waits in no queue (the profiler's
+  // reason why the run ended). All three are written holding that queue's
+  // lock, possibly by another thread (which readies the task, or moves it from
+  // a mutex's watchers to its lockers), except that the task clears
+  // waiting_in and wait_reason itself once it resumes; waiting_in is read
+  // without the lock to find the queue (hzstd_wait_remove).
   hzstd_wait_queue_t *_Atomic waiting_in;
+  bool in_queue;
   _Atomic uint32_t wait_reason;
   void *sleep_timer;                 // its uv_timer_t, if suspended in time.sleep
   // Identity, for the profiler (docs/profiler-timelines.md): process-unique,

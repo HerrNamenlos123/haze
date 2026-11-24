@@ -369,6 +369,8 @@ fn main(): int {
         s.run(
             "threads: sys.exit, panics and deadlocks across threads",
             """
+__c__("static hzstd_stackref_t main_ref;\nstatic hzstd_int_t main_value = 5;");
+
 fn spinFor(seconds: real) {
     let start = time.now();
     while time.now() - start < seconds {}
@@ -452,6 +454,23 @@ fn child(name: str): int {
         let r = t.join();
         fmt.println("not reached");
     }
+    // A stack reference is checked against the thread that uses it (C280):
+    // one the main thread made fails on another thread, even one that
+    // points at memory that never dies.
+    if name == "stackrefOnThread" {
+        let p = sys.contextPtr();
+        let here = 0;
+        do unsafe { __c__("main_ref = HZSTD_STACKREF_IMMORTAL((hzstd_context_t *)p, &main_value); here = *HZSTD_STACKREF_DEREF((hzstd_context_t *)p, hzstd_int_t, main_ref);"); };
+        fmt.println(f"{here}");
+        let t = thread.spawn(() => {
+            let q = sys.contextPtr();
+            let there = 0;
+            do unsafe { __c__("there = *HZSTD_STACKREF_DEREF((hzstd_context_t *)q, hzstd_int_t, main_ref);"); };
+            return there;
+        });
+        let r = t.join();
+        fmt.println("not reached");
+    }
     // A thread that is waited for but not deadlocked: the main thread waits
     // for a future another thread completes after a sleep.
     if name == "noDeadlock" {
@@ -490,10 +509,11 @@ fn main(): int {
     check(me, "recovered", "");
     check(me, "deadlock", "deadlock: every task on every thread is waiting");
     check(me, "noDeadlock", "");
+    check(me, "stackrefOnThread", "a stack reference never leaves the thread whose stack it points into");
     return 0;
 }
 """,
-            "exit 7 true\nfirstWins 3 true\npanic 255 true\nrecovered 0 true 400\ndeadlock 255 true\nnoDeadlock 0 true 9");
+            "exit 7 true\nfirstWins 3 true\npanic 255 true\nrecovered 0 true 400\ndeadlock 255 true\nnoDeadlock 0 true 9\nstackrefOnThread 255 true 5");
 
         // C290 to C292: a thread's stall is reported naming the thread, unless
         // it was spawned with the warning off; stackSize sizes every task of
@@ -537,9 +557,10 @@ fn child(name: str): int {
         let t = thread.spawn(() => spinMeasured(0.03), { stallWarning: false });
         let r = t.join();
     }
-    // 40000 levels need about 18 MiB: more than the 8 MiB default.
+    // 40000 levels need about 18 MiB: more than the 8 MiB default. (Without
+    // the warning: in a sanitizer build they take longer than 10 ms.)
     if name == "deepWithStack" {
-        let t = thread.spawn(() => deep(40000), { stackSize: 64 * 1024 * 1024 });
+        let t = thread.spawn(() => deep(40000), { stackSize: 64 * 1024 * 1024, stallWarning: false });
         let r = t.join();
         if r is int { fmt.println(f"{r}"); }
         // Every task of that thread gets it, not only the first.
@@ -548,7 +569,7 @@ fn child(name: str): int {
             let v = inner.join();
             if v is int { return v; }
             return -1;
-        }, { stackSize: 64 * 1024 * 1024 });
+        }, { stackSize: 64 * 1024 * 1024, stallWarning: false });
         let ru = u.join();
         if ru is int { fmt.println(f"{ru}"); }
     }
