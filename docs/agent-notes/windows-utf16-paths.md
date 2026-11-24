@@ -2,7 +2,7 @@
 
 How hzstd hands Haze's UTF-8 text to Windows, what long paths can and cannot do there, and how Windows failures are reported.
 
-Verified 2026-11-24 against main 247774be plus the uncommitted Windows work (Windows 11, x64, LongPathsEnabled=0).
+Verified 2026-11-24 against main 1514df64 (Windows 11, x64, LongPathsEnabled=0).
 
 - Every Win32 call in the repo's own C is the UTF-16 `...W` variant; an `...A` call reads UTF-8 in the ANSI code page, so names outside it ("日本", "✓") are created garbled on disk and only other ANSI calls find them again. Windows builds define `UNICODE`/`_UNICODE` (`ModuleCompiler.ts`, next to `-DHAZE_PLATFORM_WIN32`), so macro names resolve to `...W`; `scripts/no-ansi-win32.test.ts` (in the gate, any platform) fails on an ANSI name written out (`FooA(`, dbghelp's `SymInitialize`/`SymFromAddr`/`SymGetLineFromAddr64`, `SYMBOL_INFO`, `STARTUPINFOA`, `CP_ACP`). Third-party libraries (bdwgc, libuv, SDL3, the prebuilt wgpu-native) still import ANSI functions; `llvm-nm <lib> | grep __imp_.*A` lists them. Decided 2026-11-24: left for now, patched later.
 - The one conversion place: `stdlib/core/src/hzstd/include/hzstd_win_utf16.h` (`hzstd_win_utf16`, `hzstd_win_utf8`, `hzstd_win_utf8_into`). Paths for the fs calls go through `hzstd_win_path` (`hzstd_filesystem.c`): absolute via `GetFullPathNameW` (also turns `/` into `\` and resolves `.`/`..`), always `\\?\`-prefixed (`\\?\UNC\` for `\\server\share`), so short and long paths behave the same and a trailing dot or space stays part of the name. `moveToTrash` is the exception: `SHFileOperationW` takes no prefix.

@@ -2,7 +2,7 @@
 
 How the gate and single case files run on Windows, what differs from Linux, and how to find a hang.
 
-Verified 2026-11-24 against main 247774be plus the uncommitted Windows work (Windows 11, x64); the rest 2026-11-23 against main 8f787fa1 and async-runtime 1b814634.
+Verified 2026-11-24 against main 1514df64 (Windows 11, x64); the rest 2026-11-23 against main 8f787fa1 and async-runtime 1b814634.
 
 - `./scripts/run-tests.sh` runs from Git Bash and takes about 13 to 14 minutes. Green on Windows (2026-11-24): 495 passed, 0 failed, 4 known failures (`[XFAIL]`: two allocation-stack profiling cases, child environments, evaluation order), 3 skipped (`[SKIP]`, Linux-only cases). The marks and what XPASS means: [[feedback-tdd-loop-for-compiler-bugs]]. Before that work 25 cases failed on Windows (no allocation hook in the Windows profiler, ANSI paths, CRLF in string literals, arena alignment 8): [[windows-utf16-paths]].
 - `scripts/run-testsuite-cases.sh` does not work on Windows: it passes a bash script as `HAZE_TEST_BINARY`, which the runner cannot start. For single case files, write the same throwaway runner (it copies framework.hz, error_codes.hz and the case files into `.claude/bench-testsuite/runner`, generates main.hz from main.hz's `buildConfig`) and set `HAZE_TEST_BINARY` to `dist/haze.exe` after `bun run build`, `HAZE_STDLIB_DIR` to `dist/stdlib`.
