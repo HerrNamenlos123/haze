@@ -956,6 +956,8 @@ describe("`atomic`, `crossthread` and `unsafe` (stage 5), in both parsers", () =
     await rejectBothAny("unsafe struct S {}");
     await rejectBothAny("struct S { unsafe private a: int; }");
     await rejectBothAny("crossthread unsafe struct S {}");
+    // `unsafe crossthread` is a struct modifier only, never a type's.
+    await rejectBothAny("fn f(x: unsafe crossthread () => int) {}");
   });
 });
 
