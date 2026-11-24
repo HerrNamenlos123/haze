@@ -958,6 +958,81 @@ task-local storage (TL-1 to TL-7), `private` members (S0-17), the `tasklocal`/`g
   core are `unsafe crossthread` wrappers of their C cores (S5-4); `Future<T>` is an atomic opaque
   ref struct with that core and an unsafe result field (S5-8).
 
+### Lane C (compiler): decisions taken while building (2026-11-24)
+
+- **S5-C1. An atomic primitive is a property of its storage, not a type.** `n: atomic int` makes
+  the field (or global) atomic; its type is `int`, so a read is an ordinary `int` (S5-6) and no
+  rule that compares types has to see through a wrapper. Symbol collection keeps `atomic T` as a
+  type modifier; resolving a field's or a global's type (`elaborateStorageType`) takes it off an
+  integer, real or bool primitive and marks the place (`VariableSymbol.atomic`, C11 `_Atomic` in
+  C). Anywhere else, an alias and a generic argument included, `atomic int` is H7239; `atomic`
+  on anything but those primitives and dynamic arrays is H7240; never on a `tasklocal` (only its
+  own task reaches it). In an atomic struct, a field holding an atomic array or a reference is
+  stored `_Atomic` too, so rebinding the field is one atomic store. Rejected: an
+  `AtomicDatatype` wrapping the primitive (reads would need an implicit conversion at every use,
+  and every switch over types a case for it).
+- **S5-C2. Read-modify-write of an atomic place is a compare-and-swap loop around Haze's own
+  arithmetic** (checked overflow stays a panic: running atomically changes no meaning, C449), for
+  `+= -= *= /= %=` and `++ --` (post forms yield the old value). `exchange(v)` and
+  `compareExchange(expected, desired): bool` are methods of the place (a write: they need what a
+  store needs). `&=` and `|=`, listed in S5-6, are not built: the language has no such
+  operators. Rejected: C11 `+=` on the `_Atomic` object (wraps instead of panicking).
+- **S5-C3. Atomic arrays.** The lock (the `hzstd_dynamic_array_t.lock` mutex core) is made on
+  the array's first operation and installed with one compare-and-swap, not when the literal is
+  made atomic: an array literal and a constant global image need nothing at creation, and the
+  core is GC memory, so a core that lost the race is garbage. Every operation is a function in
+  hzstd_array.c that holds the lock; a read copies the element out. A write into an element
+  (whole or part: `arr[i] = v`, `arr[i].x += 1`, `arr[i].n++`, `arr[i].n.exchange(v)`) is one
+  locked region; the array, the index and the values are evaluated before the lock is taken
+  (Lower.ts `lowerAtomicArrayElementWrite`). A loop takes the lock for every step, checks the
+  length again and copies the element out, so it ends where the array ends at that step and the
+  body runs without the lock (`hzstd_atomic_array_next`). A method that changes its receiver on
+  an element would get a pointer into the storage outside the lock: H7249, as is slicing. Built
+  in: `length`, `push`, `insert`, `remove`, `pop`, `clear`, indexing, loops; `arr.lock(() =>
+  ...)` is `array.lock` in array.hz, the same region as `sys.Mutex.lock` on the array's core.
+  Every other function of `array` takes `[]T`, which an atomic array never becomes (H7248:
+  `reserve`, `sort`, `map` ...). A bounds error lets go of the lock before it panics (nothing
+  changed, so nothing is poisoned); a panic inside `lock` poisons the array like a mutex.
+- **S5-C4. `crossthread` is a type modifier resolved like `ref`:** on a closure type, also
+  through an alias; on a function type (`->`, which has no environment and crosses already), a
+  stack reference closure, or anything else H7241. Part of the callable type's identity, with
+  the plain closure's C layout. A closure converts to it when it is made right there (a lambda,
+  a bound method) and every capture, the receiver, every parameter and the result cross; a value
+  of a plain closure type never does (C592). The same check applies to a crossthread member of a
+  union. A crossthread closure converts to the plain closure type of its signature.
+- **S5-C5. Declaration checks run once every type is elaborated** (`checkThreadingDeclarations`,
+  after the struct method passes): a struct met while its own members are built
+  (`next: atomic []Node` inside `Node`) would be judged on half its members. They run per
+  concrete instantiation (generic code is checked where it is instantiated): an atomic struct's
+  fields (atomic, const or `private unsafe`, H7243, and crossing threads, H7238), a `crossthread`
+  struct (it must cross, H7238), atomic array elements (C193), `global let` / `global const`.
+  `unsafe` exists only in an atomic struct (H7245) and must be private (H7244), which by S0-17a
+  needs `opaque`; an atomic struct must be a `ref struct` (H7242). `crossthread` and `unsafe
+  crossthread` together is H7246. An atomic struct's generic arguments are not checked at its
+  declaration: they decide whether it crosses (S5-8), as `Future<T>` needs.
+- **S5-C6. The crossing rule's details** (src/Semantic/Crossing.ts): only a struct's or an
+  array's use says const data (a union's or a primitive's mutability is const by default and
+  said nothing about its variants: a union of a value and a plain reference passed as const,
+  caught by its test); a struct C defines that declares none of its members (Logger, Allocator,
+  UserBox, so the context) shows nothing of what it holds and never crosses unless declared
+  `unsafe crossthread` (a C struct that declares its members is judged by them, as
+  `hzstd_color_t`); a slice never crosses (a view into storage, possibly a stack array); a plain
+  function value (`->`) crosses. S5-1 says the context, loggers and allocators fail on their
+  members; in Haze they have none, so this is how they fail.
+- **S5-C7. `T.isAtomic`** is true for an atomic array and an atomic struct; an atomic primitive
+  is no type of its own (S5-C1), so `typeof(c.n).isAtomic` is false. `global let` needs an
+  atomic primitive or such a type (H7247); `global const` is checked as const data. H7231 is
+  gone (nothing is unavailable any more); `rejectUnavailableGlobalStorage` is now
+  `rejectGlobalStorageCombinations`.
+- **S5-C8. A compound assignment computes its value in the target's realm** (found by the
+  atomic tests: `s.small += 100` on an `i8` field failed a codegen assertion, and the atomic form
+  truncated the value in C). The value converts implicitly to the target's type, so a literal in
+  range and a narrower integer work and anything else is H4001.
+- **S5-C9. Module interfaces write `const` on const members** (Export.ts wrote none, so every
+  const member lost `const` in the consumer: an atomic struct's const field was H7243 there,
+  found by the module test of cases_crossing.hz). The threading modifiers, `unsafe` and
+  `atomic` fields are written too.
+
 ## Tooling
 
 - **G-1. The parser-equivalence sweep reads what the commit and the run decide** (user,
@@ -975,6 +1050,11 @@ task-local storage (TL-1 to TL-7), `private` members (S0-17), the `tasklocal`/`g
   behaviour; nothing here decides C454.
 
 ## What no longer compiles on this branch
+
+**After stage 5, lane C:** `atomic` and `crossthread` are reserved words (nothing in the tree
+used them as names). `global let x: int` is H7247 instead of H7231. A compound assignment
+whose value does not convert implicitly to the target's type is H4001 (before, a narrower
+target crashed the compiler).
 
 **After stage 3:** nothing more stops compiling (no code outside stdlib/core named
 `os_sleep_ns` or `hzstd_reserve_panic_recovery_frames`; a C function named `yieldAfter` would
