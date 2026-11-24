@@ -7966,6 +7966,38 @@ export class SemanticElaborator {
         }
         break;
       }
+      case Semantic.ENode.StructDatatype: {
+        // `Box<T>` against a `Box<int>`: the same generic struct, so each of
+        // its type arguments deduces from the argument's in the same position.
+        if (
+          argTypeDef.variant === Semantic.ENode.StructDatatype &&
+          patternDef.originalCollectedSymbol ===
+            argTypeDef.originalCollectedSymbol &&
+          patternDef.generics.length === argTypeDef.generics.length
+        ) {
+          for (let i = 0; i < patternDef.generics.length; i++) {
+            const patternArg = this.sr.exprNodes.get(patternDef.generics[i]);
+            const actualArg = this.sr.exprNodes.get(argTypeDef.generics[i]);
+            if (
+              patternArg.variant !== Semantic.ENode.DatatypeAsValueExpr ||
+              actualArg.variant !== Semantic.ENode.DatatypeAsValueExpr
+            ) {
+              continue;
+            }
+            const innerPattern = this.sr.typeUseNodes.get(
+              this.sr.e.resolveAlias(patternArg.type)
+            );
+            this.collectGenericDeductions(
+              innerPattern.type,
+              actualArg.type,
+              depth + 1,
+              paramIndex,
+              out
+            );
+          }
+        }
+        break;
+      }
       default: {
         // All other concrete types produce no deductions.
         break;

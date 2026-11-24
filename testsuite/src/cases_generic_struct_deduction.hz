@@ -1,0 +1,89 @@
+// ============================================================================
+// REGRESSION TEST: a generic parameter is deduced through a generic struct
+// type, `fn f<T>(b: Box<T>)` called with a `Box<int>`, as it already was
+// through arrays, slices, callables and reactive types
+// (src/Semantic/Elaborate.ts collectGenericDeductions). Found 2026-11-23:
+// `sys.joinAll(futures)` with a `[]Future<int>` failed with H7169.
+// ============================================================================
+
+namespace cases_generic_struct_deduction {
+
+    export fn register(s: mut testsuite.Suite) {
+
+        s.run(
+            "generic struct deduction: through ref, value and nested struct types",
+            """
+ref struct Box<T> {
+    value: T;
+}
+
+struct Cell<T> {
+    value: T;
+}
+
+struct Pair<A, B> {
+    first: A;
+    second: B;
+}
+
+fn unbox<T>(b: Box<T>): T { return b.value; }
+fn uncell<T>(c: Cell<T>): T { return c.value; }
+fn swap<A, B>(p: Pair<A, B>): Pair<B, A> { return Pair<B, A> { first: p.second, second: p.first }; }
+fn countBoxes<T>(bs: []Box<T>): int { return bs.length; }
+fn firstOf<T>(bs: []Box<T>): T { return bs[0].value; }
+fn deep<T>(b: Box<Cell<T>>): T { return b.value.value; }
+// T comes directly from `fallback` and wrapped from `b`: both agree.
+fn orElse<T>(b: Box<T>, fallback: T): T { return b.value; }
+fn isDone<T>(f: Future<T>): bool { return f.isDone(); }
+fn countFutures<T>(fs: []Future<T>): int { return fs.length; }
+
+fn main(): int {
+    let b = Box<int> { value: 3 };
+    let c = Cell<str> { value: "cell" };
+    let p = Pair<int, str> { first: 1, second: "one" };
+    let q = swap(p);
+    let boxes: []Box<int> = [b, Box<int> { value: 4 }];
+    let nested = Box<Cell<real>> { value: Cell<real> { value: 2.5 } };
+    let f = task.spawn(() => 5);
+    let fs: []Future<int> = [f];
+    fmt.println(f"{unbox(b)} {uncell(c)} {q.first} {q.second} {countBoxes(boxes)} {firstOf(boxes)} {deep(nested)} {orElse(b, 9)} {isDone(f)} {countFutures(fs)}");
+    return 0;
+}
+""",
+            "3 cell one 1 2 3 2.5 3 false 1\n"
+        );
+
+        s.compileFails(
+            "generic struct deduction: two struct arguments that disagree on T",
+            """
+ref struct Box<T> {
+    value: T;
+}
+fn same<T>(a: Box<T>, b: Box<T>): bool { return true; }
+fn main(): int {
+    let x = same(Box<int> { value: 1 }, Box<str> { value: "a" });
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.ConflictingDeductionsGenericParameterFunctionPleaseSpecifyIt)]
+        );
+
+        s.compileFails(
+            "generic struct deduction: a different struct deduces nothing",
+            """
+ref struct Box<T> {
+    value: T;
+}
+ref struct Other<T> {
+    value: T;
+}
+fn unbox<T>(b: Box<T>): T { return b.value; }
+fn main(): int {
+    let x = unbox(Other<int> { value: 1 });
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.CouldNotInferGenericParameterFunctionPleaseSpecify)]
+        );
+    }
+}
