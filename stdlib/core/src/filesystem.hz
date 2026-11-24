@@ -193,17 +193,6 @@ export namespace fs {
         }
     }
 
-    export fn open(path: str) {
-        return open(Alloc.heap(), path);
-    }
-
-    export fn open(allocator: Allocator, path: str) {
-        // TODO: Implement this. This should return a DataSource.
-        // DataSource is supposed to be a generic data acquisition tool for code that just needs data.
-        // They don't care if the data is loaded from memory, from disk or streamed in chunks.
-        // But currently can't do it yet because we don't have a good way to close the file handle.
-    }
-
     export fn readBinary(path: str) {
         return readBinary(Alloc.heap(), path);
     }
