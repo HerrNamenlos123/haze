@@ -49,6 +49,7 @@ import {
   BrandedArray,
   EMethodType,
   EPrimitive,
+  EStructCrossthread,
   ETypeModifier,
   EVariableContext,
   type LiteralValue,
@@ -411,6 +412,9 @@ export namespace Collect {
     // `private` on a struct member: only code inside the struct's body may name
     // it. false for everything that is not a struct member.
     private: boolean;
+    // `unsafe` on a member of an atomic struct (docs/async-decisions.md S5-7).
+    // false for everything that is not a struct member.
+    unsafe: boolean;
     // `tasklocal` / `global` on a global variable; null for everything that is
     // not one.
     globalStorage: EGlobalStorage | null;
@@ -541,6 +545,9 @@ export namespace Collect {
     plain: boolean;
     refByDefault: boolean;
     nocopy: boolean;
+    // `atomic struct` (S5-7) and `crossthread` / `unsafe crossthread` (S5-4).
+    atomic: boolean;
+    crossthread: EStructCrossthread;
     pub: boolean;
     extern: EExternLanguage;
     noemit: boolean;
@@ -1383,6 +1390,7 @@ function defineContextVariable(
       globalValueInitializer: null,
       variableContext: EVariableContext.ContextReference,
       private: false,
+      unsafe: false,
       globalStorage: null,
     },
     functionScopeId
@@ -1591,6 +1599,7 @@ function collectTypeDef(
 
     case "StructDefinition": {
       rejectPrivateOutsideOpaque(item);
+      rejectMisplacedThreadingModifiers(item);
       const parent = cc.scopeNodes.get(args.currentParentScope);
       assert(
         parent.variant === Collect.ENode.FileScope ||
@@ -1664,6 +1673,8 @@ function collectTypeDef(
           plain: item.plain,
           refByDefault: item.refByDefault,
           nocopy: item.nocopy,
+          atomic: item.atomic,
+          crossthread: structCrossthread(item),
           pub: false,
           noemit: item.noemit,
           lexicalScope: -1 as Collect.ScopeId,
@@ -2111,6 +2122,7 @@ function collectSymbol(
               globalValueInitializer: null,
               variableContext: EVariableContext.ThisReference,
               private: false,
+              unsafe: false,
               globalStorage: null,
             },
             functionScopeId
@@ -2134,6 +2146,7 @@ function collectSymbol(
               globalValueInitializer: null,
               variableContext: EVariableContext.FunctionParameter,
               private: false,
+              unsafe: false,
               globalStorage: null,
             },
             functionScopeId
@@ -2268,6 +2281,7 @@ function collectSymbol(
           globalValueInitializer: null,
           variableContext: EVariableContext.MemberOfStruct,
           private: item.private,
+          unsafe: item.unsafe,
           globalStorage: null,
         },
         args.currentParentScope
@@ -2302,6 +2316,7 @@ function collectSymbol(
           globalValueInitializer: null,
           variableContext: EVariableContext.MemberOfStruct,
           private: false,
+          unsafe: false,
           globalStorage: null,
         },
         args.currentParentScope
@@ -2314,14 +2329,6 @@ function collectSymbol(
   }
 }
 
-/**
- * `tasklocal` and `global` name where a global's storage lives
- * (docs/async-runtime.md, "Globals"). `tasklocal` lives in its module's
- * task-local block (docs/async-decisions.md TL-1 to TL-10; `tasklocal const` is
- * a constant), `global const` is a process-wide C global, like every global
- * today. `global let` is refused so that nothing silently behaves like a plain
- * global; its H7231 refusal is the code to remove when atomic types exist.
- */
 /**
  * `private` exists only in an opaque struct (user decision 2026-11-23). A
  * member hidden from outside makes the struct more than plain data: a literal
@@ -2345,7 +2352,71 @@ function rejectPrivateOutsideOpaque(item: ASTStructDefinition) {
   );
 }
 
-function rejectUnavailableGlobalStorage(item: ASTGlobalVariableDefinition) {
+/**
+ * `crossthread` (checked) or `unsafe crossthread` (promised) on a struct
+ * (docs/async-decisions.md S5-4); writing both says two different things.
+ */
+function structCrossthread(item: ASTStructDefinition): EStructCrossthread {
+  if (item.crossthread && item.unsafeCrossthread) {
+    throw new CompilerError(
+      `'${item.name}' is declared both 'crossthread' (checked by the compiler) and 'unsafe crossthread' (promised by its author): keep one`,
+      item.sourceloc,
+      HazeErrorCode.CrossthreadModifierConflict
+    );
+  }
+  if (item.unsafeCrossthread) {
+    return EStructCrossthread.Unsafe;
+  }
+  return item.crossthread ? EStructCrossthread.Checked : EStructCrossthread.None;
+}
+
+/**
+ * The declaration rules of atomic structs (S5-7) that need no types: an
+ * atomic struct is a `ref struct` (copying a value would read its unsafe
+ * members without their mutex), and an `unsafe` member exists only in an
+ * atomic struct and is `private` (C173): only the struct's own methods,
+ * which take the mutex, may reach it. Which types the members have is
+ * checked when the struct is elaborated.
+ */
+function rejectMisplacedThreadingModifiers(item: ASTStructDefinition) {
+  if (item.atomic && !item.refByDefault) {
+    throw new CompilerError(
+      `'${item.name}' is atomic, so it must be a reference: declare it 'atomic ref struct ${item.name}' (copying a value would read its members without their lock)`,
+      item.sourceloc,
+      HazeErrorCode.AtomicStructNotRef
+    );
+  }
+  for (const member of item.members) {
+    if (!member.unsafe) {
+      continue;
+    }
+    if (!item.atomic) {
+      throw new CompilerError(
+        `'${member.name}' is 'unsafe', which only a member of an atomic struct can be: declare 'atomic ref struct ${item.name}'`,
+        member.sourceloc,
+        HazeErrorCode.UnsafeFieldOutsideAtomicStruct
+      );
+    }
+    if (!member.private) {
+      throw new CompilerError(
+        `'${member.name}' is 'unsafe', so only the struct's own methods may reach it: declare it 'private unsafe ${member.name}'`,
+        member.sourceloc,
+        HazeErrorCode.UnsafeFieldNotPrivate
+      );
+    }
+  }
+}
+
+/**
+ * `tasklocal` and `global` name where a global's storage lives
+ * (docs/async-runtime.md, "Globals"). `tasklocal` lives in its module's
+ * task-local block (docs/async-decisions.md TL-1 to TL-10; `tasklocal const` is
+ * a constant), `global let` and `global const` are process-wide C globals
+ * whose types must be atomic or const and cross threads (S5-12, checked once
+ * the type is known: Elaborate.checkProcessGlobal). Neither combines with
+ * `extern` or `comptime`.
+ */
+function rejectGlobalStorageCombinations(item: ASTGlobalVariableDefinition) {
   if (item.storage === EGlobalStorage.Thread) {
     return;
   }
@@ -2362,16 +2433,6 @@ function rejectUnavailableGlobalStorage(item: ASTGlobalVariableDefinition) {
       `'${keyword}' cannot be combined with 'comptime'`,
       item.sourceloc,
       HazeErrorCode.StorageClassCombination
-    );
-  }
-  if (item.storage === EGlobalStorage.Task) {
-    return;
-  }
-  if (item.mutability !== EVariableMutability.Const) {
-    throw new CompilerError(
-      "a 'global let' must hold an atomic type (C199), and atomic types do not exist yet; use 'global const'",
-      item.sourceloc,
-      HazeErrorCode.StorageClassNotAvailable
     );
   }
 }
@@ -2417,7 +2478,7 @@ function collectGlobalDirective(
     // =================================================================================================================
 
     case "GlobalVariableDefinition": {
-      rejectUnavailableGlobalStorage(item);
+      rejectGlobalStorageCombinations(item);
       const variableSymbolId = defineVariableSymbol(
         cc,
         {
@@ -2438,6 +2499,7 @@ function collectGlobalDirective(
           mutability: item.mutability,
           variableContext: EVariableContext.Global,
           private: false,
+          unsafe: false,
           globalStorage: item.storage,
           sourceloc: item.sourceloc,
         },
@@ -2996,6 +3058,7 @@ function collectScope(
             globalValueInitializer: null,
             variableContext: astStatement.variableContext,
             private: false,
+            unsafe: false,
             globalStorage: null,
             sourceloc: astStatement.sourceloc,
           },
@@ -3425,6 +3488,7 @@ function collectExpr(
               globalValueInitializer: null,
               variableContext: EVariableContext.FunctionParameter,
               private: false,
+              unsafe: false,
               globalStorage: null,
             },
             functionScopeId
@@ -3476,6 +3540,7 @@ function collectExpr(
               globalValueInitializer: null,
               variableContext: EVariableContext.FunctionParameter,
               private: false,
+              unsafe: false,
               globalStorage: null,
             },
             functionScopeId
@@ -3790,6 +3855,8 @@ function collectExpr(
           plain: false,
           refByDefault: false,
           nocopy: false,
+          atomic: false,
+          crossthread: EStructCrossthread.None,
           pub: false,
           noemit: false,
           lexicalScope: -1 as Collect.ScopeId,
@@ -3909,6 +3976,28 @@ function collectExpr(
           currentParentScope: args.currentParentScope,
         }),
         modifier: ETypeModifier.Stackref,
+        sourceloc: item.sourceloc,
+      })[1];
+    }
+
+    case "AtomicTypeExpr": {
+      return Collect.makeExpr(cc, {
+        variant: Collect.ENode.TypeModifierExpr,
+        type: collectExpr(cc, item.type, {
+          currentParentScope: args.currentParentScope,
+        }),
+        modifier: ETypeModifier.Atomic,
+        sourceloc: item.sourceloc,
+      })[1];
+    }
+
+    case "CrossthreadTypeExpr": {
+      return Collect.makeExpr(cc, {
+        variant: Collect.ENode.TypeModifierExpr,
+        type: collectExpr(cc, item.type, {
+          currentParentScope: args.currentParentScope,
+        }),
+        modifier: ETypeModifier.Crossthread,
         sourceloc: item.sourceloc,
       })[1];
     }
@@ -4680,6 +4769,10 @@ export const printCollectedExpr = (
         return `ref ${printCollectedDatatype(cc, expr.type)}`;
       } else if (expr.modifier === ETypeModifier.Stackref) {
         return `stackref ${printCollectedDatatype(cc, expr.type)}`;
+      } else if (expr.modifier === ETypeModifier.Atomic) {
+        return `atomic ${printCollectedDatatype(cc, expr.type)}`;
+      } else if (expr.modifier === ETypeModifier.Crossthread) {
+        return `crossthread ${printCollectedDatatype(cc, expr.type)}`;
       }
       assert(false);
       throw new Error();

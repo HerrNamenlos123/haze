@@ -320,6 +320,12 @@ function computeTypeDefFingerprintUncached(
           state,
           computeTypeUseFingerprint(sr, member.type)
         );
+        // An atomic member (S5-6) has the plain type's layout and is accessed
+        // atomically; only such a member folds anything, so every other
+        // fingerprint stays what it was.
+        if (member.atomic === true) {
+          state = fnv1a64FoldString(state, "atomic member");
+        }
         // Only for a member that has any: a struct without member
         // annotations keeps exactly the fingerprint it always had, rather
         // than every fingerprint in existence changing for no structural
@@ -407,6 +413,9 @@ function computeTypeDefFingerprintUncached(
         state,
         computeTypeDefFingerprint(sr, def.functionType)
       );
+      if (def.crossthread) {
+        state = fnv1a64FoldString(state, "crossthread");
+      }
       return state;
     }
 
@@ -426,6 +435,9 @@ function computeTypeDefFingerprintUncached(
         state,
         computeTypeUseFingerprint(sr, def.datatype)
       );
+      if (def.atomic) {
+        state = fnv1a64FoldString(state, "atomic");
+      }
       return state;
     }
 

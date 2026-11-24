@@ -24,6 +24,7 @@ import { mapOutputPath } from "../shared/OutputPaths";
 import {
   EMethodType,
   EPrimitive,
+  EStructCrossthread,
   ETypeModifier,
   EVariableContext,
   type LiteralValue,
@@ -66,12 +67,14 @@ import {
   makeDeferredFunctionDatatypeAvailable,
   makeDynamicArrayDatatypeAvailable,
   makeFunctionDatatypeAvailable,
+  makeRawCallableDatatypeAvailable,
   makeRawFunctionDatatypeAvailable,
   makeStackArrayDatatypeAvailable,
   makeTypeUse,
   rejectNamespaceAsValueType,
 } from "./LookupDatatype";
 import { Semantic } from "./SemanticTypes";
+import { Crossing } from "./Crossing";
 import { findClosestByLevenshtein } from "../utils";
 
 // A C function: declared `extern C` without a Haze body and without
@@ -111,6 +114,15 @@ class GenericDeductionIncompleteError extends CompilerError {}
 // one out is the same two steps -- write the function in `array`, delete the
 // name from here.
 const ARRAY_BUILTIN_METHODS = new Set(["length", "insert", "remove", "pop"]);
+// What an atomic array has built in (resolveMemberAccessOnAtomicArray).
+const ATOMIC_ARRAY_BUILTIN_METHODS = new Set([
+  "length",
+  "push",
+  "insert",
+  "remove",
+  "pop",
+  "clear",
+]);
 // The built-in array methods that change the array.
 const DYNAMIC_ARRAY_MUTATORS = new Set([
   "push",
@@ -220,6 +232,13 @@ export class SemanticElaborator {
     run: () => void;
     context: Semantic.ElaborationContext;
   }[] = [];
+  // The crossing rule's checks of declarations (docs/async-decisions.md
+  // S5-2): the element of an `atomic []T`, the fields of an atomic struct, a
+  // `crossthread` struct, a `global let` / `global const`. They run once
+  // every type is elaborated (checkThreadingDeclarations): a struct met while
+  // its own members are still being built (`next: atomic []Job` inside
+  // `Job`) would be judged on half its members.
+  deferredCrossingChecks: (() => void)[] = [];
   // This is a stack, when a new current context is set, the old one is pushed here, then the old one
   // is pulled out of here and assigned to currentContext again. We need this stack to be able to
   // get debug info of where we are in the elaboration, what functions elaborated what functions,
@@ -1716,6 +1735,10 @@ export class SemanticElaborator {
       );
       if (contextResult) {
         return contextResult;
+      }
+      const atomicResult = this.tryAtomicOperationCall(callExpr, collectedExpr);
+      if (atomicResult) {
+        return atomicResult;
       }
       const reflectionResult = this.tryResolveTypeReflectionCall(
         collectedExpr,
@@ -5829,9 +5852,25 @@ export class SemanticElaborator {
     );
     this.sr.elaboratedGlobalVariableSymbols.set(variableSymbolId, variableId);
 
-    let type =
-      (variableSymbol.type && this.elaborateDatatype(variableSymbol.type)) ||
-      null;
+    const storage =
+      variableSymbol.type === null
+        ? null
+        : this.elaborateStorageType(variableSymbol.type);
+    let type = storage?.type ?? null;
+    if (storage?.atomic === true) {
+      // A task-local value is only ever reached by its own task, which runs
+      // on one thread at a time: nothing to synchronize.
+      if (variableSymbol.globalStorage === EGlobalStorage.Task) {
+        throw new CompilerError(
+          `'${variableSymbol.name}' cannot be atomic: a tasklocal variable is reached only by its own task`,
+          variableSymbol.sourceloc,
+          HazeErrorCode.AtomicPrimitiveOutsideFieldOrGlobal
+        );
+      }
+      const node = this.sr.symbolNodes.get(variableId);
+      assert(node.variant === Semantic.ENode.VariableSymbol);
+      node.atomic = true;
+    }
     if (type !== null) {
       rejectNamespaceAsValueType(
         this.sr,
@@ -5917,9 +5956,164 @@ export class SemanticElaborator {
         variableSymbol: variableId,
       });
       this.sr.elaboratedGlobalVariableDefinitionSymbols.add(defSymId);
+      if (variableSymbol.globalStorage === EGlobalStorage.Process) {
+        this.deferredCrossingChecks.push(() =>
+          this.checkProcessGlobal(variableSymbol, variableId)
+        );
+      }
     }
 
     return [variableId];
+  }
+
+  /**
+   * `global let` / `global const` (docs/async-decisions.md S5-12, C198,
+   * C199): one variable for every thread of the process, so what it holds
+   * must cross threads, and a `global let`, which threads change, must be
+   * atomic: an atomic primitive, an atomic array, or a reference to an atomic
+   * struct.
+   */
+  checkProcessGlobal(
+    collected: Collect.VariableSymbol,
+    variableId: Semantic.SymbolId
+  ) {
+    const variable = this.sr.symbolNodes.get(variableId);
+    assert(variable.variant === Semantic.ENode.VariableSymbol);
+    assert(variable.type !== null);
+    const isConst = collected.mutability === EVariableMutability.Const;
+    if (!isConst && variable.atomic !== true && !this.isAtomicType(variable.type)) {
+      throw new CompilerError(
+        `'${variable.name}' is a 'global let', which every thread can change, so its type must be atomic ('atomic int', 'atomic []T', a reference to an atomic struct), but it is '${Semantic.serializeTypeUse(this.sr, variable.type)}'; or declare it 'global const'`,
+        collected.sourceloc,
+        HazeErrorCode.GlobalLetNotAtomic
+      );
+    }
+    // What a `global const` holds is never written (S5-12): const data,
+    // which crosses when what it holds crosses as const (C603).
+    const type = isConst
+      ? Conversion.constOf(this.sr, variable.type)
+      : variable.type;
+    const f = Crossing.failure(this.sr, type);
+    if (f !== null) {
+      throw new CompilerError(
+        `'${variable.name}' is shared by every thread of the process, but it cannot cross threads: ${Crossing.explain(this.sr, f, { what: "type", type: variable.type })}`,
+        collected.sourceloc,
+        HazeErrorCode.CannotCrossThreads
+      );
+    }
+  }
+
+  /**
+   * `T.isAtomic` (S5-3): a type that synchronizes every access itself (C165):
+   * an atomic array, or an atomic struct (a reference to one). An atomic
+   * primitive is not a type of its own: `n: atomic int` reads as `int`.
+   */
+  isAtomicType(typeUseId: Semantic.TypeUseId): boolean {
+    const use = this.sr.typeUseNodes.get(this.resolveAlias(typeUseId));
+    const def = this.sr.typeDefNodes.get(use.type);
+    if (def.variant === Semantic.ENode.DynamicArrayDatatype) {
+      return def.atomic;
+    }
+    if (def.variant === Semantic.ENode.StructDatatype) {
+      return def.atomic && use.storage === EStorageClass.Ref;
+    }
+    return false;
+  }
+
+  /**
+   * The declaration rules of the threading modifiers, once every type is
+   * elaborated (see deferredCrossingChecks): an atomic struct's fields
+   * (S5-7: atomic, const or unsafe, and crossing threads, S5-2), a
+   * `crossthread` struct (S5-4: it must cross), and what was queued while
+   * elaborating (atomic array elements, process-wide globals).
+   */
+  checkThreadingDeclarations() {
+    for (let i = 0; i < this.sr.typeDefNodes.length; i++) {
+      const id = i as Semantic.TypeDefId;
+      const node = this.sr.typeDefNodes.get(id);
+      if (!node || node.variant !== Semantic.ENode.StructDatatype) {
+        continue;
+      }
+      // Generic code is checked where it is instantiated (S5-1).
+      if (!node.concrete || node.reactiveClone) {
+        continue;
+      }
+      if (node.atomic) {
+        this.checkAtomicStruct(node);
+      }
+      if (node.crossthread === EStructCrossthread.Checked) {
+        const use = makeTypeUse(
+          this.sr,
+          id,
+          EDatatypeMutability.Default,
+          node.refByDefault ? EStorageClass.Ref : EStorageClass.Value,
+          node.sourceloc
+        )[1];
+        const f = Crossing.failure(this.sr, use);
+        if (f !== null) {
+          throw new CompilerError(
+            `'${Semantic.serializeTypeUse(this.sr, use)}' is declared 'crossthread', but it cannot cross threads: ${Crossing.explain(this.sr, f, null)}`,
+            node.sourceloc,
+            HazeErrorCode.CannotCrossThreads
+          );
+        }
+      }
+    }
+    for (const check of this.deferredCrossingChecks) {
+      check();
+    }
+    this.deferredCrossingChecks = [];
+  }
+
+  checkAtomicStruct(node: Semantic.StructDatatypeDef) {
+    for (const memberId of node.members) {
+      const member = this.sr.symbolNodes.get(memberId);
+      if (member.variant !== Semantic.ENode.VariableSymbol) {
+        continue;
+      }
+      assert(member.type !== null);
+      // The author promises the struct's methods reach it only under their
+      // own mutex (C172); its type is not checked.
+      if (member.unsafe === true) {
+        continue;
+      }
+      const isConst = member.mutability === EVariableMutability.Const;
+      if (!isConst && member.atomic !== true && !this.isAtomicFieldType(member.type)) {
+        throw new CompilerError(
+          `'${member.name}' is a field of the atomic struct '${node.name}', so it must be atomic ('atomic int', 'atomic []T', a reference to an atomic or 'unsafe crossthread' struct), 'const', or 'private unsafe', but it is '${Semantic.serializeTypeUse(this.sr, member.type)}'`,
+          member.sourceloc,
+          HazeErrorCode.AtomicStructFieldNotAtomic
+        );
+      }
+      const f = Crossing.failure(this.sr, member.type);
+      if (f !== null) {
+        throw new CompilerError(
+          `'${node.name}' is atomic, so its fields must cross threads, but ${Crossing.explain(this.sr, f, { what: `field '${member.name}'`, type: member.type })}`,
+          member.sourceloc,
+          HazeErrorCode.CannotCrossThreads
+        );
+      }
+    }
+  }
+
+  /**
+   * A field type that synchronizes itself (S5-7): an atomic array, or a
+   * reference to an atomic or an `unsafe crossthread` struct. The field itself
+   * (which array, which struct) is stored atomically too (Lower.ts).
+   */
+  isAtomicFieldType(typeUseId: Semantic.TypeUseId): boolean {
+    const use = this.sr.typeUseNodes.get(this.resolveAlias(typeUseId));
+    const def = this.sr.typeDefNodes.get(use.type);
+    if (def.variant === Semantic.ENode.DynamicArrayDatatype) {
+      return def.atomic;
+    }
+    if (
+      def.variant === Semantic.ENode.StructDatatype &&
+      use.storage === EStorageClass.Ref
+    ) {
+      return def.atomic || def.crossthread === EStructCrossthread.Unsafe;
+    }
+    return false;
   }
 
   topLevelSymbol(symbolId: Collect.SymbolId): Semantic.SymbolId[] {
@@ -6232,7 +6426,7 @@ export class SemanticElaborator {
     const structType = this.sr.cc.typeDefNodes.get(structSym.typeDef);
     assert(structType.variant === Collect.ENode.StructTypeDef);
     assert(symbol.type);
-    const typeId = this.withContext(
+    const storage = this.withContext(
       {
         context: Semantic.isolateElaborationContext(this.currentContext, {
           // Start lookup in the struct itself, these are members, so both the type and
@@ -6249,18 +6443,18 @@ export class SemanticElaborator {
         inAttemptExpr: null,
         inFunction: null,
       },
-      () => this.elaborateDatatype(symbol.type!)
+      () => this.elaborateStorageType(symbol.type!)
     );
     if (onlyElaborateType) {
       return;
     }
     rejectNamespaceAsValueType(
       this.sr,
-      typeId,
+      storage.type,
       `Field '${symbol.name}'`,
       symbol.sourceloc
     );
-    const typeInstance = this.sr.typeUseNodes.get(typeId);
+    const typeInstance = this.sr.typeUseNodes.get(storage.type);
     const type = this.sr.typeDefNodes.get(typeInstance.type);
     const [variable, variableId] = this.sr.b.addSymbol(this.sr, {
       variant: Semantic.ENode.VariableSymbol,
@@ -6274,10 +6468,12 @@ export class SemanticElaborator {
       sourceloc: symbol.sourceloc,
       memberOfStruct: semanticStructId,
       private: symbol.private,
+      unsafe: symbol.unsafe,
+      atomic: storage.atomic,
       type:
         symbol.mutability === EVariableMutability.Const
-          ? Conversion.constOf(this.sr, typeId)
-          : typeId,
+          ? Conversion.constOf(this.sr, storage.type)
+          : storage.type,
       consumed: false,
       variableContext: EVariableContext.MemberOfStruct,
       parentSymbolId: this.sr.b.typeDefSymbol(semanticStructId)[1],
@@ -6305,7 +6501,7 @@ export class SemanticElaborator {
         }
         defaultExprId = Conversion.MakeDefaultValue(
           this.sr,
-          typeId,
+          storage.type,
           symbol.sourceloc
         );
       } else {
@@ -6336,7 +6532,7 @@ export class SemanticElaborator {
         value: Conversion.MakeConversionOrThrow(
           this.sr,
           defaultExprId,
-          typeId,
+          storage.type,
           ConstraintSet.empty(),
           symbol.sourceloc,
           Conversion.Mode.Implicit,
@@ -6451,6 +6647,8 @@ export class SemanticElaborator {
         plain: definedStructType.plain,
         refByDefault: definedStructType.refByDefault,
         nocopy: definedStructType.nocopy,
+        atomic: definedStructType.atomic,
+        crossthread: definedStructType.crossthread,
         membersBuilt: false,
         membersFinalized: false,
         parentSymbolId: parentSymbolId,
@@ -8610,6 +8808,68 @@ export class SemanticElaborator {
 
   // `context.clone(...)`, the one intrinsic on the context, or null when the
   // call is something else.
+  /**
+   * `place.exchange(v)` and `place.compareExchange(expected, desired)` on a
+   * struct field or global declared atomic (docs/async-decisions.md S5-6):
+   * `exchange` stores `v` and returns what was there, `compareExchange`
+   * stores `desired` only if the place holds `expected` and says whether it
+   * did. Both are one atomic operation and write the place, so they need what
+   * any write needs (assertWritable). Anything else named so is not touched.
+   */
+  tryAtomicOperationCall(
+    callExpr: Collect.ExprCallExpr,
+    callee: Collect.MemberAccessExpr
+  ): [Semantic.Expression, Semantic.ExprId] | null {
+    const op = callee.memberName;
+    if (op !== "exchange" && op !== "compareExchange") {
+      return null;
+    }
+    const [place, placeId] = this.expr(callee.expr, undefined);
+    if (!Semantic.isAtomicPlace(this.sr, placeId)) {
+      return null;
+    }
+    if (callee.genericArgs.length !== 0) {
+      throw new CompilerError(
+        `'${op}' takes no generic arguments`,
+        callExpr.sourceloc,
+        HazeErrorCode.FunctionCannotTakeAnyTypeParameters
+      );
+    }
+    this.assertParameterN(callExpr, op === "exchange" ? 1 : 2, op);
+    this.assertWritable(placeId, callExpr.sourceloc, "store");
+    const placeType = place.type;
+    const args = callExpr.arguments.map((argId) => {
+      const [, valueId] = this.expr(argId, undefined);
+      return Conversion.MakeConversionOrThrow(
+        this.sr,
+        valueId,
+        placeType,
+        this.currentContext.constraints,
+        callExpr.sourceloc,
+        Conversion.Mode.Implicit,
+        false
+      );
+    });
+    const flow = Semantic.FlowResult.fallthrough();
+    const writes = Semantic.WriteResult.empty();
+    writes.addAll(place.writes);
+    for (const a of args) {
+      writes.addAll(this.sr.exprNodes.get(a).writes);
+    }
+    return this.sr.b.addExpr(this.sr, {
+      variant: Semantic.ENode.AtomicOpExpr,
+      instanceIds: [],
+      target: placeId,
+      op: op,
+      args: args,
+      type: op === "exchange" ? placeType : this.sr.b.boolType(),
+      isTemporary: true,
+      sourceloc: callExpr.sourceloc,
+      flow: flow,
+      writes: writes,
+    });
+  }
+
   tryContextIntrinsicCall(
     callExpr: Collect.ExprCallExpr,
     callee: Collect.MemberAccessExpr,
@@ -10226,6 +10486,154 @@ export class SemanticElaborator {
     }
   }
 
+  /** An integer, real or bool primitive: what `atomic` makes atomic (C599). */
+  isAtomicPrimitive(typeUseId: Semantic.TypeUseId): boolean {
+    const def = this.sr.typeDefNodes.get(
+      this.sr.typeUseNodes.get(this.resolveAlias(typeUseId)).type
+    );
+    return (
+      def.variant === Semantic.ENode.PrimitiveDatatype &&
+      (Conversion.isInteger(def.primitive) ||
+        def.primitive === EPrimitive.real ||
+        def.primitive === EPrimitive.f32 ||
+        def.primitive === EPrimitive.f64 ||
+        def.primitive === EPrimitive.bool)
+    );
+  }
+
+  /**
+   * The type of a struct field or a global (docs/async-decisions.md S5-6):
+   * the only places an atomic primitive may be written (`n: atomic int`). The
+   * atomicity belongs to the storage, so the type is the plain primitive and
+   * `atomic` says how the storage is accessed; everywhere else
+   * `atomic int` is H7239 (atomicTypeUse). `atomic []T` is a type of its
+   * own and goes through elaborateDatatype like any other type.
+   */
+  elaborateStorageType(typeId: Collect.ExprId): {
+    type: Semantic.TypeUseId;
+    atomic: boolean;
+  } {
+    const written = this.sr.cc.exprNodes.get(typeId);
+    if (
+      written.variant === Collect.ENode.TypeModifierExpr &&
+      written.modifier === ETypeModifier.Atomic
+    ) {
+      const inner = this.elaborateDatatype(written.type);
+      if (this.isAtomicPrimitive(inner)) {
+        return { type: inner, atomic: true };
+      }
+    }
+    return { type: this.elaborateDatatype(typeId), atomic: false };
+  }
+
+  /**
+   * `atomic T` outside a field or global: only `atomic []T` (S5-9), whose
+   * element must cross threads (C193). An integer, real or bool written
+   * `atomic` anywhere else would be a copy that shares nothing (S5-6).
+   */
+  atomicTypeUse(
+    typeUseId: Semantic.TypeUseId,
+    sourceloc: SourceLoc
+  ): Semantic.TypeUseId {
+    const use = this.sr.typeUseNodes.get(typeUseId);
+    const resolvedUse = this.sr.typeUseNodes.get(this.resolveAlias(typeUseId));
+    const def = this.sr.typeDefNodes.get(resolvedUse.type);
+    const written = Semantic.serializeTypeUse(this.sr, typeUseId);
+    if (this.isAtomicPrimitive(typeUseId)) {
+      throw new CompilerError(
+        `'atomic ${written}' can only be the type of a struct field or a global: a copy of it would share nothing with the original`,
+        sourceloc,
+        HazeErrorCode.AtomicPrimitiveOutsideFieldOrGlobal
+      );
+    }
+    if (def.variant !== Semantic.ENode.DynamicArrayDatatype) {
+      throw new CompilerError(
+        `'atomic' applies to integer, real and bool types and to dynamic arrays, not to '${written}'` +
+          (def.variant === Semantic.ENode.StructDatatype
+            ? `; a struct is declared 'atomic ref struct'`
+            : ""),
+        sourceloc,
+        HazeErrorCode.AtomicModifierOnUnsupportedType
+      );
+    }
+    if (def.atomic) {
+      return typeUseId;
+    }
+    // Generic code is checked where it is instantiated (S5-1).
+    if (isTypeConcrete(this.sr, def.datatype)) {
+      const element = def.datatype;
+      this.deferredCrossingChecks.push(() => {
+        const f = Crossing.failure(this.sr, element);
+        if (f !== null) {
+          throw new CompilerError(
+            `'atomic ${written}' is not possible: its element must cross threads (C193), but ${Crossing.explain(this.sr, f, { what: "element", type: element })}`,
+            sourceloc,
+            HazeErrorCode.CannotCrossThreads
+          );
+        }
+      });
+    }
+    return makeDynamicArrayDatatypeAvailable(
+      this.sr,
+      def.datatype,
+      use.mutability,
+      use.storage,
+      sourceloc,
+      true
+    );
+  }
+
+  /**
+   * `crossthread (...) => R` (S5-4): a closure type only closures whose
+   * environment, parameters and result cross threads convert to
+   * (Conversion.crossthreadConversionError). A function type (`->`) has no
+   * environment and crosses already; a stack reference never does.
+   */
+  crossthreadTypeUse(
+    typeUseId: Semantic.TypeUseId,
+    sourceloc: SourceLoc
+  ): Semantic.TypeUseId {
+    const use = this.sr.typeUseNodes.get(typeUseId);
+    const resolvedUse = this.sr.typeUseNodes.get(this.resolveAlias(typeUseId));
+    const def = this.sr.typeDefNodes.get(resolvedUse.type);
+    const written = Semantic.serializeTypeUse(this.sr, typeUseId);
+    if (def.variant === Semantic.ENode.FunctionDatatype) {
+      throw new CompilerError(
+        `'${written}' is a function type, which has no environment and crosses threads already: 'crossthread' applies to closure types '(...) => T'`,
+        sourceloc,
+        HazeErrorCode.CrossthreadModifierOnNonClosure
+      );
+    }
+    if (def.variant !== Semantic.ENode.CallableDatatype) {
+      throw new CompilerError(
+        `'crossthread' applies to closure types '(...) => T', not to '${written}'` +
+          (def.variant === Semantic.ENode.StructDatatype
+            ? `; a struct is declared 'crossthread struct'`
+            : ""),
+        sourceloc,
+        HazeErrorCode.CrossthreadModifierOnNonClosure
+      );
+    }
+    if (resolvedUse.storage === EStorageClass.Stackref) {
+      throw new CompilerError(
+        `'crossthread ${written}' is not possible: a stack reference never crosses threads`,
+        sourceloc,
+        HazeErrorCode.CrossthreadModifierOnNonClosure
+      );
+    }
+    return makeTypeUse(
+      this.sr,
+      makeRawCallableDatatypeAvailable(this.sr, {
+        functionType: def.functionType,
+        crossthread: true,
+        sourceloc: sourceloc,
+      }),
+      use.mutability,
+      resolvedUse.storage,
+      sourceloc
+    )[1];
+  }
+
   elaborateDatatype(
     typeId: Collect.ExprId,
     args?: { noSubstituteGenerics?: boolean }
@@ -10369,6 +10777,14 @@ export class SemanticElaborator {
             )[1];
           }
 
+          case ETypeModifier.Atomic: {
+            return this.atomicTypeUse(typeUseId, type.sourceloc);
+          }
+
+          case ETypeModifier.Crossthread: {
+            return this.crossthreadTypeUse(typeUseId, type.sourceloc);
+          }
+
           default:
             assert(false, String(type.modifier));
             throw new Error();
@@ -10445,6 +10861,7 @@ export class SemanticElaborator {
 
         return makeCallableDatatypeAvailable(this.sr, {
           functionType: functype,
+          crossthread: false,
           sourceloc: type.sourceloc,
         });
       }
@@ -10538,7 +10955,8 @@ export class SemanticElaborator {
           this.elaborateDatatype(type.datatype),
           type.mutability,
           EStorageClass.Value,
-          type.sourceloc
+          type.sourceloc,
+          false
         );
       }
 
@@ -11199,6 +11617,20 @@ export class SemanticElaborator {
               HazeErrorCode.WriteToConstData
             );
           }
+        }
+        // A store into an atomic array's element is one locked operation
+        // (Lower.ts, lowerAtomicArrayElementWrite). A method would get a
+        // pointer into the storage and change it outside the lock (S5-9).
+        if (
+          write === "receiver" &&
+          objDef.variant === Semantic.ENode.DynamicArrayDatatype &&
+          objDef.atomic
+        ) {
+          throw new CompilerError(
+            `A method that changes its receiver cannot be called on an element of an atomic array: it would change the element outside the array's lock. Copy the element, change the copy, and store it back, inside 'arr.lock(() => ...)' if nothing may come in between`,
+            sourceloc,
+            HazeErrorCode.ReferenceIntoAtomicArray
+          );
         }
         if (
           objDef.variant === Semantic.ENode.DynamicArrayDatatype ||
@@ -13434,6 +13866,25 @@ export class SemanticElaborator {
           sourceloc
         );
       }
+      // The crossing rule as a query (docs/async-decisions.md S5-1, S5-3,
+      // C278): generic code that hands values to another thread asks first.
+      if (name === "crossesThreads") {
+        return this.sr.b.literal(
+          Crossing.crosses(this.sr, expr.type),
+          sourceloc
+        );
+      }
+      if (name === "isAtomic") {
+        return this.sr.b.literal(this.isAtomicType(expr.type), sourceloc);
+      }
+      // No stack reference anywhere in it: what an escaping closure, and so a
+      // task, may hold (C264).
+      if (name === "capturableByTask") {
+        return this.sr.b.literal(
+          Crossing.capturableByTask(this.sr, expr.type),
+          sourceloc
+        );
+      }
       if (name === "withoutConst") {
         const newMutability =
           resolvedTypeUse.mutability === EDatatypeMutability.Const
@@ -14304,7 +14755,8 @@ export class SemanticElaborator {
             this.sr.b.strType(),
             EDatatypeMutability.Mut,
             EStorageClass.Value,
-            sourceloc
+            sourceloc,
+            false
           ),
           ["hzstd_make_heap_allocator()"]
         );
@@ -14385,6 +14837,15 @@ export class SemanticElaborator {
       // can (C601, C602, C596).
       if (DYNAMIC_ARRAY_MUTATORS.has(name)) {
         this.assertMutableReference(expr.type, sourceloc);
+      }
+
+      if (exprType.atomic) {
+        return this.resolveMemberAccessOnAtomicArray(
+          exprId,
+          exprType,
+          name,
+          sourceloc
+        );
       }
 
       if (name === "push") {
@@ -15364,6 +15825,7 @@ export class SemanticElaborator {
       return JSON.stringify([
         use.storage,
         use.mutability,
+        def.crossthread,
         fn.parameters.map((p) => [this.resolveAlias(p.type), p.optional]),
         this.resolveAlias(fn.returnType),
         fn.vararg,
@@ -15398,7 +15860,11 @@ export class SemanticElaborator {
         return t;
       }
       const use = this.sr.typeUseNodes.get(this.resolveAlias(t));
+      const useDef = this.sr.typeDefNodes.get(use.type);
+      assert(useDef.variant === Semantic.ENode.CallableDatatype);
       const merged = makeCallableDatatypeAvailable(this.sr, {
+        // Part of the key above: every type of the group agrees.
+        crossthread: useDef.crossthread,
         functionType: makeRawFunctionDatatypeAvailable(this.sr, {
           parameters: functionTypes[0].parameters,
           returnType: functionTypes[0].returnType,
@@ -15993,6 +16459,111 @@ export class SemanticElaborator {
     );
   }
 
+  /**
+   * The operations of an atomic array (docs/async-decisions.md S5-9), each one
+   * operation under the array's lock (hzstd_array.h, "Atomic arrays"): what
+   * `[]T` has built in, with the same arguments and results. `arr.lock(...)`
+   * is array.lock in stdlib/core/src/array.hz; every other array function
+   * there takes a plain array, which an atomic one never becomes.
+   */
+  private resolveMemberAccessOnAtomicArray(
+    exprId: Semantic.ExprId,
+    arrayType: Semantic.DynamicArrayDatatypeDef,
+    name: string,
+    sourceloc: SourceLoc
+  ): [Semantic.Expression, Semantic.ExprId] {
+    const expr = this.sr.exprNodes.get(exprId);
+    const element = arrayType.datatype;
+    const elementName = Semantic.mangleTypeUse(this.sr, element);
+    const elementC = elementName.wasMangled
+      ? "_H" + elementName.name
+      : elementName.name;
+    const thisExprTypeId = makeTypeUse(
+      this.sr,
+      this.sr.typeUseNodes.get(expr.type).type,
+      EDatatypeMutability.Mut,
+      EStorageClass.Ref,
+      sourceloc
+    )[1];
+    const method = (
+      params: { name: string; type: Semantic.TypeUseId }[],
+      returnType: Semantic.TypeUseId,
+      body: string
+    ) => {
+      const funcname = `__hz_atomic_array_${name}_${elementName.name}`;
+      let funcId = this.sr.syntheticFunctions.get(funcname);
+      if (funcId === undefined) {
+        const functionType = makeRawFunctionDatatypeAvailable(this.sr, {
+          parameters: params.map((p) => ({ optional: false, type: p.type })),
+          returnType: returnType,
+          requires: {
+            final: true,
+            pure: false,
+            noreturn: false,
+            noreturnIf: null,
+          },
+          sourceloc: sourceloc,
+          vararg: false,
+        });
+        funcId = this.sr.b.syntheticFunctionFromCode({
+          functionTypeId: functionType,
+          parameterNames: params.map((p) => p.name),
+          funcname: funcname,
+          bodySourceCode: `__c__("${body}");`,
+          currentScope: this.currentContext.currentScope,
+          sourceloc: sourceloc,
+          envType: { type: "method", thisExprType: thisExprTypeId },
+        })[1];
+        this.sr.syntheticFunctions.set(funcname, funcId);
+      }
+      return this.sr.b.callableExpr(
+        funcId,
+        { type: "method", thisExprType: thisExprTypeId },
+        { type: "method", thisExpr: exprId },
+        sourceloc
+      );
+    };
+    const int = this.sr.b.intType();
+    const none = this.sr.b.voidType();
+    switch (name) {
+      case "push":
+        return method(
+          [{ name: "element", type: element }],
+          none,
+          `HZSTD_ATOMIC_ARRAY_PUSH(__hz_ctx, this, ${elementC}, element);`
+        );
+      case "insert":
+        return method(
+          [
+            { name: "index", type: int },
+            { name: "element", type: element },
+          ],
+          none,
+          `HZSTD_ATOMIC_ARRAY_INSERT(__hz_ctx, this, ${elementC}, index, element);`
+        );
+      case "remove":
+        return method(
+          [{ name: "index", type: int }],
+          element,
+          `return HZSTD_ATOMIC_ARRAY_REMOVE(__hz_ctx, this, ${elementC}, index);`
+        );
+      case "pop":
+        return method(
+          [],
+          element,
+          `return HZSTD_ATOMIC_ARRAY_POP(__hz_ctx, this, ${elementC});`
+        );
+      case "clear":
+        return method([], none, "hzstd_atomic_array_clear(__hz_ctx, this);");
+      default:
+        throw new CompilerError(
+          `An atomic array has no '${name}': it has the operations 'length', 'push', 'insert', 'remove', 'pop', 'clear', indexing, loops, and 'lock(() => ...)' to do more as one operation`,
+          sourceloc,
+          HazeErrorCode.DatatypeDoesNotHaveMemberNamed2
+        );
+    }
+  }
+
   // Only ever reached for the DEEP case (rx.reactive<[]T>()) -- see the call
   // site's comment. ShallowReactive<[]T> has no hzstd_reactive_array_t
   // wrapper to operate on and never reaches this function.
@@ -16239,6 +16810,12 @@ export class SemanticElaborator {
       this.sr.typeUseNodes.get(this.resolveAlias(object.type)).type
     );
     if (objectTypeDef.variant !== Semantic.ENode.DynamicArrayDatatype) {
+      return null;
+    }
+    // An atomic array's own operations are the compiler's
+    // (resolveMemberAccessOnAtomicArray); of the functions in `array`, only
+    // those taking an atomic array apply, `lock` among them.
+    if (objectTypeDef.atomic && ATOMIC_ARRAY_BUILTIN_METHODS.has(name)) {
       return null;
     }
 
@@ -16926,6 +17503,8 @@ export class SemanticElaborator {
         // Was a non-inline (reference) struct before the value-default flip; keep it.
         refByDefault: true,
         nocopy: false,
+        atomic: false,
+        crossthread: EStructCrossthread.None,
         export: false,
         extern: EExternLanguage.Extern_C,
         members: [],
@@ -16997,6 +17576,8 @@ export class SemanticElaborator {
         // Was a non-inline (reference) struct before the value-default flip; keep it.
         refByDefault: true,
         nocopy: false,
+        atomic: false,
+        crossthread: EStructCrossthread.None,
         export: false,
         extern: EExternLanguage.Extern_C,
         members: [],
@@ -17049,6 +17630,8 @@ export class SemanticElaborator {
         // Was a non-inline (reference) struct before the value-default flip; keep it.
         refByDefault: true,
         nocopy: false,
+        atomic: false,
+        crossthread: EStructCrossthread.None,
         export: false,
         extern: EExternLanguage.Extern_C,
         members: [],
@@ -19468,6 +20051,8 @@ export class SemanticElaborator {
         reactiveClone: false,
         refByDefault: false,
         nocopy: false,
+        atomic: false,
+        crossthread: EStructCrossthread.None,
         export: false,
         extern: EExternLanguage.None,
         members: [],
@@ -20262,7 +20847,8 @@ export class SemanticElaborator {
           reactiveElemType,
           EDatatypeMutability.Default,
           EStorageClass.Value,
-          sourceloc
+          sourceloc,
+          false
         );
         // DynamicArray is not a struct — go directly to makeRaw without Deep
         return this.sr.b.datatypeDefAsValue(
@@ -21216,6 +21802,18 @@ export class SemanticElaborator {
           HazeErrorCode.ExpressionTypeCannotBeSubscripted
         );
       }
+      // A slice is a view of the storage, which an atomic array never hands
+      // out (S5-9).
+      if (
+        valueType.variant === Semantic.ENode.DynamicArrayDatatype &&
+        valueType.atomic
+      ) {
+        throw new CompilerError(
+          `An atomic array cannot be sliced: a slice would be a view of its storage outside its lock`,
+          arraySubscript.sourceloc,
+          HazeErrorCode.ReferenceIntoAtomicArray
+        );
+      }
 
       return this.sr.b.addExpr(this.sr, {
         variant: Semantic.ENode.ArraySliceExpr,
@@ -21227,7 +21825,8 @@ export class SemanticElaborator {
           valueType.datatype,
           EDatatypeMutability.Default,
           EStorageClass.Value,
-          arraySubscript.sourceloc
+          arraySubscript.sourceloc,
+          false
         ),
         sourceloc: arraySubscript.sourceloc,
         isTemporary: true,
@@ -22026,6 +22625,7 @@ export class SemanticElaborator {
     callableExpr.functionSymbol = elaboratedFunctionId;
     callableExpr.type = makeCallableDatatypeAvailable(this.sr, {
       functionType: elaboratedFunction.type,
+      crossthread: false,
       sourceloc: callable.sourceloc,
     });
 
@@ -23026,7 +23626,8 @@ export function makeReactiveDatatypeAvailable(
       reactiveElemType,
       EDatatypeMutability.Default,
       EStorageClass.Value,
-      sourceloc
+      sourceloc,
+      false
     );
     // DynamicArray is not a struct — no Deep wrapping needed
     return makeTypeUse(
@@ -23142,6 +23743,10 @@ export function makeDeepDatatypeAvailable(
       generics: wrappedTypeDef.generics,
       refByDefault: wrappedTypeDef.refByDefault,
       nocopy: wrappedTypeDef.nocopy,
+      // A reactive clone's members are reactive cells: never atomic, never
+      // crossing threads.
+      atomic: false,
+      crossthread: EStructCrossthread.None,
       membersBuilt: false,
       reactiveClone: true,
       membersFinalized: false,

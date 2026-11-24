@@ -9,6 +9,7 @@ import {
 } from "../shared/AST";
 import {
   EPrimitive,
+  EStructCrossthread,
   type LiteralValue,
   primitiveToString,
 } from "../shared/common";
@@ -268,6 +269,16 @@ export function ExportTypeDef(
       if (typedef.nocopy) {
         file.write("nocopy ");
       }
+      // The threading modifiers are part of the interface: the consumer
+      // checks crossings against them (docs/async-decisions.md S5-4, S5-7).
+      if (typedef.atomic) {
+        file.write("atomic ");
+      }
+      if (typedef.crossthread === EStructCrossthread.Checked) {
+        file.write("crossthread ");
+      } else if (typedef.crossthread === EStructCrossthread.Unsafe) {
+        file.write("unsafe crossthread ");
+      }
       file.write("struct ");
       file
         .writeLine(namespaces[namespaces.length - 1].pretty + " {")
@@ -288,16 +299,20 @@ export function ExportTypeDef(
         // The consumer sees a private member as private: it is part of the
         // interface, not an implementation detail that stops at the boundary.
         const privateKeyword = content.private ? "private " : "";
+        const unsafeKeyword = content.unsafe === true ? "unsafe " : "";
+        // `n: atomic int` (S5-6): the atomicity is the storage's, the type is
+        // the plain primitive.
+        const atomicKeyword = content.atomic === true ? "atomic " : "";
         if (defaultValue) {
           file.writeLine(
-            `${privateKeyword}${content.name}: ${Semantic.serializeTypeUse(
+            `${privateKeyword}${unsafeKeyword}${content.name}: ${atomicKeyword}${Semantic.serializeTypeUse(
               sr,
               content.type
             )} = ${Semantic.serializeExpr(sr, defaultValue.value)};`
           );
         } else {
           file.writeLine(
-            `${privateKeyword}${content.name}: ${Semantic.serializeTypeUse(sr, content.type)};`
+            `${privateKeyword}${unsafeKeyword}${content.name}: ${atomicKeyword}${Semantic.serializeTypeUse(sr, content.type)};`
           );
         }
       }

@@ -6,14 +6,16 @@
 //   global let x: T = v;        global const x = v;
 //
 // at module or namespace level, after `export` / `extern` / `pub` and before
-// `let` / `const`. Both are reserved words. What is not built yet is refused,
-// so nothing silently behaves like a plain global:
+// `let` / `const`. Both are reserved words.
 //
 //   * `tasklocal let`: once per task (task-local storage, cases_tasklocal.hz);
-//     `tasklocal const` is a constant
-//   * `global let`: H7231, it must hold an atomic type and atomic types do not
-//     exist yet
-//   * `global const`: accepted, a process-wide C global like every global today
+//     `tasklocal const` is a constant; never atomic (H7239)
+//   * `global let`: once per process, so its type is atomic (an atomic
+//     primitive, an atomic array, a reference to an atomic struct), else
+//     H7247 (C199, docs/async-decisions.md S5-12)
+//   * `global const`: once per process, a C global
+//   * what either holds must cross threads (H7238; the rule itself:
+//     cases_crossing.hz)
 //   * `extern` or `comptime` with either keyword: H7232
 //   * on a local variable: a syntax error in both parsers
 //
@@ -22,9 +24,9 @@
 
 namespace cases_storage_keywords {
 
-    fn unavailable(s: mut testsuite.Suite, name: str, source: str) {
+    fn notAtomic(s: mut testsuite.Suite, name: str, source: str) {
         s.compileFails(name, source, [
-            testsuite.exactCount(errorcodes.Code.StorageClassNotAvailable, 1),
+            testsuite.exactCount(errorcodes.Code.GlobalLetNotAtomic, 1),
             testsuite.totalErrors(1),
         ]);
     }
@@ -83,29 +85,85 @@ namespace n {
 fn main(): int { return 0; }
 """);
 
-        // ── Rule 3: global let ──────────────────────────────────────────────
-        unavailable(s, "storage keywords: global let", """
-global let counter: int = 0; // <- H7231
+        // ── Rule 3: global let holds an atomic type ─────────────────────────
+        notAtomic(s, "storage keywords: global let of a plain int", """
+global let counter: int = 0; // <- H7247
 
 fn main(): int { return 0; }
 """);
 
-        unavailable(s, "storage keywords: global let in a namespace", """
+        notAtomic(s, "storage keywords: global let in a namespace", """
 namespace n {
-    global let counter: int = 0; // <- H7231
+    global let counter: int = 0; // <- H7247
 }
 
 fn main(): int { return 0; }
 """);
 
         // A global nobody uses is still diagnosed: the declaration is the error.
-        unavailable(s, "storage keywords: an unused global let is still rejected", """
-global let unused: int = 1; // <- H7231
+        notAtomic(s, "storage keywords: an unused global let is still rejected", """
+global let unused: int = 1; // <- H7247
 
 fn main(): int {
     return 7;
 }
 """);
+
+        notAtomic(s, "storage keywords: global let of a plain array", """
+global let items: []int = []; // <- H7247
+
+fn main(): int { return 0; }
+""");
+
+        s.compileFails("storage keywords: an atomic tasklocal", """
+tasklocal let counter: atomic int = 0; // <- H7239
+
+fn main(): int { return 0; }
+""", [
+            testsuite.exactCount(errorcodes.Code.AtomicPrimitiveOutsideFieldOrGlobal, 1),
+            testsuite.totalErrors(1),
+        ]);
+
+        s.compileFails("storage keywords: a global const that cannot cross threads", """
+global const make: () => int = () => 1; // <- H7238
+
+fn main(): int { return make(); }
+""", [
+            testsuite.exactCount(errorcodes.Code.CannotCrossThreads, 1),
+            testsuite.messageContains("'make' is shared by every thread of the process, but it cannot cross threads: its type is"),
+            testsuite.messageContains(":: final)', a closure whose type is not 'crossthread'"),
+            testsuite.totalErrors(1),
+        ]);
+
+        // An atomic array as a `global let` passes the type rule; a global
+        // array's initializer is not a constant image yet (a plain one fails
+        // the same way), so only the primitives run here.
+        s.compileOk("storage keywords: global let of an atomic array is atomic", """
+global let seen: mut atomic []int;
+
+fn main(): int { return 0; }
+""");
+
+        s.run("storage keywords: global let of atomic primitives", """
+global let count: atomic int = 40;
+global let ratio: atomic real = 0.5;
+global let ready: atomic bool = false;
+namespace n {
+    export global let hits: atomic int = 0;
+}
+
+fn bump() { count += 1; n.hits++; }
+
+fn main(): int {
+    bump();
+    bump();
+    ratio *= 4.0;
+    let was = ready.exchange(true);
+    let swapped = count.compareExchange(42, 50);
+    fmt.println(f"{count} {n.hits} {ratio} {was} {ready} {swapped}");
+    return 0;
+}
+""", "50 2 2 false true true");
 
         // ── Rule 4: extern and comptime ─────────────────────────────────────
         combination(s, "storage keywords: extern with global", """

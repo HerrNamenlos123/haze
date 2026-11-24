@@ -106,7 +106,18 @@ export enum ETypeModifier {
   Mut,
   Ref,
   Stackref,
+  // `atomic T` (docs/async-decisions.md S5-6, S5-9) and `crossthread T` (S5-4).
+  Atomic,
+  Crossthread,
   // Nodiscard,
+}
+
+// Whether a struct declares that it crosses threads (S5-4): `crossthread`
+// (checked by the compiler) or `unsafe crossthread` (its author's promise).
+export enum EStructCrossthread {
+  None = 0,
+  Checked = 1,
+  Unsafe = 2,
 }
 
 export type LiteralValue =

@@ -143,4 +143,32 @@ export namespace array {
     export fn clear<T>(items: mut []T) {
         __c__("hzstd_dynamic_array_clear(items);");
     }
+
+    // Runs `body` holding the lock of an atomic array and returns its value,
+    // so that several operations on the array happen as one: no other task
+    // or thread sees the array in between. Every operation takes the same
+    // lock, also inside `body` (a task that holds it takes it again without
+    // waiting), and waiting for it suspends only the waiting task. `body` may
+    // suspend. A panic that leaves `body` poisons the array, like a sys.Mutex:
+    // every later operation on it panics (docs/async-decisions.md S5-9).
+    //
+    //     let jobs: atomic []Job = [];
+    //     let job = jobs.lock(() => jobs.length > 0 ? jobs.pop() : none);
+    export fn lock<T, R>(items: atomic []T, body: immediate () => R, location: SourceLocation = SourceLocation()): R {
+        let ctx = sys.contextPtr();
+        let core = ffi.atomicArrayCore(items);
+        ffi.hzstd_mutex_lock(ctx, core, location);
+        let result = body();
+        ffi.hzstd_mutex_unlock(ctx, core);
+        return result;
+    }
+}
+
+namespace ffi {
+    // The lock of an atomic array, made on its first use (hzstd_array.h,
+    // "Atomic arrays"). Exported: array.lock is re-elaborated in every module
+    // that calls it.
+    export fn atomicArrayCore<T>(items: atomic []T): cptr {
+        __c__("return (void *)hzstd_atomic_array_core(items);");
+    }
 }

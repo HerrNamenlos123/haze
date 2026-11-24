@@ -903,8 +903,12 @@ class CodeGenerator {
               .writeLine(`struct ${this.mangleTypeDef(symbol)} {`)
               .pushIndent();
             for (const member of symbol.members) {
+              // C11 atomics are sequentially consistent by default: every
+              // load, store and compound assignment of the member is one
+              // atomic operation (docs/async-decisions.md S5-6).
+              const memberType = this.mangleTypeUse(member.type);
               this.out.type_definitions.writeLine(
-                `${this.mangleTypeUse(member.type)} ${member.name};`
+                `${member.atomic ? `_Atomic(${memberType})` : memberType} ${member.name};`
               );
             }
             if (symbol.members.length === 0) {
@@ -1103,13 +1107,13 @@ class CodeGenerator {
         }
 
         this.out.global_variables.writeLine(
-          `${this.mangleTypeUse(statement.type)} ${this.mangleName(
+          `${this.globalStorageType(statement)} ${this.mangleName(
             statement.name
           )} = ${exprValue};`
         );
       } else {
         this.out.global_variables.writeLine(
-          `${this.mangleTypeUse(statement.type)} ${this.mangleName(statement.name)} = {0};`
+          `${this.globalStorageType(statement)} ${this.mangleName(statement.name)} = {0};`
         );
       }
     }
@@ -1318,6 +1322,13 @@ class CodeGenerator {
       type = this.lr.typeDefNodes.get(type);
     }
     return this.mangleName(type.name);
+  }
+
+  // The C type of a global's storage: C11 `_Atomic` for an atomic primitive
+  // (docs/async-decisions.md S5-6), sequentially consistent.
+  globalStorageType(statement: Lowered.VariableStatement): string {
+    const type = this.mangleTypeUse(statement.type);
+    return statement.atomic ? `_Atomic(${type})` : type;
   }
 
   mangleTypeUse(type: Lowered.TypeUse | Lowered.TypeUseId): string {
@@ -3344,6 +3355,51 @@ class CodeGenerator {
         const e = this.emitExpr(expr.value);
         tempWriter.write(e.temp);
         outWriter.write("alignof(" + e.out.get() + ")");
+        return { out: outWriter, temp: tempWriter };
+      }
+
+      case Lowered.ENode.AtomicOpExpr: {
+        // The place is `_Atomic` (C11), so these are sequentially consistent
+        // (docs/async-decisions.md S5-6). Its address is taken once.
+        const target = this.emitExpr(expr.target);
+        tempWriter.write(target.temp);
+        const targetExpr = this.lr.exprNodes.get(expr.target);
+        const plainType = this.mangleTypeUse(targetExpr.type);
+        const place = `__typeof__(&(${target.out.get()})) __hz_atomic = &(${target.out.get()});`;
+        const op = expr.op;
+        if (op.kind === "exchange") {
+          const value = this.emitExpr(op.value);
+          tempWriter.write(value.temp);
+          outWriter.write(
+            `({ ${place} ${plainType} __hz_value = ${value.out.get()}; atomic_exchange(__hz_atomic, __hz_value); })`
+          );
+          return { out: outWriter, temp: tempWriter };
+        }
+        if (op.kind === "compareExchange") {
+          const expected = this.emitExpr(op.expected);
+          const desired = this.emitExpr(op.desired);
+          tempWriter.write(expected.temp);
+          tempWriter.write(desired.temp);
+          outWriter.write(
+            `({ ${place} ${plainType} __hz_expected = ${expected.out.get()}; ${plainType} __hz_desired = ${desired.out.get()}; atomic_compare_exchange_strong(__hz_atomic, &__hz_expected, __hz_desired); })`
+          );
+          return { out: outWriter, temp: tempWriter };
+        }
+        // A read-modify-write is a compare-and-swap loop, so the arithmetic
+        // is Haze's own (overflow checked), exactly as `x = x + v` computes it.
+        const value = this.emitExpr(op.value);
+        tempWriter.write(value.temp);
+        const typeDef = this.lr.typeDefNodes.get(
+          this.lr.typeUseNodes.get(Lowered.resolveAlias(this.lr, targetExpr.type))
+            .type
+        );
+        assert(typeDef.variant === Lowered.ENode.PrimitiveDatatype);
+        const next = Conversion.isInteger(typeDef.primitive)
+          ? `${this.makeCheckedBinaryArithmeticFunction(expr.target, op.value, this.lr.typeUseNodes.get(Lowered.resolveAlias(this.lr, targetExpr.type)).type, op.operation)}(__hz_old, __hz_value)`
+          : `(__hz_old ${BinaryOperationToString(op.operation)} __hz_value)`;
+        outWriter.write(
+          `({ ${place} ${plainType} __hz_value = ${value.out.get()}; ${plainType} __hz_old = atomic_load(__hz_atomic); ${plainType} __hz_new; do { __hz_new = ${next}; } while (!atomic_compare_exchange_weak(__hz_atomic, &__hz_old, __hz_new)); ${op.returnOld ? "__hz_old" : "__hz_new"}; })`
+        );
         return { out: outWriter, temp: tempWriter };
       }
 

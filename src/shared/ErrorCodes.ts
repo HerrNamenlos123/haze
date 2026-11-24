@@ -286,13 +286,24 @@ export enum HazeErrorCode {
   WriteThroughNonMutReference = 7225, // This data cannot be changed through a reference without 'mut'
   WriteToConstData = 7226, // Const data never changes
   PrivateMemberAccess = 7230, // Member '' of '' is private: only code inside the struct can reach it
-  StorageClassNotAvailable = 7231, // This storage class is not available yet (see the message)
   StorageClassCombination = 7232, // 'tasklocal' / 'global' cannot be combined with ''
   ContextRequirementOutsideExternCDeclaration = 7233, // ':: context' is only for an 'extern C' function without a body
   TaskLocalOfNocopyType = 7234, // A 'tasklocal' variable cannot hold a nocopy type: a new task copies its parent's value
   RebindOfDeepReactiveMember = 7235, // A member of a deep reactive value is written with ':=', never rebound to another cell
   TaskLocalOutsideFunction = 7236, // A task-local variable exists once per task: code outside a function runs in none
   PrivateMemberOfNonOpaqueStruct = 7237, // A private member makes a struct more than plain data: declare it 'opaque struct' first
+  CannotCrossThreads = 7238, // '' cannot cross threads: the message names the member or element on the way to the culprit
+  AtomicPrimitiveOutsideFieldOrGlobal = 7239, // An atomic integer, real or bool is only a struct field's or a global's type
+  AtomicModifierOnUnsupportedType = 7240, // 'atomic' applies to integer, real and bool types and to dynamic arrays
+  CrossthreadModifierOnNonClosure = 7241, // 'crossthread' applies to closure types and structs
+  AtomicStructNotRef = 7242, // An atomic struct must be a 'ref struct'
+  AtomicStructFieldNotAtomic = 7243, // Every field of an atomic struct is atomic, const or unsafe
+  UnsafeFieldNotPrivate = 7244, // An 'unsafe' field must be 'private'
+  UnsafeFieldOutsideAtomicStruct = 7245, // 'unsafe' is a field modifier of atomic structs only
+  CrossthreadModifierConflict = 7246, // 'crossthread' and 'unsafe crossthread' cannot both be written
+  GlobalLetNotAtomic = 7247, // A 'global let' must hold an atomic type
+  ConversionToOrFromAtomicArray = 7248, // Only an array literal converts to 'atomic []T', and 'atomic []T' never converts to '[]T'
+  ReferenceIntoAtomicArray = 7249, // Nothing hands out a reference into an atomic array's storage
   ThisDistroPackageManagerNotSupportedYetPlease = 8001, // This Distro/Package Manager is not supported yet, please report
   DeadCodeDetectedAndStripped = 9001, // Dead code detected and stripped
   EmbeddedFileSizeMBExceeds50MB = 9002, // Embedded file size ( MB) exceeds 50 MB:

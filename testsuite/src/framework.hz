@@ -15,12 +15,14 @@ namespace testsuite {
         MustBeAbsent,   // this H-code must not appear at all
         ExactCount,     // this H-code must appear exactly `count` times
         TotalCount,     // exactly `count` H-codes total must appear (any code)
+        MessageContains, // `text` must appear in the output (a message's wording)
     }
 
     export ref struct ErrorCheck {
         code: int;
         kind: CheckKind;
         count: int = 0;
+        text: str = "";
     }
 
     export fn mustHave(code: errorcodes.Code): ErrorCheck {
@@ -37,6 +39,13 @@ namespace testsuite {
 
     export fn totalErrors(count: int): ErrorCheck {
         return ErrorCheck { code: 0, kind: CheckKind.TotalCount, count: count };
+    }
+
+    // The compiler's output contains `text` verbatim: pins the part of a
+    // message that matters (the path a crossing error names), not just its
+    // code.
+    export fn messageContains(text: str): ErrorCheck {
+        return ErrorCheck { code: 0, kind: CheckKind.MessageContains, text: text };
     }
 
     export enum ExpectKind {
@@ -309,6 +318,11 @@ namespace testsuite {
             let n = totalDiagnosticCodes(output);
             if n != check.count {
                 return f"expected exactly {check.count} total diagnostic code(s), but got {n}";
+            }
+        }
+        else if check.kind == CheckKind.MessageContains {
+            if !output.contains(check.text) {
+                return f"expected the output to contain: {check.text}";
             }
         }
         return "";

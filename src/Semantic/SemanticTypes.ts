@@ -28,6 +28,7 @@ import {
   BrandedArray,
   type EMethodType,
   EPrimitive,
+  type EStructCrossthread,
   type EVariableContext,
   type LiteralValue,
   type NameSet,
@@ -138,6 +139,7 @@ export namespace Semantic {
     AddressOfExpr,
     DereferenceExpr,
     ExprAssignmentExpr,
+    AtomicOpExpr,
     StructLiteralExpr,
     ArrayLiteralExpr,
     ArraySubscriptExpr,
@@ -167,6 +169,14 @@ export namespace Semantic {
     // Struct members only: declared `private`, so only code inside the struct's
     // body may name it (Elaborate.assertMemberAccessible). Absent = not private.
     private?: boolean;
+    // Struct members only: declared `unsafe` in an atomic struct, so the
+    // crossing rule does not look at its type (S5-7, S5-8). Absent = not unsafe.
+    unsafe?: boolean;
+    // Struct members and globals only: the storage is an atomic primitive
+    // (`n: atomic int`, S5-6). `type` is the plain primitive: reading one
+    // gives the plain type, a write stores, compound assignment and ++/-- are
+    // one atomic read-modify-write. Absent = not atomic.
+    atomic?: boolean;
     type: TypeUseId | null;
     mutability: EVariableMutability;
     export: boolean;
@@ -391,6 +401,10 @@ export namespace Semantic {
     reactiveClone: boolean;
     refByDefault: boolean;
     nocopy: boolean;
+    // `atomic struct` (docs/async-decisions.md S5-7) and `crossthread` /
+    // `unsafe crossthread` (S5-4).
+    atomic: boolean;
+    crossthread: EStructCrossthread;
     export: boolean;
     extern: EExternLanguage;
     members: Semantic.SymbolId[];
@@ -430,6 +444,10 @@ export namespace Semantic {
   export type CallableDatatypeDef = {
     variant: ENode.CallableDatatype;
     functionType: TypeDefId;
+    // `crossthread (...) => R` (S5-4): only closures whose environment,
+    // parameters and result cross threads convert to it. Part of the type's
+    // identity; the C layout is the same as the plain closure's.
+    crossthread: boolean;
     concrete: boolean;
   };
 
@@ -450,6 +468,10 @@ export namespace Semantic {
   export type DynamicArrayDatatypeDef = {
     variant: ENode.DynamicArrayDatatype;
     datatype: TypeUseId;
+    // `atomic []T` (S5-9): every operation takes the array's lock. Part of
+    // the type's identity: only an array literal converts to it, and it
+    // never converts to `[]T`.
+    atomic: boolean;
     concrete: boolean;
     syntheticFields: SymbolId[]; // This is for synthetic fields to have symbol ids, such as ".length", for narrowing.
   };
@@ -743,6 +765,17 @@ export namespace Semantic {
     operation: EAssignmentOperation;
   };
 
+  // `place.exchange(v)` / `place.compareExchange(expected, desired)` on a
+  // place declared atomic (docs/async-decisions.md S5-6). `args` are
+  // converted to the place's plain type.
+  export type AtomicOpExpr = BaseExpr & {
+    variant: ENode.AtomicOpExpr;
+    instanceIds: InstanceId[];
+    target: ExprId;
+    op: "exchange" | "compareExchange";
+    args: ExprId[];
+  };
+
   export type PreIncrExpr = BaseExpr & {
     variant: ENode.PreIncrExpr;
     instanceIds: InstanceId[];
@@ -998,6 +1031,7 @@ export namespace Semantic {
     | AlignofExpr
     | BlockScopeExpr
     | ExprAssignmentExpr
+    | AtomicOpExpr
     | UnaryExpr
     | BinaryExpr
     | CallableExpr
@@ -1316,6 +1350,8 @@ export namespace Semantic {
       Map<number, Semantic.TypeDefId[]>
     >;
     callableTypeCache: Map<Semantic.TypeDefId, Semantic.TypeDefId>;
+    // The `crossthread` callables, by function type (S5-4).
+    crossthreadCallableTypeCache: Map<Semantic.TypeDefId, Semantic.TypeDefId>;
     deferredFunctionTypeCache: Map<number, Semantic.TypeDefId[]>;
     // Left as scans: both resolve aliases as they compare, so a precomputed
     // index could go stale, and neither showed up in the profile.
@@ -2116,6 +2152,7 @@ export namespace Semantic {
       elaboratedTypeDefSymbols: [],
       functionTypeCache: new Map(),
       callableTypeCache: new Map(),
+      crossthreadCallableTypeCache: new Map(),
       deferredFunctionTypeCache: new Map(),
       fixedArrayTypeCache: [],
       dynamicArrayTypeCache: [],
@@ -2190,6 +2227,10 @@ export namespace Semantic {
     // see finalizeAllStructMethods for the full explanation.
     sr.e.finalizeAllStructMethods();
 
+    // The crossing rule's declaration checks (S5-2), now that every type is
+    // elaborated in full.
+    sr.e.checkThreadingDeclarations();
+
     if (moduleName !== HAZE_STDLIB_NAME) {
       if (isLibrary) {
         if (sr.globalMainFunction) {
@@ -2229,6 +2270,43 @@ export namespace Semantic {
     }
 
     return sr;
+  }
+
+  /**
+   * Whether a place is declared atomic (docs/async-decisions.md S5-6): a
+   * struct field `n: atomic int` or a global `global let n: atomic int`. Its
+   * type is the plain primitive; how it is accessed is the place's.
+   */
+  export function isAtomicPlace(
+    sr: Semantic.Context,
+    placeId: Semantic.ExprId
+  ): boolean {
+    const place = sr.exprNodes.get(placeId);
+    if (place.variant === Semantic.ENode.SymbolValueExpr) {
+      const symbol = sr.symbolNodes.get(place.symbol);
+      return (
+        symbol.variant === Semantic.ENode.VariableSymbol &&
+        symbol.atomic === true
+      );
+    }
+    if (place.variant === Semantic.ENode.MemberAccessExpr) {
+      const object = sr.exprNodes.get(place.expr);
+      const def = sr.typeDefNodes.get(
+        sr.typeUseNodes.get(sr.e.resolveAlias(object.type)).type
+      );
+      if (def.variant !== Semantic.ENode.StructDatatype) {
+        return false;
+      }
+      return def.members.some((memberId) => {
+        const member = sr.symbolNodes.get(memberId);
+        return (
+          member.variant === Semantic.ENode.VariableSymbol &&
+          member.name === place.memberName &&
+          member.atomic === true
+        );
+      });
+    }
+    return false;
   }
 
   export function serializeMutability(typeUse: TypeUse) {
@@ -2675,7 +2753,7 @@ export namespace Semantic {
         }) :: deferred`;
 
       case Semantic.ENode.CallableDatatype:
-        return `${serializeTypeDef(sr, datatype.functionType, { functionTypeAsCallable: true })}`;
+        return `${datatype.crossthread ? "crossthread " : ""}${serializeTypeDef(sr, datatype.functionType, { functionTypeAsCallable: true })}`;
 
       case Semantic.ENode.NamespaceDatatype:
         return getNamespaceChainFromDatatype(sr, datatypeId)
@@ -2686,7 +2764,7 @@ export namespace Semantic {
         return `[${datatype.length}]${serializeTypeUse(sr, datatype.datatype)}`;
 
       case Semantic.ENode.DynamicArrayDatatype:
-        return `[](${serializeTypeUse(sr, datatype.datatype)})`;
+        return `${datatype.atomic ? "atomic " : ""}[](${serializeTypeUse(sr, datatype.datatype)})`;
 
       case Semantic.ENode.UntaggedUnionDatatype: {
         return (
@@ -3124,8 +3202,10 @@ export namespace Semantic {
 
         const func = mangleTypeDef(sr, type.functionType);
 
+        // A crossthread closure has the plain closure's layout, but it is a
+        // type of its own (S5-4), so code generic over it gets its own name.
         return {
-          name: "Cl" + func.name,
+          name: (type.crossthread ? "Ct" : "Cl") + func.name,
           wasMangled: true,
         };
       }
@@ -3206,8 +3286,9 @@ export namespace Semantic {
       }
 
       case Semantic.ENode.DynamicArrayDatatype: {
+        // `atomic []T` (S5-9) is a type of its own with the same C layout.
         return {
-          name: "D" + mangleTypeUse(sr, type.datatype).name,
+          name: (type.atomic ? "XaD" : "D") + mangleTypeUse(sr, type.datatype).name,
           wasMangled: true,
         };
       }
@@ -3543,6 +3624,9 @@ export namespace Semantic {
 
       case Semantic.ENode.SizeofExpr:
         return `sizeof(${serializeExpr(sr, expr.valueExpr)})`;
+
+      case Semantic.ENode.AtomicOpExpr:
+        return `${serializeExpr(sr, expr.target)}.${expr.op}(${expr.args.map((a) => serializeExpr(sr, a)).join(", ")})`;
 
       case Semantic.ENode.AlignofExpr:
         return `alignof(${serializeExpr(sr, expr.valueExpr)})`;
