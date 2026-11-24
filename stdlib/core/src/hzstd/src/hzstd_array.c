@@ -141,6 +141,7 @@ hzstd_dynamic_array_t *hzstd_dynamic_array_create(
   da->capacity = 0;
   da->elementTypeName = elementTypeName;
   da->borrowed_buffer = false;
+  da->lock = NULL;
 
   if (initial_capacity > 0) {
     /* attempt to allocate initial buffer */
@@ -173,6 +174,7 @@ void hzstd_dynamic_array_init_borrowed(
   // have been a one-past-the-end pointer into the shared block.
   da->buffer = count > 0 ? buffer : NULL;
   da->borrowed_buffer = count > 0;
+  da->lock = NULL;
 }
 
 /* reserve: ensure capacity >= new_capacity */

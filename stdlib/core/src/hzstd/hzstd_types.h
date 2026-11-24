@@ -423,6 +423,9 @@ typedef struct {
   // hzstd_dynamic_array_realloc_buffer. Reading, in-place writes, and
   // shrinking all stay on the borrowed storage.
   bool borrowed_buffer;
+  // The lock of an `atomic []T` (docs/async-decisions.md S5-9): a mutex core
+  // every operation on the array takes; NULL for a plain array.
+  struct hzstd_mutex_core_t *lock;
 } hzstd_dynamic_array_t;
 
 // This type is to be used for encoding the actual type in the code, so we know

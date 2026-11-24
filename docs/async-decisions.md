@@ -841,6 +841,123 @@ suspend (user: "2a", "full tracing"); no locks in computeds (user). Decided whil
   with its message, kill poisoning observed from an `atexit` stand-in as in cases_tasks.hz);
   examples/async (`./run`, `./run <demo>`): mutex, condition, flag, join, limits, poison.
 
+## Stage 5: threads and the crossing rule (2026-11-24, lenovo-yoga; the user's go: "go stage 5")
+
+Claims read before the stage: C141 to C202, C263 to C280, C449, C461 to C467, C478 to C499, C511,
+C518, C572, C579 to C584, C591 to C604. Already built by earlier stages: C280 and C261 (a stackref
+carries its owning thread, stage 2), one scheduler with its own libuv loop per thread (stage 3),
+task-local storage (TL-1 to TL-7), `private` members (S0-17), the `tasklocal`/`global` keywords
+(S0-20). Work runs on branch `async-stage5` in two lanes (runtime R, compiler C) and is merged into
+`async-runtime` only when the whole stage is green.
+
+### The crossing rule (C147, C264, C274 to C277, C462 to C467, C591 to C603)
+
+- **S5-1. One function decides whether a type crosses threads**, with the reason when it does not
+  (the chain of members down to the culprit, named in every error). A type crosses when:
+  - a primitive value: the integer and real families, `bool`, `str` (immutable), enums, `none`,
+    literals. `cptr` and the C string pointer types never (C273, C274); `Regex` never until it is
+    shown to be immutable and thread safe (conservative);
+  - an atomic primitive (`atomic int`, S5-6): crosses;
+  - a value struct: every member crosses;
+  - a reference to a struct (`ref`, `mut ref`, or a ref struct's default): only to an `atomic` struct
+    (its members are atomic, const or unsafe by S5-7; its generic arguments must cross, S5-8) or to
+    an `unsafe crossthread` struct; or when the reference is to `const` data, which is deeply const
+    (C603) and crosses when its members cross as const;
+  - `stackref` anything never (C264, C277);
+  - a dynamic array `[]T`: only `atomic []T` (S5-9) or `const []T`; a fixed array when its element
+    crosses;
+  - a union: every variant crosses;
+  - a closure value: only when its type is a `crossthread` closure type (C592, C594, S5-4); a plain
+    function value (no environment) crosses (it reads the new thread's own globals, C604);
+  - reactive, shallow-reactive and computed values never (they belong to one thread's reactive
+    state);
+  - everything else is decided by the rules above through its members: `TypeErasedBox` fails on its
+    `cptr`, a plain `Arena`, the context, loggers and allocators fail on their members.
+  Recursive types are checked coinductively (a type being checked is assumed to cross; the answer is
+  the conjunction). Generic code is checked where it is instantiated.
+- **S5-2. Where it is applied (C464, every path):** converting a value to a `crossthread` closure type
+  (its environment, every parameter type and the return type must cross: a crossthread closure is
+  called on another thread with arguments from the caller and hands its result back); a type
+  declared `crossthread` (must pass, checked at the declaration); the element type of `atomic []T`
+  (C193); the members of an atomic struct (S5-7); `global let` and `global const` (S5-12).
+  `thread.spawn` takes `crossthread () => T`, so its lambda, every capture and the result type are
+  checked at the call (C148, C276, C467); a future crosses only when its value does (C600, by
+  S5-8 on `Future<T>`). Tasks of one thread need no check (C217).
+- **S5-3. Queries (C278):** `T.crossesThreads`, `T.isAtomic`, `T.capturableByTask` (no stackref
+  anywhere in it: what an escaping closure may hold). Resolved next to `T.isOpaque`.
+- **S5-4. `crossthread` (keyword: contract section 2, user 2026-11-17; Axiom C595 still open).** On a
+  struct: it must pass S5-1 (a promise checked by the compiler). On a closure type:
+  `crossthread (x: int) => str`, also in aliases; only closures whose environment, parameters and
+  result cross convert to it (C594). `unsafe crossthread` on a struct: the author promises the
+  struct is thread safe (a wrapper of a self-synchronizing C handle: wgpu objects, hzstd's own
+  mutex, flag and future cores); nothing inside is checked (C171). Not on closure types.
+
+- **S5-5. The atomic box and the atomic arena (C487, C488, C493 to C495, C581):** `AtomicTypeErasedBox`
+  holds only atomic values (its constructor requires `T.isAtomic`) and crosses; it is put into each
+  thread's own user box to share it. `AtomicArena` takes a lock for every allocation and crosses; a
+  plain `Arena` fails S5-1 on its members (C493). Growing allocations never live in an arena (C581;
+  checked, not changed).
+
+### Atomic types (C165, C170, C172 to C174, C189 to C193, C599)
+
+- **S5-6. Atomic primitives:** `atomic` before an integer, real or `bool` type (C599), allowed as a
+  struct field and as a global's type only (a copied atomic value shares nothing, so as a local,
+  parameter or result it would only mislead). A read loads, an assignment stores, `+= -= *= &= |=`
+  and `++ --` are one atomic read-modify-write; `exchange(v)` and `compareExchange(expected,
+  desired): bool` are built in. C11 `_Atomic`, sequentially consistent. `x = x + 1` is two atomic
+  operations: a logical race, allowed (C143).
+- **S5-7. Atomic structs:** `atomic` is a struct modifier and needs a `ref struct` (copying a value
+  would read unsafe members without their mutex). Every field is atomic (an atomic primitive, an
+  atomic array, a reference to an atomic or `unsafe crossthread` struct), `const`, or `unsafe`.
+  An `unsafe` field must be `private` (C173) and its type is not checked: its author promises it is
+  accessed only under a mutex the struct's methods take (C172). `unsafe` is a field modifier only.
+- **S5-8. An atomic struct crosses when its non-unsafe fields and its generic arguments cross** (the
+  generic arguments are its elements, C193). So `Future<T>` (atomic, its result an unsafe field)
+  crosses exactly when `T` does (C600), and a future of anything still exists for one thread's tasks.
+- **S5-9. Atomic arrays (C189):** `atomic []T`, where `T` must cross (C193). Every operation (index
+  read and write, push, insert, remove, pop, clear, length, iteration steps) takes the array's lock,
+  a stage 4 mutex core (C151: waiting suspends the task; each operation is a suspension point).
+  `arr.lock(() => ...)` holds it for a callback, inside which the same operations run (C180, C182,
+  reentrant C184). Only an array literal converts to `atomic []T` (it is the only array nothing else
+  references, as C146 says of struct literals); `atomic []T` never converts to `[]T`. The lock is a
+  field of `hzstd_dynamic_array_t` (NULL for plain arrays), set when the literal is made atomic.
+
+### Threads (C148, C479, C518, C572, C604; contract sections 2 and 5)
+
+- **S5-10. `thread.spawn<T>(body: crossthread () => T, options: thread.SpawnOptions = {},
+  location)`: `Future<T>`.** Options `stallWarning: bool = true` and `stackSize: int | none` (the
+  stack size of every task of the new thread; the stall warning names its option, C290 to C292).
+  The new OS thread (registered with the GC) gets its own scheduler and loop, a blank context with
+  the stdlib defaults (C479), every per-thread global at its initial value (C518, S5-11); `body` is
+  its first task; the future completes when `body` returns, even while other tasks of that thread
+  still run (C572). The thread ends when nothing on it is pending (C236, C434); the process ends on
+  exit or when every thread has ended (C237): the main thread waits for the others before returning
+  the exit status. stdlib/core/src/thread.hz holds the `thread` namespace (its old commented-out
+  draft goes: superseded).
+- **S5-11. Cross-thread wake-ups:** every scheduler has an inbox (a locked list of tasks to ready)
+  and a `uv_async_t`; readying a task of another thread pushes it there and calls `uv_async_send`.
+  A scheduler drains its inbox only between tasks, so a task readied by another thread before it
+  finished suspending is never run twice. The future, mutex and flag cores and their wait queues
+  each get a lock (S4-19), held for the few instructions of a state change; `hzstd_mutex_wait_change`
+  queues and releases as one step. A thread with nothing ready blocks in its loop while another
+  thread could still wake it; the deadlock panic stays for a process with one thread.
+- **S5-12. Globals (C196 to C202):** a module-level `let` exists once per thread: per-thread blocks
+  in `hzstd_thread_t`, the same scheme as TL-2 to TL-5 with their own index space, made from the
+  initial image on first use (C518; initializers are constant images). A module-level `const` stays
+  one C global (never written, so once per thread and once per process cannot be told apart).
+  `global let` needs an atomic type (S5-6, S5-7, S5-9) and `global const` is const; both must cross
+  (C199). `tasklocal` is unchanged.
+- **S5-13. `sys.exit`, an uncaught panic and `sys.abort` act on the process:** exit stops every
+  thread at its next switch (each scheduler is woken), and an uncaught panic on any thread prints,
+  cleans up every thread and ends with 255 (contract section 2).
+- **S5-14. Future completion across threads:** `complete` stores the result before it settles the
+  core, and `join` reads it after the core says it is settled; the core's lock orders the two.
+  Before, `complete` settled first: harmless on one thread, a race across threads (found reading
+  task.hz, 2026-11-24).
+- **S5-15. hzstd's own handles cross by the author's promise:** `sys.Mutex`, `sys.Flag` and the future
+  core are `unsafe crossthread` wrappers of their C cores (S5-4); `Future<T>` is an atomic opaque
+  ref struct with that core and an unsafe result field (S5-8).
+
 ## Tooling
 
 - **G-1. The parser-equivalence sweep reads what the commit and the run decide** (user,
