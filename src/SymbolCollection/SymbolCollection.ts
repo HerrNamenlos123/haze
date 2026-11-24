@@ -2367,7 +2367,9 @@ function structCrossthread(item: ASTStructDefinition): EStructCrossthread {
   if (item.unsafeCrossthread) {
     return EStructCrossthread.Unsafe;
   }
-  return item.crossthread ? EStructCrossthread.Checked : EStructCrossthread.None;
+  return item.crossthread
+    ? EStructCrossthread.Checked
+    : EStructCrossthread.None;
 }
 
 /**

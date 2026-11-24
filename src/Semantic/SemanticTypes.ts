@@ -3288,7 +3288,8 @@ export namespace Semantic {
       case Semantic.ENode.DynamicArrayDatatype: {
         // `atomic []T` (S5-9) is a type of its own with the same C layout.
         return {
-          name: (type.atomic ? "XaD" : "D") + mangleTypeUse(sr, type.datatype).name,
+          name:
+            (type.atomic ? "XaD" : "D") + mangleTypeUse(sr, type.datatype).name,
           wasMangled: true,
         };
       }

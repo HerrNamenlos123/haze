@@ -5981,7 +5981,11 @@ export class SemanticElaborator {
     assert(variable.variant === Semantic.ENode.VariableSymbol);
     assert(variable.type !== null);
     const isConst = collected.mutability === EVariableMutability.Const;
-    if (!isConst && variable.atomic !== true && !this.isAtomicType(variable.type)) {
+    if (
+      !isConst &&
+      variable.atomic !== true &&
+      !this.isAtomicType(variable.type)
+    ) {
       throw new CompilerError(
         `'${variable.name}' is a 'global let', which every thread can change, so its type must be atomic ('atomic int', 'atomic []T', a reference to an atomic struct), but it is '${Semantic.serializeTypeUse(this.sr, variable.type)}'; or declare it 'global const'`,
         collected.sourceloc,
@@ -6078,7 +6082,11 @@ export class SemanticElaborator {
         continue;
       }
       const isConst = member.mutability === EVariableMutability.Const;
-      if (!isConst && member.atomic !== true && !this.isAtomicFieldType(member.type)) {
+      if (
+        !isConst &&
+        member.atomic !== true &&
+        !this.isAtomicFieldType(member.type)
+      ) {
         throw new CompilerError(
           `'${member.name}' is a field of the atomic struct '${node.name}', so it must be atomic ('atomic int', 'atomic []T', a reference to an atomic or 'unsafe crossthread' struct), 'const', or 'private unsafe', but it is '${Semantic.serializeTypeUse(this.sr, member.type)}'`,
           member.sourceloc,

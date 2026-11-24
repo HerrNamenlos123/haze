@@ -3390,8 +3390,9 @@ class CodeGenerator {
         const value = this.emitExpr(op.value);
         tempWriter.write(value.temp);
         const typeDef = this.lr.typeDefNodes.get(
-          this.lr.typeUseNodes.get(Lowered.resolveAlias(this.lr, targetExpr.type))
-            .type
+          this.lr.typeUseNodes.get(
+            Lowered.resolveAlias(this.lr, targetExpr.type)
+          ).type
         );
         assert(typeDef.variant === Lowered.ENode.PrimitiveDatatype);
         const next = Conversion.isInteger(typeDef.primitive)

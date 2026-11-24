@@ -290,44 +290,46 @@ bool hzstd_atomic_array_next(hzstd_context_t *ctx, hzstd_dynamic_array_t *array,
 // ends it (Lower.ts, lowerAtomicArrayElementWrite).
 void *hzstd_atomic_array_enter_element(hzstd_context_t *ctx, hzstd_dynamic_array_t *array, hzstd_int_t index);
 void hzstd_atomic_array_push(hzstd_context_t *ctx, hzstd_dynamic_array_t *array, const void *element);
-void hzstd_atomic_array_insert(
-    hzstd_context_t *ctx, hzstd_dynamic_array_t *array, hzstd_int_t index, const void *element);
+void hzstd_atomic_array_insert(hzstd_context_t *ctx,
+                               hzstd_dynamic_array_t *array,
+                               hzstd_int_t index,
+                               const void *element);
 void hzstd_atomic_array_remove(hzstd_context_t *ctx, hzstd_dynamic_array_t *array, hzstd_int_t index, void *out);
 void hzstd_atomic_array_pop(hzstd_context_t *ctx, hzstd_dynamic_array_t *array, void *out);
 void hzstd_atomic_array_clear(hzstd_context_t *ctx, hzstd_dynamic_array_t *array);
 
-#define HZSTD_ATOMIC_ARRAY_GET(ctx, array, elementType, index)                                                        \
+#define HZSTD_ATOMIC_ARRAY_GET(ctx, array, elementType, index)                                                         \
   ({                                                                                                                   \
     elementType __hz_atomic_element;                                                                                   \
-    hzstd_atomic_array_get(ctx, array, index, &__hz_atomic_element);                                                  \
+    hzstd_atomic_array_get(ctx, array, index, &__hz_atomic_element);                                                   \
     __hz_atomic_element;                                                                                               \
   })
 
 #define HZSTD_ATOMIC_ARRAY_NEXT(ctx, array, index, out) hzstd_atomic_array_next(ctx, array, index, &(out))
 
-#define HZSTD_ATOMIC_ARRAY_PUSH(ctx, array, elementType, element)                                                     \
+#define HZSTD_ATOMIC_ARRAY_PUSH(ctx, array, elementType, element)                                                      \
   (void)({                                                                                                             \
     elementType __hz_atomic_element = element;                                                                         \
-    hzstd_atomic_array_push(ctx, array, &__hz_atomic_element);                                                        \
+    hzstd_atomic_array_push(ctx, array, &__hz_atomic_element);                                                         \
   })
 
-#define HZSTD_ATOMIC_ARRAY_INSERT(ctx, array, elementType, index, element)                                            \
+#define HZSTD_ATOMIC_ARRAY_INSERT(ctx, array, elementType, index, element)                                             \
   (void)({                                                                                                             \
     elementType __hz_atomic_element = element;                                                                         \
-    hzstd_atomic_array_insert(ctx, array, index, &__hz_atomic_element);                                               \
+    hzstd_atomic_array_insert(ctx, array, index, &__hz_atomic_element);                                                \
   })
 
-#define HZSTD_ATOMIC_ARRAY_REMOVE(ctx, array, elementType, index)                                                     \
+#define HZSTD_ATOMIC_ARRAY_REMOVE(ctx, array, elementType, index)                                                      \
   ({                                                                                                                   \
     elementType __hz_atomic_element;                                                                                   \
-    hzstd_atomic_array_remove(ctx, array, index, &__hz_atomic_element);                                               \
+    hzstd_atomic_array_remove(ctx, array, index, &__hz_atomic_element);                                                \
     __hz_atomic_element;                                                                                               \
   })
 
-#define HZSTD_ATOMIC_ARRAY_POP(ctx, array, elementType)                                                               \
+#define HZSTD_ATOMIC_ARRAY_POP(ctx, array, elementType)                                                                \
   ({                                                                                                                   \
     elementType __hz_atomic_element;                                                                                   \
-    hzstd_atomic_array_pop(ctx, array, &__hz_atomic_element);                                                         \
+    hzstd_atomic_array_pop(ctx, array, &__hz_atomic_element);                                                          \
     __hz_atomic_element;                                                                                               \
   })
 

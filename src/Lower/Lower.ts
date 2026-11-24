@@ -1425,7 +1425,11 @@ function lowerAtomicArrayElementWrite(
 
   const sourceloc = lr.sr.exprNodes.get(writeId).sourceloc;
   const ctx = () =>
-    currentContextPointer(lr, "Writing an element of an atomic array", sourceloc);
+    currentContextPointer(
+      lr,
+      "Writing an element of an atomic array",
+      sourceloc
+    );
   const block: Lowered.StatementId[] = [];
   const evaluate = (id: Semantic.ExprId): Lowered.ExprId => {
     const lowered = lowerExpr(lr, id, block, instanceInfo)[1];
@@ -1474,7 +1478,13 @@ function lowerAtomicArrayElementWrite(
     lr.atomicElementSubstitutions.delete(id);
   }
   const writeType = lr.exprNodes.get(write).type;
-  const result = storeInTempVarAndGet(lr, writeType, write, sourceloc, block)[1];
+  const result = storeInTempVarAndGet(
+    lr,
+    writeType,
+    write,
+    sourceloc,
+    block
+  )[1];
   const voidType = lowerTypeUse(lr, lr.sr.b.voidType());
   block.push(
     Lowered.addStatement(lr, {
@@ -1746,12 +1756,12 @@ export function lowerExpr(
       expr.variant === Semantic.ENode.AtomicOpExpr
         ? expr.target
         : expr.expr;
-    const values =
-      expr.variant === Semantic.ENode.ExprAssignmentExpr
-        ? [expr.value]
-        : expr.variant === Semantic.ENode.AtomicOpExpr
-          ? expr.args
-          : [];
+    let values: Semantic.ExprId[] = [];
+    if (expr.variant === Semantic.ENode.ExprAssignmentExpr) {
+      values = [expr.value];
+    } else if (expr.variant === Semantic.ENode.AtomicOpExpr) {
+      values = expr.args;
+    }
     const atomic = lowerAtomicArrayElementWrite(
       lr,
       exprId,
@@ -2781,8 +2791,13 @@ export function lowerExpr(
       )[1];
       // A compound assignment of an atomic place is one read-modify-write
       // (S5-6), not a load and a store.
-      const atomicOperation = COMPOUND_ASSIGNMENT_OPERATIONS.get(expr.operation);
-      if (atomicOperation !== undefined && Semantic.isAtomicPlace(lr.sr, expr.target)) {
+      const atomicOperation = COMPOUND_ASSIGNMENT_OPERATIONS.get(
+        expr.operation
+      );
+      if (
+        atomicOperation !== undefined &&
+        Semantic.isAtomicPlace(lr.sr, expr.target)
+      ) {
         return Lowered.addExpr(lr, {
           variant: Lowered.ENode.AtomicOpExpr,
           target: loweredTarget,
@@ -4995,47 +5010,49 @@ function lowerStatement(
             )[1]
           : null;
 
-      const loopConditionExpr = atomicElement !== null
-        ? makeIntrinsicCall(
-            lr,
-            "HZSTD_ATOMIC_ARRAY_NEXT",
-            [
-              currentContextPointer(
-                lr,
-                "A loop over an atomic array",
-                semanticForeachStmt.sourceloc
-              ),
-              arrayVarId,
-              indexSymbolExpr,
-              atomicElement,
-            ],
-            boolTypeUse
-          )[1]
-        : Lowered.addExpr(lr, {
-        variant: Lowered.ENode.BinaryExpr,
-        left: indexSymbolExpr,
-        operation: EBinaryOperation.LessThan,
-        right:
-          arrayType.variant === Semantic.ENode.DynamicArrayDatatype
-            ? Lowered.addExpr(lr, {
-                variant: Lowered.ENode.MemberAccessExpr,
-                expr: arrayVarId,
-                memberName: "length",
-                requiresDeref: false,
-                type: intTypeUse,
-              })[1]
-            : Lowered.addExpr(lr, {
-                variant: Lowered.ENode.LiteralExpr,
-                literal: {
-                  type: EPrimitive.int,
-                  value: (arrayType as Semantic.FixedArrayDatatypeDef).length,
-                  unit: null,
-                },
-                type: intTypeUse,
-              })[1],
-        plainResultType: lr.typeUseNodes.get(boolTypeUse).type,
-        type: boolTypeUse,
-      })[1];
+      const loopConditionExpr =
+        atomicElement !== null
+          ? makeIntrinsicCall(
+              lr,
+              "HZSTD_ATOMIC_ARRAY_NEXT",
+              [
+                currentContextPointer(
+                  lr,
+                  "A loop over an atomic array",
+                  semanticForeachStmt.sourceloc
+                ),
+                arrayVarId,
+                indexSymbolExpr,
+                atomicElement,
+              ],
+              boolTypeUse
+            )[1]
+          : Lowered.addExpr(lr, {
+              variant: Lowered.ENode.BinaryExpr,
+              left: indexSymbolExpr,
+              operation: EBinaryOperation.LessThan,
+              right:
+                arrayType.variant === Semantic.ENode.DynamicArrayDatatype
+                  ? Lowered.addExpr(lr, {
+                      variant: Lowered.ENode.MemberAccessExpr,
+                      expr: arrayVarId,
+                      memberName: "length",
+                      requiresDeref: false,
+                      type: intTypeUse,
+                    })[1]
+                  : Lowered.addExpr(lr, {
+                      variant: Lowered.ENode.LiteralExpr,
+                      literal: {
+                        type: EPrimitive.int,
+                        value: (arrayType as Semantic.FixedArrayDatatypeDef)
+                          .length,
+                        unit: null,
+                      },
+                      type: intTypeUse,
+                    })[1],
+              plainResultType: lr.typeUseNodes.get(boolTypeUse).type,
+              type: boolTypeUse,
+            })[1];
 
       const loopIncrementExpr = Lowered.addExpr(lr, {
         variant: Lowered.ENode.ExprAssignmentExpr,
@@ -5068,12 +5085,14 @@ function lowerStatement(
 
       const loopVarType = lowerTypeUse(lr, arrayType.datatype);
       let loopVariableName = loopVariable.name;
-      let loopVariableValue = atomicElement ?? Lowered.addExpr(lr, {
-        variant: Lowered.ENode.ArraySubscriptExpr,
-        expr: arrayVarId,
-        index: indexSymbolExpr,
-        type: loopVarType,
-      })[1];
+      let loopVariableValue =
+        atomicElement ??
+        Lowered.addExpr(lr, {
+          variant: Lowered.ENode.ArraySubscriptExpr,
+          expr: arrayVarId,
+          index: indexSymbolExpr,
+          type: loopVarType,
+        })[1];
       // A deep reactive array's elements are Reactive<T> cells (see
       // Elaborate.ts's matching peel of the loop variable's declared type)
       // -- read through however many layers deep that goes so the body sees

@@ -311,7 +311,7 @@ hzstd_mutex_core_t *hzstd_atomic_array_core(hzstd_dynamic_array_t *array)
 
 void hzstd_atomic_array_enter(hzstd_context_t *ctx, hzstd_dynamic_array_t *array)
 {
-  hzstd_mutex_lock(ctx, hzstd_atomic_array_core(array), (hzstd_source_location_t){0});
+  hzstd_mutex_lock(ctx, hzstd_atomic_array_core(array), (hzstd_source_location_t) { 0 });
 }
 
 void hzstd_atomic_array_leave(hzstd_context_t *ctx, hzstd_dynamic_array_t *array)
@@ -329,16 +329,16 @@ hzstd_int_t hzstd_atomic_array_length(hzstd_context_t *ctx, hzstd_dynamic_array_
 
 // Lets go of the lock, then panics: a bounds error changed nothing, so it
 // must not poison the array.
-_Noreturn static void hzstd_atomic_array_out_of_range(
-    hzstd_context_t *ctx, hzstd_dynamic_array_t *array, const char *what, hzstd_int_t index)
+_Noreturn static void
+hzstd_atomic_array_out_of_range(hzstd_context_t *ctx, hzstd_dynamic_array_t *array, const char *what, hzstd_int_t index)
 {
   hzstd_int_t length = hzstd_dynamic_array_size(array);
   hzstd_atomic_array_leave(ctx, array);
   hzstd_panic_fmt_n(2, "%s out of range [%" PRId64 "] with length %" PRId64, what, index, length);
 }
 
-static void hzstd_atomic_array_check_result(
-    hzstd_context_t *ctx, hzstd_dynamic_array_t *array, hzstd_dynamic_array_result_t result)
+static void
+hzstd_atomic_array_check_result(hzstd_context_t *ctx, hzstd_dynamic_array_t *array, hzstd_dynamic_array_result_t result)
 {
   if (result == hzstd_dynamic_array_result_ok) {
     return;
@@ -390,8 +390,10 @@ void hzstd_atomic_array_push(hzstd_context_t *ctx, hzstd_dynamic_array_t *array,
   hzstd_atomic_array_leave(ctx, array);
 }
 
-void hzstd_atomic_array_insert(
-    hzstd_context_t *ctx, hzstd_dynamic_array_t *array, hzstd_int_t index, const void *element)
+void hzstd_atomic_array_insert(hzstd_context_t *ctx,
+                               hzstd_dynamic_array_t *array,
+                               hzstd_int_t index,
+                               const void *element)
 {
   hzstd_atomic_array_enter(ctx, array);
   if (index < 0 || index > hzstd_dynamic_array_size(array)) {
