@@ -12223,12 +12223,13 @@ export class SemanticElaborator {
         Semantic.serializeTypeUse(this.sr, valueExpr.type),
         assignment.sourceloc
       );
-      // An integer mutating a float (allowed above) is computed in the
-      // float's realm: lowering emits `target = target OP value`, whose
-      // operands must share one type.
+      // The value is computed in the target's realm (an integer mutating a
+      // float, a literal or a narrower integer mutating a wider one): lowering
+      // emits `target = target OP value`, or one atomic read-modify-write
+      // (S5-6), whose operands must share one type. A value that does not
+      // convert implicitly (a wider integer variable) is refused here.
       const compoundValueId =
-        Conversion.isFloat(this.sr, lhsTypeUseResolved.type) &&
-        Conversion.isIntegerById(this.sr, rhsTypeUseResolved.type)
+        lhsTypeUseResolved.type !== rhsTypeUseResolved.type
           ? Conversion.MakeConversionOrThrow(
               this.sr,
               valueExprId,

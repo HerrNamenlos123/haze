@@ -88,6 +88,41 @@ fn main(): int {
 }
 """, 255);
 
+        // The value of a compound assignment is computed in the target's
+        // realm, atomic or not: a literal or a narrower integer converts, a
+        // literal out of range is refused (before, the plain form crashed the
+        // compiler and the atomic one truncated in C).
+        s.run("atomic: a compound assignment converts its value to the target", """
+struct Plain { small: i8 = 0; wide: i64 = 0; }
+struct Shared { small: atomic i8 = 0; wide: atomic i64 = 0; }
+fn main(): int {
+    let p = Plain {};
+    let a = Shared {};
+    let narrow: i8 = 5;
+    p.small += 100;
+    a.small += 100;
+    p.wide += narrow;
+    a.wide += narrow;
+    p.small -= narrow;
+    a.small -= narrow;
+    fmt.println(f"{p.small} {a.small} {p.wide} {a.wide}");
+    return 0;
+}
+""", "95 95 5 5");
+
+        s.compileFails("atomic: a compound assignment refuses a literal out of the target's range", """
+struct Shared { small: atomic i8 = 0; }
+fn main(): int {
+    let a = Shared {};
+    a.small += 1000; // <- H4001
+    return 0;
+}
+""", [
+            testsuite.exactCount(errorcodes.Code.NoSuitableConversionFound, 1),
+            testsuite.totalErrors(1),
+            testsuite.messageContains("does not fit in the target range [-128, 127]"),
+        ]);
+
         // Several tasks counting through one atomic struct, suspending between
         // their increments.
         s.run("atomic: tasks interleaving on an atomic counter", """
