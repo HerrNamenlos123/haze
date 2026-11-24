@@ -54,13 +54,19 @@ fn main(): int {
     let dir = workPath("fs_create_text");
     fs.createDirectory(dir);
 
+    // Each call in a statement of its own: the parts of one f-string are not
+    // evaluated in a fixed order yet (cases_evaluation_order).
     let path = f"{dir}/new.txt";
-    fmt.println(f"new file: {describe(fs.createText(path, \"first\"))}, holds {contents(path)}");
-    fmt.println(f"again: {describe(fs.createText(path, \"second\"))}, holds {contents(path)}");
+    let first = describe(fs.createText(path, "first"));
+    fmt.println(f"new file: {first}, holds {contents(path)}");
+    let again = describe(fs.createText(path, "second"));
+    fmt.println(f"again: {again}, holds {contents(path)}");
 
     let empty = f"{dir}/empty.txt";
-    fmt.println(f"empty text: {describe(fs.createText(empty, \"\"))}, holds '{contents(empty)}'");
-    fmt.println(f"over an empty file: {describe(fs.createText(empty, \"x\"))}, holds '{contents(empty)}'");
+    let emptyText = describe(fs.createText(empty, ""));
+    fmt.println(f"empty text: {emptyText}, holds '{contents(empty)}'");
+    let overEmpty = describe(fs.createText(empty, "x"));
+    fmt.println(f"over an empty file: {overEmpty}, holds '{contents(empty)}'");
 
     let folder = f"{dir}/folder";
     fs.createDirectory(folder);
@@ -68,7 +74,8 @@ fn main(): int {
 
     // Like writeText, it creates the folders the file goes in.
     let nested = f"{dir}/a/b/c.txt";
-    fmt.println(f"in new folders: {describe(fs.createText(nested, \"deep\"))}, holds {contents(nested)}");
+    let deep = describe(fs.createText(nested, "deep"));
+    fmt.println(f"in new folders: {deep}, holds {contents(nested)}");
 
     // A NUL inside a path would cut it short and create a different file.
     let cut = f"{dir}/cut";
@@ -125,41 +132,31 @@ fn present(path: str): bool {
     return false;
 }
 
-__c__("#include <unistd.h>");
-
-fn makeLink(target: str, link: str) {
-    do unsafe {
-        __c__("char *t = malloc((size_t)target.length + 1); memcpy(t, target.data, (size_t)target.length); t[target.length] = 0; char *l = malloc((size_t)link.length + 1); memcpy(l, link.data, (size_t)link.length); l[link.length] = 0; symlink(t, l); free(t); free(l);");
-    };
-}
-
 fn main(): int {
     let dir = workPath("fs_remove_file");
     let file = f"{dir}/gone.txt";
     fs.writeText(file, "x");
-    fmt.println(f"a file: {describe(fs.removeFile(file))}, still there {present(file)}");
+    // Each call in a statement of its own (cases_evaluation_order).
+    let removed = describe(fs.removeFile(file));
+    fmt.println(f"a file: {removed}, still there {present(file)}");
     fmt.println(f"again: {describe(fs.removeFile(file))}");
 
     let folder = f"{dir}/folder";
     let inside = f"{folder}/inside.txt";
     fs.writeText(inside, "kept");
-    fmt.println(f"a folder: {describe(fs.removeFile(folder))}, still there {present(inside)}");
+    let ofFolder = describe(fs.removeFile(folder));
+    fmt.println(f"a folder: {ofFolder}, still there {present(inside)}");
 
     let empty = f"{dir}/empty";
     fs.createDirectory(empty);
-    fmt.println(f"an empty folder: {describe(fs.removeFile(empty))}, still there {present(empty)}");
+    let ofEmpty = describe(fs.removeFile(empty));
+    fmt.println(f"an empty folder: {ofEmpty}, still there {present(empty)}");
 
     // A NUL inside a path would cut it short and remove a different file.
     let cut = f"{dir}/cut";
     fs.writeText(cut, "kept");
-    fmt.println(f"a path with a NUL: {describe(fs.removeFile(f\"{cut}\\x00.txt\"))}, the cut-short file still there {present(cut)}");
-
-    // A symbolic link is removed itself, never what it points to.
-    let target = f"{dir}/target.txt";
-    fs.writeText(target, "kept");
-    let link = f"{dir}/link.txt";
-    makeLink(target, link);
-    fmt.println(f"a link: {describe(fs.removeFile(link))}, the link still there {present(link)}, its target still there {present(target)}");
+    let cutResult = describe(fs.removeFile(f"{cut}\\x00.txt"));
+    fmt.println(f"a path with a NUL: {cutResult}, the cut-short file still there {present(cut)}");
     return 0;
 }
 """,
@@ -169,8 +166,104 @@ again: NotFound
 a folder: NotAFile, still there true
 an empty folder: NotAFile, still there true
 a path with a NUL: InvalidPath, the cut-short file still there true
-a link: ok, the link still there false, its target still there true
 """);
+
+        // A move is a rename: the destination is the old file or the whole new
+        // one. On Windows a file another program holds open without delete
+        // sharing (as an editor does) cannot be renamed over; the move used to
+        // copy over it in place instead, leaving a half-written file wherever
+        // the copy stopped. It is refused, and both files stay as they were.
+        // (On Linux the rename over an open file simply succeeds.)
+        s.run(
+            "fs.move: a file another program holds open is never written over in place",
+            """
+__c__("#include <windows.h>");
+__c__("static HANDLE hz_t_held;");
+__c__("void hz_t_hold(hzstd_str_t path) { wchar_t wide[1024]; int n = MultiByteToWideChar(CP_UTF8, 0, path.data, (int)path.length, wide, 1023); wide[n > 0 ? n : 0] = 0; hz_t_held = CreateFileW(wide, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL); }");
+__c__("void hz_t_release(void) { CloseHandle(hz_t_held); }");
+extern C fn hz_t_hold(path: str): void :: final;
+extern C fn hz_t_release(): void :: final;
+
+fn workPath(name: str): str {
+    let dir = env.get("HAZE_TEST_WORKDIR");
+    if !dir {
+        sys.panic("HAZE_TEST_WORKDIR is not set. Run the suite via scripts/run-tests.sh.");
+    }
+    return f"{dir}/{name}";
+}
+
+fn contents(path: str): str {
+    if let text = fs.readText(path) {
+        return text;
+    }
+    return "<unreadable>";
+}
+
+fn present(path: str): bool {
+    if let exists = fs.exists(path) {
+        return exists;
+    }
+    return false;
+}
+
+fn main(): int {
+    let dir = workPath("fs_move_held");
+    fs.createDirectory(dir);
+    let target = f"{dir}/target.txt";
+    let source = f"{dir}/source.txt";
+    fs.writeText(target, "old");
+    fs.writeText(source, "new");
+    hz_t_hold(target);
+    let moved = fs.move(source, target, { overwrite: true });
+    hz_t_release();
+    let result = moved ? "moved" : "refused";
+    fmt.println(f"onto a file held open: {result}, it holds {contents(target)}, the source still there {present(source)}");
+    return 0;
+}
+""",
+            "onto a file held open: refused, it holds old, the source still there true");
+        s.onlyOn(sys.Platform.Win32, "Windows file sharing: Linux renames over an open file");
+
+        // Symbolic links exist on Linux only; Windows has none.
+        s.run(
+            "fs.removeFile: a symbolic link is removed itself, never what it points to",
+            """
+fn workPath(name: str): str {
+    let dir = env.get("HAZE_TEST_WORKDIR");
+    if !dir {
+        sys.panic("HAZE_TEST_WORKDIR is not set. Run the suite via scripts/run-tests.sh.");
+    }
+    return f"{dir}/{name}";
+}
+
+fn present(path: str): bool {
+    if let exists = fs.exists(path) {
+        return exists;
+    }
+    return false;
+}
+
+__c__("#include <unistd.h>");
+
+fn makeLink(target: str, link: str) {
+    do unsafe {
+        __c__("char *t = malloc((size_t)target.length + 1); memcpy(t, target.data, (size_t)target.length); t[target.length] = 0; char *l = malloc((size_t)link.length + 1); memcpy(l, link.data, (size_t)link.length); l[link.length] = 0; symlink(t, l); free(t); free(l);");
+    };
+}
+
+fn main(): int {
+    let dir = workPath("fs_remove_link");
+    let target = f"{dir}/target.txt";
+    fs.writeText(target, "kept");
+    let link = f"{dir}/link.txt";
+    makeLink(target, link);
+    let removed = fs.removeFile(link) ? "ok" : "failed";
+    fmt.println(f"a link: {removed}, the link still there {present(link)}, its target still there {present(target)}");
+    return 0;
+}
+""",
+            "a link: ok, the link still there false, its target still there true");
+        s.onlyOn(sys.Platform.Linux, "symbolic links exist on Linux only");
 
         s.run(
             "fs.readHead: the start of a file, never more",
@@ -181,14 +274,6 @@ fn workPath(name: str): str {
         return f"{dir}/{name}";
     }
     return f"/tmp/{name}";
-}
-
-__c__("#include <sys/stat.h>");
-
-fn makeFifo(path: str) {
-    do unsafe {
-        __c__("char *p = malloc((size_t)path.length + 1); memcpy(p, path.data, (size_t)path.length); p[path.length] = 0; mkfifo(p, 0600); free(p);");
-    };
 }
 
 fn head(path: str, n: int): str {
@@ -231,14 +316,8 @@ fn main(): int {
     fs.writeText(bigPath, big.cloneString());
     fmt.println(f"16 of 2 MB: {head(bigPath, 16)}");
 
-    // Only a regular file is read. A named pipe with no writer would block
-    // the open for ever, a folder has no text: both are NotAFile, at once.
-    let fifo = f"{dir}/pipe";
-    makeFifo(fifo);
-    fmt.println(f"of a named pipe: {head(fifo, 8)}");
+    // Only a regular file is read: a folder has no text.
     fmt.println(f"of a folder: {head(dir, 8)}");
-    let opened = fs.openRead(fifo);
-    fmt.println(f"openRead of a named pipe: {opened is fs.Error ? \"refused\" : \"opened\"}");
     return 0;
 }
 """,
@@ -250,9 +329,50 @@ fn main(): int {
 of an empty file: '' (0)
 of no file: NotFound
 16 of 2 MB: 'abcdefghijabcdef' (16)
-of a named pipe: NotAFile
 of a folder: NotAFile
+""");
+
+        // A named pipe with no writer would block the open for ever: it is
+        // NotAFile, at once. Named pipes in the filesystem exist on Linux only.
+        s.run(
+            "fs.readHead: a named pipe is NotAFile, at once",
+            """
+fn workPath(name: str): str {
+    let dir = env.get("HAZE_TEST_WORKDIR");
+    if !dir {
+        sys.panic("HAZE_TEST_WORKDIR is not set. Run the suite via scripts/run-tests.sh.");
+    }
+    return f"{dir}/{name}";
+}
+
+__c__("#include <sys/stat.h>");
+
+fn makeFifo(path: str) {
+    do unsafe {
+        __c__("char *p = malloc((size_t)path.length + 1); memcpy(p, path.data, (size_t)path.length); p[path.length] = 0; mkfifo(p, 0600); free(p);");
+    };
+}
+
+fn main(): int {
+    let dir = workPath("fs_read_head_fifo");
+    fs.createDirectory(dir);
+    let fifo = f"{dir}/pipe";
+    makeFifo(fifo);
+    let read = fs.readHead(fifo, 8);
+    let notAFile = false;
+    if !read {
+        notAFile = read == fs.Error.NotAFile;
+    }
+    fmt.println(f"readHead of a named pipe: NotAFile {notAFile}");
+    let opened = fs.openRead(fifo);
+    fmt.println(f"openRead of a named pipe: {opened is fs.Error ? \"refused\" : \"opened\"}");
+    return 0;
+}
+""",
+            """
+readHead of a named pipe: NotAFile true
 openRead of a named pipe: refused
 """);
+        s.onlyOn(sys.Platform.Linux, "named pipes in the filesystem exist on Linux only");
     }
 }

@@ -148,9 +148,9 @@ fn main(): int {
     hz_t_alloc(gigabyteLike, true, 16);
     fmt.println(f"full first chunk, then a small one: {hz_t_chunks(gigabyteLike, true)}");
 
-    let small = Alloc.arena({ unscanned: { firstBytes: 64 } });
-    hz_t_alloc(small, true, 100);
-    fmt.println(f"first allocation bigger than firstBytes: {hz_t_chunks(small, true)}");
+    let firstTooSmall = Alloc.arena({ unscanned: { firstBytes: 64 } });
+    hz_t_alloc(firstTooSmall, true, 100);
+    fmt.println(f"first allocation bigger than firstBytes: {hz_t_chunks(firstTooSmall, true)}");
 
     let fixedNoMax = Alloc.arena({ unscanned: { firstBytes: 16, nextBytes: 4096, growth: 1.0, maxBytes: 1024 } });
     allocMany(fixedNoMax, true, 16, 3);

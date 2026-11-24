@@ -29,6 +29,8 @@
 #include <psapi.h>
 #include <shellapi.h> // CommandLineToArgvW
 
+#include "../include/hzstd_win_utf16.h"
+
 // ── Semaphore ────────────────────────────────────────────────────────────────
 //
 // hzstd_semaphore_t is opaque in hzstd_types.h -- its concrete layout (a
@@ -46,7 +48,7 @@ hzstd_semaphore_t* hzstd_create_semaphore(void)
   if (!semaphore) {
     return NULL;
   }
-  semaphore->handle = CreateEvent(NULL, FALSE, FALSE, NULL);
+  semaphore->handle = CreateEventW(NULL, FALSE, FALSE, NULL);
   if (semaphore->handle == NULL) {
     free(semaphore);
     return NULL;
@@ -246,17 +248,32 @@ static void store_panic_reason(hzstd_str_t msg)
 // hzstd_stacktrace_t using StackWalk64 on the captured CONTEXT, then either
 // signals panic_response (recovery) or prints & exits.
 
-#define SYM_BUF_SIZE (sizeof(SYMBOL_INFO) + MAX_SYM_NAME * sizeof(TCHAR))
+#define SYM_BUF_SIZE (sizeof(SYMBOL_INFOW) + MAX_SYM_NAME * sizeof(wchar_t))
 
-static DWORD WINAPI hzstd_panic_handler_thread(LPVOID _)
+// A UTF-16 name from dbghelp as a str in `allocator`; empty when memory runs
+// out.
+static hzstd_str_t hzstd_win_name_in(hzstd_allocator_t allocator, const wchar_t* wide)
 {
-  (void)_;
+  size_t length = 0;
+  char* utf8 = hzstd_win_utf8(wide, &length);
+  if (!utf8) {
+    return HZSTD_STRING(NULL, 0);
+  }
+  hzstd_str_t name = hzstd_str_from_cstr_dup(allocator, utf8);
+  free(utf8);
+  return name;
+}
 
-  BOOL sym_ok = SymInitialize(GetCurrentProcess(), NULL, TRUE);
+static DWORD WINAPI hzstd_panic_handler_thread(LPVOID running)
+{
+  // Registered with the collector by now (CreateThread is GC_CreateThread in
+  // this translation unit): hzstd_setup_panic_handler waits for this signal,
+  // so that registration is over before any user code runs.
+  hzstd_trigger_semaphore((hzstd_semaphore_t*)running);
+
+  BOOL sym_ok = SymInitializeW(GetCurrentProcess(), NULL, TRUE);
   if (!sym_ok) {
-    fprintf(stderr,
-            "Warning: SymInitialize failed — stack trace will show raw "
-            "addresses only.\n");
+    fprintf(stderr, "Warning: SymInitialize failed, stack traces will show raw addresses only.\n");
   }
 
   for (;;) {
@@ -327,20 +344,20 @@ static DWORD WINAPI hzstd_panic_handler_thread(LPVOID _)
         hzstd_str_t name = HZSTD_STRING(NULL, 0);
 
         DWORD64 displacement = 0;
-        char symbolBuffer[SYM_BUF_SIZE];
-        PSYMBOL_INFO pSym = (PSYMBOL_INFO)symbolBuffer;
-        pSym->SizeOfStruct = sizeof(SYMBOL_INFO);
+        _Alignas(SYMBOL_INFOW) char symbolBuffer[SYM_BUF_SIZE];
+        PSYMBOL_INFOW pSym = (PSYMBOL_INFOW)symbolBuffer;
+        pSym->SizeOfStruct = sizeof(SYMBOL_INFOW);
         pSym->MaxNameLen = MAX_SYM_NAME;
-        if (SymFromAddr(hProcess, sf2.AddrPC.Offset, &displacement, pSym)) {
-          name = hzstd_str_from_cstr_dup(allocator, pSym->Name);
+        if (SymFromAddrW(hProcess, sf2.AddrPC.Offset, &displacement, pSym)) {
+          name = hzstd_win_name_in(allocator, pSym->Name);
         }
 
         hzstd_source_location_t sourceloc = { ._filename = HZSTD_STRING(NULL, 0), ._line = 0, ._column = 0 };
-        IMAGEHLP_LINE64 lineInfo;
-        lineInfo.SizeOfStruct = sizeof(IMAGEHLP_LINE64);
+        IMAGEHLP_LINEW64 lineInfo;
+        lineInfo.SizeOfStruct = sizeof(IMAGEHLP_LINEW64);
         DWORD lineDisp = 0;
-        if (SymGetLineFromAddr64(hProcess, sf2.AddrPC.Offset, &lineDisp, &lineInfo)) {
-          sourceloc._filename = hzstd_str_from_cstr_dup(allocator, lineInfo.FileName);
+        if (SymGetLineFromAddrW64(hProcess, sf2.AddrPC.Offset, &lineDisp, &lineInfo)) {
+          sourceloc._filename = hzstd_win_name_in(allocator, lineInfo.FileName);
           sourceloc._line = (hzstd_int_t)lineInfo.LineNumber;
         }
 
@@ -536,24 +553,45 @@ hzstd_stacktrace_t hzstd_build_stacktrace(int skip_n_frames)
 
 // ── hzstd_setup_panic_handler ─────────────────────────────────────────────────
 
+// Called by every thread that can panic (the main thread before main, the
+// profiler's helper threads). The semaphore pair, the worker that services it
+// and the vectored handler are process-wide: exactly one of each, made by the
+// first call. A second pair and worker would orphan the first (a panic in
+// flight against the old pair waits for ever), and every call used to make
+// one. The stack guarantee is per thread and is set on every call.
+static atomic_int g_panic_handler_worker_started = 0;
+
 void hzstd_setup_panic_handler(void)
 {
-  panic_trigger = hzstd_create_semaphore();
-  panic_response = hzstd_create_semaphore();
-  assert(panic_trigger && panic_response);
+  int expected = 0;
+  if (atomic_compare_exchange_strong(&g_panic_handler_worker_started, &expected, 1)) {
+    panic_trigger = hzstd_create_semaphore();
+    panic_response = hzstd_create_semaphore();
+    hzstd_semaphore_t* running = hzstd_create_semaphore();
+    if (!panic_trigger || !panic_response || !running) {
+      hzstd_trap_ccstr("Internal Runtime Error: Failed to create the panic handler's semaphores");
+    }
 
-  HANDLE hWorker = CreateThread(NULL, 0, hzstd_panic_handler_thread, NULL, 0, NULL);
-  (void)hWorker;
+    HANDLE worker = CreateThread(NULL, 0, hzstd_panic_handler_thread, running, 0, NULL);
+    if (worker == NULL) {
+      hzstd_trap_ccstr("Internal Runtime Error: Failed to start the panic handler thread");
+    }
+    CloseHandle(worker);
+    // Until the worker runs, the collector is registering it, which allocates
+    // on the GC heap; waiting here keeps that out of the program's own time.
+    hzstd_wait_for_semaphore(running);
+    hzstd_destroy_semaphore(running);
+
+    PVOID handle = AddVectoredExceptionHandler(1, VectoredHandler);
+    if (handle == NULL) {
+      hzstd_trap_ccstr("Internal Runtime Error: Failed to register Vectored Exception Handler");
+    }
+  }
 
   // Reserve extra stack so the VEH handler has room to run after overflow.
   ULONG bytes = (ULONG)GUARANTEED_VEH_STACK_SIZE;
   if (!SetThreadStackGuarantee(&bytes)) {
     hzstd_trap_ccstr("Internal Runtime Error: Failed to set guaranteed VEH stack size");
-  }
-
-  PVOID handle = AddVectoredExceptionHandler(1, VectoredHandler);
-  if (handle == NULL) {
-    hzstd_trap_ccstr("Internal Runtime Error: Failed to register Vectored Exception Handler");
   }
 }
 
@@ -587,7 +625,7 @@ hzstd_int_t hzstd_time_wall_ms(void)
 
 void os_sleep_ns(uint64_t ns)
 {
-  HANDLE timer = CreateWaitableTimer(NULL, TRUE, NULL);
+  HANDLE timer = CreateWaitableTimerW(NULL, TRUE, NULL);
   LARGE_INTEGER li;
   li.QuadPart = -(int64_t)(ns / 100);
   SetWaitableTimer(timer, &li, 0, NULL, NULL, FALSE);
@@ -597,10 +635,15 @@ void os_sleep_ns(uint64_t ns)
 
 // ── Working directory ─────────────────────────────────────────────────────────
 
+// The current folder as UTF-8 in `buf`.
 bool hzstd_get_cwd(char* buf, size_t buf_size)
 {
-  DWORD r = GetCurrentDirectoryA((DWORD)buf_size, buf);
-  return r > 0 && r < (DWORD)buf_size;
+  DWORD size = GetCurrentDirectoryW(0, NULL);
+  wchar_t* wide = size > 0 ? (wchar_t*)malloc((size_t)size * sizeof(wchar_t)) : NULL;
+  DWORD length = wide ? GetCurrentDirectoryW(size, wide) : 0;
+  int bytes = length > 0 && length < size ? hzstd_win_utf8_into(wide, buf, buf_size) : -1;
+  free(wide);
+  return bytes >= 0;
 }
 
 // ── Process spawn ─────────────────────────────────────────────────────────────
@@ -650,32 +693,69 @@ static DWORD WINAPI hzstd_pipe_reader_thread(LPVOID arg)
   return 0;
 }
 
-static inline char* process_build_error_message_gc(DWORD err)
+// The text for a spawn that failed: the same static text the filesystem calls
+// give for the error (hzstd_filesystem.c, earlier in this translation unit),
+// which is also what Linux reports for the same condition. Never copied.
+static inline char* process_error_message(DWORD err)
 {
-  LPSTR msg = NULL;
-  DWORD size
-      = FormatMessageA(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
-                       NULL,
-                       err,
-                       MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
-                       (LPSTR)&msg,
-                       0,
-                       NULL);
-  char* gc = NULL;
-  if (size > 0 && msg) {
-    gc = hzstd_allocate_unscanned(hzstd_make_heap_allocator(), size + 1, NULL);
-    if (gc) {
-      memcpy(gc, msg, size);
-      gc[size] = '\0';
-    }
-    LocalFree(msg);
-  }
-  return gc;
+  return (char*)hzstd_fs_windows_failure(err).message.data;
 }
 
 static inline void process_set_error_message(hzstd_process_result_t* out, DWORD err)
 {
-  out->stderr_data = process_build_error_message_gc(err);
+  out->stderr_data = process_error_message(err);
+}
+
+// The UTF-16 command line and working directory CreateProcessW takes, both
+// malloc'd for the caller to free (*cwdOut stays NULL: the parent's). 0, or
+// the Win32 error that stops the spawn.
+static DWORD
+process_spawn_inputs(hzstd_str_t exe, hzstd_dynamic_array_t* argv, hzstd_str_t cwd, wchar_t** cmdOut, wchar_t** cwdOut)
+{
+  *cmdOut = NULL;
+  *cwdOut = NULL;
+  // The command line in one malloc'd block (hzstd_win_cmdline.h): it only
+  // lives for the call, so it never goes near the GC.
+  char* line = hzstd_win_command_line(
+      exe, (const hzstd_str_t*)hzstd_dynamic_array_raw_buffer(argv), hzstd_dynamic_array_size(argv));
+  if (!line) {
+    return ERROR_NOT_ENOUGH_MEMORY;
+  }
+  bool invalid = false;
+  wchar_t* wideLine = hzstd_win_utf16(line, strlen(line), &invalid);
+  free(line);
+  if (!wideLine) {
+    return invalid ? ERROR_INVALID_PARAMETER : ERROR_NOT_ENOUGH_MEMORY;
+  }
+  if (cwd.length > 0) {
+    // Cut at a NUL, as a C string would be.
+    const char* nul = (const char*)memchr(cwd.data, '\0', (size_t)cwd.length);
+    size_t cwdLength = nul ? (size_t)(nul - cwd.data) : (size_t)cwd.length;
+    wchar_t* wideCwd = hzstd_win_utf16(cwd.data, cwdLength, &invalid);
+    DWORD size = wideCwd ? GetFullPathNameW(wideCwd, 0, NULL, NULL) : 0;
+    wchar_t* full = size > 0 ? (wchar_t*)malloc((size_t)size * sizeof(wchar_t)) : NULL;
+    DWORD length = full ? GetFullPathNameW(wideCwd, size, full, NULL) : 0;
+    DWORD fullErr = GetLastError();
+    free(wideCwd);
+    if (!full || length == 0 || length >= size) {
+      free(full);
+      free(wideLine);
+      return invalid ? ERROR_INVALID_PARAMETER : size == 0 || length == 0 ? fullErr : ERROR_NOT_ENOUGH_MEMORY;
+    }
+    // Windows starts no process in a folder whose path, with a trailing
+    // backslash and the NUL, is longer than MAX_PATH, with any API and with or
+    // without the \\?\ prefix (measured 2026-11-23: CreateProcessW 267,
+    // SetCurrentDirectoryW 206). Such a working directory is reported as too
+    // long, never quietly replaced by another one.
+    if ((size_t)length + 2 > MAX_PATH) {
+      free(full);
+      free(wideLine);
+      return ERROR_FILENAME_EXCED_RANGE;
+    }
+    *cwdOut = full;
+  }
+  *cmdOut = wideLine;
+  return 0;
 }
 
 int hzstd_spawn_process(hzstd_str_t exe,
@@ -691,15 +771,12 @@ int hzstd_spawn_process(hzstd_str_t exe,
   out->stdout_data = (char*)"";
   out->stderr_data = (char*)"";
 
-  // The command line in one malloc'd block (hzstd_win_cmdline.h) and the
-  // working directory as a scratch copy: neither outlives this call, so
-  // neither goes near the GC.
-  char* cmdline = hzstd_win_command_line(
-      exe, (const hzstd_str_t*)hzstd_dynamic_array_raw_buffer(argv), hzstd_dynamic_array_size(argv));
-  HZSTD_SCRATCH_CSTR(cwd_c, cwd);
-  if (!cmdline || !cwd_c) {
-    free(cmdline);
-    return ENOMEM;
+  wchar_t* cmdline = NULL;
+  wchar_t* workingDir = NULL;
+  DWORD inputErr = process_spawn_inputs(exe, argv, cwd, &cmdline, &workingDir);
+  if (inputErr != 0) {
+    process_set_error_message(out, inputErr);
+    return (int)inputErr;
   }
 
   SECURITY_ATTRIBUTES sa = { sizeof(sa), NULL, TRUE };
@@ -710,6 +787,7 @@ int hzstd_spawn_process(hzstd_str_t exe,
     if (!CreatePipe(&stdout_read, &stdout_write, &sa, 0) || !CreatePipe(&stderr_read, &stderr_write, &sa, 0)) {
       DWORD err = GetLastError();
       free(cmdline);
+      free(workingDir);
       process_set_error_message(out, err);
       return err;
     }
@@ -725,6 +803,7 @@ int hzstd_spawn_process(hzstd_str_t exe,
     if (reader_thread == NULL) {
       DWORD err = GetLastError();
       free(cmdline);
+      free(workingDir);
       CloseHandle(stdout_read);
       CloseHandle(stdout_write);
       CloseHandle(stderr_read);
@@ -734,7 +813,7 @@ int hzstd_spawn_process(hzstd_str_t exe,
     }
   }
 
-  STARTUPINFOA si = { 0 };
+  STARTUPINFOW si = { 0 };
   si.cb = sizeof(si);
   if (!inherit_stdio) {
     si.hStdOutput = stdout_write;
@@ -750,9 +829,10 @@ int hzstd_spawn_process(hzstd_str_t exe,
   // runs (measured 2026-11-04). With inherit_stdio the child is meant to
   // share the parent's console, so that path keeps the old flags.
   DWORD flags = inherit_stdio ? 0 : CREATE_NO_WINDOW;
-  BOOL created = CreateProcessA(NULL, cmdline, NULL, NULL, TRUE, flags, NULL, cwd.length > 0 ? cwd_c : NULL, &si, &pi);
+  BOOL created = CreateProcessW(NULL, cmdline, NULL, NULL, TRUE, flags, NULL, workingDir, &si, &pi);
   DWORD createErr = created ? 0 : GetLastError();
   free(cmdline);
+  free(workingDir);
   if (!inherit_stdio) {
     // The child holds its own copies: the reads end when it does.
     CloseHandle(stdout_write);
@@ -831,14 +911,13 @@ hzstd_process_spawn(hzstd_str_t exe, hzstd_dynamic_array_t* argv, hzstd_dynamic_
 {
   hzstd_process_spawn_result_t result = { NULL, 0, NULL };
 
-  // As in hzstd_spawn_process: one malloc'd command line, a scratch working
-  // directory, nothing on the GC.
-  char* cmdline = hzstd_win_command_line(
-      exe, (const hzstd_str_t*)hzstd_dynamic_array_raw_buffer(argv), hzstd_dynamic_array_size(argv));
-  HZSTD_SCRATCH_CSTR(cwd_c, cwd);
-  if (!cmdline || !cwd_c) {
-    free(cmdline);
-    result.error_code = ENOMEM;
+  // As in hzstd_spawn_process: malloc'd inputs, nothing on the GC.
+  wchar_t* cmdline = NULL;
+  wchar_t* workingDir = NULL;
+  DWORD inputErr = process_spawn_inputs(exe, argv, cwd, &cmdline, &workingDir);
+  if (inputErr != 0) {
+    result.error_code = (int)inputErr;
+    result.error_message = process_error_message(inputErr);
     return result;
   }
 
@@ -851,8 +930,9 @@ hzstd_process_spawn(hzstd_str_t exe, hzstd_dynamic_array_t* argv, hzstd_dynamic_
       || !CreatePipe(&stderr_read, &stderr_write, &sa, 0)) {
     DWORD err = GetLastError();
     free(cmdline);
+    free(workingDir);
     result.error_code = (int)err;
-    result.error_message = process_build_error_message_gc(err);
+    result.error_message = process_error_message(err);
     if (stdin_read) {
       CloseHandle(stdin_read);
     }
@@ -879,7 +959,7 @@ hzstd_process_spawn(hzstd_str_t exe, hzstd_dynamic_array_t* argv, hzstd_dynamic_
   SetHandleInformation(stdout_read, HANDLE_FLAG_INHERIT, 0);
   SetHandleInformation(stderr_read, HANDLE_FLAG_INHERIT, 0);
 
-  STARTUPINFOA si = { 0 };
+  STARTUPINFOW si = { 0 };
   si.cb = sizeof(si);
   si.hStdInput = stdin_read;
   si.hStdOutput = stdout_write;
@@ -890,9 +970,10 @@ hzstd_process_spawn(hzstd_str_t exe, hzstd_dynamic_array_t* argv, hzstd_dynamic_
   // All three streams are pipes: no console for the child, or one started
   // by a parent without a console (a detached [app]) opens a console window
   // of its own (see hzstd_spawn_process).
-  BOOL ok = CreateProcessA(NULL, cmdline, NULL, NULL, TRUE, CREATE_NO_WINDOW, NULL, cwd.length > 0 ? cwd_c : NULL, &si, &pi);
+  BOOL ok = CreateProcessW(NULL, cmdline, NULL, NULL, TRUE, CREATE_NO_WINDOW, NULL, workingDir, &si, &pi);
   DWORD createErr = ok ? 0 : GetLastError();
   free(cmdline);
+  free(workingDir);
 
   // The child-side ends are only needed by the child process.
   CloseHandle(stdin_read);
@@ -902,7 +983,7 @@ hzstd_process_spawn(hzstd_str_t exe, hzstd_dynamic_array_t* argv, hzstd_dynamic_
   if (!ok) {
     DWORD err = createErr;
     result.error_code = (int)err;
-    result.error_message = process_build_error_message_gc(err);
+    result.error_message = process_error_message(err);
     CloseHandle(stdin_write);
     CloseHandle(stdout_read);
     CloseHandle(stderr_read);

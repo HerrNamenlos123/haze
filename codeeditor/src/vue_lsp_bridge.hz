@@ -50,7 +50,8 @@ import unicode
 // hzstd_get_cwd is the platform layer's own wrapper (hzstd_platform.h, pulled
 // in by hzstd.h, so always in scope): plain getcwd() lives in <unistd.h>,
 // which the Windows toolchain does not have, while the wrapper is
-// GetCurrentDirectoryA there and getcwd() on Linux. It returns false on
+// GetCurrentDirectoryW converted to UTF-8 there and getcwd() on Linux. It
+// returns false on
 // failure and leaves the buffer unspecified, so the buffer is emptied first --
 // toAbsolutePath then produces a visibly wrong path starting with "/" instead
 // of whatever bytes happened to be on the stack.

@@ -124,6 +124,11 @@ fn main(): int {
     cases_extern_c_function_types.register(suite);
     cases_context_review.register(suite);
     cases_process_capture.register(suite);
+    cases_runtime_own_threads.register(suite);
+    cases_evaluation_order.register(suite);
+    cases_fs_unicode_paths.register(suite);
+    cases_panic_messages.register(suite);
+    cases_source_text.register(suite);
 
     return testsuite.runAll(config, suite);
 }

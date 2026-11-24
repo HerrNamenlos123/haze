@@ -2283,6 +2283,13 @@ export class ModuleCompiler {
     }
 
     compilerFlags.addWin32("-DHAZE_PLATFORM_WIN32");
+    // Every Win32 call is the UTF-16 variant: Haze text is UTF-8, and an ANSI
+    // (...A) call reads it in the system's code page. With UNICODE a macro
+    // name (CreateEvent, MessageBox) is the ...W function, so char text
+    // handed to one does not compile; scripts/no-ansi-win32.test.ts finds
+    // the ...A names written out.
+    compilerFlags.addWin32("-DUNICODE");
+    compilerFlags.addWin32("-D_UNICODE");
     compilerFlags.addLinux("-DHAZE_PLATFORM_LINUX");
     // Selects the stack switching library's implementation (stdlib/core/src/fiber/fiber.h).
     compilerFlags.addAll(`-D${fiberTargetMacro(HOST)}`);

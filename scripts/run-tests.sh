@@ -36,6 +36,11 @@ bun test src/ModuleCompiler/FileStamps.test.ts src/ModuleCompiler/ModuleBuildCac
 echo "==> Checking haze.toml validation"
 bun test src/shared/Config.test.ts
 
+# Every Win32 call in the repo's own C is the UTF-16 variant; a source scan, so
+# it runs on every platform.
+echo "==> Checking that no ANSI Win32 call is written in the repo's C"
+bun test scripts/no-ansi-win32.test.ts
+
 # ANTLR is not a compilation path, but it is the oracle the native parser is
 # checked against. This proves the two still agree on every .hz file in the
 # tree, not just on whatever a compiled project happens to reach (§8.3).

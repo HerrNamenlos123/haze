@@ -38,6 +38,7 @@ import {
 } from "../src/Parser/AntlrGrammar";
 import { diffAST, formatDifferences } from "../src/Parser/ASTDiff";
 import { NativeParserServer } from "../src/Parser/NativeParser";
+import { normalizeLineEndings } from "../src/shared/Text";
 import { Parser } from "../src/Parser/Parser";
 import { setParserMode } from "../src/Parser/ParserMode";
 import type { ModuleConfig } from "../src/shared/Config";
@@ -163,9 +164,12 @@ async function main(): Promise<void> {
   for (const file of files) {
     // Generated scratch (testsuite/.work) can be swept away underneath a long
     // sweep; a file that no longer exists is not a divergence.
+    // Both parsers get what the compiler gives them: the source with its line
+    // endings normalized (Parser.parseTextToAST does it again, which changes
+    // nothing; the native server takes the text as it is handed over).
     let text: string;
     try {
-      text = readFileSync(file, "utf8");
+      text = normalizeLineEndings(readFileSync(file, "utf8"));
     } catch {
       continue;
     }

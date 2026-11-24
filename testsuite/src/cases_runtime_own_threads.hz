@@ -1,0 +1,112 @@
+// ============================================================================
+// What the runtime and the profiler do on threads of their own must not show
+// up in what a program measures, and must not pile up.
+//
+// - After startup, nothing allocates on the GC heap while main sits idle. The
+//   Windows panic worker used to be started without waiting for it, so its
+//   start-up allocation (1392 bytes) landed somewhere in the first moments of
+//   main, inside whatever window a program was counting with
+//   GC_get_total_bytes.
+// - A Profiler session leaves no thread behind. The Windows profiler's two
+//   helper threads each set up the panic handler again, which made a new
+//   semaphore pair and a new panic worker every time: two threads that never
+//   ended per session, and the old worker waiting on semaphores nobody posts.
+// - The profiler's own sampling is not one of the allocations it records:
+//   the allocation hook is process-wide, so the Windows scheduler thread's
+//   sample chunks went through it unless that thread suppresses it.
+// ============================================================================
+
+namespace cases_runtime_own_threads {
+
+    export fn register(s: mut testsuite.Suite) {
+
+        s.run(
+            "runtime: after startup nothing allocates on the GC heap while main is idle",
+            """
+__c__("size_t GC_get_total_bytes(void);");
+__c__("#ifdef _WIN32");
+__c__("void __stdcall Sleep(unsigned long milliseconds);");
+__c__("static void hz_t_idle(void) { Sleep(300); }");
+__c__("#else");
+__c__("#include <time.h>");
+__c__("static void hz_t_idle(void) { struct timespec t = { 0, 300000000L }; nanosleep(&t, NULL); }");
+__c__("#endif");
+extern C fn hz_t_idle(): void :: final;
+
+fn allocated(): int {
+    let n = 0;
+    __c__("n = (hzstd_int_t)GC_get_total_bytes();");
+    return n;
+}
+
+fn main(): int {
+    let before = allocated();
+    hz_t_idle();
+    let after = allocated();
+    fmt.println(f"allocated while idle: {after - before}");
+    return 0;
+}
+""",
+            "allocated while idle: 0");
+
+        // The profiler prints to stdout, so these assert and exit 0.
+        s.runExitCode(
+            "profiler: a session leaves no thread behind",
+            """
+__c__("#ifdef _WIN32");
+__c__("#include <windows.h>");
+__c__("#include <tlhelp32.h>");
+__c__("static hzstd_int_t hz_t_threads(void) { HANDLE s = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0); THREADENTRY32 e; e.dwSize = sizeof(e); hzstd_int_t n = 0; DWORD pid = GetCurrentProcessId(); if (Thread32First(s, &e)) { do { if (e.th32OwnerProcessID == pid) { n++; } } while (Thread32Next(s, &e)); } CloseHandle(s); return n; }");
+__c__("#else");
+__c__("#include <dirent.h>");
+__c__("static hzstd_int_t hz_t_threads(void) { DIR *d = opendir(\\"/proc/self/task\\"); hzstd_int_t n = 0; struct dirent *e; while ((e = readdir(d)) != NULL) { if (e->d_name[0] != '.') { n++; } } closedir(d); return n; }");
+__c__("#endif");
+extern C fn hz_t_threads(): int :: final;
+
+fn session() {
+    let p = Profiler({ samplingRate: 1000, memoryInstrumentation: true, memoryInstrumentationStacktraces: false });
+    let r = p.stop();
+}
+
+fn main(): int {
+    // The first session makes whatever exists once per process from then on.
+    session();
+    let before = hz_t_threads();
+    session();
+    session();
+    let after = hz_t_threads();
+    assert(after == before, f"two sessions left {after - before} thread(s) behind ({before} before, {after} after)");
+    return 0;
+}
+""",
+            0);
+
+        s.runExitCode(
+            "profiler: its own sampling is not among the allocations it records",
+            """
+fn now(): real {
+    let t = 0.0;
+    __c__("t = hzstd_time_now();");
+    return t;
+}
+
+fn main(): int {
+    let p = Profiler({ samplingRate: 1000, memoryInstrumentation: true, memoryInstrumentationStacktraces: false });
+    // 200 ms of work that allocates nothing, so the profiler takes samples
+    // (and stores them) while the window is open.
+    let start = now();
+    let spins = 0;
+    while now() - start < 0.2 {
+        spins = spins + 1;
+    }
+    let r = p.stop();
+    assert(r.samples.length > 10, f"expected the session to take samples, it took {r.samples.length}");
+    // The Profiler object itself is the one allocation every window has.
+    let others = r.memoryInstrumentationFrames.length - 1;
+    assert(others == 0, f"the window recorded {others} allocation(s) besides the Profiler");
+    return 0;
+}
+""",
+            0);
+    }
+}

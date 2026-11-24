@@ -8,8 +8,8 @@
 // entry, plus every intermediate of the Windows command line). They live only
 // for the call, so they now go on the stack (HZSTD_SCRATCH_CSTR in
 // hzstd_string.h; malloc beyond 512 bytes) or into one malloc'd block, and the
-// GC never sees them. errno messages are views of glibc's immutable table
-// instead of copies.
+// GC never sees them. Error messages are views of glibc's immutable table
+// instead of copies, and on Windows of the same texts in hzstd's own table.
 //
 // Checked here: the GC allocation counts of the filesystem calls, and that
 // every path still works past the 512-byte stack buffer, where the copy moves
@@ -28,11 +28,18 @@ namespace cases_runtime_scratch_strings {
         s.runExitCode(
             "runtime strings: filesystem calls do not copy their path to the GC heap",
             """
+fn workDir(): str {
+    let dir = env.get("HAZE_TEST_WORKDIR");
+    if !dir {
+        sys.panic("HAZE_TEST_WORKDIR is not set. Run the suite via scripts/run-tests.sh.");
+    }
+    return dir;
+}
 fn profiler(): Profiler {
     return Profiler({ samplingRate: 0, memoryInstrumentation: true, memoryInstrumentationStacktraces: false });
 }
 fn main(): int {
-    let dir = "/tmp/haze-testsuite-scratch-strings";
+    let dir = f"{workDir()}/scratch-strings";
     let made = fs.createDirectory(dir);
     let path = f"{dir}/a.txt";
     let copyTo = f"{dir}/b.txt";
@@ -76,9 +83,16 @@ fn main(): int {
         s.run(
             "runtime strings: paths longer than the stack buffer",
             """
+fn workDir(): str {
+    let dir = env.get("HAZE_TEST_WORKDIR");
+    if !dir {
+        sys.panic("HAZE_TEST_WORKDIR is not set. Run the suite via scripts/run-tests.sh.");
+    }
+    return dir;
+}
 fn main(): int {
     let seg = "0123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789";
-    let dir = f"/tmp/haze-testsuite-long-paths/{seg}/{seg}/{seg}/{seg}/{seg}/{seg}";
+    let dir = f"{workDir()}/long-paths/{seg}/{seg}/{seg}/{seg}/{seg}/{seg}";
     let path = f"{dir}/file.txt";
     let copyTo = f"{dir}/copy.txt";
     let w = fs.writeText(path, "far away");
@@ -95,25 +109,71 @@ fn main(): int {
 """,
             "true far away true far away");
 
-        // Child processes: argv and the environment are built in one block
-        // each, the working directory is a scratch copy (here a long one, so
-        // malloc'd), and the output grows in place past its first 4 KB.
+        // Child processes: argv is built in one block, the working directory
+        // is a scratch copy (here also a long one), and the output grows in
+        // place past its first 4 KB. The child is this program itself, so the
+        // case behaves the same on every platform. The arguments carry what
+        // Windows quoting has to keep: a space, an empty argument, quotes, and
+        // backslashes before a quote and at the end.
+        //
+        // A working directory longer than MAX_PATH cannot be used on Windows
+        // at all (CreateProcessW and SetCurrentDirectoryW refuse it, with or
+        // without the \?\ prefix): there the spawn reports the name as too
+        // long instead of starting the child somewhere else.
+        let longCwd = sys.isWin32() ? "refused: File name too long" : "used";
         s.run(
-            "runtime strings: child processes get their arguments, environment and long working directory",
+            "runtime strings: child processes get their arguments, output and working directory",
             """
+fn workDir(): str {
+    let dir = env.get("HAZE_TEST_WORKDIR");
+    if !dir {
+        sys.panic("HAZE_TEST_WORKDIR is not set. Run the suite via scripts/run-tests.sh.");
+    }
+    return dir;
+}
+
+fn realOf(path: str): str {
+    let found = fs.realPath(path);
+    if !found {
+        return f"<no real path for {path}>";
+    }
+    let resolved: str = found;
+    return resolved;
+}
+
 fn main(): int {
-    let seg = "0123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789";
-    let dir = f"/tmp/haze-testsuite-long-cwd/{seg}/{seg}/{seg}/{seg}/{seg}/{seg}";
-    let w = fs.writeText(f"{dir}/marker.txt", "x");
+    let args = sys.args();
+    if args.length > 2 && args[1] == "child" {
+        if args[2] == "args" {
+            let given = "";
+            for (let i = 3; i < args.length; i++) {
+                given = given + "<" + args[i] + ">";
+            }
+            fmt.println(given);
+            fmt.println(realOf("."));
+        }
+        if args[2] == "bulk" {
+            let out = String();
+            for (let i = 0; i < 20000; i++) {
+                out.append("a");
+            }
+            fmt.println(out.cloneString());
+        }
+        return 0;
+    }
 
-    let r1 = process.runCaptured("sh", ["-c", "echo $HZ_A $HZ_B; pwd; echo \\"$0|$1|$2\\"", "zero", "one two", ""], { env: ["HZ_A=first", "HZ_B=second"], cwd: dir });
+    let me = args[0];
+    let base = f"{workDir()}/child-cwd";
+    fs.createDirectory(base);
+
+    let r1 = process.runCaptured(me, ["child", "args", "zero", "one two", "", "say \\"hi\\"", "a\\"b", "back\\\\slash\\\\", "end\\\\\\""], { cwd: base });
     let lines = r1.stdoutResult.split("\\n");
-    fmt.println(f"{r1.exitCode} {lines[0]} {lines[1] == dir} {lines[2]}");
+    fmt.println(f"{r1.exitCode} {lines[0].trim()} {lines[1].trim() == realOf(base)}");
 
-    let r2 = process.runCaptured("sh", ["-c", "head -c 20000 /dev/zero | tr '\\\\0' 'a'"]);
-    fmt.println(f"{r2.exitCode} {r2.stdoutResult.length}");
+    let r2 = process.runCaptured(me, ["child", "bulk"]);
+    fmt.println(f"{r2.exitCode} {r2.stdoutResult.trim().length}");
 
-    let spawned = process.spawn("sh", ["-c", "echo $HZ_C; pwd"], { env: ["HZ_C=background"], cwd: dir });
+    let spawned = process.spawn(me, ["child", "args", "background"], { cwd: base });
     if let p = spawned {
         let out = "";
         while p.isAlive() {
@@ -122,7 +182,67 @@ fn main(): int {
         out = out + p.readStdout();
         let code = p.join();
         let parts = out.split("\\n");
-        fmt.println(f"{code} {parts[0]} {parts[1] == dir}");
+        fmt.println(f"{code} {parts[0].trim()} {parts[1].trim() == realOf(base)}");
+    }
+    else {
+        fmt.println("spawn failed");
+    }
+
+    let seg = "0123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789";
+    let deep = f"{base}/{seg}/{seg}/{seg}";
+    let w = fs.writeText(f"{deep}/marker.txt", "x");
+    let r3 = process.runCaptured(me, ["child", "args", "deep"], { cwd: deep });
+    if r3.exitCode == 0 {
+        let deepLines = r3.stdoutResult.split("\\n");
+        let usedDeep = deepLines[1].trim() == realOf(deep);
+        fmt.println(f"long working directory: {usedDeep ? "used" : "elsewhere"}");
+    }
+    else {
+        fmt.println(f"long working directory: refused: {r3.stderrResult.trim()}");
+    }
+    return 0;
+}
+""",
+            f"""
+0 <zero><one two><><say "hi"><a"b><back\\slash\\><end\\"> true
+0 20000
+0 <background> true
+long working directory: {longCwd}
+""");
+
+        // The environment a child is given. Not implemented properly yet on
+        // either platform (it needs a compile-time key-value store first); on
+        // Linux the list replaces the whole environment, on Windows it is
+        // ignored. Kept here so that what works stays working, and marked as
+        // the known failure it is on Windows.
+        s.run(
+            "runtime strings: child processes get the environment they are given",
+            """
+fn main(): int {
+    let args = sys.args();
+    if args.length > 1 && args[1] == "child" {
+        let a = "-";
+        if let value = env.get("HZ_A") {
+            a = value;
+        }
+        let b = "-";
+        if let value = env.get("HZ_B") {
+            b = value;
+        }
+        fmt.println(f"{a} {b}");
+        return 0;
+    }
+    let me = args[0];
+    let r = process.runCaptured(me, ["child"], { env: ["HZ_A=firstXYZ".slice(0, 10), "HZ_B=second"] });
+    fmt.println(f"{r.exitCode} {r.stdoutResult.trim()}");
+    let spawned = process.spawn(me, ["child"], { env: ["HZ_A=background"] });
+    if let p = spawned {
+        let out = "";
+        while p.isAlive() {
+            out = out + p.readStdout();
+        }
+        out = out + p.readStdout();
+        fmt.println(f"{p.join()} {out.trim()}");
     }
     else {
         fmt.println("spawn failed");
@@ -131,9 +251,9 @@ fn main(): int {
 }
 """,
             """
-0 first second true zero|one two|
-0 20000
-0 background true
+0 first second
+0 background -
 """);
+        s.knownFailure(sys.Platform.Win32, "child environments are not implemented properly yet");
     }
 }

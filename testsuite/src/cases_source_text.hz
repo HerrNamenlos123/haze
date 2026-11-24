@@ -1,0 +1,24 @@
+// ============================================================================
+// REGRESSION TEST: source code is text, and text is normalized.
+//
+// The parser reads CRLF and a lone CR as LF before it sees anything, so a
+// program means the same whatever line endings its file has (a Windows
+// checkout is CRLF). A multi-line string literal kept its file's CRs, and the
+// trimming of its last line break took only the LF, leaving a bare CR at the
+// end (a TOML file written from one was rejected for it). A lone CR did not
+// end a line at all, so a // comment ending in one swallowed the next line.
+//
+// The case source is a plain string with \r\n and \r escapes, so its file
+// holds those bytes on every platform.
+// ============================================================================
+
+namespace cases_source_text {
+
+    export fn register(s: mut testsuite.Suite) {
+
+        s.run(
+            "source text: CRLF and a lone CR in a source file read as LF",
+            "fn main(): int {\r\n    let text = \"\"\"\r\none\r\ntwo\rthree\r\n\"\"\";\r\n    let crs = 0;\r\n    // a comment that ends in a lone CR\r    crs = crs + 100;\r\n    for (let i = 0; i < text.length; i++) {\r\n        if text[i] == 13 {\r\n            crs = crs + 1;\r\n        }\r\n    }\r\n    fmt.println(f\"{text.length} bytes, {crs - 100} CR, {text.split(\"\\n\").length} lines\");\r\n    return 0;\r\n}\r\n",
+            "13 bytes, 0 CR, 3 lines");
+    }
+}

@@ -400,11 +400,13 @@ struct hzstd_profiling_context_t {
   // support registering multiple profiler instances above each other
   hzstd_memory_instrumentation_state_t prevMemoryInstrumentationState;
   bool memoryInstrumentationRecordStacktraces;
-  // Reference point for hzstd_memory_instrumentation_raw_frame_t::timestamp --
-  // same CLOCK_MONOTONIC reading as session_start_time (both taken at
-  // hzstd_profiling_start), so memory captures land on the exact same
-  // timeline as CPU samples (see hzstd_trace_memory_impl).
-  double memoryInstrumentationTimeRef;
+  // The session's zero, as an hzstd_time_now() reading taken in
+  // hzstd_profiling_start: every timestamp of the session is seconds after
+  // it. Memory captures subtract it on both platforms (see
+  // hzstd_trace_memory_impl), and so do Windows CPU samples (see
+  // hzstd_profiling_stackwalker_thread); Linux CPU samples are measured from
+  // perf_time_ref_ns, which is taken right next to it.
+  double timelineRef;
 
   // Append-only history of every allocation captured this session, raw (just
   // PCs + a timestamp, no symbol resolution) -- see
@@ -706,7 +708,7 @@ static void hzstd_trace_memory_impl(hz_profiler_instrument_allocation_type type,
   if (!context->memoryInstrumentationRecordStacktraces) {
     hzstd_memory_instrumentation_raw_frame_t raw
         = { .depth = 0, .sizeBytes = size, .allocationType = type, .dataType = dataType };
-    raw.timestamp = hzstd_time_now() - context->memoryInstrumentationTimeRef;
+    raw.timestamp = hzstd_time_now() - context->timelineRef;
     hzstd_profiling_memory_captures_append(context, raw);
     return;
   }
@@ -723,7 +725,7 @@ static void hzstd_trace_memory_impl(hz_profiler_instrument_allocation_type type,
   raw.sizeBytes = size;
   raw.allocationType = type;
   raw.dataType = dataType;
-  raw.timestamp = hzstd_time_now() - context->memoryInstrumentationTimeRef;
+  raw.timestamp = hzstd_time_now() - context->timelineRef;
 
   hzstd_temporarily_reenable_memory_instrumentation(prevMemoryState);
 
@@ -1562,6 +1564,10 @@ static DWORD WINAPI hzstd_profiling_stackwalker_thread(LPVOID _context)
 {
   hzstd_profiling_context_t *context = _context;
   hzstd_setup_panic_handler();
+  // This thread exists only for the profiler: nothing it allocates is the
+  // program's, so none of it is recorded (the allocation hook is
+  // process-wide, the suppression is per thread).
+  (void)hzstd_temporarily_disable_memory_instrumentation();
 
   HANDLE hProcess = GetCurrentProcess();
 
@@ -1590,7 +1596,7 @@ static DWORD WINAPI hzstd_profiling_stackwalker_thread(LPVOID _context)
 #endif
 
     hzstd_profiling_raw_sample_t sample = { 0 };
-    sample.timestamp = context->sample_started_at;
+    sample.timestamp = context->sample_started_at - context->timelineRef;
 
     while (StackWalk64(machineType,
                        hProcess,
@@ -1710,6 +1716,10 @@ static DWORD WINAPI hzstd_profiling_scheduler_thread(LPVOID _context)
 {
   hzstd_profiling_context_t *context = _context;
   hzstd_setup_panic_handler();
+  // As in the stackwalker: the sample chunks this thread allocates while
+  // draining the ring are the profiler's own, never one of the program's
+  // allocations.
+  (void)hzstd_temporarily_disable_memory_instrumentation();
   while (!atomic_load(&context->stop_scheduler)) {
     uint64_t interval_ns = 1000000000ull / context->sampling_rate_hz;
     os_sleep_ns(interval_ns);
@@ -1957,7 +1967,7 @@ hzstd_profiling_start(int sampling_rate_hz, bool memoryInstrumentation, bool mem
   // samples_head/samples_tail above.
   hzstd_profiling_mutex_init(&context->memoryCapturesMutex);
   context->memoryInstrumentationRecordStacktraces = memoryInstrumentationStacktrace;
-  // NOTE: memoryInstrumentationTimeRef is set, and instrumentation actually
+  // NOTE: timelineRef is set, and instrumentation actually
   // enabled (hzstd_push_memory_instrumentation), further down -- see the
   // comment there for why this can't happen here despite looking like the
   // obvious place for it.
@@ -2159,7 +2169,7 @@ hzstd_profiling_start(int sampling_rate_hz, bool memoryInstrumentation, bool mem
   // perf_time_ref_ns is the raw absolute value (nanoseconds since whatever
   // arbitrary point CLOCK_MONOTONIC itself starts counting from, normally
   // system boot), while hzstd_time_now() (and therefore every allocation's
-  // eventual `hzstd_time_now() - memoryInstrumentationTimeRef` in
+  // eventual `hzstd_time_now() - timelineRef` in
   // hzstd_trace_memory_impl) is relative to this process's own startup_ts.
   // Calling hzstd_time_now() again here -- a handful of nanoseconds after
   // the clock_gettime() above, close enough to not matter -- captures
@@ -2167,7 +2177,7 @@ hzstd_profiling_start(int sampling_rate_hz, bool memoryInstrumentation, bool mem
   // later be measured in, so the subtraction in hzstd_trace_memory_impl
   // actually yields a small, correct, comparable-to-CPU-samples delta
   // instead of silently mixing two different zero points.
-  context->memoryInstrumentationTimeRef = hzstd_time_now();
+  context->timelineRef = hzstd_time_now();
   if (memoryInstrumentation) {
     context->prevMemoryInstrumentationState = hzstd_push_memory_instrumentation(hzstd_trace_memory_impl, context);
   }
@@ -2210,6 +2220,14 @@ hzstd_profiling_start(int sampling_rate_hz, bool memoryInstrumentation, bool mem
 
   g_profiling_context = context;
 #elif defined(HAZE_PLATFORM_WIN32)
+  // The session's zero, then the allocation hook, as on Linux; here before the
+  // helper threads start, since the CPU samples they take are measured from
+  // it too.
+  context->timelineRef = hzstd_time_now();
+  if (memoryInstrumentation) {
+    context->prevMemoryInstrumentationState = hzstd_push_memory_instrumentation(hzstd_trace_memory_impl, context);
+  }
+
   // GetCurrentThread() only returns a pseudo-handle valid within the calling
   // thread; duplicate it into a real handle so the scheduler thread can
   // SuspendThread/GetThreadContext/ResumeThread it from the outside.
@@ -2927,12 +2945,12 @@ static hzstd_profiling_frame_t hzstd_profiling_resolve_frame(void *address, bool
 // ── dbghelp source-location + symbol resolution ─────────────────────────────
 //
 // Unlike Linux, Windows debug info (PDB) is already indexed by dbghelp, so
-// there is no need for a hand-rolled .debug_line reader here: SymFromAddr and
-// SymGetLineFromAddr64 do the equivalent of the libunwind+dwarfline path above.
+// there is no need for a hand-rolled .debug_line reader here: SymFromAddrW and
+// SymGetLineFromAddrW64 do the equivalent of the libunwind+dwarfline path above.
 // This mirrors what the panic handler in hzstd_platform_win32.c already does
 // for crash stacktraces.
 
-#define HZSTD_PROFILING_SYM_BUF_SIZE (sizeof(SYMBOL_INFO) + MAX_SYM_NAME * sizeof(TCHAR))
+#define HZSTD_PROFILING_SYM_BUF_SIZE (sizeof(SYMBOL_INFOW) + MAX_SYM_NAME * sizeof(wchar_t))
 
 static bool g_profiling_sym_initialized = false;
 
@@ -2944,10 +2962,8 @@ static hzstd_profiling_frame_t hzstd_profiling_resolve_frame(void *address, bool
   void *lookupAddress = isLeaf ? address : (void *)((uintptr_t)address - 1);
 
   if (!g_profiling_sym_initialized) {
-    if (!SymInitialize(GetCurrentProcess(), NULL, TRUE)) {
-      fprintf(stderr,
-              "Warning: SymInitialize failed — profiling symbol "
-              "names/source locations will be unavailable.\n");
+    if (!SymInitializeW(GetCurrentProcess(), NULL, TRUE)) {
+      fprintf(stderr, "Warning: SymInitialize failed, profiling symbol names and source locations will be unavailable.\n");
     }
     g_profiling_sym_initialized = true;
   }
@@ -2956,23 +2972,33 @@ static hzstd_profiling_frame_t hzstd_profiling_resolve_frame(void *address, bool
   hzstd_str_t name = HZSTD_STRING(NULL, 0);
   HANDLE hProcess = GetCurrentProcess();
 
-  char symbolBuffer[HZSTD_PROFILING_SYM_BUF_SIZE];
-  PSYMBOL_INFO pSym = (PSYMBOL_INFO)symbolBuffer;
-  pSym->SizeOfStruct = sizeof(SYMBOL_INFO);
+  _Alignas(SYMBOL_INFOW) char symbolBuffer[HZSTD_PROFILING_SYM_BUF_SIZE];
+  PSYMBOL_INFOW pSym = (PSYMBOL_INFOW)symbolBuffer;
+  pSym->SizeOfStruct = sizeof(SYMBOL_INFOW);
   pSym->MaxNameLen = MAX_SYM_NAME;
   DWORD64 displacement = 0;
-  if (SymFromAddr(hProcess, (DWORD64)(uintptr_t)lookupAddress, &displacement, pSym)) {
-    hzstd_demangle_result_t demangled = hzstd_demangle(allocator, pSym->Name);
-    name = demangled.success ? hzstd_demangle_display(allocator, &demangled)
-                             : hzstd_str_from_cstr_dup(allocator, pSym->Name);
+  if (SymFromAddrW(hProcess, (DWORD64)(uintptr_t)lookupAddress, &displacement, pSym)) {
+    size_t mangledLength = 0;
+    char* mangled = hzstd_win_utf8(pSym->Name, &mangledLength);
+    if (mangled) {
+      hzstd_demangle_result_t demangled = hzstd_demangle(allocator, mangled);
+      name = demangled.success ? hzstd_demangle_display(allocator, &demangled)
+                               : hzstd_str_from_cstr_dup(allocator, mangled);
+      free(mangled);
+    }
   }
 
   hzstd_source_location_t sourceloc = { ._filename = HZSTD_STRING(NULL, 0), ._line = 0, ._column = 0 };
-  IMAGEHLP_LINE64 lineInfo;
-  lineInfo.SizeOfStruct = sizeof(IMAGEHLP_LINE64);
+  IMAGEHLP_LINEW64 lineInfo;
+  lineInfo.SizeOfStruct = sizeof(IMAGEHLP_LINEW64);
   DWORD lineDisp = 0;
-  if (SymGetLineFromAddr64(hProcess, (DWORD64)(uintptr_t)lookupAddress, &lineDisp, &lineInfo)) {
-    sourceloc._filename = hzstd_str_from_cstr_dup(allocator, lineInfo.FileName);
+  if (SymGetLineFromAddrW64(hProcess, (DWORD64)(uintptr_t)lookupAddress, &lineDisp, &lineInfo)) {
+    size_t fileLength = 0;
+    char* file = hzstd_win_utf8(lineInfo.FileName, &fileLength);
+    if (file) {
+      sourceloc._filename = hzstd_str_from_cstr_dup(allocator, file);
+      free(file);
+    }
     sourceloc._line = (hzstd_int_t)lineInfo.LineNumber;
   }
 

@@ -22,6 +22,7 @@ import {
 } from "../shared/Config";
 import { EPrimitive, type NameSet, primitiveToString } from "../shared/common";
 import { assert, GeneralError, InternalError, type SourceLocNotNull } from "../shared/Errors";
+import { normalizeLineEndings } from "../shared/Text";
 import { requestSync } from "../Parser/SyncBridge";
 import { OutputWriter } from "./OutputWriter";
 
@@ -287,10 +288,8 @@ class CodeGenerator {
       return buffer;
     }
 
-    // For text files, normalize to LF only (remove CR)
-    let content = buffer.toString("utf8");
-    content = content.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
-    return Buffer.from(content, "utf8");
+    // A text file is text: its line endings are normalized like source code.
+    return Buffer.from(normalizeLineEndings(buffer.toString("utf8")), "utf8");
   }
 
   private buildEmbeddedFileFunctionMap() {

@@ -1,6 +1,8 @@
 // The Windows command line for spawning a process: the program and its
-// arguments joined into the single string CreateProcess takes, each quoted the
-// way hzstd has always quoted them.
+// arguments joined into the single string CreateProcess takes, each quoted so
+// that the child's C runtime (and CommandLineToArgvW) splits it back into
+// exactly those arguments. The line is UTF-8 here; the spawner converts it to
+// UTF-16 for CreateProcessW.
 //
 // Built in ONE malloc'd block, sized exactly by a measuring pass that runs the
 // same quoting code without writing (hzstd_win_quote_arg with dst == NULL):
@@ -20,12 +22,14 @@
 #include <string.h>
 
 // Quotes one argument into `dst` (or only measures it, with dst == NULL) and
-// returns its length. An argument without a space or tab is passed as it is;
+// returns its length. An argument that is not empty and holds no whitespace
+// and no quote is passed as it is (its backslashes mean nothing there);
 // otherwise it is put in double quotes, a quote inside it is escaped, and the
-// backslashes in front of a quote (or of the closing quote) are doubled.
+// backslashes in front of a quote (or of the closing quote) are doubled. An
+// empty argument is "", which is how it stays an argument at all.
 //
-// `len` stops at the first NUL: the argument used to be copied into a C string
-// first, which ended it there, and CreateProcess takes a C string anyway.
+// `len` stops at the first NUL: CreateProcess takes a C string, so an argument
+// ends there on every platform (posix_spawn's argv are C strings too).
 static inline size_t hzstd_win_quote_arg(char *dst, const char *arg, size_t len)
 {
   const char *nul = len > 0 ? (const char *)memchr(arg, '\0', len) : NULL;
@@ -33,9 +37,9 @@ static inline size_t hzstd_win_quote_arg(char *dst, const char *arg, size_t len)
     len = (size_t)(nul - arg);
   }
 
-  bool need_quotes = false;
+  bool need_quotes = len == 0;
   for (size_t i = 0; i < len; ++i) {
-    if (arg[i] == ' ' || arg[i] == '\t') {
+    if (arg[i] == ' ' || arg[i] == '\t' || arg[i] == '\n' || arg[i] == '\v' || arg[i] == '"') {
       need_quotes = true;
       break;
     }

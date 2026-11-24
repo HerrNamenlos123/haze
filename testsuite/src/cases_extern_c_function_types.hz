@@ -81,14 +81,14 @@ extern C fn storesHaze(f: (x: int) -> int): cptr { return f as cptr; }
 
 // Everything that needs no context is allowed in an extern C body.
 struct Pt { x: int = 0; y: int = 0; }
-extern C noemit fn labs(x: int): int :: final;
+extern C noemit fn llabs(x: int): int :: final;
 extern C fn plainC(a: int, b: int): int { return a * 10 + b; }
 extern C fn legalBody(ctx: Context, f: extern C (a: int, b: int) -> int, n: int): int {
     let p = Pt { x: n, y: 2 };
     let sum = p.x * 3 + p.y - 1;
     let viaValue = f(sum, 1);
     let direct = plainC(viaValue, 0);
-    let lib = labs(-3);
+    let lib = llabs(-3);
     let fresh = Context();
     let items: []int = [1, 2, 3];
     let inner = Context.init(ctx, () => { return dummy() + items.length; });

@@ -1,0 +1,210 @@
+// ============================================================================
+// REGRESSION TEST: paths and arguments outside every ANSI code page.
+//
+// Haze strings are UTF-8, and every Windows call that takes a path or a
+// command line has to get it as UTF-16 (the ...W variant). The ANSI variants,
+// and the C runtime's char paths (fopen, _open, _stat, _mkdir), read the bytes
+// in the system's ANSI code page instead: any character outside it ("日本",
+// "✓", and on most systems also "Ü") named a different file or none. Every
+// path-taking fs call and a child process (its argument and working
+// directory) go through such a name here, on every platform.
+// ============================================================================
+
+namespace cases_fs_unicode_paths {
+
+    export fn register(s: mut testsuite.Suite) {
+
+        s.run(
+            "fs and process: paths and arguments outside every ANSI code page",
+            """
+fn workDir(): str {
+    let dir = env.get("HAZE_TEST_WORKDIR");
+    if !dir {
+        sys.panic("HAZE_TEST_WORKDIR is not set. Run the suite via scripts/run-tests.sh.");
+    }
+    return dir;
+}
+
+fn ok(result: Result<none, fs.Error>): str {
+    if result {
+        return "ok";
+    }
+    if result == fs.Error.AlreadyExists {
+        return "AlreadyExists";
+    }
+    return f"error {result}";
+}
+
+fn textOf(path: str): str {
+    let read = fs.readText(path);
+    if !read {
+        return "<unreadable>";
+    }
+    let text: str = read;
+    return text;
+}
+
+fn present(path: str): bool {
+    if let exists = fs.exists(path) {
+        return exists;
+    }
+    return false;
+}
+
+fn realOf(path: str): str {
+    let found = fs.realPath(path);
+    if !found {
+        return f"<no real path for {path}>";
+    }
+    let resolved: str = found;
+    return resolved;
+}
+
+fn streamWrite(path: str, text: str) {
+    let opened = fs.openWrite(path);
+    if opened is fs.Error {
+        return;
+    }
+    let writer = opened;
+    writer.write(text);
+    writer.close();
+}
+
+fn streamRead(path: str): str {
+    let opened = fs.openRead(path);
+    if opened is fs.Error {
+        return "<not opened>";
+    }
+    let reader = opened;
+    while !reader.done() {
+        reader.readSome(64);
+    }
+    let text = reader.text();
+    reader.close();
+    return text;
+}
+
+fn main(): int {
+    let args = sys.args();
+    if args.length > 2 && args[1] == "child" {
+        fmt.println(args[2]);
+        fmt.println(realOf("."));
+        return 0;
+    }
+
+    let base = f"{workDir()}/unicode-paths {sys.processId()} Ünïcødé 日本 ✓";
+    let made = ok(fs.createDirectory(base));
+    fmt.println(f"createDirectory: {made}, exists: {present(base)}");
+
+    let file = f"{base}/fïlé 日本.txt";
+    let wrote = ok(fs.writeText(file, "inhalt ✓"));
+    fmt.println(f"writeText: {wrote}, readText: {textOf(file)}");
+
+    let size = -1;
+    if let state = fs.statFile(file) {
+        size = state.size;
+    }
+    fmt.println(f"statFile: {size} bytes");
+
+    let head = fs.readHead(file, 6);
+    let headText = "<unreadable>";
+    if head {
+        let text: str = head;
+        headText = text;
+    }
+    fmt.println(f"readHead: {headText}");
+
+    let fresh = f"{base}/nëu 日本.txt";
+    let created = ok(fs.createText(fresh, "neu"));
+    let createdAgain = ok(fs.createText(fresh, "nochmal"));
+    fmt.println(f"createText: {created}, again: {createdAgain}, holds: {textOf(fresh)}");
+
+    let replaced = ok(fs.replaceText(file, "ersetzt ✓"));
+    fmt.println(f"replaceText: {replaced}, holds: {textOf(file)}");
+
+    let copy = f"{base}/kopie 日本.txt";
+    let copied = ok(fs.copyFile(file, copy, { overwrite: true }));
+    fmt.println(f"copyFile: {copied}, holds: {textOf(copy)}");
+
+    let moved = f"{base}/verschoben 日本.txt";
+    let movedResult = ok(fs.move(copy, moved, { overwrite: true }));
+    fmt.println(f"move: {movedResult}, source left: {present(copy)}, holds: {textOf(moved)}");
+
+    let folder = f"{base}/ördner 日本";
+    let folderMade = ok(fs.createDirectory(folder));
+    let innerWrote = ok(fs.writeText(f"{folder}/inner ✓.txt", "drin"));
+    let folderCopy = f"{base}/ördner kopie";
+    let folderCopied = ok(fs.copyDirectory(folder, folderCopy, { overwrite: true }));
+    fmt.println(f"copyDirectory: {folderMade} {innerWrote} {folderCopied}, holds: {textOf(f"{folderCopy}/inner ✓.txt")}");
+
+    let listed = fs.listDir(base);
+    let names: []str = [];
+    if listed {
+        let entries: []fs.DirEntry = listed;
+        for entry in entries {
+            names.push(entry.name);
+        }
+    }
+    let expected: []str = ["fïlé 日本.txt", "nëu 日本.txt", "verschoben 日本.txt", "ördner 日本", "ördner kopie"];
+    let found = 0;
+    for want in expected {
+        for name in names {
+            if name == want {
+                found = found + 1;
+            }
+        }
+    }
+    fmt.println(f"listDir: {names.length} names, {found} of the {expected.length} expected");
+
+    let streamed = f"{base}/strom 日本.txt";
+    streamWrite(streamed, "ström");
+    fmt.println(f"openWrite: {textOf(streamed)}");
+    fmt.println(f"openRead: {streamRead(streamed)}");
+
+    let held = false;
+    let lock = fs.tryLockFile(f"{base}/sperre 日本.lock");
+    if lock {
+        let taken: fs.FileLock = lock;
+        held = taken.held();
+        taken.unlock();
+    }
+    fmt.println(f"tryLockFile: held {held}");
+
+    let exclusive = f"{base}/exklusiv 日本";
+    let took = ok(fs.createDirectoryExclusive(exclusive));
+    let released = ok(fs.removeEmptyDirectory(exclusive));
+    fmt.println(f"createDirectoryExclusive: {took}, removeEmptyDirectory: {released}, left: {present(exclusive)}");
+
+    let resolvedFile = realOf(file);
+    fmt.println(f"realPath ends in the name: {resolvedFile.endsWith(\"fïlé 日本.txt\")}");
+
+    let removed = ok(fs.removeFile(moved));
+    fmt.println(f"removeFile: {removed}, left: {present(moved)}");
+
+    let r = process.runCaptured(args[0], ["child", "ärgument 日本 ✓"], { cwd: base });
+    let lines = r.stdoutResult.split("\\n");
+    fmt.println(f"child: {r.exitCode} {lines[0].trim()}, its working directory: {lines[1].trim() == realOf(base)}");
+    return 0;
+}
+""",
+            """
+createDirectory: ok, exists: true
+writeText: ok, readText: inhalt ✓
+statFile: 10 bytes
+readHead: inhalt
+createText: ok, again: AlreadyExists, holds: neu
+replaceText: ok, holds: ersetzt ✓
+copyFile: ok, holds: ersetzt ✓
+move: ok, source left: false, holds: ersetzt ✓
+copyDirectory: ok ok ok, holds: drin
+listDir: 5 names, 5 of the 5 expected
+openWrite: ström
+openRead: ström
+tryLockFile: held true
+createDirectoryExclusive: ok, removeEmptyDirectory: ok, left: false
+realPath ends in the name: true
+removeFile: ok, left: false
+child: 0 ärgument 日本 ✓, its working directory: true
+""");
+    }
+}

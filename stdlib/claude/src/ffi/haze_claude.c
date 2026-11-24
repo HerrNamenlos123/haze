@@ -14,6 +14,7 @@
 #  include <bcrypt.h>
 #  include <io.h>
 #  include <process.h>
+#  include "hzstd/include/hzstd_win_utf16.h"
 #else
 #  include <fcntl.h>
 #  include <signal.h>
@@ -48,6 +49,36 @@ static hzstd_str_t haze_claude_make_str(hzstd_allocator_t allocator, const char 
 static const char *haze_claude_cpath(hzstd_str_t path)
 {
   return hzstd_raw_malloc_null_terminated_str(path);
+}
+
+#if defined(_WIN32)
+// The UTF-16 form of `path` for the ...W calls (an ANSI call, or fopen, reads
+// a char path in the system's code page): malloc'd, NULL on invalid UTF-8 or
+// no memory. A NUL inside ends it, as it ends a C string.
+static wchar_t *haze_claude_wpath(hzstd_str_t path)
+{
+  bool invalid = false;
+  return hzstd_win_utf16(path.data, (size_t)path.length, &invalid);
+}
+#endif
+
+// fopen(path, mode), on Windows with the UTF-16 path (_wfopen).
+static FILE *haze_claude_fopen(hzstd_str_t path, const char *mode)
+{
+#if defined(_WIN32)
+  wchar_t wideMode[8];
+  size_t i = 0;
+  for (; mode[i] != '\0' && i < 7; i++) {
+    wideMode[i] = (wchar_t)mode[i];
+  }
+  wideMode[i] = L'\0';
+  wchar_t *wide = haze_claude_wpath(path);
+  FILE *file = wide ? _wfopen(wide, wideMode) : NULL;
+  free(wide);
+  return file;
+#else
+  return fopen(haze_claude_cpath(path), mode);
+#endif
 }
 
 static const char HAZE_CLAUDE_HEX[16] = { '0', '1', '2', '3', '4', '5', '6', '7',
@@ -207,7 +238,7 @@ haze_claude_str_result_t haze_claude_sha256_file(hzstd_allocator_t allocator, hz
 {
   haze_claude_str_result_t result = { .ok = false, .value = { .data = "", .length = 0 } };
 
-  FILE *file = fopen(haze_claude_cpath(path), "rb");
+  FILE *file = haze_claude_fopen(path, "rb");
   if (file == NULL) {
     return result;
   }
@@ -301,7 +332,10 @@ hzstd_bool_t haze_claude_make_executable(hzstd_str_t path)
 hzstd_bool_t haze_claude_is_executable(hzstd_str_t path)
 {
 #if defined(_WIN32)
-  return _access(haze_claude_cpath(path), 0) == 0;
+  wchar_t *wide = haze_claude_wpath(path);
+  bool present = wide && _waccess(wide, 0) == 0;
+  free(wide);
+  return present;
 #else
   return access(haze_claude_cpath(path), X_OK) == 0;
 #endif
@@ -313,7 +347,10 @@ hzstd_bool_t haze_claude_is_executable(hzstd_str_t path)
 hzstd_bool_t haze_claude_remove_file(hzstd_str_t path)
 {
 #if defined(_WIN32)
-  return DeleteFileA(haze_claude_cpath(path)) != 0;
+  wchar_t *wide = haze_claude_wpath(path);
+  bool removed = wide && DeleteFileW(wide) != 0;
+  free(wide);
+  return removed;
 #else
   return unlink(haze_claude_cpath(path)) == 0;
 #endif
@@ -328,13 +365,20 @@ haze_claude_str_result_t haze_claude_realpath(hzstd_allocator_t allocator, hzstd
   haze_claude_str_result_t result = { .ok = false, .value = { .data = "", .length = 0 } };
 
 #if defined(_WIN32)
-  char buffer[MAX_PATH];
-  DWORD length = GetFullPathNameA(haze_claude_cpath(path), MAX_PATH, buffer, NULL);
-  if (length == 0 || length >= MAX_PATH) {
+  wchar_t *wide = haze_claude_wpath(path);
+  DWORD size = wide ? GetFullPathNameW(wide, 0, NULL, NULL) : 0;
+  wchar_t *full = size > 0 ? (wchar_t *)malloc((size_t)size * sizeof(wchar_t)) : NULL;
+  DWORD length = full ? GetFullPathNameW(wide, size, full, NULL) : 0;
+  free(wide);
+  size_t utf8Length = 0;
+  char *utf8 = length > 0 && length < size ? hzstd_win_utf8(full, &utf8Length) : NULL;
+  free(full);
+  if (utf8 == NULL) {
     return result;
   }
   result.ok = true;
-  result.value = haze_claude_make_str(allocator, buffer, (size_t)length);
+  result.value = haze_claude_make_str(allocator, utf8, utf8Length);
+  free(utf8);
 #else
   char buffer[PATH_MAX];
   if (realpath(haze_claude_cpath(path), buffer) == NULL) {
@@ -435,19 +479,19 @@ extern char **environ;
 hzstd_int_t haze_claude_environ_count(void)
 {
 #if defined(_WIN32)
-  LPCH block = GetEnvironmentStringsA();
+  LPWCH block = GetEnvironmentStringsW();
   if (block == NULL) {
     return 0;
   }
   hzstd_int_t count = 0;
-  for (LPCH entry = block; *entry != '\0'; entry += strlen(entry) + 1) {
+  for (LPWCH entry = block; *entry != L'\0'; entry += wcslen(entry) + 1) {
     // Windows exposes internal "=C:=..." drive-cwd entries; they are not
     // inheritable settings and confuse anything that parses NAME=value.
-    if (entry[0] != '=') {
+    if (entry[0] != L'=') {
       count++;
     }
   }
-  FreeEnvironmentStringsA(block);
+  FreeEnvironmentStringsW(block);
   return count;
 #else
   hzstd_int_t count = 0;
@@ -461,23 +505,28 @@ hzstd_int_t haze_claude_environ_count(void)
 hzstd_str_t haze_claude_environ_at(hzstd_allocator_t allocator, hzstd_int_t index)
 {
 #if defined(_WIN32)
-  LPCH block = GetEnvironmentStringsA();
+  LPWCH block = GetEnvironmentStringsW();
   if (block == NULL) {
     return (hzstd_str_t){ .data = "", .length = 0 };
   }
   hzstd_int_t seen = 0;
   hzstd_str_t result = { .data = "", .length = 0 };
-  for (LPCH entry = block; *entry != '\0'; entry += strlen(entry) + 1) {
-    if (entry[0] == '=') {
+  for (LPWCH entry = block; *entry != L'\0'; entry += wcslen(entry) + 1) {
+    if (entry[0] == L'=') {
       continue;
     }
     if (seen == index) {
-      result = haze_claude_make_str(allocator, entry, strlen(entry));
+      size_t length = 0;
+      char *utf8 = hzstd_win_utf8(entry, &length);
+      if (utf8 != NULL) {
+        result = haze_claude_make_str(allocator, utf8, length);
+        free(utf8);
+      }
       break;
     }
     seen++;
   }
-  FreeEnvironmentStringsA(block);
+  FreeEnvironmentStringsW(block);
   return result;
 #else
   hzstd_int_t seen = 0;
@@ -513,7 +562,7 @@ haze_claude_head_tail_t haze_claude_read_head_tail(hzstd_allocator_t allocator, 
     return result;
   }
 
-  FILE *file = fopen(haze_claude_cpath(path), "rb");
+  FILE *file = haze_claude_fopen(path, "rb");
   if (file == NULL) {
     return result;
   }
@@ -565,7 +614,7 @@ haze_claude_head_tail_t haze_claude_read_head_tail(hzstd_allocator_t allocator, 
 // rewriting the file -- and core's `fs.openWrite` truncates.
 hzstd_bool_t haze_claude_append_text(hzstd_str_t path, hzstd_str_t text)
 {
-  FILE *file = fopen(haze_claude_cpath(path), "ab");
+  FILE *file = haze_claude_fopen(path, "ab");
   if (file == NULL) {
     return false;
   }

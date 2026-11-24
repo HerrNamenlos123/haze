@@ -22,25 +22,26 @@
 #define MKDIR(path) mkdir(path, 0777)
 #define STAT stat
 #define FSTAT fstat
+#define FSTAT_STRUCT struct stat
 #define FILENO fileno
 #define IS_DIR(mode) S_ISDIR(mode)
 
 #elif defined(HAZE_PLATFORM_WIN32)
 
 #define WIN32_LEAN_AND_MEAN
-#define HAZE_MAX_PATH_LENGTH MAX_PATH
-#include <direct.h>
 #include <io.h>
 #include <sys/stat.h>
 #include <windows.h>
 #include <shellapi.h> // SHFileOperationW
 #include <wchar.h>
+#include "../include/hzstd_win_utf16.h"
 #define PATH_SEPARATOR '\\'
-#define MKDIR(path) _mkdir(path)
-#define STAT _stat
+// No path-taking C runtime call and no MAX_PATH on Windows: see the "Paths
+// for the Win32 calls" section below. Only an open file's descriptor is
+// asked for its type.
 #define FSTAT _fstat
+#define FSTAT_STRUCT struct _stat
 #define FILENO _fileno
-#define IS_DIR(mode) ((mode) & _S_IFDIR)
 
 #else
 #error "Unsupported platform"
@@ -86,6 +87,53 @@ static hzstd_fs_error_code_t hzstd_fs_error_from_errno(int err)
 extern const char *strerrordesc_np(int errnum);
 #endif
 
+// The texts glibc gives the errno values the filesystem calls produce, for
+// every system without strerrordesc_np: Windows reports the same condition
+// with the same text, and a static text is never copied.
+static const char* hzstd_fs_errno_text(int err)
+{
+  switch (err) {
+  case EPERM:
+    return "Operation not permitted";
+  case ENOENT:
+    return "No such file or directory";
+  case EIO:
+    return "Input/output error";
+  case EBADF:
+    return "Bad file descriptor";
+  case EAGAIN:
+    return "Resource temporarily unavailable";
+  case ENOMEM:
+    return "Cannot allocate memory";
+  case EACCES:
+    return "Permission denied";
+  case EBUSY:
+    return "Device or resource busy";
+  case EEXIST:
+    return "File exists";
+  case EXDEV:
+    return "Invalid cross-device link";
+  case ENOTDIR:
+    return "Not a directory";
+  case EISDIR:
+    return "Is a directory";
+  case EINVAL:
+    return "Invalid argument";
+  case EMFILE:
+    return "Too many open files";
+  case ENOSPC:
+    return "No space left on device";
+  case EROFS:
+    return "Read-only file system";
+  case ENAMETOOLONG:
+    return "File name too long";
+  case ENOTEMPTY:
+    return "Directory not empty";
+  default:
+    return NULL;
+  }
+}
+
 static hzstd_str_t hzstd_fs_errno_message(int err)
 {
 #ifdef HZSTD_FS_HAS_STRERRORDESC
@@ -94,66 +142,171 @@ static hzstd_str_t hzstd_fs_errno_message(int err)
     return (hzstd_str_t) { .data = (char*)desc, .length = (hzstd_int_t)strlen(desc) };
   }
 #endif
+  const char* text = hzstd_fs_errno_text(err);
+  if (text) {
+    return (hzstd_str_t) { .data = (char*)text, .length = (hzstd_int_t)strlen(text) };
+  }
+#if defined(HAZE_PLATFORM_WIN32)
+  return HZSTD_STRING("Unknown error", 13);
+#else
   const char* msg = strerror(err);
   return msg ? hzstd_cstr_dup((char*)msg) : HZSTD_STRING(NULL, 0);
+#endif
 }
 
 #if defined(HAZE_PLATFORM_WIN32)
-static hzstd_fs_error_code_t hzstd_fs_error_from_windows_error(DWORD err)
+// The errno value for a Win32 error: from there a failure takes the same way
+// as on Linux, to the same code and the same text.
+static int hzstd_fs_errno_from_windows_error(DWORD err)
 {
   switch (err) {
   case ERROR_FILE_NOT_FOUND:
   case ERROR_PATH_NOT_FOUND:
-    return hzstd_fs_error_code_not_found;
-
+  case ERROR_INVALID_DRIVE:
+  case ERROR_BAD_NETPATH:
+  case ERROR_BAD_NET_NAME:
+  case ERROR_BAD_PATHNAME:
+    return ENOENT;
   case ERROR_ACCESS_DENIED:
-    return hzstd_fs_error_code_permission_denied;
-
+  case ERROR_SHARING_VIOLATION:
+  case ERROR_LOCK_VIOLATION:
+  case ERROR_PRIVILEGE_NOT_HELD:
+    return EACCES;
   case ERROR_FILE_EXISTS:
-    return hzstd_fs_error_code_already_exists;
-
+  case ERROR_ALREADY_EXISTS:
+    return EEXIST;
   case ERROR_INVALID_NAME:
-    return hzstd_fs_error_code_invalid_path;
-
+  case ERROR_INVALID_PARAMETER:
+    return EINVAL;
   case ERROR_FILENAME_EXCED_RANGE:
-    return hzstd_fs_error_code_name_too_long;
-
+  case ERROR_BUFFER_OVERFLOW:
+    return ENAMETOOLONG;
+  case ERROR_DIRECTORY:
+    return ENOTDIR;
+  case ERROR_DIR_NOT_EMPTY:
+    return ENOTEMPTY;
+  case ERROR_DISK_FULL:
+  case ERROR_HANDLE_DISK_FULL:
+    return ENOSPC;
+  case ERROR_NOT_ENOUGH_MEMORY:
+  case ERROR_OUTOFMEMORY:
+    return ENOMEM;
+  case ERROR_WRITE_PROTECT:
+    return EROFS;
+  case ERROR_NOT_SAME_DEVICE:
+    return EXDEV;
+  case ERROR_BUSY:
+    return EBUSY;
+  case ERROR_TOO_MANY_OPEN_FILES:
+    return EMFILE;
+  case ERROR_INVALID_HANDLE:
+    return EBADF;
   default:
-    return hzstd_fs_error_code_io_error;
+    return EIO;
   }
 }
-#endif
 
-#if defined(HAZE_PLATFORM_WIN32)
-static inline hzstd_str_t hzstd_fs_windows_error(DWORD err);
-#endif
-
-// Opens an existing file for reading, as fopen(path, mode) does. On Windows it
-// is also shared for delete: a rename over the file (fs.replaceText, or any
-// other program replacing it whole) then succeeds while it is open here, as it
-// does on Linux. fopen shares only read and write, and Windows refuses such a
-// rename for as long as a reader has the file open. The errors are the ones
-// fopen gave. NULL on failure, with *error set.
-static FILE* hzstd_fs_open_for_reading(const char* path, const char* mode, hzstd_fs_error_t* error)
+static hzstd_fs_error_t hzstd_fs_windows_failure(DWORD err)
 {
-#if defined(HAZE_PLATFORM_WIN32)
-  HANDLE handle = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
-                              OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-  if (handle == INVALID_HANDLE_VALUE) {
-    DWORD err = GetLastError();
-    hzstd_fs_error_code_t code = hzstd_fs_error_from_windows_error(err);
-    // What fopen reported for these (the C runtime's mapping): EACCES and
-    // ENOENT.
-    if (err == ERROR_SHARING_VIOLATION || err == ERROR_LOCK_VIOLATION) {
-      code = hzstd_fs_error_code_permission_denied;
-    } else if (err == ERROR_INVALID_DRIVE || err == ERROR_BAD_NETPATH || err == ERROR_BAD_NET_NAME
-               || err == ERROR_FILENAME_EXCED_RANGE) {
-      code = hzstd_fs_error_code_not_found;
-    }
-    *error = (hzstd_fs_error_t) { .code = code, .message = hzstd_fs_windows_error(err) };
+  int e = hzstd_fs_errno_from_windows_error(err);
+  return (hzstd_fs_error_t) { .code = hzstd_fs_error_from_errno(e), .message = hzstd_fs_errno_message(e) };
+}
+
+// ── Paths for the Win32 calls ───────────────────────────────────────────────
+//
+// Every Win32 call in this file is the UTF-16 (...W) variant, and on Windows
+// no C runtime call here takes a path (fopen, _open, _stat and _mkdir read it
+// in the ANSI code page): see hzstd_win_utf16.h. hzstd_win_path turns a path
+// into what those calls take: UTF-16, made absolute against the current
+// folder (GetFullPathNameW, which also turns '/' into '\' and resolves "."
+// and ".."), and prefixed with \\?\ (\\?\UNC\ for \\server\share). With the
+// prefix the name goes to the filesystem as it is written: a path is not cut
+// at MAX_PATH (260 characters), and a name ending in a dot or a space is that
+// name, as on Linux, for short and long paths alike. A device path (\\.\NUL)
+// and an already prefixed one stay as they are. An empty path names nothing
+// (not_found, as open("") on Linux). malloc'd, for the caller to free; NULL
+// with *error set on failure.
+static wchar_t* hzstd_win_path(const char* path, hzstd_fs_error_t* error)
+{
+  bool invalid = false;
+  wchar_t* wide = hzstd_win_utf16(path, strlen(path), &invalid);
+  if (!wide) {
+    *error = invalid ? (hzstd_fs_error_t) { .code = hzstd_fs_error_code_invalid_path,
+                                            .message = HZSTD_STRING("path is not valid UTF-8", 23) }
+                     : (hzstd_fs_error_t) { .code = hzstd_fs_error_code_out_of_memory,
+                                            .message = HZSTD_STRING("out of memory", 13) };
     return NULL;
   }
-  int fd = _open_osfhandle((intptr_t)handle, _O_RDONLY | (strchr(mode, 'b') ? _O_BINARY : _O_TEXT));
+  if (wide[0] == L'\0') {
+    free(wide);
+    *error = (hzstd_fs_error_t) { .code = hzstd_fs_error_code_not_found, .message = hzstd_fs_errno_message(ENOENT) };
+    return NULL;
+  }
+  DWORD size = GetFullPathNameW(wide, 0, NULL, NULL);
+  wchar_t* full = size > 0 ? (wchar_t*)malloc((size_t)size * sizeof(wchar_t)) : NULL;
+  DWORD length = full ? GetFullPathNameW(wide, size, full, NULL) : 0;
+  DWORD fullErr = GetLastError();
+  free(wide);
+  if (!full || length == 0 || length >= size) {
+    free(full);
+    *error = size == 0 || length == 0 ? hzstd_fs_windows_failure(fullErr)
+                                      : (hzstd_fs_error_t) { .code = hzstd_fs_error_code_out_of_memory,
+                                                             .message = HZSTD_STRING("out of memory", 13) };
+    return NULL;
+  }
+  if (wcsncmp(full, L"\\\\?\\", 4) == 0 || wcsncmp(full, L"\\\\.\\", 4) == 0) {
+    return full;
+  }
+  bool unc = full[0] == L'\\' && full[1] == L'\\';
+  // "\\server\share" keeps one of its two backslashes after "\\?\UNC".
+  const wchar_t* prefix = unc ? L"\\\\?\\UNC" : L"\\\\?\\";
+  const wchar_t* rest = unc ? full + 1 : full;
+  size_t prefixLength = wcslen(prefix);
+  size_t restLength = wcslen(rest);
+  wchar_t* prefixed = (wchar_t*)malloc((prefixLength + restLength + 1) * sizeof(wchar_t));
+  if (!prefixed) {
+    free(full);
+    *error = (hzstd_fs_error_t) { .code = hzstd_fs_error_code_out_of_memory, .message = HZSTD_STRING("out of memory", 13) };
+    return NULL;
+  }
+  memcpy(prefixed, prefix, prefixLength * sizeof(wchar_t));
+  memcpy(prefixed + prefixLength, rest, (restLength + 1) * sizeof(wchar_t));
+  free(full);
+  return prefixed;
+}
+
+// A stdio stream on a file opened with CreateFileW: shared for reading,
+// writing and deleting, as a rename over a file someone reads (fs.replaceText,
+// or any other program replacing it whole) succeeds on Linux. fopen shares
+// only read and write, and Windows refuses such a rename for as long as the
+// file is open. `creation` is OPEN_EXISTING to read, CREATE_ALWAYS to write.
+// A folder at the path is not_a_file. NULL with *error set on failure.
+static FILE* hzstd_win_open_stream(const char* path, DWORD access, DWORD creation, const char* mode,
+                                   hzstd_fs_error_t* error)
+{
+  wchar_t* wide = hzstd_win_path(path, error);
+  if (!wide) {
+    return NULL;
+  }
+  HANDLE handle = CreateFileW(wide, access, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, creation,
+                              FILE_ATTRIBUTE_NORMAL, NULL);
+  if (handle == INVALID_HANDLE_VALUE) {
+    DWORD err = GetLastError();
+    // Opening a folder as a file is refused as access denied.
+    DWORD attributes = err == ERROR_ACCESS_DENIED ? GetFileAttributesW(wide) : INVALID_FILE_ATTRIBUTES;
+    free(wide);
+    if (attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY)) {
+      *error = (hzstd_fs_error_t) { .code = hzstd_fs_error_code_not_a_file, .message = hzstd_fs_errno_message(EISDIR) };
+    } else {
+      *error = hzstd_fs_windows_failure(err);
+    }
+    return NULL;
+  }
+  free(wide);
+  // Text mode, for a `mode` without 'b', is what fopen gives: CRLF is read as
+  // LF, and the first 0x1A byte ends the file.
+  int flags = (strchr(mode, 'b') ? _O_BINARY : _O_TEXT) | (access & GENERIC_WRITE ? _O_WRONLY : _O_RDONLY);
+  int fd = _open_osfhandle((intptr_t)handle, flags);
   if (fd < 0) {
     CloseHandle(handle);
     *error = (hzstd_fs_error_t) { .code = hzstd_fs_error_code_io_error, .message = HZSTD_STRING("no file descriptor for the file", 31) };
@@ -167,6 +320,53 @@ static FILE* hzstd_fs_open_for_reading(const char* path, const char* mode, hzstd
     return NULL;
   }
   return f;
+}
+
+// Deletes the file at `path`, for cleaning up after a failed write.
+static void hzstd_win_delete_file(const char* path)
+{
+  hzstd_fs_error_t ignored;
+  wchar_t* wide = hzstd_win_path(path, &ignored);
+  if (wide) {
+    DeleteFileW(wide);
+    free(wide);
+  }
+}
+#endif
+
+// Creates (or empties) the file at `path` for writing in binary, as
+// fopen(path, "wb") does. NULL on failure, with *error set.
+static FILE* hzstd_fs_open_for_writing(const char* path, hzstd_fs_error_t* error)
+{
+#if defined(HAZE_PLATFORM_WIN32)
+  return hzstd_win_open_stream(path, GENERIC_WRITE, CREATE_ALWAYS, "wb", error);
+#else
+  FILE* f = fopen(path, "wb");
+  if (!f) {
+    int err = errno;
+    *error = (hzstd_fs_error_t) { .code = hzstd_fs_error_from_errno(err), .message = hzstd_fs_errno_message(err) };
+  }
+  return f;
+#endif
+}
+
+// Removes the file at `path`, for cleaning up after a failed write.
+static void hzstd_fs_remove_partial(const char* path)
+{
+#if defined(HAZE_PLATFORM_WIN32)
+  hzstd_win_delete_file(path);
+#else
+  remove(path);
+#endif
+}
+
+// Opens an existing file for reading, as fopen(path, mode) does (on Windows
+// shared for delete too, see hzstd_win_open_stream). NULL on failure, with
+// *error set.
+static FILE* hzstd_fs_open_for_reading(const char* path, const char* mode, hzstd_fs_error_t* error)
+{
+#if defined(HAZE_PLATFORM_WIN32)
+  return hzstd_win_open_stream(path, GENERIC_READ, OPEN_EXISTING, mode, error);
 #else
   FILE* f = fopen(path, mode);
   if (!f) {
@@ -365,13 +565,10 @@ hzstd_fs_error_t hzstd_write_file_text(hzstd_allocator_t allocator, hzstd_str_t 
   hzstd_str_t parent = hzstd_fs_parent_dir(nullTermPath);
   hzstd_mkdir_recursive(parent);
 
-  FILE* f = fopen(nullTermPath, "wb");
+  hzstd_fs_error_t openError;
+  FILE* f = hzstd_fs_open_for_writing(nullTermPath, &openError);
   if (!f) {
-    int err = errno;
-    return (hzstd_fs_error_t) {
-      .code = hzstd_fs_error_from_errno(err),
-      .message = hzstd_fs_errno_message(err),
-    };
+    return openError;
   }
 
   if (input.length > 0) {
@@ -413,9 +610,6 @@ hzstd_fs_error_t hzstd_write_file_text(hzstd_allocator_t allocator, hzstd_str_t 
 // bits of the file it replaces (not setuid, setgid or sticky: the content is
 // new); a new file gets the default ones, and with `privateFile` it is 0600
 // either way. On Windows a file has its folder's permissions.
-#if defined(HAZE_PLATFORM_WIN32)
-static inline hzstd_str_t hzstd_fs_windows_error(DWORD err);
-#endif
 hzstd_fs_error_t hzstd_replace_file_text(hzstd_str_t path, hzstd_str_t input, hzstd_bool_t privateFile)
 {
   HZSTD_SCRATCH_CSTR(target, path);
@@ -430,11 +624,11 @@ hzstd_fs_error_t hzstd_replace_file_text(hzstd_str_t path, hzstd_str_t input, hz
   hzstd_mkdir_recursive(hzstd_fs_parent_dir(target));
 #if defined(HAZE_PLATFORM_WIN32)
   (void)privateFile;
-  FILE* f = fopen(partial, "wb");
+  hzstd_fs_error_t openError;
+  FILE* f = hzstd_fs_open_for_writing(partial, &openError);
   if (!f) {
-    int err = errno;
     free(partial);
-    return (hzstd_fs_error_t) { .code = hzstd_fs_error_from_errno(err), .message = hzstd_fs_errno_message(err) };
+    return openError;
   }
 #else
   int setMode = 0;
@@ -501,7 +695,7 @@ hzstd_fs_error_t hzstd_replace_file_text(hzstd_str_t path, hzstd_str_t input, hz
     err = errno;
   }
   if (failed) {
-    remove(partial);
+    hzstd_fs_remove_partial(partial);
     free(partial);
     return (hzstd_fs_error_t) { .code = hzstd_fs_error_code_io_error, .message = hzstd_fs_errno_message(err) };
   }
@@ -512,54 +706,60 @@ hzstd_fs_error_t hzstd_replace_file_text(hzstd_str_t path, hzstd_str_t input, hz
   // reading the old content -- MoveFileEx refuses exactly that case (error 5).
   // Only a filesystem without POSIX semantics (FAT, exFAT, some network
   // drives) rejects it; there MoveFileEx is all there is.
+  hzstd_fs_error_t pathError;
+  wchar_t* widePartial = hzstd_win_path(partial, &pathError);
+  wchar_t* wideTarget = widePartial ? hzstd_win_path(target, &pathError) : NULL;
+  if (!wideTarget) {
+    free(widePartial);
+    hzstd_fs_remove_partial(partial);
+    free(partial);
+    return pathError;
+  }
   DWORD moveErr = 0;
   int renamed = 0;
   int posixRejected = 0;
-  HANDLE handle = CreateFileA(partial, DELETE | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+  HANDLE handle = CreateFileW(widePartial, DELETE | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                               NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
   if (handle == INVALID_HANDLE_VALUE) {
     moveErr = GetLastError();
   } else {
-    wchar_t full[HAZE_MAX_PATH_LENGTH * 4];
-    wchar_t wide[HAZE_MAX_PATH_LENGTH * 4];
-    int wideLength = MultiByteToWideChar(CP_ACP, 0, target, -1, wide, (int)(sizeof(wide) / sizeof(wide[0])));
-    DWORD fullLength = wideLength > 0 ? GetFullPathNameW(wide, (DWORD)(sizeof(full) / sizeof(full[0])), full, NULL) : 0;
-    if (fullLength == 0 || fullLength >= sizeof(full) / sizeof(full[0])) {
-      moveErr = wideLength > 0 ? GetLastError() : ERROR_FILENAME_EXCED_RANGE;
+    size_t targetChars = wcslen(wideTarget);
+    size_t infoSize = sizeof(FILE_RENAME_INFO) + targetChars * sizeof(wchar_t);
+    FILE_RENAME_INFO* info = calloc(1, infoSize);
+    if (!info) {
+      moveErr = ERROR_NOT_ENOUGH_MEMORY;
     } else {
-      size_t infoSize = sizeof(FILE_RENAME_INFO) + fullLength * sizeof(wchar_t);
-      FILE_RENAME_INFO* info = calloc(1, infoSize);
-      if (!info) {
-        moveErr = ERROR_NOT_ENOUGH_MEMORY;
+      info->Flags = FILE_RENAME_FLAG_REPLACE_IF_EXISTS | FILE_RENAME_FLAG_POSIX_SEMANTICS;
+      info->RootDirectory = NULL;
+      info->FileNameLength = (DWORD)(targetChars * sizeof(wchar_t));
+      memcpy(info->FileName, wideTarget, targetChars * sizeof(wchar_t));
+      if (SetFileInformationByHandle(handle, FileRenameInfoEx, info, (DWORD)infoSize)) {
+        renamed = 1;
+        // The rename is metadata of this file: flushed with it.
+        FlushFileBuffers(handle);
       } else {
-        info->Flags = FILE_RENAME_FLAG_REPLACE_IF_EXISTS | FILE_RENAME_FLAG_POSIX_SEMANTICS;
-        info->RootDirectory = NULL;
-        info->FileNameLength = (DWORD)(fullLength * sizeof(wchar_t));
-        memcpy(info->FileName, full, fullLength * sizeof(wchar_t));
-        if (SetFileInformationByHandle(handle, FileRenameInfoEx, info, (DWORD)infoSize)) {
-          renamed = 1;
-          // The rename is metadata of this file: flushed with it.
-          FlushFileBuffers(handle);
-        } else {
-          moveErr = GetLastError();
-          posixRejected = moveErr == ERROR_INVALID_PARAMETER || moveErr == ERROR_NOT_SUPPORTED;
-        }
-        free(info);
+        moveErr = GetLastError();
+        posixRejected = moveErr == ERROR_INVALID_PARAMETER || moveErr == ERROR_NOT_SUPPORTED;
       }
+      free(info);
     }
     CloseHandle(handle);
   }
   if (!renamed && posixRejected) {
-    if (MoveFileExA(partial, target, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+    if (MoveFileExW(widePartial, wideTarget, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
       renamed = 1;
     } else {
       moveErr = GetLastError();
     }
   }
   if (!renamed) {
-    DeleteFileA(partial);
+    DeleteFileW(widePartial);
+  }
+  free(widePartial);
+  free(wideTarget);
+  if (!renamed) {
     free(partial);
-    return (hzstd_fs_error_t) { .code = hzstd_fs_error_from_windows_error(moveErr), .message = hzstd_fs_windows_error(moveErr) };
+    return hzstd_fs_windows_failure(moveErr);
   }
 #else
   if (rename(partial, target) != 0) {
@@ -614,10 +814,48 @@ hzstd_fs_error_t hzstd_create_file_text(hzstd_allocator_t allocator, hzstd_str_t
   hzstd_mkdir_recursive(parent);
 
 #if defined(HAZE_PLATFORM_WIN32)
-  int fd = _open(nullTermPath, _O_WRONLY | _O_CREAT | _O_EXCL | _O_BINARY, _S_IREAD | _S_IWRITE);
+  hzstd_fs_error_t pathError;
+  wchar_t* wide = hzstd_win_path(nullTermPath, &pathError);
+  if (!wide) {
+    return pathError;
+  }
+  HANDLE handle = CreateFileW(wide, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
+                              CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
+  if (handle == INVALID_HANDLE_VALUE) {
+    DWORD err = GetLastError();
+    // A folder at the path is reported as access denied: it is there all the
+    // same.
+    bool taken = err == ERROR_ACCESS_DENIED && GetFileAttributesW(wide) != INVALID_FILE_ATTRIBUTES;
+    free(wide);
+    return taken ? (hzstd_fs_error_t) { .code = hzstd_fs_error_code_already_exists, .message = hzstd_fs_errno_message(EEXIST) }
+                 : hzstd_fs_windows_failure(err);
+  }
+  const char* data = input.data;
+  hzstd_int_t left = input.length;
+  while (left > 0) {
+    DWORD chunk = left > (hzstd_int_t)0x40000000 ? 0x40000000 : (DWORD)left;
+    DWORD written = 0;
+    if (!WriteFile(handle, data, chunk, &written, NULL) || written == 0) {
+      DWORD err = GetLastError();
+      CloseHandle(handle);
+      DeleteFileW(wide);
+      free(wide);
+      hzstd_fs_error_t failure = hzstd_fs_windows_failure(err);
+      failure.code = hzstd_fs_error_code_io_error;
+      return failure;
+    }
+    data += written;
+    left -= written;
+  }
+  if (!CloseHandle(handle)) {
+    DWORD err = GetLastError();
+    DeleteFileW(wide);
+    free(wide);
+    return hzstd_fs_windows_failure(err);
+  }
+  free(wide);
 #else
   int fd = open(nullTermPath, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0666);
-#endif
   if (fd < 0) {
     int err = errno;
     return (hzstd_fs_error_t) {
@@ -629,21 +867,13 @@ hzstd_fs_error_t hzstd_create_file_text(hzstd_allocator_t allocator, hzstd_str_t
   const char* data = input.data;
   hzstd_int_t left = input.length;
   while (left > 0) {
-#if defined(HAZE_PLATFORM_WIN32)
-    int written = _write(fd, data, left > INT_MAX ? INT_MAX : (unsigned int)left);
-#else
     ssize_t written = write(fd, data, (size_t)left);
     if (written < 0 && errno == EINTR) {
       continue;
     }
-#endif
     if (written <= 0) {
       int err = written < 0 ? errno : EIO;
-#if defined(HAZE_PLATFORM_WIN32)
-      _close(fd);
-#else
       close(fd);
-#endif
       remove(nullTermPath);
       return (hzstd_fs_error_t) {
         .code = hzstd_fs_error_code_io_error,
@@ -654,11 +884,7 @@ hzstd_fs_error_t hzstd_create_file_text(hzstd_allocator_t allocator, hzstd_str_t
     left -= written;
   }
 
-#if defined(HAZE_PLATFORM_WIN32)
-  int closed = _close(fd);
-#else
   int closed = close(fd);
-#endif
   if (closed != 0) {
     int err = errno;
     remove(nullTermPath);
@@ -667,6 +893,7 @@ hzstd_fs_error_t hzstd_create_file_text(hzstd_allocator_t allocator, hzstd_str_t
       .message = hzstd_fs_errno_message(err),
     };
   }
+#endif
 
   return (hzstd_fs_error_t) {
     .code = hzstd_fs_error_code_none,
@@ -694,19 +921,24 @@ hzstd_fs_error_t hzstd_remove_file(hzstd_str_t path)
   }
 
 #if defined(HAZE_PLATFORM_WIN32)
-  DWORD attributes = GetFileAttributesA(nullTermPath);
+  hzstd_fs_error_t pathError;
+  wchar_t* wide = hzstd_win_path(nullTermPath, &pathError);
+  if (!wide) {
+    return pathError;
+  }
+  DWORD attributes = GetFileAttributesW(wide);
   if (attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY)) {
+    free(wide);
     return (hzstd_fs_error_t) {
       .code = hzstd_fs_error_code_not_a_file,
       .message = HZSTD_STRING("path is a directory", 19),
     };
   }
-  if (!DeleteFileA(nullTermPath)) {
-    DWORD err = GetLastError();
-    return (hzstd_fs_error_t) {
-      .code = hzstd_fs_error_from_windows_error(err),
-      .message = HZSTD_STRING("could not remove the file", 25),
-    };
+  BOOL deleted = DeleteFileW(wide);
+  DWORD err = GetLastError();
+  free(wide);
+  if (!deleted) {
+    return hzstd_fs_windows_failure(err);
   }
 #else
   struct stat st;
@@ -768,22 +1000,14 @@ hzstd_fs_error_t hzstd_move_to_trash(hzstd_str_t path)
     };
   }
 
-  int wideLength = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path.data, (int)path.length, NULL, 0);
-  if (wideLength <= 0) {
-    return (hzstd_fs_error_t) {
-      .code = hzstd_fs_error_code_invalid_path,
-      .message = HZSTD_STRING("path is not valid UTF-8", 23),
-    };
-  }
-  wchar_t* wide = (wchar_t*)malloc(((size_t)wideLength + 1) * sizeof(wchar_t));
+  bool invalid = false;
+  wchar_t* wide = hzstd_win_utf16(path.data, (size_t)path.length, &invalid);
   if (!wide) {
-    return (hzstd_fs_error_t) {
-      .code = hzstd_fs_error_code_out_of_memory,
-      .message = HZSTD_STRING("out of memory", 13),
-    };
+    return invalid ? (hzstd_fs_error_t) { .code = hzstd_fs_error_code_invalid_path,
+                                          .message = HZSTD_STRING("path is not valid UTF-8", 23) }
+                   : (hzstd_fs_error_t) { .code = hzstd_fs_error_code_out_of_memory,
+                                          .message = HZSTD_STRING("out of memory", 13) };
   }
-  MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path.data, (int)path.length, wide, wideLength);
-  wide[wideLength] = L'\0';
 
   // The shell expands a wildcard and would trash every item it matches. No
   // Windows file name can contain one, so such a path names no item.
@@ -797,7 +1021,8 @@ hzstd_fs_error_t hzstd_move_to_trash(hzstd_str_t path)
 
   // SHFileOperationW wants a full path: it resolves a relative one against
   // whatever the current folder is at that moment. Its list of paths ends in
-  // two NULs, hence the room for one more.
+  // two NULs, hence the room for one more. It takes no \\?\ prefix, so this
+  // is the one path here that does not go through hzstd_win_path.
   DWORD fullSize = GetFullPathNameW(wide, 0, NULL, NULL);
   wchar_t* full = fullSize > 0 ? (wchar_t*)malloc(((size_t)fullSize + 1) * sizeof(wchar_t)) : NULL;
   DWORD fullLength = full ? GetFullPathNameW(wide, fullSize, full, NULL) : 0;
@@ -819,12 +1044,11 @@ hzstd_fs_error_t hzstd_move_to_trash(hzstd_str_t path)
   if (GetFileAttributesW(full) == INVALID_FILE_ATTRIBUTES) {
     DWORD err = GetLastError();
     free(full);
-    hzstd_fs_error_code_t code = hzstd_fs_error_from_windows_error(err);
-    return (hzstd_fs_error_t) {
-      .code = code,
-      .message = code == hzstd_fs_error_code_not_found ? HZSTD_STRING("no such file or folder", 22)
-                                                       : HZSTD_STRING("could not reach the item", 24),
-    };
+    hzstd_fs_error_t failure = hzstd_fs_windows_failure(err);
+    if (failure.code == hzstd_fs_error_code_not_found) {
+      failure.message = HZSTD_STRING("no such file or folder", 22);
+    }
+    return failure;
   }
 
   // FOF_ALLOWUNDO is what sends it to the Recycle Bin. When the bin cannot
@@ -847,7 +1071,7 @@ hzstd_fs_error_t hzstd_move_to_trash(hzstd_str_t path)
   if (result != 0) {
     return (hzstd_fs_error_t) {
       .code = result == HZSTD_TRASH_DE_ACCESSDENIEDSRC ? hzstd_fs_error_code_permission_denied
-                                                       : hzstd_fs_error_from_windows_error((DWORD)result),
+                                                       : hzstd_fs_windows_failure((DWORD)result).code,
       .message = HZSTD_STRING("could not move the item to the Recycle Bin", 42),
     };
   }
@@ -1280,13 +1504,10 @@ hzstd_fs_error_t hzstd_file_open_write(hzstd_allocator_t allocator, hzstd_str_t 
   hzstd_str_t parent = hzstd_fs_parent_dir(nullTermPath);
   hzstd_mkdir_recursive(parent);
 
-  FILE* f = fopen(nullTermPath, "wb");
+  hzstd_fs_error_t openError;
+  FILE* f = hzstd_fs_open_for_writing(nullTermPath, &openError);
   if (!f) {
-    int err = errno;
-    return (hzstd_fs_error_t) {
-      .code = hzstd_fs_error_from_errno(err),
-      .message = hzstd_fs_errno_message(err),
-    };
+    return openError;
   }
 
   // A big stdio buffer is what keeps this from becoming a syscall per append:
@@ -1386,7 +1607,7 @@ hzstd_file_open_read(hzstd_allocator_t allocator, hzstd_str_t path, void* out_ha
   }
 #endif
 
-  struct STAT st;
+  FSTAT_STRUCT st;
   if (FSTAT(FILENO(f), &st) != 0) {
     int err = errno;
     fclose(f);
@@ -1497,13 +1718,10 @@ hzstd_write_file_binary(hzstd_allocator_t allocator, hzstd_str_t path, void* buf
   hzstd_str_t parent = hzstd_fs_parent_dir(nullTermPath);
   hzstd_mkdir_recursive(parent);
 
-  FILE* f = fopen(nullTermPath, "wb");
+  hzstd_fs_error_t openError;
+  FILE* f = hzstd_fs_open_for_writing(nullTermPath, &openError);
   if (!f) {
-    int err = errno;
-    return (hzstd_fs_error_t) {
-      .code = hzstd_fs_error_from_errno(err),
-      .message = hzstd_fs_errno_message(err),
-    };
+    return openError;
   }
 
   size_t written = fwrite(buffer, 1, (size_t)length, f);
@@ -1534,6 +1752,79 @@ hzstd_write_file_binary(hzstd_allocator_t allocator, hzstd_str_t path, void* buf
 // above get the default permissions; with `privateLeaf`, `path` itself, when
 // it is made here, is 0700 on Linux (on Windows it has its parent's). A
 // folder already there keeps its permissions.
+#if defined(HAZE_PLATFORM_WIN32)
+static hzstd_fs_error_t hzstd_mkdir_recursive_leaf(hzstd_str_t path, int privateLeaf)
+{
+  (void)privateLeaf;
+  if (path.data == NULL || path.length == 0) {
+    return (hzstd_fs_error_t) { .code = hzstd_fs_error_code_invalid_path, .message = HZSTD_STRING("invalid path", 12) };
+  }
+  HZSTD_SCRATCH_CSTR(cpath, path);
+  if (!cpath) {
+    return (hzstd_fs_error_t) { .code = hzstd_fs_error_code_out_of_memory, .message = HZSTD_STRING("out of memory", 13) };
+  }
+  hzstd_fs_error_t error;
+  wchar_t* full = hzstd_win_path(cpath, &error);
+  if (!full) {
+    return error;
+  }
+  size_t length = wcslen(full);
+  while (length > 0 && full[length - 1] == L'\\') {
+    full[--length] = L'\0';
+  }
+  // The first folder that can be made comes after the root: "\\?\C:\",
+  // "\\?\UNC\server\share\", or a device's first component.
+  size_t start = 4;
+  size_t components = 1;
+  if (wcsncmp(full, L"\\\\?\\UNC\\", 8) == 0) {
+    start = 8;
+    components = 2;
+  }
+  else if (length >= 6 && full[5] == L':') {
+    start = 7;
+    components = 0;
+  }
+  for (; components > 0 && start < length; start++) {
+    if (full[start] == L'\\') {
+      components--;
+    }
+  }
+
+  for (size_t i = start; i <= length; i++) {
+    if (i < length && full[i] != L'\\') {
+      continue;
+    }
+    wchar_t saved = full[i];
+    full[i] = L'\0';
+    DWORD attributes = GetFileAttributesW(full);
+    if (attributes == INVALID_FILE_ATTRIBUTES) {
+      DWORD err = GetLastError();
+      if (err == ERROR_FILE_NOT_FOUND || err == ERROR_PATH_NOT_FOUND) {
+        err = CreateDirectoryW(full, NULL) ? 0 : GetLastError();
+        // Another program made it in the meantime: it is there.
+        if (err == ERROR_ALREADY_EXISTS) {
+          err = 0;
+        }
+      }
+      if (err != 0) {
+        free(full);
+        return hzstd_fs_windows_failure(err);
+      }
+    }
+    else if (!(attributes & FILE_ATTRIBUTE_DIRECTORY)) {
+      free(full);
+      return (hzstd_fs_error_t) {
+        .code = hzstd_fs_error_code_not_a_file,
+        .message = i < length ? HZSTD_STRING("path component is not a directory", 35)
+                              : HZSTD_STRING("path exists but is not a directory", 36),
+      };
+    }
+    full[i] = saved;
+  }
+  free(full);
+  return (hzstd_fs_error_t) { .code = hzstd_fs_error_code_none, .message = HZSTD_STRING(NULL, 0) };
+}
+#else
 static hzstd_fs_error_t hzstd_mkdir_recursive_leaf(hzstd_str_t path, int privateLeaf)
 {
   if (path.data == NULL || path.length == 0) {
@@ -1607,12 +1898,7 @@ static hzstd_fs_error_t hzstd_mkdir_recursive_leaf(hzstd_str_t path, int private
       };
     }
 
-#if defined(HAZE_PLATFORM_WIN32)
-    (void)privateLeaf;
-    int made = MKDIR(tmp);
-#else
     int made = privateLeaf ? mkdir(tmp, 0700) : MKDIR(tmp);
-#endif
     if (made != 0 && errno != EEXIST) {
       int err = errno;
       return (hzstd_fs_error_t) {
@@ -1633,6 +1919,7 @@ static hzstd_fs_error_t hzstd_mkdir_recursive_leaf(hzstd_str_t path, int private
     .message = HZSTD_STRING(NULL, 0),
   };
 }
+#endif
 
 hzstd_fs_error_t hzstd_mkdir_recursive(hzstd_str_t path)
 {
@@ -1661,6 +1948,29 @@ hzstd_fs_exists_result_t hzstd_fs_exists(hzstd_str_t path)
     return result;
   }
 
+#if defined(HAZE_PLATFORM_WIN32)
+  HZSTD_SCRATCH_CSTR(cpath, path);
+  if (!cpath) {
+    result.error = (hzstd_fs_error_t) { .code = hzstd_fs_error_code_out_of_memory, .message = HZSTD_STRING("out of memory", 13) };
+    return result;
+  }
+  hzstd_fs_error_t pathError;
+  wchar_t* wide = hzstd_win_path(cpath, &pathError);
+  if (!wide) {
+    result.error = pathError;
+    return result;
+  }
+  DWORD attributes = GetFileAttributesW(wide);
+  DWORD err = GetLastError();
+  free(wide);
+  if (attributes != INVALID_FILE_ATTRIBUTES) {
+    result.exists = true;
+  }
+  else if (err != ERROR_FILE_NOT_FOUND && err != ERROR_PATH_NOT_FOUND) {
+    result.error = hzstd_fs_windows_failure(err);
+  }
+  return result;
+#else
   if (path.length >= HAZE_MAX_PATH_LENGTH) {
     result.error = (hzstd_fs_error_t) {
       .code = hzstd_fs_error_code_name_too_long,
@@ -1693,6 +2003,7 @@ hzstd_fs_exists_result_t hzstd_fs_exists(hzstd_str_t path)
   };
 
   return result;
+#endif
 }
 
 // A copy of `text` (`length` bytes) in the caller's allocator, as the result.
@@ -1721,22 +2032,18 @@ hzstd_fs_path_result_t hzstd_fs_real_path(hzstd_allocator_t allocator, hzstd_str
     };
   }
 #if defined(HAZE_PLATFORM_WIN32)
-  int wideLength = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path.data, (int)path.length, NULL, 0);
-  if (wideLength <= 0) {
-    return (hzstd_fs_path_result_t) {
-      .path = HZSTD_STRING(NULL, 0),
-      .error = { .code = hzstd_fs_error_code_invalid_path, .message = HZSTD_STRING("path is not valid UTF-8", 23) },
-    };
-  }
-  wchar_t* wide = (wchar_t*)malloc(((size_t)wideLength + 1) * sizeof(wchar_t));
-  if (!wide) {
+  HZSTD_SCRATCH_CSTR(cpath, path);
+  if (!cpath) {
     return (hzstd_fs_path_result_t) {
       .path = HZSTD_STRING(NULL, 0),
       .error = { .code = hzstd_fs_error_code_out_of_memory, .message = HZSTD_STRING("out of memory", 13) },
     };
   }
-  MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path.data, (int)path.length, wide, wideLength);
-  wide[wideLength] = L'\0';
+  hzstd_fs_error_t pathError;
+  wchar_t* wide = hzstd_win_path(cpath, &pathError);
+  if (!wide) {
+    return (hzstd_fs_path_result_t) { .path = HZSTD_STRING(NULL, 0), .error = pathError };
+  }
   // BACKUP_SEMANTICS opens a folder too; no access is asked for, only the
   // name.
   HANDLE handle = CreateFileW(wide, 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING,
@@ -1744,10 +2051,7 @@ hzstd_fs_path_result_t hzstd_fs_real_path(hzstd_allocator_t allocator, hzstd_str
   free(wide);
   if (handle == INVALID_HANDLE_VALUE) {
     DWORD err = GetLastError();
-    return (hzstd_fs_path_result_t) {
-      .path = HZSTD_STRING(NULL, 0),
-      .error = { .code = hzstd_fs_error_from_windows_error(err), .message = hzstd_fs_windows_error(err) },
-    };
+    return (hzstd_fs_path_result_t) { .path = HZSTD_STRING(NULL, 0), .error = hzstd_fs_windows_failure(err) };
   }
   DWORD finalLength = GetFinalPathNameByHandleW(handle, NULL, 0, FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
   wchar_t* final = finalLength > 0 ? (wchar_t*)malloc(((size_t)finalLength + 1) * sizeof(wchar_t)) : NULL;
@@ -1756,10 +2060,7 @@ hzstd_fs_path_result_t hzstd_fs_real_path(hzstd_allocator_t allocator, hzstd_str
   CloseHandle(handle);
   if (!final || written == 0 || written > finalLength) {
     free(final);
-    return (hzstd_fs_path_result_t) {
-      .path = HZSTD_STRING(NULL, 0),
-      .error = { .code = hzstd_fs_error_from_windows_error(finalErr), .message = hzstd_fs_windows_error(finalErr) },
-    };
+    return (hzstd_fs_path_result_t) { .path = HZSTD_STRING(NULL, 0), .error = hzstd_fs_windows_failure(finalErr) };
   }
   // The name comes back as "\\?\C:\..." (or "\\?\UNC\server\..."): the
   // spelling every other call takes is without that prefix.
@@ -1772,18 +2073,16 @@ hzstd_fs_path_result_t hzstd_fs_real_path(hzstd_allocator_t allocator, hzstd_str
   else if (wcsncmp(name, L"\\\\?\\", 4) == 0) {
     name = final + 4;
   }
-  int utf8Length = WideCharToMultiByte(CP_UTF8, 0, name, -1, NULL, 0, NULL, NULL);
-  char* utf8 = utf8Length > 0 ? (char*)malloc((size_t)utf8Length) : NULL;
-  if (!utf8 || WideCharToMultiByte(CP_UTF8, 0, name, -1, utf8, utf8Length, NULL, NULL) <= 0) {
-    free(utf8);
-    free(final);
+  size_t utf8Length = 0;
+  char* utf8 = hzstd_win_utf8(name, &utf8Length);
+  free(final);
+  if (!utf8) {
     return (hzstd_fs_path_result_t) {
       .path = HZSTD_STRING(NULL, 0),
       .error = { .code = hzstd_fs_error_code_out_of_memory, .message = HZSTD_STRING("out of memory", 13) },
     };
   }
-  free(final);
-  hzstd_fs_path_result_t result = hzstd_fs_path_result(allocator, utf8, strlen(utf8));
+  hzstd_fs_path_result_t result = hzstd_fs_path_result(allocator, utf8, utf8Length);
   free(utf8);
   return result;
 #else
@@ -1809,24 +2108,36 @@ hzstd_fs_path_result_t hzstd_fs_real_path(hzstd_allocator_t allocator, hzstd_str
 }
 
 
-#ifdef HAZE_PLATFORM_WIN32
-static inline hzstd_str_t hzstd_fs_windows_error(DWORD err)
+#if defined(HAZE_PLATFORM_WIN32)
+// `dir` + "/" + `name` (`length` bytes), malloc'd. NULL when memory runs out.
+static char* hzstd_fs_join(const char* dir, const char* name, size_t length)
 {
-  LPSTR msg = NULL;
-  DWORD size
-      = FormatMessageA(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
-                       NULL,
-                       err,
-                       MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
-                       (LPSTR)&msg,
-                       0,
-                       NULL);
-  if (size == 0 || !msg) {
-    return HZSTD_STRING("Unknown error", 13);
+  size_t dirLength = strlen(dir);
+  char* joined = (char*)malloc(dirLength + 1 + length + 1);
+  if (joined) {
+    memcpy(joined, dir, dirLength);
+    joined[dirLength] = '/';
+    memcpy(joined + dirLength + 1, name, length);
+    joined[dirLength + 1 + length] = '\0';
   }
-  hzstd_str_t out = hzstd_cstr_dup(msg);
-  LocalFree(msg);
-  return out;
+  return joined;
+}
+
+// The attributes of what is at `path`; INVALID_FILE_ATTRIBUTES with *error
+// set when nothing is or it cannot be reached.
+static DWORD hzstd_win_attributes(const char* path, hzstd_fs_error_t* error)
+{
+  wchar_t* wide = hzstd_win_path(path, error);
+  if (!wide) {
+    return INVALID_FILE_ATTRIBUTES;
+  }
+  DWORD attributes = GetFileAttributesW(wide);
+  DWORD err = GetLastError();
+  free(wide);
+  if (attributes == INVALID_FILE_ATTRIBUTES) {
+    *error = hzstd_fs_windows_failure(err);
+  }
+  return attributes;
 }
 #endif
 
@@ -1834,23 +2145,41 @@ static inline hzstd_str_t hzstd_fs_windows_error(DWORD err)
 static hzstd_fs_error_t
 hzstd_fs_copy_file_internal(const char* src, const char* dst, const hzstd_fs_copy_options_t* opts)
 {
+#if defined(HAZE_PLATFORM_WIN32)
+  hzstd_fs_error_t error;
+  if (hzstd_win_attributes(src, &error) == INVALID_FILE_ATTRIBUTES) {
+    return error;
+  }
+  // Create parent directory, not the file path itself
+  hzstd_mkdir_recursive(hzstd_fs_parent_dir(dst));
+  wchar_t* wideSrc = hzstd_win_path(src, &error);
+  wchar_t* wideDst = wideSrc ? hzstd_win_path(dst, &error) : NULL;
+  if (!wideDst) {
+    free(wideSrc);
+    return error;
+  }
+  BOOL copied = CopyFileW(wideSrc, wideDst, !opts->overwrite);
+  DWORD err = GetLastError();
+  free(wideSrc);
+  free(wideDst);
+  if (!copied) {
+    if (err == ERROR_FILE_EXISTS) {
+      return (hzstd_fs_error_t) { .code = hzstd_fs_error_code_already_exists,
+                                  .message = HZSTD_STRING("destination exists", 18) };
+    }
+    return hzstd_fs_windows_failure(err);
+  }
+#else
   struct STAT st;
   if (STAT(src, &st) != 0) {
-#if defined(HAZE_PLATFORM_LINUX)
     return (hzstd_fs_error_t) { .code = hzstd_fs_error_from_errno(errno),
                                 .message = hzstd_fs_errno_message(errno) };
-#elif defined(HAZE_PLATFORM_WIN32)
-    DWORD err = GetLastError();
-    return (hzstd_fs_error_t) { .code = hzstd_fs_error_from_windows_error(err),
-                                .message = hzstd_fs_windows_error(err) };
-#endif
   }
 
   // Create parent directory, not the file path itself
   hzstd_str_t parent = hzstd_fs_parent_dir(dst);
   hzstd_mkdir_recursive(parent);
 
-#if defined(HAZE_PLATFORM_LINUX)
   if (!opts->overwrite) {
     struct STAT dst_st;
     if (STAT(dst, &dst_st) == 0) {
@@ -1889,14 +2218,6 @@ hzstd_fs_copy_file_internal(const char* src, const char* dst, const hzstd_fs_cop
   if (r < 0) {
     return (hzstd_fs_error_t) { .code = hzstd_fs_error_from_errno(errno),
                                 .message = hzstd_fs_errno_message(errno) };
-  }
-
-#elif defined(HAZE_PLATFORM_WIN32)
-  BOOL fail_if_exists = !opts->overwrite;
-  if (!CopyFileA(src, dst, fail_if_exists)) {
-    DWORD err = GetLastError();
-    return (hzstd_fs_error_t) { .code = hzstd_fs_error_from_windows_error(err),
-                                .message = hzstd_fs_windows_error(err) };
   }
 #endif
 
@@ -1953,25 +2274,44 @@ hzstd_fs_copy_dir_internal(const char* src, const char* dst, const hzstd_fs_copy
   closedir(dir);
 
 #elif defined(HAZE_PLATFORM_WIN32)
-  WIN32_FIND_DATAA ffd;
-  char search_path[HAZE_MAX_PATH_LENGTH];
-  snprintf(search_path, sizeof(search_path), "%s\\*", src);
-  HANDLE hFind = FindFirstFileA(search_path, &ffd);
+  hzstd_fs_error_t pathError;
+  wchar_t* wideSrc = hzstd_win_path(src, &pathError);
+  if (!wideSrc) {
+    return pathError;
+  }
+  size_t srcChars = wcslen(wideSrc);
+  wchar_t* pattern = (wchar_t*)malloc((srcChars + 3) * sizeof(wchar_t));
+  if (!pattern) {
+    free(wideSrc);
+    return (hzstd_fs_error_t) { .code = hzstd_fs_error_code_out_of_memory, .message = HZSTD_STRING("out of memory", 13) };
+  }
+  memcpy(pattern, wideSrc, srcChars * sizeof(wchar_t));
+  memcpy(pattern + srcChars, L"\\*", 3 * sizeof(wchar_t));
+  free(wideSrc);
+  WIN32_FIND_DATAW ffd;
+  HANDLE hFind = FindFirstFileW(pattern, &ffd);
+  DWORD findErr = GetLastError();
+  free(pattern);
   if (hFind == INVALID_HANDLE_VALUE) {
-    DWORD err = GetLastError();
-    return (hzstd_fs_error_t) { .code = hzstd_fs_error_from_windows_error(err),
-                                .message = hzstd_fs_windows_error(err) };
+    return hzstd_fs_windows_failure(findErr);
   }
 
   do {
-    if (strcmp(ffd.cFileName, ".") == 0 || strcmp(ffd.cFileName, "..") == 0) {
+    if (wcscmp(ffd.cFileName, L".") == 0 || wcscmp(ffd.cFileName, L"..") == 0) {
       continue;
     }
 
-    char src_path[HAZE_MAX_PATH_LENGTH];
-    char dst_path[HAZE_MAX_PATH_LENGTH];
-    snprintf(src_path, sizeof(src_path), "%s\\%s", src, ffd.cFileName);
-    snprintf(dst_path, sizeof(dst_path), "%s\\%s", dst, ffd.cFileName);
+    size_t nameLength = 0;
+    char* name = hzstd_win_utf8(ffd.cFileName, &nameLength);
+    char* src_path = name ? hzstd_fs_join(src, name, nameLength) : NULL;
+    char* dst_path = name ? hzstd_fs_join(dst, name, nameLength) : NULL;
+    free(name);
+    if (!src_path || !dst_path) {
+      free(src_path);
+      free(dst_path);
+      FindClose(hFind);
+      return (hzstd_fs_error_t) { .code = hzstd_fs_error_code_out_of_memory, .message = HZSTD_STRING("out of memory", 13) };
+    }
 
     hzstd_fs_error_t err;
     if (ffd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
@@ -1980,12 +2320,14 @@ hzstd_fs_copy_dir_internal(const char* src, const char* dst, const hzstd_fs_copy
     else {
       err = hzstd_fs_copy_file_internal(src_path, dst_path, opts);
     }
+    free(src_path);
+    free(dst_path);
 
     if (err.code != hzstd_fs_error_code_none && !opts->skip_errors) {
       FindClose(hFind);
       return err;
     }
-  } while (FindNextFileA(hFind, &ffd) != 0);
+  } while (FindNextFileW(hFind, &ffd) != 0);
   FindClose(hFind);
 #endif
 
@@ -2029,19 +2371,23 @@ hzstd_fs_error_t hzstd_fs_copy(hzstd_str_t src, hzstd_str_t dst, hzstd_fs_copy_o
   if (!srcPath || !dstPath) {
     return (hzstd_fs_error_t) { .code = hzstd_fs_error_code_out_of_memory, .message = HZSTD_STRING("out of memory", 13) };
   }
+#if defined(HAZE_PLATFORM_WIN32)
+  hzstd_fs_error_t error;
+  DWORD attributes = hzstd_win_attributes(srcPath, &error);
+  if (attributes == INVALID_FILE_ATTRIBUTES) {
+    return error;
+  }
+  bool isDir = (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+#else
   struct STAT st;
   if (STAT(srcPath, &st) != 0) {
-#if defined(HAZE_PLATFORM_LINUX)
     return (hzstd_fs_error_t) { .code = hzstd_fs_error_from_errno(errno),
                                 .message = hzstd_fs_errno_message(errno) };
-#elif defined(HAZE_PLATFORM_WIN32)
-    DWORD err = GetLastError();
-    return (hzstd_fs_error_t) { .code = hzstd_fs_error_from_windows_error(err),
-                                .message = hzstd_fs_windows_error(err) };
-#endif
   }
+  bool isDir = IS_DIR(st.st_mode);
+#endif
 
-  if (IS_DIR(st.st_mode)) {
+  if (isDir) {
     return hzstd_fs_copy_dir_internal(srcPath, dstPath, opts);
   }
   else {
@@ -2082,14 +2428,36 @@ hzstd_fs_error_t hzstd_fs_move(hzstd_str_t src, hzstd_str_t dst, hzstd_fs_copy_o
 #elif defined(HAZE_PLATFORM_WIN32)
   {
     hzstd_mkdir_recursive(hzstd_fs_parent_dir(dstPath));
-    DWORD flags = opts->overwrite ? MOVEFILE_REPLACE_EXISTING : 0;
-    if (MoveFileExA(srcPath, dstPath, flags)) {
+    hzstd_fs_error_t pathError;
+    wchar_t* wideSrc = hzstd_win_path(srcPath, &pathError);
+    wchar_t* wideDst = wideSrc ? hzstd_win_path(dstPath, &pathError) : NULL;
+    if (!wideDst) {
+      free(wideSrc);
+      return pathError;
+    }
+    BOOL moved = MoveFileExW(wideSrc, wideDst, opts->overwrite ? MOVEFILE_REPLACE_EXISTING : 0);
+    DWORD moveErr = moved ? 0 : GetLastError();
+    DWORD srcAttributes = moved ? INVALID_FILE_ATTRIBUTES : GetFileAttributesW(wideSrc);
+    DWORD dstAttributes = moved ? INVALID_FILE_ATTRIBUTES : GetFileAttributesW(wideDst);
+    free(wideSrc);
+    free(wideDst);
+    if (moved) {
       return (hzstd_fs_error_t) { .code = hzstd_fs_error_code_none };
     }
-    DWORD moveErr = GetLastError();
-    if (moveErr != ERROR_NOT_SAME_DEVICE && moveErr != ERROR_ACCESS_DENIED) {
-      return (hzstd_fs_error_t) { .code = hzstd_fs_error_from_windows_error(moveErr),
-                                  .message = hzstd_fs_windows_error(moveErr) };
+    if (!opts->overwrite && (moveErr == ERROR_ALREADY_EXISTS || moveErr == ERROR_FILE_EXISTS)) {
+      return (hzstd_fs_error_t) { .code = hzstd_fs_error_code_already_exists,
+                                  .message = HZSTD_STRING("destination exists", 18) };
+    }
+    // Copied instead only to another drive, or for a folder onto a folder
+    // that is there (merged), as on Linux. A file the rename cannot replace
+    // (another program holds it open) is never written over in place: that
+    // would leave a half-written file where the rename promised the old one
+    // or the new one.
+    bool merge = opts->overwrite && (moveErr == ERROR_ACCESS_DENIED || moveErr == ERROR_ALREADY_EXISTS)
+                 && srcAttributes != INVALID_FILE_ATTRIBUTES && (srcAttributes & FILE_ATTRIBUTE_DIRECTORY)
+                 && dstAttributes != INVALID_FILE_ATTRIBUTES && (dstAttributes & FILE_ATTRIBUTE_DIRECTORY);
+    if (moveErr != ERROR_NOT_SAME_DEVICE && !merge) {
+      return hzstd_fs_windows_failure(moveErr);
     }
   }
 #endif
@@ -2119,11 +2487,22 @@ hzstd_fs_error_t hzstd_fs_move(hzstd_str_t src, hzstd_str_t dst, hzstd_fs_copy_o
     }
   }
 #elif defined(HAZE_PLATFORM_WIN32)
-  if (IS_DIR(GetFileAttributesA(srcPath))) {
-    RemoveDirectoryA(srcPath);
-  }
-  else {
-    DeleteFileA(srcPath);
+  {
+    // As on Linux, a folder is removed only when it is empty.
+    hzstd_fs_error_t pathError;
+    wchar_t* wideSrc = hzstd_win_path(srcPath, &pathError);
+    if (!wideSrc) {
+      return pathError;
+    }
+    DWORD attributes = GetFileAttributesW(wideSrc);
+    BOOL removed = attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY)
+                       ? RemoveDirectoryW(wideSrc)
+                       : DeleteFileW(wideSrc);
+    DWORD removeErr = GetLastError();
+    free(wideSrc);
+    if (!removed) {
+      return hzstd_fs_windows_failure(removeErr);
+    }
   }
 #endif
 
@@ -2151,8 +2530,12 @@ hzstd_file_stat_t hzstd_file_stat(hzstd_str_t path)
   const char* cpath = hzstd_raw_malloc_null_terminated_str(path);
 
 #if defined(HAZE_PLATFORM_WIN32)
+  hzstd_fs_error_t pathError;
+  wchar_t* wide = hzstd_win_path(cpath, &pathError);
   WIN32_FILE_ATTRIBUTE_DATA data;
-  if (!GetFileAttributesExA(cpath, GetFileExInfoStandard, &data)) {
+  BOOL found = wide && GetFileAttributesExW(wide, GetFileExInfoStandard, &data);
+  free(wide);
+  if (!found) {
     free((void*)cpath);
     return result;
   }
@@ -2276,7 +2659,7 @@ void hzstd_close_dir(void* handle)
 
 typedef struct {
   HANDLE hFind;
-  WIN32_FIND_DATAA ffd;
+  WIN32_FIND_DATAW ffd;
   bool exhausted;
   bool has_pending; // ffd holds the next unconsumed entry
 } hzstd_dir_handle_win32_t;
@@ -2286,25 +2669,33 @@ hzstd_open_dir_result_t hzstd_open_dir(hzstd_str_t path)
   if (path.data == NULL || path.length == 0) {
     return (hzstd_open_dir_result_t) { .handle = NULL, .error = hzstd_fs_error_code_invalid_path };
   }
-  if (path.length + 2 >= HAZE_MAX_PATH_LENGTH) {
-    return (hzstd_open_dir_result_t) { .handle = NULL, .error = hzstd_fs_error_code_name_too_long };
-  }
-
-  char pattern[HAZE_MAX_PATH_LENGTH];
-  memcpy(pattern, path.data, path.length);
-  pattern[path.length] = '\0';
-  strcat(pattern, "\\*");
-
-  hzstd_dir_handle_win32_t* h = malloc(sizeof(hzstd_dir_handle_win32_t));
-  if (!h) {
+  HZSTD_SCRATCH_CSTR(cpath, path);
+  if (!cpath) {
     return (hzstd_open_dir_result_t) { .handle = NULL, .error = hzstd_fs_error_code_out_of_memory };
   }
+  hzstd_fs_error_t pathError;
+  wchar_t* wide = hzstd_win_path(cpath, &pathError);
+  if (!wide) {
+    return (hzstd_open_dir_result_t) { .handle = NULL, .error = pathError.code };
+  }
+  size_t chars = wcslen(wide);
+  wchar_t* pattern = (wchar_t*)malloc((chars + 3) * sizeof(wchar_t));
+  hzstd_dir_handle_win32_t* h = pattern ? malloc(sizeof(hzstd_dir_handle_win32_t)) : NULL;
+  if (!h) {
+    free(pattern);
+    free(wide);
+    return (hzstd_open_dir_result_t) { .handle = NULL, .error = hzstd_fs_error_code_out_of_memory };
+  }
+  memcpy(pattern, wide, chars * sizeof(wchar_t));
+  memcpy(pattern + chars, L"\\*", 3 * sizeof(wchar_t));
+  free(wide);
 
-  h->hFind = FindFirstFileA(pattern, &h->ffd);
+  h->hFind = FindFirstFileW(pattern, &h->ffd);
+  DWORD findErr = GetLastError();
+  free(pattern);
   if (h->hFind == INVALID_HANDLE_VALUE) {
-    DWORD err = GetLastError();
     free(h);
-    return (hzstd_open_dir_result_t) { .handle = NULL, .error = hzstd_fs_error_from_windows_error(err) };
+    return (hzstd_open_dir_result_t) { .handle = NULL, .error = hzstd_fs_windows_failure(findErr).code };
   }
 
   h->exhausted = false;
@@ -2318,26 +2709,30 @@ hzstd_dir_entry_t hzstd_read_next_dir_entry(void* handle, hzstd_allocator_t allo
   hzstd_dir_handle_win32_t* h = (hzstd_dir_handle_win32_t*)handle;
 
   while (!h->exhausted) {
-    WIN32_FIND_DATAA ffd;
     if (h->has_pending) {
-      ffd = h->ffd;
       h->has_pending = false;
     } else {
-      if (!FindNextFileA(h->hFind, &ffd)) {
+      if (!FindNextFileW(h->hFind, &h->ffd)) {
         h->exhausted = true;
         break;
       }
     }
 
-    if (strcmp(ffd.cFileName, ".") == 0 || strcmp(ffd.cFileName, "..") == 0) {
+    if (wcscmp(h->ffd.cFileName, L".") == 0 || wcscmp(h->ffd.cFileName, L"..") == 0) {
       continue;
     }
 
-    bool is_dir = (ffd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+    // A name is at most MAX_PATH UTF-16 units, each at most 3 UTF-8 bytes.
+    char name[MAX_PATH * 3 + 1];
+    int nameLength = hzstd_win_utf8_into(h->ffd.cFileName, name, sizeof(name));
+    if (nameLength < 0) {
+      continue;
+    }
+    bool is_dir = (h->ffd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
     return (hzstd_dir_entry_t) {
       .valid = true,
       .is_dir = is_dir,
-      .name = hzstd_str_from_cstr_dup(allocator, ffd.cFileName),
+      .name = hzstd_str_from_cstr_dup(allocator, name),
     };
   }
 
@@ -2375,15 +2770,16 @@ hzstd_fs_error_t hzstd_create_directory_exclusive(hzstd_str_t path)
 {
   HZSTD_FS_DIRECTORY_PATH(nullTermPath, path);
 #if defined(HAZE_PLATFORM_WIN32)
-  if (!CreateDirectoryA(nullTermPath, NULL)) {
-    DWORD err = GetLastError();
-    hzstd_fs_error_code_t code = hzstd_fs_error_from_windows_error(err);
-    // CreateDirectory reports a file or a directory already at the path as
-    // ERROR_ALREADY_EXISTS, which the shared mapping does not know.
-    if (err == ERROR_ALREADY_EXISTS) {
-      code = hzstd_fs_error_code_already_exists;
-    }
-    return (hzstd_fs_error_t) { .code = code, .message = hzstd_fs_windows_error(err) };
+  hzstd_fs_error_t pathError;
+  wchar_t* wide = hzstd_win_path(nullTermPath, &pathError);
+  if (!wide) {
+    return pathError;
+  }
+  BOOL made = CreateDirectoryW(wide, NULL);
+  DWORD err = GetLastError();
+  free(wide);
+  if (!made) {
+    return hzstd_fs_windows_failure(err);
   }
 #else
   if (mkdir(nullTermPath, 0777) != 0) {
@@ -2400,15 +2796,20 @@ hzstd_fs_error_t hzstd_remove_empty_directory(hzstd_str_t path)
 {
   HZSTD_FS_DIRECTORY_PATH(nullTermPath, path);
 #if defined(HAZE_PLATFORM_WIN32)
-  if (!RemoveDirectoryA(nullTermPath)) {
-    DWORD err = GetLastError();
-    hzstd_fs_error_code_t code = hzstd_fs_error_from_windows_error(err);
+  hzstd_fs_error_t pathError;
+  wchar_t* wide = hzstd_win_path(nullTermPath, &pathError);
+  if (!wide) {
+    return pathError;
+  }
+  BOOL removed = RemoveDirectoryW(wide);
+  DWORD err = GetLastError();
+  free(wide);
+  if (!removed) {
+    hzstd_fs_error_t failure = hzstd_fs_windows_failure(err);
     if (err == ERROR_DIR_NOT_EMPTY) {
-      code = hzstd_fs_error_code_not_empty;
-    } else if (err == ERROR_DIRECTORY) {
-      code = hzstd_fs_error_code_not_a_directory;
+      failure.code = hzstd_fs_error_code_not_empty;
     }
-    return (hzstd_fs_error_t) { .code = code, .message = hzstd_fs_windows_error(err) };
+    return failure;
   }
 #else
   if (rmdir(nullTermPath) != 0) {
@@ -2519,17 +2920,17 @@ hzstd_file_lock_result_t hzstd_file_lock(hzstd_str_t path, bool wait)
   result.handle = fd;
   return result;
 #elif defined(HAZE_PLATFORM_WIN32)
-  wchar_t wide[HAZE_MAX_PATH_LENGTH * 4];
-  if (MultiByteToWideChar(CP_UTF8, 0, cpath, -1, wide, (int)(sizeof(wide) / sizeof(wide[0]))) <= 0) {
-    result.error = (hzstd_fs_error_t) { .code = hzstd_fs_error_code_name_too_long, .message = HZSTD_STRING("path too long", 13) };
+  wchar_t* wide = hzstd_win_path(cpath, &result.error);
+  if (!wide) {
     return result;
   }
   // NULL security attributes: the handle is not inherited.
   HANDLE handle = CreateFileW(wide, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                               NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+  DWORD openErr = GetLastError();
+  free(wide);
   if (handle == INVALID_HANDLE_VALUE) {
-    DWORD err = GetLastError();
-    result.error = (hzstd_fs_error_t) { .code = hzstd_fs_error_from_windows_error(err), .message = hzstd_fs_windows_error(err) };
+    result.error = hzstd_fs_windows_failure(openErr);
     return result;
   }
   OVERLAPPED overlapped = { 0 };
@@ -2540,7 +2941,7 @@ hzstd_file_lock_result_t hzstd_file_lock(hzstd_str_t path, bool wait)
     if (err == ERROR_LOCK_VIOLATION || err == ERROR_IO_PENDING) {
       result.error = (hzstd_fs_error_t) { .code = hzstd_fs_error_code_busy, .message = HZSTD_STRING("locked elsewhere", 16) };
     } else {
-      result.error = (hzstd_fs_error_t) { .code = hzstd_fs_error_from_windows_error(err), .message = hzstd_fs_windows_error(err) };
+      result.error = hzstd_fs_windows_failure(err);
     }
     return result;
   }

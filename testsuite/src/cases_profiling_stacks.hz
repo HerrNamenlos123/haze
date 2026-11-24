@@ -95,6 +95,7 @@ fn main(): int {
 """,
             0
         );
+        s.knownFailure(sys.Platform.Win32, "allocation stacks are not captured on Windows yet");
 
         // The SAME allocation shows up twice in a built trace (see profiling.buildTrace):
         // as a leaf sample in the CPU profile (its stack), and as a stackless
@@ -255,5 +256,6 @@ fn main(): int {
 """,
             0
         );
+        s.knownFailure(sys.Platform.Win32, "allocation stacks are not captured on Windows yet");
     }
 }

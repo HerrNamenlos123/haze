@@ -191,11 +191,41 @@ abcdefabcdef
         // handing a str to C must copy it by length: the process spawner
         // read argv, the program, the working directory and the environment
         // up to the next NUL, which only worked while every formatted string
-        // happened to sit in zero-filled memory.
+        // happened to sit in zero-filled memory. The child is this program
+        // itself, so it behaves the same on every platform; the environment
+        // is cases_runtime_scratch_strings' known-failure case.
         s.run(
             "bytebuffer: a str handed to a child process is read by its length, not to a NUL",
             """
+fn workDir(): str {
+    let dir = env.get("HAZE_TEST_WORKDIR");
+    if !dir {
+        sys.panic("HAZE_TEST_WORKDIR is not set. Run the suite via scripts/run-tests.sh.");
+    }
+    return dir;
+}
+
+fn realOf(path: str): str {
+    let found = fs.realPath(path);
+    if !found {
+        return f"<no real path for {path}>";
+    }
+    let resolved: str = found;
+    return resolved;
+}
+
 fn main(): int {
+    let args = sys.args();
+    if args.length > 1 && args[1] == "child" {
+        let given = "";
+        for (let i = 2; i < args.length; i++) {
+            given = given + "[" + args[i] + "]";
+        }
+        fmt.println(given);
+        fmt.println(realOf("."));
+        return 0;
+    }
+
     let b = ByteBuffer(64);
     b.push("abc");
     b.push("def");
@@ -203,27 +233,33 @@ fn main(): int {
     b.commit();
     let arg = b.string();
 
-    let exe = "echoXYZ".slice(0, 4);
-    let r1 = process.runCaptured(exe, [arg, "one two".slice(0, 3)]);
-    let r2 = process.runCaptured("pwd", [], { cwd: "/tmpXYZ".slice(0, 4) });
-    let r3 = process.runCaptured("sh", ["-c", "echo $HZTEST"], { env: ["HZTEST=okXYZ".slice(0, 9)] });
-    fmt.println(f"{r1.exitCode} [{r1.stdoutResult.trim()}]");
-    fmt.println(f"{r2.exitCode} [{r2.stdoutResult.trim()}]");
-    fmt.println(f"{r3.exitCode} [{r3.stdoutResult.trim()}]");
+    // The program, an argument and the working directory each end in the
+    // middle of other bytes.
+    let me = args[0];
+    let exe = f"{me}XYZ".slice(0, me.length);
+    let dir = workDir();
+    let cwd = f"{dir}XYZ".slice(0, dir.length);
+    let r = process.runCaptured(exe, ["child", arg, "one two".slice(0, 3)], { cwd: cwd });
+    let lines = r.stdoutResult.split("\\n");
+    fmt.println(f"{r.exitCode} {lines[0].trim()} {lines[1].trim() == realOf(dir)}");
     return 0;
 }
 """,
-            """
-0 [abc one]
-0 [/tmp]
-0 [ok]
-""");
+            "0 [abc][one] true");
 
         s.run(
             "bytebuffer: copying a file through sliced paths reads them by length",
             """
+fn workDir(): str {
+    let dir = env.get("HAZE_TEST_WORKDIR");
+    if !dir {
+        sys.panic("HAZE_TEST_WORKDIR is not set. Run the suite via scripts/run-tests.sh.");
+    }
+    return dir;
+}
+
 fn main(): int {
-    let dir = "/tmp/haze-testsuite-str-copy";
+    let dir = f"{workDir()}/str-copy";
     let made = fs.createDirectory(dir);
     let wrote = fs.writeText(f"{dir}/src.txt", "copied");
     let src = f"{dir}/src.txtXYZ".slice(0, dir.length + 8);

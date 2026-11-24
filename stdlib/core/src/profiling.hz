@@ -174,7 +174,7 @@ namespace profiling {
     //
     // They belong on one timeline because they ARE one timeline: hzstd_profiling.c
     // deliberately derives both timestamps from the same CLOCK_MONOTONIC reference (see the
-    // comment on perf_time_ref_ns/memoryInstrumentationTimeRef there), precisely so the two
+    // comment on timelineRef there), precisely so the two
     // can be related to each other. Emitting them as two separate profiles on two thread
     // tracks -- which is what this used to do -- threw that away: it produced two flame
     // charts of the same thread that could not be read against each other, at wildly

@@ -100,12 +100,25 @@ _Noreturn void hzstd_assert_failed(void)
   hzstd_panic_str_n(HZSTD_STRING_FROM_CSTR("Assertion failed"), 1);
 }
 
+// The one place a formatted panic is formatted. The variadic functions below
+// each start their own va_list and hand it here; passing a va_list on to
+// another `...` function formats the va_list object itself, which printed
+// garbage for every number. A frame of its own (noinline) that it skips, like
+// every other one here, so the trace still starts where the panic was.
+__attribute__((noinline)) static _Noreturn void hzstd_panic_vfmt_n(int skip_n_frames, const char *fmt, va_list args)
+{
+  char buf[1024];
+  vsnprintf(buf, sizeof(buf), fmt, args);
+  hzstd_panic_str_n(HZSTD_STRING_FROM_CSTR(buf), skip_n_frames + 1);
+}
+
 void hzstd_assert_fmt(bool condition, const char *fmt, ...)
 {
-  va_list args;
-  va_start(args, fmt);
-  hzstd_assert_fmt_n(condition, 1, fmt, args);
-  va_end(args);
+  if (!condition) {
+    va_list args;
+    va_start(args, fmt);
+    hzstd_panic_vfmt_n(1, fmt, args);
+  }
 }
 
 void hzstd_assert_fmt_n(bool condition, int skip_n_frames, const char *fmt, ...)
@@ -113,8 +126,7 @@ void hzstd_assert_fmt_n(bool condition, int skip_n_frames, const char *fmt, ...)
   if (!condition) {
     va_list args;
     va_start(args, fmt);
-    hzstd_panic_fmt_n(1 + skip_n_frames, fmt, args);
-    va_end(args);
+    hzstd_panic_vfmt_n(1 + skip_n_frames, fmt, args);
   }
 }
 
@@ -122,18 +134,14 @@ _Noreturn void hzstd_panic_fmt(const char *fmt, ...)
 {
   va_list args;
   va_start(args, fmt);
-  hzstd_panic_fmt_n(1, fmt, args);
-  va_end(args);
+  hzstd_panic_vfmt_n(1, fmt, args);
 }
 
 _Noreturn void hzstd_panic_fmt_n(int skip_n_frames, const char *fmt, ...)
 {
-  char buf[1024];
   va_list args;
   va_start(args, fmt);
-  vsnprintf(buf, sizeof(buf), fmt, args);
-  va_end(args);
-  hzstd_panic_str_n(HZSTD_STRING_FROM_CSTR(buf), skip_n_frames + 1);
+  hzstd_panic_vfmt_n(1 + skip_n_frames, fmt, args);
 }
 
 _Noreturn void hzstd_panic(hzstd_ccstr_t msg)
