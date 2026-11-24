@@ -78,21 +78,6 @@ export namespace Crossing {
     return `${parts.join(", ")}, ${f.culprit}`;
   }
 
-  /**
-   * Why a value of this type cannot cross threads, as the rest of a
-   * sentence after "cannot cross threads: ", or null when it crosses.
-   */
-  export function whyNot(
-    sr: Semantic.Context,
-    typeUseId: Semantic.TypeUseId
-  ): string | null {
-    const f = failure(sr, typeUseId);
-    if (f === null) {
-      return null;
-    }
-    return `is '${Semantic.serializeTypeUse(sr, typeUseId)}', which cannot cross threads: ${explain(sr, f, null)}`;
-  }
-
   function fail(culprit: string): Failure {
     return { path: [], culprit: culprit };
   }
