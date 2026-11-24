@@ -23,6 +23,10 @@ STATIC: 'static';
 PRIVATE: 'private';
 TASKLOCAL: 'tasklocal';
 GLOBAL: 'global';
+// `atomic` and `crossthread` modify structs and types (docs/async-decisions.md
+// S5-4, S5-6 to S5-9). Both are reserved words.
+ATOMIC: 'atomic';
+CROSSTHREAD: 'crossthread';
 STRUCT: 'struct';
 NODISCARD: 'nodiscard';
 NONCLONABLE: 'nonclonable';

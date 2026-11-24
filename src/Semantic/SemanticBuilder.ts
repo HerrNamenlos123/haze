@@ -268,6 +268,7 @@ export class SemanticBuilder {
       envValue: envValue,
       type: makeCallableDatatypeAvailable(this.sr, {
         functionType: functionSymbol.type,
+        crossthread: false,
         sourceloc: sourceloc,
       }),
       flow: Semantic.FlowResult.fallthrough(),
@@ -1256,6 +1257,7 @@ export class SemanticBuilder {
       case Semantic.ENode.UnaryExpr:
       case Semantic.ENode.ExplicitCastExpr:
       case Semantic.ENode.ExprAssignmentExpr:
+      case Semantic.ENode.AtomicOpExpr:
       case Semantic.ENode.DereferenceExpr:
       case Semantic.ENode.DatatypeAsValueExpr:
       case Semantic.ENode.CallableExpr:

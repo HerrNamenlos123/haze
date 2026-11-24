@@ -121,6 +121,8 @@ export namespace Lowered {
     // raw pointer (HZSTD_STACKREF_DEREF). The ONE lowering path for every
     // access through a `stackref` (R&D/Storage Classes and References.md §5.3).
     StackrefDerefExpr = 58,
+    // An operation on an atomic field or global (docs/async-decisions.md S5-6).
+    AtomicOpExpr = 59,
     // Dummy
     Dummy = 60,
     AttemptFrameStatement = 61,
@@ -153,6 +155,12 @@ export namespace Lowered {
     loweredTypeUses: Map<Semantic.TypeUseId, Lowered.TypeUseId>;
     loweredFunctions: Map<Semantic.SymbolId, Lowered.FunctionId>;
     loweredPointers: Map<Lowered.TypeUseId, Lowered.TypeDefId>;
+    // While a write into an element of an atomic array is lowered
+    // (lowerAtomicArrayElementWrite): the Semantic expressions already
+    // evaluated or replaced (the element, by the pointer the lock handed out),
+    // and the write itself, which is lowered the ordinary way inside.
+    atomicElementSubstitutions: Map<Semantic.ExprId, Lowered.ExprId>;
+    atomicElementWrites: Set<Semantic.ExprId>;
     // The module's C globals: `const`, `global` and `extern` ones.
     loweredGlobalVariables: Lowered.StatementId[];
     // The module's `tasklocal let` variables: the fields of its task-local
@@ -426,6 +434,29 @@ export namespace Lowered {
     type: TypeUseId;
   };
 
+  /**
+   * One atomic operation on a place declared `atomic` (a struct field or a
+   * global, docs/async-decisions.md S5-6), sequentially consistent: a
+   * compound assignment or ++/-- as one read-modify-write (`returnOld` for
+   * x++ and x--), `exchange(v)`, `compareExchange(expected, desired)`. A plain
+   * load or store needs no node: C11 makes every access of an `_Atomic`
+   * object atomic.
+   */
+  export type AtomicOpExpr = {
+    variant: ENode.AtomicOpExpr;
+    target: ExprId;
+    op:
+      | {
+          kind: "rmw";
+          operation: EBinaryOperation;
+          value: ExprId;
+          returnOld: boolean;
+        }
+      | { kind: "exchange"; value: ExprId }
+      | { kind: "compareExchange"; expected: ExprId; desired: ExprId };
+    type: TypeUseId;
+  };
+
   export type StructInstantiationExpr = {
     variant: ENode.StructLiteralExpr;
     type: TypeUseId;
@@ -486,6 +517,7 @@ export namespace Lowered {
     | CallableExpr
     | StructInstantiationExpr
     | ExprAssignmentExpr
+    | AtomicOpExpr
     | DereferenceExpr
     | AddressOfExpr
     | StackrefDerefExpr
@@ -551,6 +583,9 @@ export namespace Lowered {
     variableContext: EVariableContext;
     intrinsicTakeAddrOfValue: boolean;
     value: ExprId | null;
+    // A global of an atomic primitive type (`global let n: atomic int`, S5-6):
+    // C11 `_Atomic`. false for every local.
+    atomic: boolean;
     // `let stackref x = ...` (see Semantic.StackrefInit). For "copy-value" the
     // value has the pointee type and codegen copies it into a stack buffer;
     // for "lambda" the value is the CallableExpr to build in place.
@@ -737,6 +772,8 @@ export namespace Lowered {
     members: {
       name: string;
       type: TypeUseId;
+      // `n: atomic int` (docs/async-decisions.md S5-6): C11 `_Atomic`.
+      atomic: boolean;
     }[];
   };
 
@@ -919,6 +956,7 @@ const storeInTempVarAndGet = (
   flattened.push(
     Lowered.addStatement(lr, {
       variant: Lowered.ENode.VariableStatement,
+      atomic: false,
       stackrefInit: null,
       name: {
         prettyName: varname,
@@ -1333,6 +1371,176 @@ type InstanceInfo = {
   returnedInstanceIds: Set<Semantic.InstanceId>;
 };
 
+/** Whether a Semantic expression is an atomic array (`atomic []T`, S5-9). */
+function isAtomicArray(lr: Lowered.Module, arrayId: Semantic.ExprId): boolean {
+  const array = lr.sr.exprNodes.get(arrayId);
+  const def = lr.sr.typeDefNodes.get(
+    lr.sr.typeUseNodes.get(lr.sr.e.resolveAlias(array.type)).type
+  );
+  return def.variant === Semantic.ENode.DynamicArrayDatatype && def.atomic;
+}
+
+/**
+ * A write into the storage of an atomic array (docs/async-decisions.md
+ * S5-9): `arr[i] = v`, `arr[i] += v`, `arr[i].x = v`, `arr[i].n++`,
+ * `arr[i].n.exchange(v)` is one operation under the array's lock, so another
+ * task or thread never sees half of it, and nothing hands out a pointer into
+ * the storage beyond it. The array, the index, the values and any index
+ * further inside are evaluated first, outside the lock; then
+ * hzstd_atomic_array_enter_element takes the lock and checks the index, the
+ * write itself is lowered the ordinary way with the element replaced by the
+ * pointer the lock handed out, and the lock is let go of. Returns null when
+ * the target does not lie in an atomic array's storage: a write through a
+ * reference held in one (`arr[i].field = v` with `ref` elements) writes the
+ * referenced struct, not the array.
+ */
+function lowerAtomicArrayElementWrite(
+  lr: Lowered.Module,
+  writeId: Semantic.ExprId,
+  targetId: Semantic.ExprId,
+  valueIds: Semantic.ExprId[],
+  instanceInfo: InstanceInfo
+): [Lowered.Expression, Lowered.ExprId] | null {
+  // From the place outwards, through the steps that stay in the element's own
+  // storage, to the element of the atomic array.
+  const innerIndices: Semantic.ExprId[] = [];
+  let element: Semantic.ArraySubscriptExpr | null = null;
+  let elementId: Semantic.ExprId | null = null;
+  let curId = targetId;
+  for (;;) {
+    const cur = lr.sr.exprNodes.get(curId);
+    if (
+      cur.variant !== Semantic.ENode.MemberAccessExpr &&
+      cur.variant !== Semantic.ENode.ArraySubscriptExpr
+    ) {
+      return null;
+    }
+    const object = lr.sr.exprNodes.get(cur.expr);
+    const objectUse = lr.sr.typeUseNodes.get(lr.sr.e.resolveAlias(object.type));
+    const objectDef = lr.sr.typeDefNodes.get(objectUse.type);
+    if (cur.variant === Semantic.ENode.ArraySubscriptExpr) {
+      if (
+        objectDef.variant === Semantic.ENode.DynamicArrayDatatype &&
+        objectDef.atomic
+      ) {
+        element = cur;
+        elementId = curId;
+        break;
+      }
+      if (objectDef.variant !== Semantic.ENode.FixedArrayDatatype) {
+        return null;
+      }
+      innerIndices.push(...cur.indices);
+    } else if (
+      objectDef.variant !== Semantic.ENode.StructDatatype ||
+      objectUse.storage !== EStorageClass.Value
+    ) {
+      return null;
+    }
+    curId = cur.expr;
+  }
+  assert(element !== null && elementId !== null);
+  assert(element.indices.length === 1);
+
+  const sourceloc = lr.sr.exprNodes.get(writeId).sourceloc;
+  const ctx = () =>
+    currentContextPointer(
+      lr,
+      "Writing an element of an atomic array",
+      sourceloc
+    );
+  const block: Lowered.StatementId[] = [];
+  const evaluate = (id: Semantic.ExprId): Lowered.ExprId => {
+    const lowered = lowerExpr(lr, id, block, instanceInfo)[1];
+    return storeInTempVarAndGet(
+      lr,
+      lr.exprNodes.get(lowered).type,
+      lowered,
+      sourceloc,
+      block
+    )[1];
+  };
+  // Evaluated in source order, before the lock is taken.
+  const array = evaluate(element.expr);
+  const index = evaluate(element.indices[0]);
+  const evaluated: Semantic.ExprId[] = [];
+  for (const id of [...innerIndices.reverse(), ...valueIds]) {
+    lr.atomicElementSubstitutions.set(id, evaluate(id));
+    evaluated.push(id);
+  }
+  const elementType = lowerTypeUse(lr, element.type);
+  const pointer = storeInTempVarAndGet(
+    lr,
+    makeLowerTypeUse(lr, makePointerType(lr, elementType), false)[1],
+    makeIntrinsicCall(
+      lr,
+      "hzstd_atomic_array_enter_element",
+      [ctx(), array, index],
+      makeLowerTypeUse(lr, makePointerType(lr, elementType), false)[1]
+    )[1],
+    sourceloc,
+    block
+  )[1];
+  lr.atomicElementSubstitutions.set(
+    elementId,
+    Lowered.addExpr(lr, {
+      variant: Lowered.ENode.DereferenceExpr,
+      expr: pointer,
+      type: elementType,
+    })[1]
+  );
+  lr.atomicElementWrites.add(writeId);
+  const write = lowerExpr(lr, writeId, block, instanceInfo)[1];
+  lr.atomicElementWrites.delete(writeId);
+  lr.atomicElementSubstitutions.delete(elementId);
+  for (const id of evaluated) {
+    lr.atomicElementSubstitutions.delete(id);
+  }
+  const writeType = lr.exprNodes.get(write).type;
+  const result = storeInTempVarAndGet(
+    lr,
+    writeType,
+    write,
+    sourceloc,
+    block
+  )[1];
+  const voidType = lowerTypeUse(lr, lr.sr.b.voidType());
+  block.push(
+    Lowered.addStatement(lr, {
+      variant: Lowered.ENode.ExprStatement,
+      expr: makeIntrinsicCall(
+        lr,
+        "hzstd_atomic_array_leave",
+        [ctx(), array],
+        voidType
+      )[1],
+      sourceloc: sourceloc,
+    })[1]
+  );
+  return Lowered.addExpr(lr, {
+    variant: Lowered.ENode.BlockScopeExpr,
+    sourceloc: sourceloc,
+    block: Lowered.addBlockScope(lr, {
+      definesVariables: true,
+      statements: block,
+      emittedExpr: result,
+    })[1],
+    type: writeType,
+  });
+}
+
+// The compound assignments and the arithmetic each one performs.
+const COMPOUND_ASSIGNMENT_OPERATIONS = new Map<
+  EAssignmentOperation,
+  EBinaryOperation
+>([
+  [EAssignmentOperation.Add, EBinaryOperation.Add],
+  [EAssignmentOperation.Subtract, EBinaryOperation.Subtract],
+  [EAssignmentOperation.Multiply, EBinaryOperation.Multiply],
+  [EAssignmentOperation.Divide, EBinaryOperation.Divide],
+  [EAssignmentOperation.Modulo, EBinaryOperation.Modulo],
+]);
+
 // Whether evaluating `id` runs no code: a variable or literal, reached through
 // member accesses, casts, `&` and `*` only.
 function isPlainValue(lr: Lowered.Module, id: Lowered.ExprId): boolean {
@@ -1550,6 +1758,40 @@ export function lowerExpr(
   }
 ): [Lowered.Expression, Lowered.ExprId] {
   const expr = lr.sr.exprNodes.get(exprId);
+
+  const substituted = lr.atomicElementSubstitutions.get(exprId);
+  if (substituted !== undefined) {
+    return [lr.exprNodes.get(substituted), substituted];
+  }
+  if (
+    (expr.variant === Semantic.ENode.ExprAssignmentExpr ||
+      expr.variant === Semantic.ENode.AtomicOpExpr ||
+      expr.variant === Semantic.ENode.PreIncrExpr ||
+      expr.variant === Semantic.ENode.PostIncrExpr) &&
+    !lr.atomicElementWrites.has(exprId)
+  ) {
+    const target =
+      expr.variant === Semantic.ENode.ExprAssignmentExpr ||
+      expr.variant === Semantic.ENode.AtomicOpExpr
+        ? expr.target
+        : expr.expr;
+    let values: Semantic.ExprId[] = [];
+    if (expr.variant === Semantic.ENode.ExprAssignmentExpr) {
+      values = [expr.value];
+    } else if (expr.variant === Semantic.ENode.AtomicOpExpr) {
+      values = expr.args;
+    }
+    const atomic = lowerAtomicArrayElementWrite(
+      lr,
+      exprId,
+      target,
+      values,
+      instanceInfo
+    );
+    if (atomic !== null) {
+      return atomic;
+    }
+  }
 
   switch (expr.variant) {
     case Semantic.ENode.ExprCallExpr: {
@@ -1916,6 +2158,27 @@ export function lowerExpr(
         }
       }
 
+      // An atomic array's length is read under its lock (S5-9).
+      if (
+        accessedExprTypeDef.variant === Semantic.ENode.DynamicArrayDatatype &&
+        accessedExprTypeDef.atomic
+      ) {
+        assert(expr.memberName === "length");
+        return makeIntrinsicCall(
+          lr,
+          "hzstd_atomic_array_length",
+          [
+            currentContextPointer(
+              lr,
+              "Reading the length of an atomic array",
+              expr.sourceloc
+            ),
+            lowerExpr(lr, expr.expr, flattened, instanceInfo)[1],
+          ],
+          lowerTypeUse(lr, expr.type)
+        );
+      }
+
       // A deep reactive array's length is a tracked read (CodeGenerator emits
       // HZSTD_REACTIVE_ARRAY_LENGTH with the context): it registers with the
       // running task's computed.
@@ -2231,6 +2494,29 @@ export function lowerExpr(
 
     case Semantic.ENode.ArraySubscriptExpr: {
       assert(expr.indices.length === 1);
+      // An element of an atomic array is read as a copy, under its lock
+      // (S5-9). A write into one never gets here: see
+      // lowerAtomicArrayElementWrite.
+      if (isAtomicArray(lr, expr.expr)) {
+        return makeIntrinsicCall(
+          lr,
+          "HZSTD_ATOMIC_ARRAY_GET",
+          [
+            currentContextPointer(
+              lr,
+              "Reading an element of an atomic array",
+              expr.sourceloc
+            ),
+            lowerExpr(lr, expr.expr, flattened, instanceInfo)[1],
+            Lowered.addExpr(lr, {
+              variant: Lowered.ENode.DatatypeAsValueExpr,
+              type: lowerTypeUse(lr, expr.type),
+            })[1],
+            lowerExpr(lr, expr.indices[0], flattened, instanceInfo)[1],
+          ],
+          lowerTypeUse(lr, expr.type)
+        );
+      }
       return Lowered.addExpr(lr, {
         variant: Lowered.ENode.ArraySubscriptExpr,
         expr: lowerExpr(lr, expr.expr, flattened, instanceInfo)[1],
@@ -2526,6 +2812,27 @@ export function lowerExpr(
         flattened,
         instanceInfo
       )[1];
+      // A compound assignment of an atomic place is one read-modify-write
+      // (S5-6), not a load and a store.
+      const atomicOperation = COMPOUND_ASSIGNMENT_OPERATIONS.get(
+        expr.operation
+      );
+      if (
+        atomicOperation !== undefined &&
+        Semantic.isAtomicPlace(lr.sr, expr.target)
+      ) {
+        return Lowered.addExpr(lr, {
+          variant: Lowered.ENode.AtomicOpExpr,
+          target: loweredTarget,
+          op: {
+            kind: "rmw",
+            operation: atomicOperation,
+            value: loweredValue,
+            returnOld: false,
+          },
+          type: lowerTypeUse(lr, expr.type),
+        });
+      }
       if (
         expr.operation === EAssignmentOperation.Rebind ||
         expr.operation === EAssignmentOperation.Assign
@@ -2632,6 +2939,22 @@ export function lowerExpr(
       throw new Error();
     }
 
+    case Semantic.ENode.AtomicOpExpr: {
+      const target = lowerExpr(lr, expr.target, flattened, instanceInfo)[1];
+      const args = expr.args.map(
+        (a) => lowerExpr(lr, a, flattened, instanceInfo)[1]
+      );
+      return Lowered.addExpr(lr, {
+        variant: Lowered.ENode.AtomicOpExpr,
+        target: target,
+        op:
+          expr.op === "exchange"
+            ? { kind: "exchange", value: args[0] }
+            : { kind: "compareExchange", expected: args[0], desired: args[1] },
+        type: lowerTypeUse(lr, expr.type),
+      });
+    }
+
     case Semantic.ENode.PreIncrExpr: {
       // ++x / --x: collapse to ExprAssignmentExpr(target, target OP 1)
       const loweredExpr = lowerExpr(lr, expr.expr, flattened, instanceInfo)[1];
@@ -2646,6 +2969,23 @@ export function lowerExpr(
           : { type: typeDef.primitive, value: 1, unit: null }) as LiteralValue,
         type: typeId,
       })[1];
+      // On an atomic place, one read-modify-write (S5-6).
+      if (Semantic.isAtomicPlace(lr.sr, expr.expr)) {
+        return Lowered.addExpr(lr, {
+          variant: Lowered.ENode.AtomicOpExpr,
+          target: loweredExpr,
+          op: {
+            kind: "rmw",
+            operation:
+              expr.operation === EIncrOperation.Incr
+                ? EBinaryOperation.Add
+                : EBinaryOperation.Subtract,
+            value: one,
+            returnOld: false,
+          },
+          type: typeId,
+        });
+      }
       return Lowered.addExpr(lr, {
         variant: Lowered.ENode.ExprAssignmentExpr,
         target: loweredExpr,
@@ -2681,6 +3021,24 @@ export function lowerExpr(
           : { type: typeDef.primitive, value: 1, unit: null }) as LiteralValue,
         type: typeId,
       })[1];
+      // On an atomic place, one read-modify-write that yields the old value
+      // (S5-6).
+      if (Semantic.isAtomicPlace(lr.sr, expr.expr)) {
+        return Lowered.addExpr(lr, {
+          variant: Lowered.ENode.AtomicOpExpr,
+          target: loweredExpr,
+          op: {
+            kind: "rmw",
+            operation:
+              expr.operation === EIncrOperation.Incr
+                ? EBinaryOperation.Add
+                : EBinaryOperation.Subtract,
+            value: one,
+            returnOld: true,
+          },
+          type: typeId,
+        });
+      }
       const blockStatements: Lowered.StatementId[] = [];
       const [_savedExpr, savedExprId] = storeInTempVarAndGet(
         lr,
@@ -3724,6 +4082,7 @@ hzstd_slot_read(&__tmp_result, __slot, sizeof(__tmp_result));`,
         statements.push(
           Lowered.addStatement(lr, {
             variant: Lowered.ENode.VariableStatement,
+            atomic: false,
             stackrefInit: null,
             name: ctxNameSet,
             type: ctxType,
@@ -4018,6 +4377,7 @@ export function lowerTypeDef(
       return {
         name: m.name,
         type: lowerTypeUse(lr, m.type),
+        atomic: m.atomic === true,
       };
     });
 
@@ -4513,6 +4873,7 @@ function lowerStatement(
 
       const [s, sId] = Lowered.addStatement<Lowered.Statement>(lr, {
         variant: Lowered.ENode.VariableStatement,
+        atomic: false,
         stackrefInit: statement.stackrefInit,
         name: {
           mangledName: name,
@@ -4636,6 +4997,7 @@ function lowerStatement(
       const [_indexInitStmt, indexInitStmtId] =
         Lowered.addStatement<Lowered.VariableStatement>(lr, {
           variant: Lowered.ENode.VariableStatement,
+          atomic: false,
           stackrefInit: null,
           name: indexName,
           type: intTypeUse,
@@ -4655,31 +5017,65 @@ function lowerStatement(
         type: intTypeUse,
       })[1];
 
-      const loopConditionExpr = Lowered.addExpr(lr, {
-        variant: Lowered.ENode.BinaryExpr,
-        left: indexSymbolExpr,
-        operation: EBinaryOperation.LessThan,
-        right:
-          arrayType.variant === Semantic.ENode.DynamicArrayDatatype
-            ? Lowered.addExpr(lr, {
-                variant: Lowered.ENode.MemberAccessExpr,
-                expr: arrayVarId,
-                memberName: "length",
-                requiresDeref: false,
-                type: intTypeUse,
-              })[1]
-            : Lowered.addExpr(lr, {
-                variant: Lowered.ENode.LiteralExpr,
-                literal: {
-                  type: EPrimitive.int,
-                  value: (arrayType as Semantic.FixedArrayDatatypeDef).length,
-                  unit: null,
-                },
-                type: intTypeUse,
-              })[1],
-        plainResultType: lr.typeUseNodes.get(boolTypeUse).type,
-        type: boolTypeUse,
-      })[1];
+      // An atomic array (S5-9, S5-C3): every step is one operation under the
+      // array's lock that checks the length again and copies the element out,
+      // so the loop ends where the array ends at that step, never reads past
+      // it, and the body runs without the lock.
+      const atomicElement =
+        arrayType.variant === Semantic.ENode.DynamicArrayDatatype &&
+        arrayType.atomic
+          ? storeInTempVarAndGet(
+              lr,
+              lowerTypeUse(lr, arrayType.datatype),
+              null,
+              semanticForeachStmt.sourceloc,
+              flattenedArrayStatements
+            )[1]
+          : null;
+
+      const loopConditionExpr =
+        atomicElement !== null
+          ? makeIntrinsicCall(
+              lr,
+              "HZSTD_ATOMIC_ARRAY_NEXT",
+              [
+                currentContextPointer(
+                  lr,
+                  "A loop over an atomic array",
+                  semanticForeachStmt.sourceloc
+                ),
+                arrayVarId,
+                indexSymbolExpr,
+                atomicElement,
+              ],
+              boolTypeUse
+            )[1]
+          : Lowered.addExpr(lr, {
+              variant: Lowered.ENode.BinaryExpr,
+              left: indexSymbolExpr,
+              operation: EBinaryOperation.LessThan,
+              right:
+                arrayType.variant === Semantic.ENode.DynamicArrayDatatype
+                  ? Lowered.addExpr(lr, {
+                      variant: Lowered.ENode.MemberAccessExpr,
+                      expr: arrayVarId,
+                      memberName: "length",
+                      requiresDeref: false,
+                      type: intTypeUse,
+                    })[1]
+                  : Lowered.addExpr(lr, {
+                      variant: Lowered.ENode.LiteralExpr,
+                      literal: {
+                        type: EPrimitive.int,
+                        value: (arrayType as Semantic.FixedArrayDatatypeDef)
+                          .length,
+                        unit: null,
+                      },
+                      type: intTypeUse,
+                    })[1],
+              plainResultType: lr.typeUseNodes.get(boolTypeUse).type,
+              type: boolTypeUse,
+            })[1];
 
       const loopIncrementExpr = Lowered.addExpr(lr, {
         variant: Lowered.ENode.ExprAssignmentExpr,
@@ -4712,12 +5108,14 @@ function lowerStatement(
 
       const loopVarType = lowerTypeUse(lr, arrayType.datatype);
       let loopVariableName = loopVariable.name;
-      let loopVariableValue = Lowered.addExpr(lr, {
-        variant: Lowered.ENode.ArraySubscriptExpr,
-        expr: arrayVarId,
-        index: indexSymbolExpr,
-        type: loopVarType,
-      })[1];
+      let loopVariableValue =
+        atomicElement ??
+        Lowered.addExpr(lr, {
+          variant: Lowered.ENode.ArraySubscriptExpr,
+          expr: arrayVarId,
+          index: indexSymbolExpr,
+          type: loopVarType,
+        })[1];
       // A deep reactive array's elements are Reactive<T> cells (see
       // Elaborate.ts's matching peel of the loop variable's declared type)
       // -- read through however many layers deep that goes so the body sees
@@ -4754,6 +5152,7 @@ function lowerStatement(
       flattened.push(
         Lowered.addStatement<Lowered.VariableStatement>(lr, {
           variant: Lowered.ENode.VariableStatement,
+          atomic: false,
           stackrefInit: null,
           name: {
             prettyName: loopVariableName,
@@ -4777,6 +5176,7 @@ function lowerStatement(
         bodyStatements.push(
           Lowered.addStatement<Lowered.VariableStatement>(lr, {
             variant: Lowered.ENode.VariableStatement,
+            atomic: false,
             stackrefInit: null,
             name: {
               prettyName: indexVariable.name,
@@ -5507,6 +5907,7 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
               statements.push(
                 Lowered.addStatement(lr, {
                   variant: Lowered.ENode.VariableStatement,
+                  atomic: false,
                   stackrefInit: null,
                   sourceloc: f.sourceloc,
                   name: {
@@ -5823,6 +6224,7 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
 
       const [_, pId] = Lowered.addStatement<Lowered.VariableStatement>(lr, {
         variant: Lowered.ENode.VariableStatement,
+        atomic: variableSymbol.atomic === true,
         stackrefInit: null,
         name: name,
         intrinsicTakeAddrOfValue: false,
@@ -5996,6 +6398,9 @@ function serializeLoweredExpr(
     case Lowered.ENode.ExprAssignmentExpr:
       return `${serializeLoweredExpr(lr, expr.target)} = ${serializeLoweredExpr(lr, expr.value)}`;
 
+    case Lowered.ENode.AtomicOpExpr:
+      return `atomic ${expr.op.kind} ${serializeLoweredExpr(lr, expr.target)}`;
+
     case Lowered.ENode.SizeofExpr:
       return `sizeof(${serializeLoweredExpr(lr, expr.value)})`;
 
@@ -6144,6 +6549,8 @@ export function LowerModule(sr: Semantic.Context): Lowered.Module {
     loweredCallablesByFunctionType: new Map(),
     loweredFunctions: new Map(),
     loweredPointers: new Map(),
+    atomicElementSubstitutions: new Map(),
+    atomicElementWrites: new Set(),
     loweredGlobalVariables: [],
     loweredTaskLocals: [],
     loweredThreadGlobals: [],

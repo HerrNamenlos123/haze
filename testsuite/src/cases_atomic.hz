@@ -1,0 +1,499 @@
+// ============================================================================
+// Atomic types (docs/async-decisions.md S5-6 to S5-9; Axiom C165, C170,
+// C172 to C174, C189 to C193, C599): atomic primitives as struct fields and
+// globals, atomic structs and their unsafe fields, atomic arrays and their
+// lock. Global let/const: cases_storage_keywords.hz; the crossing rule:
+// cases_crossing.hz.
+//
+// Tasks of one thread interleave only where they suspend, so the
+// "several tasks" cases suspend inside and between operations: every atomic
+// array operation is a suspension point (it may wait for the lock, C151).
+// ============================================================================
+
+namespace cases_atomic {
+
+    fn fails(s: mut testsuite.Suite, name: str, source: str, code: errorcodes.Code, part: str) {
+        s.compileFails(name, source, [
+            testsuite.exactCount(code, 1),
+            testsuite.totalErrors(1),
+            testsuite.messageContains(part),
+        ]);
+    }
+
+    export fn register(s: mut testsuite.Suite) {
+
+        // ── S5-6: atomic primitives ─────────────────────────────────────────
+        s.run("atomic: every operation of an atomic field", """
+atomic opaque ref struct Stats {
+    n: atomic int = 0;
+    small: atomic i8 = 0;
+    big: atomic u64 = 1;
+    r: atomic real = 1.5;
+    f: atomic f32 = 2.0;
+    on: atomic bool = false;
+    fn constructor(): mut Stats { return Stats {}; }
+}
+struct Plain { hits: atomic int = 3; }
+
+fn main(): int {
+    let s = Stats();
+    s.n = 5;
+    s.n += 3;
+    s.n -= 1;
+    s.n *= 6;
+    s.n /= 2;
+    s.n %= 8;
+    let post = s.n++;
+    let pre = ++s.n;
+    let postDown = s.n--;
+    let preDown = --s.n;
+    fmt.println(f"{s.n} {post} {pre} {postDown} {preDown}");
+
+    let old = s.n.exchange(10);
+    let hit = s.n.compareExchange(10, 11);
+    let miss = s.n.compareExchange(10, 12);
+    fmt.println(f"{old} {hit} {miss} {s.n}");
+
+    s.small += 100;
+    s.big *= 4;
+    s.r *= 2.0;
+    let half: f32 = 0.5;
+    s.f += half;
+    let was = s.on.exchange(true);
+    fmt.println(f"{s.small} {s.big} {s.r} {s.f} {was} {s.on}");
+
+    // Reading gives the plain type: it is an ordinary value after that.
+    let copy = s.n;
+    let doubled: int = copy * 2;
+    let t: typeof(s.n) = 1;
+    fmt.println(f"{doubled} {t + 1}");
+
+    // A value struct may hold one too; a copy shares nothing.
+    let p = Plain {};
+    let q = p;
+    q.hits += 1;
+    fmt.println(f"{p.hits} {q.hits}");
+    return 0;
+}
+""", "5 5 7 7 5\n5 true false 11\n100 4 3 2.5 false true\n22 2\n3 4");
+
+        // Overflow is checked as in `x = x + 1`: running atomically changes
+        // nothing about what the code means (C449).
+        s.runExitCode("atomic: compound assignment keeps Haze's overflow check", """
+struct Small { n: atomic i8 = 127; }
+fn main(): int {
+    let s = Small {};
+    s.n += 1;
+    return 0;
+}
+""", 255);
+
+        // The value of a compound assignment is computed in the target's
+        // realm, atomic or not: a literal or a narrower integer converts, a
+        // literal out of range is refused (before, the plain form crashed the
+        // compiler and the atomic one truncated in C).
+        s.run("atomic: a compound assignment converts its value to the target", """
+struct Plain { small: i8 = 0; wide: i64 = 0; }
+struct Shared { small: atomic i8 = 0; wide: atomic i64 = 0; }
+fn main(): int {
+    let p = Plain {};
+    let a = Shared {};
+    let narrow: i8 = 5;
+    p.small += 100;
+    a.small += 100;
+    p.wide += narrow;
+    a.wide += narrow;
+    p.small -= narrow;
+    a.small -= narrow;
+    fmt.println(f"{p.small} {a.small} {p.wide} {a.wide}");
+    return 0;
+}
+""", "95 95 5 5");
+
+        s.compileFails("atomic: a compound assignment refuses a literal out of the target's range", """
+struct Shared { small: atomic i8 = 0; }
+fn main(): int {
+    let a = Shared {};
+    a.small += 1000; // <- H4001
+    return 0;
+}
+""", [
+            testsuite.exactCount(errorcodes.Code.NoSuitableConversionFound, 1),
+            testsuite.totalErrors(1),
+            testsuite.messageContains("does not fit in the target range [-128, 127]"),
+        ]);
+
+        // Several tasks counting through one atomic struct, suspending between
+        // their increments.
+        s.run("atomic: tasks interleaving on an atomic counter", """
+atomic opaque ref struct Counter {
+    n: atomic int = 0;
+    fn constructor(): mut Counter { return Counter {}; }
+    mut fn add() { this.n += 1; }
+}
+
+fn main(): int {
+    let c = Counter();
+    let a = task.spawn(() => { for (let i = 0; i < 50; i++) { c.add(); sys.yield(); } return 0; });
+    let b = task.spawn(() => { for (let i = 0; i < 50; i++) { c.n++; sys.yield(); } return 0; });
+    let all: []Future<int> = [a, b];
+    sys.joinAll(all);
+    fmt.println(f"{c.n}");
+    return 0;
+}
+""", "100");
+
+        fails(s, "atomic: an atomic local", """
+fn main(): int {
+    let n: atomic int = 0; // <- H7239
+    return 0;
+}
+""", errorcodes.Code.AtomicPrimitiveOutsideFieldOrGlobal, "'atomic int' can only be the type of a struct field or a global: a copy of it would share nothing with the original");
+
+        fails(s, "atomic: an atomic parameter", """
+fn f(n: atomic int) {} // <- H7239
+fn main(): int { return 0; }
+""", errorcodes.Code.AtomicPrimitiveOutsideFieldOrGlobal, "'atomic int' can only be the type of a struct field or a global");
+
+        fails(s, "atomic: an atomic result", """
+fn f(): atomic bool { return true; } // <- H7239
+fn main(): int { return 0; }
+""", errorcodes.Code.AtomicPrimitiveOutsideFieldOrGlobal, "'atomic bool' can only be the type of a struct field or a global");
+
+        fails(s, "atomic: an atomic array element", """
+fn main(): int {
+    let xs: []atomic int = []; // <- H7239
+    return 0;
+}
+""", errorcodes.Code.AtomicPrimitiveOutsideFieldOrGlobal, "'atomic int' can only be the type of a struct field or a global");
+
+        fails(s, "atomic: an atomic generic argument", """
+struct Box<T> { v: T; }
+fn main(): int {
+    let b: Box<atomic int> = { v: 1 }; // <- H7239
+    return 0;
+}
+""", errorcodes.Code.AtomicPrimitiveOutsideFieldOrGlobal, "'atomic int' can only be the type of a struct field or a global");
+
+        fails(s, "atomic: an alias of an atomic primitive", """
+type Count = atomic int; // <- H7239
+struct S { n: Count; }
+fn main(): int { let s = S { n: 1 }; return 0; }
+""", errorcodes.Code.AtomicPrimitiveOutsideFieldOrGlobal, "'atomic int' can only be the type of a struct field or a global");
+
+        fails(s, "atomic: atomic on a str", """
+struct S { name: atomic str; } // <- H7240
+fn main(): int { return 0; }
+""", errorcodes.Code.AtomicModifierOnUnsupportedType, "'atomic' applies to integer, real and bool types and to dynamic arrays, not to 'str'");
+
+        fails(s, "atomic: atomic on a struct type", """
+struct Point { x: int; }
+struct S { p: atomic Point; } // <- H7240
+fn main(): int { return 0; }
+""", errorcodes.Code.AtomicModifierOnUnsupportedType, "; a struct is declared 'atomic ref struct'");
+
+        s.compileFails("atomic: exchange of a field that is not atomic", """
+struct S { n: int = 0; }
+fn main(): int {
+    let s = S {};
+    let old = s.n.exchange(2); // <- H7110
+    return 0;
+}
+""", [
+            testsuite.exactCount(errorcodes.Code.ExpressionTypeDoesNotHaveMemberCalled, 1),
+            testsuite.totalErrors(1),
+        ]);
+
+        fails(s, "atomic: writing an atomic field needs a mut reference", """
+atomic opaque ref struct Counter {
+    n: atomic int = 0;
+    fn constructor(): mut Counter { return Counter {}; }
+}
+fn peek(c: Counter): int { return c.n.exchange(0); } // <- H7225
+fn main(): int { return peek(Counter()); }
+""", errorcodes.Code.WriteThroughNonMutReference, "only a 'mut' reference can change the data it points to");
+
+        // ── S5-7: atomic structs ────────────────────────────────────────────
+        s.compileOk("atomic: an atomic struct with every kind of field", """
+atomic opaque ref struct Inner {
+    n: atomic int = 0;
+    fn constructor(): mut Inner { return Inner {}; }
+}
+unsafe crossthread struct Handle { raw: cptr; }
+unsafe crossthread ref struct SharedHandle { raw: cptr = none; }
+atomic opaque ref struct Pool {
+    count: atomic int = 0;
+    ratio: atomic real = 0.0;
+    ready: atomic bool = false;
+    jobs: atomic []int = [];
+    inner: Inner;
+    shared: SharedHandle = SharedHandle {};
+    const name: str = "pool";
+    const limits: []int = [1, 2];
+    const handle: Handle = Handle { raw: none };
+    private unsafe scratch: []int = [];
+    private unsafe raw: cptr = none;
+    fn constructor(): mut Pool { return Pool { inner: Inner() }; }
+}
+fn main(): int { let p = Pool(); return 0; }
+""");
+
+        fails(s, "atomic: an atomic struct must be a ref struct", """
+atomic struct Counter { n: atomic int = 0; } // <- H7242
+fn main(): int { return 0; }
+""", errorcodes.Code.AtomicStructNotRef, "'Counter' is atomic, so it must be a reference: declare it 'atomic ref struct Counter'");
+
+        fails(s, "atomic: a plain field of an atomic struct", """
+atomic ref struct Counter { n: int = 0; } // <- H7243
+fn main(): int { return 0; }
+""", errorcodes.Code.AtomicStructFieldNotAtomic, "'n' is a field of the atomic struct 'Counter', so it must be atomic ('atomic int', 'atomic []T', a reference to an atomic or 'unsafe crossthread' struct), 'const', or 'private unsafe', but it is 'int'");
+
+        fails(s, "atomic: a plain array field of an atomic struct", """
+atomic ref struct Queue { items: []int = []; } // <- H7243
+fn main(): int { return 0; }
+""", errorcodes.Code.AtomicStructFieldNotAtomic, "'items' is a field of the atomic struct 'Queue', so it must be atomic");
+
+        fails(s, "atomic: a reference to a plain struct in an atomic struct", """
+ref struct Box { v: int = 0; }
+atomic ref struct Holder { box: Box = Box {}; } // <- H7243
+fn main(): int { return 0; }
+""", errorcodes.Code.AtomicStructFieldNotAtomic, "'box' is a field of the atomic struct 'Holder', so it must be atomic");
+
+        fails(s, "atomic: a const field of an atomic struct must cross threads", """
+atomic ref struct Holder { const raw: cptr = none; } // <- H7238
+fn main(): int { return 0; }
+""", errorcodes.Code.CannotCrossThreads, "'Holder' is atomic, so its fields must cross threads, but its field 'raw' is 'cptr', a raw C pointer");
+
+        fails(s, "atomic: an unsafe field must be private", """
+atomic opaque ref struct Pool { unsafe items: []int = []; } // <- H7244
+fn main(): int { return 0; }
+""", errorcodes.Code.UnsafeFieldNotPrivate, "'items' is 'unsafe', so only the struct's own methods may reach it: declare it 'private unsafe items'");
+
+        fails(s, "atomic: unsafe only in an atomic struct", """
+opaque ref struct Pool { private unsafe items: []int = []; } // <- H7245
+fn main(): int { return 0; }
+""", errorcodes.Code.UnsafeFieldOutsideAtomicStruct, "'items' is 'unsafe', which only a member of an atomic struct can be");
+
+        // private needs opaque (S0-17a), unsafe needs private: the rules compose.
+        fails(s, "atomic: a private unsafe field needs an opaque struct", """
+atomic ref struct Pool { private unsafe items: []int = []; } // <- H7237
+fn main(): int { return 0; }
+""", errorcodes.Code.PrivateMemberOfNonOpaqueStruct, "declare it 'opaque struct Pool'");
+
+        // ── S5-9: atomic arrays ─────────────────────────────────────────────
+        s.run("atomic: every operation of an atomic array", """
+struct P { x: int = 0; y: int = 0; }
+fn main(): int {
+    let xs: mut atomic []int = [1, 2, 3];
+    xs.push(4);
+    xs.insert(0, 0);
+    let removed = xs.remove(1);
+    let popped = xs.pop();
+    xs[0] = 10;
+    xs[1] += 5;
+    xs[2]++;
+    let post = xs[2]--;
+    let total = 0;
+    let indices = 0;
+    for x, i in xs { total += x; indices += i; }
+    fmt.println(f"{removed} {popped} {xs[0]} {xs[1]} {xs[2]} {post} {total} {indices} {xs.length}");
+
+    // An element update is one operation, also on part of an element.
+    let ps: mut atomic []P = [P {}, P { x: 1 }];
+    ps[1].x += 41;
+    ps[0].y = 7;
+    ps[0] = P { x: ps[0].y, y: 0 };
+    let copy = ps[1];
+    copy.x = 0;
+    fmt.println(f"{ps[0].x} {ps[0].y} {ps[1].x} {copy.x}");
+
+    // lock: several operations as one; reentrant inside; its value.
+    let length = xs.lock(() => {
+        xs.push(100);
+        xs.push(xs.length);
+        return xs.length;
+    });
+    let nested = xs.lock(() => xs.lock(() => xs[xs.length - 1]));
+    xs.lock(() => {});
+    fmt.println(f"{length} {nested} {xs.length}");
+    xs.clear();
+    fmt.println(f"{xs.length}");
+    return 0;
+}
+""", "1 4 10 7 3 4 20 3 3\n7 0 42 0\n5 4 5\n0");
+
+        s.run("atomic: a loop over an atomic array sees what it holds at every step", """
+fn main(): int {
+    // Each step checks the length again: a loop that shrinks the array ends
+    // where the array ends, never past it.
+    let xs: mut atomic []int = [1, 2, 3, 4, 5, 6];
+    let seen = 0;
+    for x in xs {
+        seen += 1;
+        xs.pop();
+    }
+    // ...and one that grows it goes on.
+    let ys: mut atomic []int = [1];
+    let steps = 0;
+    for y in ys {
+        steps += 1;
+        if ys.length < 4 { ys.push(y + 1); }
+    }
+    fmt.println(f"{seen} {xs.length} {steps} {ys[3]}");
+    return 0;
+}
+""", "3 3 4 4");
+
+        s.run("atomic: tasks interleaving on an atomic array and its lock", """
+fn main(): int {
+    let log: mut atomic []int = [];
+    // Two producers suspend between their pushes; a third task holds the
+    // lock across a suspension, and nobody gets in meanwhile.
+    let a = task.spawn(() => { for (let i = 0; i < 5; i++) { log.push(1); sys.yield(); } return 0; });
+    let b = task.spawn(() => { for (let i = 0; i < 5; i++) { log.push(2); sys.yield(); } return 0; });
+    let c = task.spawn(() => {
+        log.lock(() => {
+            let start = log.length;
+            log.push(3);
+            sys.yield();
+            time.sleep(0.005);
+            log.push(3);
+            return start;
+        });
+        return 0;
+    });
+    let all: []Future<int> = [a, b, c];
+    sys.joinAll(all);
+    let ones = 0;
+    let twos = 0;
+    let adjacentThrees = false;
+    for v, i in log {
+        if v == 1 { ones += 1; }
+        if v == 2 { twos += 1; }
+        if v == 3 && i + 1 < log.length && log[i + 1] == 3 { adjacentThrees = true; }
+    }
+    fmt.println(f"{log.length} {ones} {twos} {adjacentThrees}");
+    return 0;
+}
+""", "12 5 5 true");
+
+        // A bounds error lets go of the lock before it panics: a recovered one
+        // leaves the array usable. A panic inside `lock` poisons it.
+        s.run("atomic: a bounds error does not poison the array", """
+fn main(): int {
+    let xs: mut atomic []int = [1];
+    let r = attempt { let v = xs[5]; 0 } recover e { 1 };
+    let q = attempt { xs.remove(3); 0 } recover e { 1 };
+    let p = attempt { xs.insert(9, 1); 0 } recover e { 1 };
+    xs.push(2);
+    fmt.println(f"{r} {q} {p} {xs.length} {xs[1]}");
+    return 0;
+}
+""", "1 1 1 2 2");
+
+        s.runExitCode("atomic: a panic inside lock poisons the array", """
+fn main(): int {
+    let xs: mut atomic []int = [1];
+    let fail = xs.length > 0;
+    let r = attempt {
+        xs.lock(() => { if fail { sys.panic("half way"); } });
+        0
+    } recover e { 1 };
+    xs.push(2); // the array is poisoned: this panics
+    return 0;
+}
+""", 255);
+
+        fails(s, "atomic: only an array literal becomes an atomic array", """
+fn main(): int {
+    let local: []int = [1, 2];
+    let shared: atomic []int = local; // <- H7248
+    return 0;
+}
+""", errorcodes.Code.ConversionToOrFromAtomicArray, "only an array literal becomes an atomic array, since any other array may also be used elsewhere without the lock");
+
+        fails(s, "atomic: an atomic array never becomes a plain one", """
+fn sum(xs: []int): int { return 0; }
+fn main(): int {
+    let shared: atomic []int = [1, 2];
+    return sum(shared); // <- H7248
+}
+""", errorcodes.Code.ConversionToOrFromAtomicArray, "an atomic array never becomes a plain one, whose operations would not take its lock");
+
+        fails(s, "atomic: an array a function made is no literal", """
+fn make(): []int { return [1]; }
+fn main(): int {
+    let shared: atomic []int = make(); // <- H7248
+    return 0;
+}
+""", errorcodes.Code.ConversionToOrFromAtomicArray, "only an array literal becomes an atomic array");
+
+        // Each branch is a literal of its own, made atomic where it is written.
+        s.run("atomic: literals in both branches of a condition", """
+fn main(): int {
+    let pick = true;
+    let shared: mut atomic []int = pick ? [1] : [2, 3];
+    shared.push(4);
+    fmt.println(f"{shared.length} {shared[1]}");
+    return 0;
+}
+""", "2 4");
+
+        fails(s, "atomic: the plain array functions take no atomic array", """
+fn main(): int {
+    let xs: mut atomic []int = [1, 2];
+    xs.reserve(8); // <- H7248
+    return 0;
+}
+""", errorcodes.Code.ConversionToOrFromAtomicArray, "an atomic array never becomes a plain one");
+
+        fails(s, "atomic: the element of an atomic array must cross threads", """
+ref struct Box { v: int = 0; }
+fn main(): int {
+    let boxes: atomic []Box = []; // <- H7238
+    return 0;
+}
+""", errorcodes.Code.CannotCrossThreads, "its element must cross threads (C193), but its element is 'ref ");
+
+        fails(s, "atomic: a cptr element", """
+struct Holder { items: atomic []cptr; } // <- H7238
+fn main(): int { return 0; }
+""", errorcodes.Code.CannotCrossThreads, "its element must cross threads (C193), but its element is 'cptr', a raw C pointer");
+
+        fails(s, "atomic: a method changing an element of an atomic array", """
+struct P {
+    x: int = 0;
+    mut fn bump() { this.x += 1; }
+}
+fn main(): int {
+    let ps: mut atomic []P = [P {}];
+    ps[0].bump(); // <- H7249
+    return 0;
+}
+""", errorcodes.Code.ReferenceIntoAtomicArray, "A method that changes its receiver cannot be called on an element of an atomic array");
+
+        fails(s, "atomic: an atomic array is never sliced", """
+fn main(): int {
+    let xs: atomic []int = [1, 2, 3];
+    let part = xs[0:2]; // <- H7249
+    return 0;
+}
+""", errorcodes.Code.ReferenceIntoAtomicArray, "An atomic array cannot be sliced");
+
+        fails(s, "atomic: what an atomic array does not have", """
+fn main(): int {
+    let xs: mut atomic []int = [1];
+    let f = xs.first; // <- no member
+    return 0;
+}
+""", errorcodes.Code.DatatypeDoesNotHaveMemberNamed2, "An atomic array has no 'first'");
+
+        fails(s, "atomic: changing an atomic array needs a mut reference", """
+fn main(): int {
+    let xs: atomic []int = [1];
+    xs.push(2); // <- H7225
+    return 0;
+}
+""", errorcodes.Code.WriteThroughNonMutReference, "only a 'mut' reference can change the data it points to");
+    }
+}

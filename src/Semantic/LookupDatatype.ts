@@ -200,11 +200,17 @@ export function makeRawCallableDatatypeAvailable(
   sr: Semantic.Context,
   args: {
     functionType: Semantic.TypeDefId;
+    // `crossthread (...) => R` (docs/async-decisions.md S5-4).
+    crossthread: boolean;
     sourceloc: SourceLoc;
   }
 ): Semantic.TypeDefId {
-  // The only thing the scan compared was functionType, so this is a plain map.
-  const cachedCallable = sr.callableTypeCache.get(args.functionType);
+  // A callable is identified by its function type and whether it is
+  // crossthread, so these are two plain maps.
+  const cache = args.crossthread
+    ? sr.crossthreadCallableTypeCache
+    : sr.callableTypeCache;
+  const cachedCallable = cache.get(args.functionType);
   if (cachedCallable !== undefined) {
     return cachedCallable;
   }
@@ -213,9 +219,10 @@ export function makeRawCallableDatatypeAvailable(
   const [_, ftypeId] = sr.b.addType(sr, {
     variant: Semantic.ENode.CallableDatatype,
     functionType: args.functionType,
+    crossthread: args.crossthread,
     concrete: sr.typeDefNodes.get(args.functionType).concrete,
   });
-  sr.callableTypeCache.set(args.functionType, ftypeId);
+  cache.set(args.functionType, ftypeId);
   return ftypeId;
 }
 
@@ -223,6 +230,7 @@ export function makeCallableDatatypeAvailable(
   sr: Semantic.Context,
   args: {
     functionType: Semantic.TypeDefId;
+    crossthread: boolean;
     sourceloc: SourceLoc;
   }
 ): Semantic.TypeUseId {
@@ -527,10 +535,12 @@ export function makeDynamicArrayDatatypeAvailable(
   datatype: Semantic.TypeUseId,
   mutability: EDatatypeMutability,
   storage: EStorageClass,
-  sourceloc: SourceLoc
+  sourceloc: SourceLoc,
+  // `atomic []T` (docs/async-decisions.md S5-9): a type of its own.
+  atomic: boolean
 ): Semantic.TypeUseId {
   // Keyed like makeStackArrayDatatypeAvailable: element definition, storage
-  // class and mutability.
+  // class and mutability; and whether the array is atomic.
   const resolvedElemUse = sr.typeUseNodes.get(sr.e.resolveAlias(datatype));
   for (const id of sr.dynamicArrayTypeCache) {
     const type = sr.typeDefNodes.get(id);
@@ -539,7 +549,8 @@ export function makeDynamicArrayDatatypeAvailable(
     if (
       cachedElemUse.type !== resolvedElemUse.type ||
       cachedElemUse.storage !== resolvedElemUse.storage ||
-      cachedElemUse.mutability !== resolvedElemUse.mutability
+      cachedElemUse.mutability !== resolvedElemUse.mutability ||
+      type.atomic !== atomic
     ) {
       continue;
     }
@@ -551,6 +562,7 @@ export function makeDynamicArrayDatatypeAvailable(
   const [_, typeId] = sr.b.addType<Semantic.DynamicArrayDatatypeDef>(sr, {
     variant: Semantic.ENode.DynamicArrayDatatype,
     datatype: datatype,
+    atomic: atomic,
     concrete: isTypeConcrete(sr, datatype),
     syntheticFields: [lengthFieldId],
   });

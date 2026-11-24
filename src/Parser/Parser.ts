@@ -46,6 +46,8 @@ import {
   type ASTRefTypeExpr,
   type ASTStackrefTypeExpr,
   type ASTImmediateTypeExpr,
+  type ASTAtomicTypeExpr,
+  type ASTCrossthreadTypeExpr,
   type ASTLambda,
   type ASTLambdaExpr,
   type ASTLiteralExpr,
@@ -1199,6 +1201,32 @@ class ASTBuilder extends HazeParserListener {
       return;
     }
 
+    if (ctx.ATOMIC()) {
+      if (produced.length !== 1) {
+        throw new InternalError("TypeExprModified atomic stack mismatch");
+      }
+
+      this.stack.push({
+        variant: "AtomicTypeExpr",
+        type: produced[0] as ASTExpr,
+        sourceloc: this.loc(ctx),
+      } satisfies ASTAtomicTypeExpr);
+      return;
+    }
+
+    if (ctx.CROSSTHREAD()) {
+      if (produced.length !== 1) {
+        throw new InternalError("TypeExprModified crossthread stack mismatch");
+      }
+
+      this.stack.push({
+        variant: "CrossthreadTypeExpr",
+        type: produced[0] as ASTExpr,
+        sourceloc: this.loc(ctx),
+      } satisfies ASTCrossthreadTypeExpr);
+      return;
+    }
+
     if (ctx.MUT()) {
       if (produced.length !== 1) {
         throw new InternalError("TypeExprModified mut stack mismatch");
@@ -1736,6 +1764,7 @@ class ASTBuilder extends HazeParserListener {
         : EVariableMutability.Default,
       optional: false,
       private: Boolean(ctx._priv),
+      unsafe: Boolean(ctx._unsafeField),
       defaultValue: defaultValue,
       sourceloc: this.loc(ctx),
     } satisfies ASTStructMemberDefinition);
@@ -1762,6 +1791,7 @@ class ASTBuilder extends HazeParserListener {
       mutability: EVariableMutability.Default,
       optional: Boolean(ctx.QUESTIONMARK()),
       private: false,
+      unsafe: false,
       defaultValue: defaultValue,
       sourceloc: this.loc(ctx),
     } satisfies ASTStructMemberDefinition);
@@ -1823,6 +1853,7 @@ class ASTBuilder extends HazeParserListener {
         : EVariableMutability.Default,
       optional: Boolean(ctx.QUESTIONMARK()),
       private: Boolean(ctx._priv),
+      unsafe: Boolean(ctx._unsafeField),
       defaultValue: defaultValue,
       sourceloc: this.loc(ctx),
     } satisfies ASTStructMemberDefinition);
@@ -2108,6 +2139,13 @@ class ASTBuilder extends HazeParserListener {
       plain: ctx.structModifier().some((m) => Boolean(m.PLAIN())),
       refByDefault: ctx.structModifier().some((m) => Boolean(m.REF())),
       nocopy: ctx.structModifier().some((m) => Boolean(m.NOCOPY())),
+      atomic: ctx.structModifier().some((m) => Boolean(m.ATOMIC())),
+      crossthread: ctx
+        .structModifier()
+        .some((m) => Boolean(m.CROSSTHREAD()) && !m.UNSAFE()),
+      unsafeCrossthread: ctx
+        .structModifier()
+        .some((m) => Boolean(m.CROSSTHREAD()) && Boolean(m.UNSAFE())),
       name: name,
       noemit: Boolean(ctx._noemit),
       generics: generics.map((p) => ({

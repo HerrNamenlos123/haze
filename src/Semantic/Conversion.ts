@@ -29,6 +29,7 @@ import {
 import { makePrimitiveAvailable, makeRawPrimitiveAvailable } from "./Elaborate";
 import { makeTypeUse } from "./LookupDatatype";
 import { Semantic } from "./SemanticTypes";
+import { Crossing } from "./Crossing";
 
 export namespace Conversion {
   // Helper function to extract constraint path from expression
@@ -1344,6 +1345,55 @@ export namespace Conversion {
     return problems.length === 0 ? null : problems.join("; ");
   }
 
+  /**
+   * Why `sourceExpr` cannot become a value of the `crossthread` closure type
+   * `target` (docs/async-decisions.md S5-2, S5-4, C594), or null when it can
+   * (or `target` is no crossthread type). Such a closure is called on another
+   * thread with arguments from the caller and hands its result back, so its
+   * environment, every parameter and its result must cross threads. Only a
+   * closure made right here has an environment the compiler can see: a
+   * lambda, a function, a method bound to its receiver. A closure value whose
+   * type is only a signature never crosses (C592), unless that type is
+   * crossthread already.
+   */
+  export function crossthreadConversionError(
+    sr: Semantic.Context,
+    sourceExpr: Semantic.Expression,
+    source: Semantic.CallableDatatypeDef,
+    target: Semantic.CallableDatatypeDef,
+    targetTypeText: string
+  ): string | null {
+    if (!target.crossthread || source.crossthread) {
+      return null;
+    }
+    const prefix = `This closure cannot become '${targetTypeText}', which crosses threads`;
+    if (sourceExpr.variant !== Semantic.ENode.CallableExpr) {
+      return `${prefix}: its type is only a signature, which says nothing about what it captured (C592). Pass the lambda itself, or keep it in a variable of a 'crossthread' closure type`;
+    }
+    const steps: { what: string; type: Semantic.TypeUseId }[] = [];
+    const env = sourceExpr.envType;
+    if (env?.type === "lambda") {
+      for (const capture of env.captures) {
+        steps.push({ what: `capture '${capture.name}'`, type: capture.type });
+      }
+    } else if (env?.type === "method") {
+      steps.push({ what: "receiver 'this'", type: env.thisExprType });
+    }
+    const fn = sr.typeDefNodes.get(target.functionType);
+    assert(fn.variant === Semantic.ENode.FunctionDatatype);
+    fn.parameters.forEach((p, i) => {
+      steps.push({ what: `parameter ${i + 1}`, type: p.type });
+    });
+    steps.push({ what: "result", type: fn.returnType });
+    for (const step of steps) {
+      const f = Crossing.failure(sr, step.type);
+      if (f !== null) {
+        return `${prefix}: ${Crossing.explain(sr, f, step)}`;
+      }
+    }
+    return null;
+  }
+
   function checkFunctionDatatypeCompatibility(
     sr: Semantic.Context,
     resolvedSourceTypeDef: Semantic.FunctionDatatypeDef,
@@ -1922,6 +1972,50 @@ export namespace Conversion {
       };
     }
 
+    // Atomic arrays (docs/async-decisions.md S5-9): an array literal, which
+    // nothing else references (as C146 says of struct literals), may become
+    // one; no other array may, since code elsewhere would go on using it
+    // without the lock. An atomic array never becomes a plain one.
+    if (
+      resolvedSourceTypeDef.variant === Semantic.ENode.DynamicArrayDatatype &&
+      resolvedTargetTypeDef.variant === Semantic.ENode.DynamicArrayDatatype &&
+      resolvedSourceTypeDef.atomic &&
+      !resolvedTargetTypeDef.atomic
+    ) {
+      return {
+        kind: "error",
+        message: `Cannot use ${sourceTypeText} as ${targetTypeText}: an atomic array never becomes a plain one, whose operations would not take its lock`,
+        code: HazeErrorCode.ConversionToOrFromAtomicArray,
+      };
+    }
+    if (
+      resolvedSourceTypeDef.variant === Semantic.ENode.DynamicArrayDatatype &&
+      resolvedTargetTypeDef.variant === Semantic.ENode.DynamicArrayDatatype &&
+      !resolvedSourceTypeDef.atomic &&
+      resolvedTargetTypeDef.atomic
+    ) {
+      if (sourceExpr.variant !== Semantic.ENode.ArrayLiteralExpr) {
+        return {
+          kind: "error",
+          message: `Cannot use ${sourceTypeText} as ${targetTypeText}: only an array literal becomes an atomic array, since any other array may also be used elsewhere without the lock`,
+          code: HazeErrorCode.ConversionToOrFromAtomicArray,
+        };
+      }
+      if (
+        sr.e.resolveAlias(resolvedSourceTypeDef.datatype) !==
+        sr.e.resolveAlias(resolvedTargetTypeDef.datatype)
+      ) {
+        return {
+          kind: "error",
+          message: `Cannot use ${sourceTypeText} as ${targetTypeText}: the elements differ`,
+          code: HazeErrorCode.ConversionToOrFromAtomicArray,
+        };
+      }
+      return {
+        kind: "basic-c-cast",
+      };
+    }
+
     // Dynamic arrays whose elements differ only in mutability (see
     // arrayViewChange).
     {
@@ -1990,6 +2084,9 @@ export namespace Conversion {
     if (
       resolvedTargetTypeDef.variant === Semantic.ENode.UntaggedUnionDatatype
     ) {
+      // Why a closure did not become a crossthread member it matches in
+      // signature (S5-2): the reason, if no member takes it.
+      let crossing: string | null = null;
       const matching = resolvedTargetTypeDef.members.findIndex((m) => {
         // Check Direct match against the resolved (alias-canonicalized) source type
         if (sr.e.resolveAlias(m) === resolvedSourceTypeUseId) {
@@ -2021,10 +2118,20 @@ export namespace Conversion {
             const tType = sr.typeDefNodes.get(mDef.functionType);
             assert(fType.variant === Semantic.ENode.FunctionDatatype);
             assert(tType.variant === Semantic.ENode.FunctionDatatype);
-            return (
-              checkFunctionDatatypeCompatibility(sr, fType, "", tType, "") ===
+            if (
+              checkFunctionDatatypeCompatibility(sr, fType, "", tType, "") !==
               "success"
+            ) {
+              return false;
+            }
+            crossing = crossthreadConversionError(
+              sr,
+              sourceExpr,
+              sDef,
+              mDef,
+              Semantic.serializeTypeUse(sr, m)
             );
+            return crossing === null;
           }
           return false;
         }
@@ -2058,6 +2165,13 @@ export namespace Conversion {
         return {
           kind: "value-to-union",
           index: matching,
+        };
+      }
+      if (crossing !== null) {
+        return {
+          kind: "error",
+          message: crossing,
+          code: HazeErrorCode.CannotCrossThreads,
         };
       }
 
@@ -2433,13 +2547,26 @@ export namespace Conversion {
         tType,
         targetTypeText
       );
-      if (result === "success") {
-        return {
-          kind: "basic-c-cast",
-        };
-      } else {
+      if (result !== "success") {
         return result;
       }
+      const crossing = crossthreadConversionError(
+        sr,
+        sourceExpr,
+        resolvedSourceTypeDef,
+        resolvedTargetTypeDef,
+        targetTypeText
+      );
+      if (crossing !== null) {
+        return {
+          kind: "error",
+          message: crossing,
+          code: HazeErrorCode.CannotCrossThreads,
+        };
+      }
+      return {
+        kind: "basic-c-cast",
+      };
     }
 
     // Conversion to LiteralDatatype
@@ -3443,6 +3570,15 @@ export namespace Conversion {
       sourceUse.type === targetUse.type
     ) {
       return undefined;
+    }
+    // An atomic array is never seen as a plain one: the plain array's
+    // operations take no lock (S5-9). Into an atomic array, only a literal
+    // converts, which buildConversionPlan decides before this.
+    if (sourceDef.atomic) {
+      return "an atomic array never becomes a plain one, whose operations would not take its lock.";
+    }
+    if (targetDef.atomic) {
+      return "only an array literal becomes an atomic array.";
     }
     const sourceElem = sr.typeUseNodes.get(
       sr.e.resolveAlias(throughConst(sr, sourceTypeUseId, sourceDef.datatype))

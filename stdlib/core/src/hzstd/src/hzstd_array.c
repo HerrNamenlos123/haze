@@ -288,3 +288,145 @@ hzstd_dynamic_array_result_t hzstd_dynamic_array_remove(hzstd_dynamic_array_t *d
   da->size -= 1;
   return hzstd_dynamic_array_result_ok;
 }
+
+// ── Atomic arrays (hzstd_array.h; docs/async-decisions.md S5-9) ─────────────
+
+hzstd_mutex_core_t *hzstd_atomic_array_core(hzstd_dynamic_array_t *array)
+{
+  hzstd_assert(array != NULL);
+  hzstd_mutex_core_t *core = __atomic_load_n(&array->lock, __ATOMIC_ACQUIRE);
+  if (core != NULL) {
+    return core;
+  }
+  // The first operation makes the core. Two threads can get here at once:
+  // the one whose core is installed first wins, the other's core is garbage
+  // for the GC.
+  hzstd_mutex_core_t *fresh = hzstd_mutex_core_new();
+  hzstd_mutex_core_t *expected = NULL;
+  if (__atomic_compare_exchange_n(&array->lock, &expected, fresh, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+    return fresh;
+  }
+  return expected;
+}
+
+void hzstd_atomic_array_enter(hzstd_context_t *ctx, hzstd_dynamic_array_t *array)
+{
+  hzstd_mutex_lock(ctx, hzstd_atomic_array_core(array), (hzstd_source_location_t) { 0 });
+}
+
+void hzstd_atomic_array_leave(hzstd_context_t *ctx, hzstd_dynamic_array_t *array)
+{
+  hzstd_mutex_unlock(ctx, hzstd_atomic_array_core(array));
+}
+
+hzstd_int_t hzstd_atomic_array_length(hzstd_context_t *ctx, hzstd_dynamic_array_t *array)
+{
+  hzstd_atomic_array_enter(ctx, array);
+  hzstd_int_t length = hzstd_dynamic_array_size(array);
+  hzstd_atomic_array_leave(ctx, array);
+  return length;
+}
+
+// Lets go of the lock, then panics: a bounds error changed nothing, so it
+// must not poison the array.
+_Noreturn static void
+hzstd_atomic_array_out_of_range(hzstd_context_t *ctx, hzstd_dynamic_array_t *array, const char *what, hzstd_int_t index)
+{
+  hzstd_int_t length = hzstd_dynamic_array_size(array);
+  hzstd_atomic_array_leave(ctx, array);
+  hzstd_panic_fmt_n(2, "%s out of range [%" PRId64 "] with length %" PRId64, what, index, length);
+}
+
+static void
+hzstd_atomic_array_check_result(hzstd_context_t *ctx, hzstd_dynamic_array_t *array, hzstd_dynamic_array_result_t result)
+{
+  if (result == hzstd_dynamic_array_result_ok) {
+    return;
+  }
+  hzstd_atomic_array_leave(ctx, array);
+  if (result == hzstd_dynamic_array_result_max_array_size) {
+    hzstd_panic_fmt_n(2, "max dynamic array size reached");
+  }
+  if (result == hzstd_dynamic_array_result_out_of_memory) {
+    hzstd_panic_fmt_n(2, "out of memory");
+  }
+  hzstd_unreachable(0);
+}
+
+void hzstd_atomic_array_get(hzstd_context_t *ctx, hzstd_dynamic_array_t *array, hzstd_int_t index, void *out)
+{
+  hzstd_atomic_array_enter(ctx, array);
+  if (index < 0 || index >= hzstd_dynamic_array_size(array)) {
+    hzstd_atomic_array_out_of_range(ctx, array, "array index", index);
+  }
+  hzstd_dynamic_array_get(array, (size_t)index, out);
+  hzstd_atomic_array_leave(ctx, array);
+}
+
+bool hzstd_atomic_array_next(hzstd_context_t *ctx, hzstd_dynamic_array_t *array, hzstd_int_t index, void *out)
+{
+  hzstd_atomic_array_enter(ctx, array);
+  bool present = index >= 0 && index < hzstd_dynamic_array_size(array);
+  if (present) {
+    hzstd_dynamic_array_get(array, (size_t)index, out);
+  }
+  hzstd_atomic_array_leave(ctx, array);
+  return present;
+}
+
+void *hzstd_atomic_array_enter_element(hzstd_context_t *ctx, hzstd_dynamic_array_t *array, hzstd_int_t index)
+{
+  hzstd_atomic_array_enter(ctx, array);
+  if (index < 0 || index >= hzstd_dynamic_array_size(array)) {
+    hzstd_atomic_array_out_of_range(ctx, array, "array index", index);
+  }
+  return hzstd_dynamic_array_at(array, (size_t)index);
+}
+
+void hzstd_atomic_array_push(hzstd_context_t *ctx, hzstd_dynamic_array_t *array, const void *element)
+{
+  hzstd_atomic_array_enter(ctx, array);
+  hzstd_atomic_array_check_result(ctx, array, hzstd_dynamic_array_push(array, element));
+  hzstd_atomic_array_leave(ctx, array);
+}
+
+void hzstd_atomic_array_insert(hzstd_context_t *ctx,
+                               hzstd_dynamic_array_t *array,
+                               hzstd_int_t index,
+                               const void *element)
+{
+  hzstd_atomic_array_enter(ctx, array);
+  if (index < 0 || index > hzstd_dynamic_array_size(array)) {
+    hzstd_atomic_array_out_of_range(ctx, array, "array insert index", index);
+  }
+  hzstd_atomic_array_check_result(ctx, array, hzstd_dynamic_array_insert(array, (size_t)index, element));
+  hzstd_atomic_array_leave(ctx, array);
+}
+
+void hzstd_atomic_array_remove(hzstd_context_t *ctx, hzstd_dynamic_array_t *array, hzstd_int_t index, void *out)
+{
+  hzstd_atomic_array_enter(ctx, array);
+  if (index < 0 || index >= hzstd_dynamic_array_size(array)) {
+    hzstd_atomic_array_out_of_range(ctx, array, "array remove index", index);
+  }
+  hzstd_atomic_array_check_result(ctx, array, hzstd_dynamic_array_remove(array, (size_t)index, out));
+  hzstd_atomic_array_leave(ctx, array);
+}
+
+void hzstd_atomic_array_pop(hzstd_context_t *ctx, hzstd_dynamic_array_t *array, void *out)
+{
+  hzstd_atomic_array_enter(ctx, array);
+  if (hzstd_dynamic_array_size(array) == 0) {
+    hzstd_atomic_array_leave(ctx, array);
+    hzstd_panic_fmt_n(1, "cannot pop from dynamic array: length == 0");
+  }
+  hzstd_atomic_array_check_result(ctx, array, hzstd_dynamic_array_pop(array, out));
+  hzstd_atomic_array_leave(ctx, array);
+}
+
+void hzstd_atomic_array_clear(hzstd_context_t *ctx, hzstd_dynamic_array_t *array)
+{
+  hzstd_atomic_array_enter(ctx, array);
+  hzstd_dynamic_array_clear(array);
+  hzstd_atomic_array_leave(ctx, array);
+}
