@@ -200,6 +200,26 @@ type UnionDispatch = {
 
 export class SemanticElaborator {
   currentContext: Semantic.ElaborationContext;
+
+  // Declarations never compile definitions. A function signature is cached
+  // before its parameter and return types are elaborated (so that a type
+  // naming it finds it) and is complete only once they are, so nothing may
+  // compile a function body while one is being built: a body calling its
+  // overload set would see it half-built and choose another overload, or
+  // none, depending on which declaration happened to be reached first
+  // (cases_elaboration_order.hz). These are the signatures being built;
+  // elaborateFunctionSignature never hands one of them out.
+  signaturesInProgress = new Set<Semantic.SymbolId>();
+  // The struct method passes (every method body of a struct, see
+  // instantiateAndElaborateStruct) asked for while a signature was being
+  // built. They run, in the context they were asked for in, as soon as no
+  // signature is being built: when the outermost one is complete, and at the
+  // end of the top-level pass for any left by a signature whose elaboration
+  // failed (an error something recovered from).
+  deferredStructMethodPasses: {
+    run: () => void;
+    context: Semantic.ElaborationContext;
+  }[] = [];
   // This is a stack, when a new current context is set, the old one is pushed here, then the old one
   // is pulled out of here and assigned to currentContext again. We need this stack to be able to
   // get debug info of where we are in the elaboration, what functions elaborated what functions,
@@ -2096,11 +2116,7 @@ export class SemanticElaborator {
       );
 
     if (!this.inFunction) {
-      throw new CompilerError(
-        "Function calls are not allowed here. Struct member default values, global constant initializers, and other compile-time contexts cannot contain function calls.",
-        callExpr.sourceloc,
-        HazeErrorCode.FunctionCallsAreNotAllowedHereStructMember
-      );
+      throw this.callsNotAllowedHere(callExpr.sourceloc);
     }
     // Call a callee of CallableDatatype (a bound method or a closure value),
     // or a plain function value that needs no `this`.
@@ -4332,18 +4348,20 @@ export class SemanticElaborator {
     }
   }
 
+  // The namespace itself: the semantic namespace type that `ns.X`, the parent
+  // of a symbol inside it and the module interface refer to, one per namespace
+  // (shared by all its blocks). Elaborates nothing inside it: what it holds is
+  // compiled by elaborateNamespaceContents, from the top-level pass only. A
+  // reference to a namespace can sit anywhere, also in the parameter types of
+  // a function signature still being built, and compiling bodies from there
+  // let them see that signature half-built (cases_elaboration_order.hz).
   elaborateNamespace(namespaceId: Collect.TypeDefId) {
     const namespace = this.sr.cc.typeDefNodes.get(namespaceId);
     assert(namespace.variant === Collect.ENode.NamespaceTypeDef);
-    const sharedInstance = this.sr.cc.nsSharedInstances.get(
-      namespace.sharedInstance
-    );
-    assert(sharedInstance.variant === Collect.ENode.NamespaceSharedInstance);
 
-    for (const s of this.sr.elaboratedNamespaceSymbols) {
-      if (s.originalSharedInstance === namespace.sharedInstance) {
-        return s.result;
-      }
+    const cached = this.namespaceCacheEntry(namespace.sharedInstance);
+    if (cached) {
+      return cached.result;
     }
 
     let parentNamespace = null as Semantic.TypeDefId | null;
@@ -4356,7 +4374,7 @@ export class SemanticElaborator {
       parentNamespace = this.elaborateNamespace(namespaceSymbol.typeDef);
     }
 
-    const [ns, nsId] = this.sr.b.namespaceType(
+    const [, nsId] = this.sr.b.namespaceType(
       namespace.name,
       parentNamespace ? this.sr.b.typeDefSymbol(parentNamespace)[1] : null,
       namespaceId,
@@ -4368,9 +4386,48 @@ export class SemanticElaborator {
     );
     this.sr.elaboratedNamespaceSymbols.push({
       originalSharedInstance: namespace.sharedInstance,
-      substitutionContext: this.sr.e.currentContext,
+      // A namespace has no generics: its context substitutes nothing, also
+      // when the first reference to it sits inside a generic instantiation.
+      substitutionContext: Semantic.makeElaborationContext({
+        currentScope: namespace.parentScope,
+        genericsScope: namespace.parentScope,
+        constraints: ConstraintSet.empty(),
+      }),
       result: nsId,
+      contentsElaborated: false,
     });
+    return nsId;
+  }
+
+  namespaceCacheEntry(sharedInstance: Collect.NSSharedInstanceId) {
+    for (const s of this.sr.elaboratedNamespaceSymbols) {
+      if (s.originalSharedInstance === sharedInstance) {
+        return s;
+      }
+    }
+    return null;
+  }
+
+  // Compiles everything the namespace holds, in all of its blocks, once: its
+  // functions, structs, globals and nested namespaces. Called by the
+  // top-level pass only (topLevelSymbol, which also reaches the nested
+  // namespaces through here), never from a reference to the namespace.
+  elaborateNamespaceContents(namespaceId: Collect.TypeDefId) {
+    const nsId = this.elaborateNamespace(namespaceId);
+    const namespace = this.sr.cc.typeDefNodes.get(namespaceId);
+    assert(namespace.variant === Collect.ENode.NamespaceTypeDef);
+    const cached = this.namespaceCacheEntry(namespace.sharedInstance);
+    assert(cached);
+    if (cached.contentsElaborated) {
+      return nsId;
+    }
+    cached.contentsElaborated = true;
+    const ns = this.sr.typeDefNodes.get(nsId);
+    assert(ns.variant === Semantic.ENode.NamespaceDatatype);
+    const sharedInstance = this.sr.cc.nsSharedInstances.get(
+      namespace.sharedInstance
+    );
+    assert(sharedInstance.variant === Collect.ENode.NamespaceSharedInstance);
 
     for (const scopeId of sharedInstance.namespaceScopes) {
       const nsScope = this.sr.cc.scopeNodes.get(scopeId);
@@ -4436,6 +4493,20 @@ export class SemanticElaborator {
       return found;
     }
 
+    // The values are written in the enum's own scope, so they are elaborated
+    // there, with nothing of the context of whatever reached the enum first
+    // (its scope, substitutions, constraints).
+    const enumContext = Semantic.makeElaborationContext({
+      currentScope: enumValue.parentScope,
+      genericsScope: enumValue.parentScope,
+      constraints: ConstraintSet.empty(),
+    });
+    const valueExpr = (value: Collect.ExprId) =>
+      this.withContext(
+        { context: enumContext, inAttemptExpr: null, inFunction: null },
+        () => this.expr(value, undefined)[1]
+      );
+
     const [enumType, enumTypeId] = this.sr.b.addType<Semantic.EnumDatatypeDef>(
       this.sr,
       {
@@ -4457,7 +4528,7 @@ export class SemanticElaborator {
     const [_, enumSymbolId] = this.sr.b.typeDefSymbol(enumTypeId);
 
     insertIntoEnumDefCache(this.sr, enumId, {
-      substitutionContext: this.currentContext,
+      substitutionContext: enumContext,
       parentSymbolId: parentNamespace,
       result: enumTypeId,
       resultAsTypeDefSymbol: enumSymbolId,
@@ -4520,7 +4591,7 @@ export class SemanticElaborator {
       if (enumValue.values[0].value) {
         const [valueResult, _] = EvalCTFEOrFail(
           this.sr,
-          this.expr(enumValue.values[0].value, undefined)[1],
+          valueExpr(enumValue.values[0].value),
           enumValue.values[0].sourceloc
         );
         assert(valueResult.variant === Semantic.ENode.LiteralExpr);
@@ -4560,7 +4631,7 @@ export class SemanticElaborator {
           if (value.value) {
             const [valueResult, _] = EvalCTFEOrFail(
               this.sr,
-              this.expr(value.value, undefined)[1],
+              valueExpr(value.value),
               value.sourceloc
             );
             assert(valueResult.variant === Semantic.ENode.LiteralExpr);
@@ -4679,7 +4750,7 @@ export class SemanticElaborator {
           if (value.value) {
             const [valueResult, _] = EvalCTFEOrFail(
               this.sr,
-              this.expr(value.value, undefined)[1],
+              valueExpr(value.value),
               value.sourceloc
             );
             assert(valueResult.variant === Semantic.ENode.LiteralExpr);
@@ -5632,7 +5703,13 @@ export class SemanticElaborator {
         return null;
       }
 
-      case Collect.ENode.NamespaceTypeDef:
+      case Collect.ENode.NamespaceTypeDef: {
+        // The top-level pass is where a namespace's contents are compiled.
+        return this.sr.b.typeDefSymbol(
+          this.elaborateNamespaceContents(typeDefSymbol.typeDef)
+        )[1];
+      }
+
       case Collect.ENode.EnumTypeDef: {
         // Do normal elaboration like usual already
         return this.elaborateTypeDef(typeDefSymbol, [], typedef.sourceloc);
@@ -6071,6 +6148,10 @@ export class SemanticElaborator {
   elaborateMethodsAndTypedefsOfStruct(semanticStructId: Semantic.TypeDefId) {
     const semanticStruct = this.sr.typeDefNodes.get(semanticStructId);
     assert(semanticStruct.variant === Semantic.ENode.StructDatatype);
+    assert(
+      this.signaturesInProgress.size === 0,
+      "A struct's method pass ran while a function signature was being built"
+    );
     const collectedStructDef = this.sr.cc.symbolNodes.get(
       semanticStruct.originalCollectedSymbol
     );
@@ -6347,7 +6428,9 @@ export class SemanticElaborator {
         if (!(struct.methodsFinalized || struct.methodsInProgress)) {
           struct.methodsInProgress = false;
           struct.methodsFinalized = true;
-          this.elaborateMethodsAndTypedefsOfStruct(existing);
+          this.structMethodPassWhenNoSignatureIsBuilt(() =>
+            this.elaborateMethodsAndTypedefsOfStruct(existing)
+          );
         }
       }
 
@@ -6435,43 +6518,54 @@ export class SemanticElaborator {
       // FIRST elaborate members
       this.elaborateMembersOfStruct(structId, false);
       struct.membersBuilt = true;
-
-      if (isRoot) {
-        // If this is a root struct of an elaboration chain, since all members are elaborated now,
-        // elaborate methods and then elaborate members again, so they can elaborate their methods
-
-        this.elaborateMethodsAndTypedefsOfStruct(structId);
-        struct.methodsFinalized = true;
-      }
-      // If this is NOT a root struct, do NOT elaborate methods
-
       this.currentContext.elaborationRecursiveStructStack.pop();
 
+      // If this is NOT a root struct, do NOT elaborate methods
       if (isRoot) {
-        // Now elaborate all members again but without the stack, so they think they are the root now and fix themselves
-        this.elaborateMembersOfStruct(structId, true);
-        struct.membersFinalized = true;
-
-        // Nested structs (struct Foo { struct Bar { ... } }) are pre-instantiated eagerly
-        // by elaborateMethodsAndTypedefsOfStruct() above -- see the `nestedStructs.push(...)`
-        // there -- while THIS struct is still the root of the recursive elaboration stack.
-        // Being non-root at the time they're created, they hit the "If this is NOT a root
-        // struct, do NOT elaborate methods" branch and so never get their own .methods
-        // populated on the initial pass. Ordinarily a *later* lookup of that same nested
-        // struct while the stack is empty would fix it up via the CACHE HIT branch above
-        // (`if (!(struct.methodsFinalized || struct.methodsInProgress)) { ... }`), but if
-        // the nested struct is never looked up again after this root finishes (e.g. it's
-        // only ever referenced from within a sibling method's signature, such as a
-        // Result<NestedStruct, E> return type resolved while the parent was still mid-
-        // elaboration), it silently keeps an empty method list forever -- so operators like
-        // `nestedValue := x` (and any other method call on it) fail to resolve even though
-        // the method is right there in the source. Fix that up here, now that the stack is
-        // empty again, exactly the same way the CACHE HIT branch would.
-        this.finalizeNestedStructMethods(structId);
+        // The method pass compiles every method body, so it never runs while
+        // a function signature is being built (this struct reached first in
+        // its parameter types): it then waits until none is, in this context.
+        this.structMethodPassWhenNoSignatureIsBuilt(() =>
+          this.finishRootStruct(structId)
+        );
       }
     }
 
     return structId;
+  }
+
+  // The rest of a root struct's elaboration, once all its members are.
+  finishRootStruct(structId: Semantic.TypeDefId) {
+    const struct = this.sr.typeDefNodes.get(structId);
+    assert(struct.variant === Semantic.ENode.StructDatatype);
+    // If this is a root struct of an elaboration chain, since all members are elaborated now,
+    // elaborate methods and then elaborate members again, so they can elaborate their methods.
+    // The struct is the root of the chain while they are.
+    this.currentContext.elaborationRecursiveStructStack.push(structId);
+    this.elaborateMethodsAndTypedefsOfStruct(structId);
+    struct.methodsFinalized = true;
+    this.currentContext.elaborationRecursiveStructStack.pop();
+
+    // Now elaborate all members again but without the stack, so they think they are the root now and fix themselves
+    this.elaborateMembersOfStruct(structId, true);
+    struct.membersFinalized = true;
+
+    // Nested structs (struct Foo { struct Bar { ... } }) are pre-instantiated eagerly
+    // by elaborateMethodsAndTypedefsOfStruct() above -- see the `nestedStructs.push(...)`
+    // there -- while THIS struct is still the root of the recursive elaboration stack.
+    // Being non-root at the time they're created, they hit the "If this is NOT a root
+    // struct, do NOT elaborate methods" branch and so never get their own .methods
+    // populated on the initial pass. Ordinarily a *later* lookup of that same nested
+    // struct while the stack is empty would fix it up via the CACHE HIT branch above
+    // (`if (!(struct.methodsFinalized || struct.methodsInProgress)) { ... }`), but if
+    // the nested struct is never looked up again after this root finishes (e.g. it's
+    // only ever referenced from within a sibling method's signature, such as a
+    // Result<NestedStruct, E> return type resolved while the parent was still mid-
+    // elaboration), it silently keeps an empty method list forever -- so operators like
+    // `nestedValue := x` (and any other method call on it) fail to resolve even though
+    // the method is right there in the source. Fix that up here, now that the stack is
+    // empty again, exactly the same way the CACHE HIT branch would.
+    this.finalizeNestedStructMethods(structId);
   }
 
   // See the call site above for why this is needed. Walks nested structs (recursively,
@@ -8359,11 +8453,7 @@ export class SemanticElaborator {
       );
     }
     if (!this.inFunction) {
-      throw new CompilerError(
-        "Function calls are not allowed here. Struct member default values, global constant initializers, and other compile-time contexts cannot contain function calls.",
-        sourceloc,
-        HazeErrorCode.FunctionCallsAreNotAllowedHereStructMember
-      );
+      throw this.callsNotAllowedHere(sourceloc);
     }
     const defaultFnId = Semantic.tryFindBuiltinSymbolByName(
       this.sr,
@@ -8668,6 +8758,10 @@ export class SemanticElaborator {
             pathEntry.id = existing;
             return existing;
           }
+          assert(
+            this.signaturesInProgress.size === 0,
+            `The function '${func.name}' was compiled while a function signature was being built`
+          );
 
           let childOf = null as Semantic.TypeDefId | null;
           if (parentSymbolId) {
@@ -12154,6 +12248,10 @@ export class SemanticElaborator {
           ) &&
           signature.parentSymbolId === parent
         ) {
+          assert(
+            !this.signaturesInProgress.has(signatureId),
+            `The signature of '${functionSymbol.name}' was asked for while its own parameter and return types were being elaborated`
+          );
           return signatureId;
         }
       }
@@ -12177,78 +12275,92 @@ export class SemanticElaborator {
       .get(functionSymbolId)!
       .push(signatureId);
 
-    signature.parameters = functionSymbol.parameters.map((p) => {
-      if (p.kind === "param-pack") {
-        return {
-          kind: "param-pack",
-        };
-      } else if (p.type === null) {
-        // Closure parameter with no explicit type annotation -- left unresolved
-        // here; callableExpr() fills it in from context before the signature is
-        // used any further, or throws a CompilerError if it can't be inferred.
-        return {
-          kind: "normal",
-          name: p.name,
-          type: null,
-          immediate: p.immediate,
-        };
-      } else {
-        const isolatedContext = Semantic.isolateElaborationContext(
-          this.currentContext,
-          {
-            currentScope: functionSymbol.signatureScope,
-            genericsScope: functionSymbol.signatureScope,
-            constraints: ConstraintSet.empty(),
-            instanceDeps: {
-              instanceDependsOn: new Map(),
-              structMembersDependOn: new Map(),
-              symbolDependsOn: new Map(),
-            },
+    this.signaturesInProgress.add(signatureId);
+    let built = false;
+    try {
+      signature.parameters = functionSymbol.parameters.map((p) => {
+        if (p.kind === "param-pack") {
+          return {
+            kind: "param-pack",
+          };
+        } else if (p.type === null) {
+          // Closure parameter with no explicit type annotation -- left unresolved
+          // here; callableExpr() fills it in from context before the signature is
+          // used any further, or throws a CompilerError if it can't be inferred.
+          return {
+            kind: "normal",
+            name: p.name,
+            type: null,
+            immediate: p.immediate,
+          };
+        } else {
+          const isolatedContext = Semantic.isolateElaborationContext(
+            this.currentContext,
+            {
+              currentScope: functionSymbol.signatureScope,
+              genericsScope: functionSymbol.signatureScope,
+              constraints: ConstraintSet.empty(),
+              instanceDeps: {
+                instanceDependsOn: new Map(),
+                structMembersDependOn: new Map(),
+                symbolDependsOn: new Map(),
+              },
+            }
+          );
+          // Remove this function's own generic substitutions so they don't leak from
+          // an outer instantiation (e.g. format_to_proxy<T=X> nested via f-strings).
+          for (const gId of functionSymbol.generics) {
+            isolatedContext.substitute.delete(gId);
           }
-        );
-        // Remove this function's own generic substitutions so they don't leak from
-        // an outer instantiation (e.g. format_to_proxy<T=X> nested via f-strings).
-        for (const gId of functionSymbol.generics) {
-          isolatedContext.substitute.delete(gId);
+          const paramType = p.type;
+          const type = this.withContext(
+            {
+              context: isolatedContext,
+              inAttemptExpr: null,
+              inFunction: null,
+            },
+            () =>
+              this.elaborateDatatype(paramType, { noSubstituteGenerics: true })
+          );
+          return {
+            kind: "normal",
+            name: p.name,
+            type: type,
+            immediate: p.immediate,
+          };
         }
-        const paramType = p.type;
-        const type = this.withContext(
+      });
+
+      signature.returnType =
+        functionSymbol.returnType &&
+        this.withContext(
           {
-            context: isolatedContext,
+            context: Semantic.isolateElaborationContext(this.currentContext, {
+              currentScope: functionSymbol.signatureScope,
+              genericsScope: functionSymbol.signatureScope,
+              constraints: ConstraintSet.empty(),
+              instanceDeps: {
+                instanceDependsOn: new Map(),
+                structMembersDependOn: new Map(),
+                symbolDependsOn: new Map(),
+              },
+            }),
             inAttemptExpr: null,
             inFunction: null,
           },
-          () =>
-            this.elaborateDatatype(paramType, { noSubstituteGenerics: true })
+          () => this.elaborateDatatype(functionSymbol.returnType!)
         );
-        return {
-          kind: "normal",
-          name: p.name,
-          type: type,
-          immediate: p.immediate,
-        };
+      built = true;
+    } finally {
+      this.signaturesInProgress.delete(signatureId);
+      if (!built) {
+        // Its types failed: never hand out what was built of it. Something
+        // that recovers from the error builds it anew.
+        const signatures =
+          this.sr.elaboratedFunctionSignatures.get(functionSymbolId)!;
+        signatures.splice(signatures.indexOf(signatureId), 1);
       }
-    });
-
-    signature.returnType =
-      functionSymbol.returnType &&
-      this.withContext(
-        {
-          context: Semantic.isolateElaborationContext(this.currentContext, {
-            currentScope: functionSymbol.signatureScope,
-            genericsScope: functionSymbol.signatureScope,
-            constraints: ConstraintSet.empty(),
-            instanceDeps: {
-              instanceDependsOn: new Map(),
-              structMembersDependOn: new Map(),
-              symbolDependsOn: new Map(),
-            },
-          }),
-          inAttemptExpr: null,
-          inFunction: null,
-        },
-        () => this.elaborateDatatype(functionSymbol.returnType!)
-      );
+    }
 
     let parentName = "";
     if (parent) {
@@ -12327,7 +12439,58 @@ export class SemanticElaborator {
       .get(cacheCodename)!
       .push(signatureId);
 
+    // Complete and registered: what waited for no signature being built runs
+    // now, if this was the outermost one.
+    this.runDeferredStructMethodPasses();
     return signatureId;
+  }
+
+  // Runs a struct method pass now, or, while a function signature is being
+  // built, as soon as none is (see deferredStructMethodPasses).
+  structMethodPassWhenNoSignatureIsBuilt(run: () => void) {
+    if (this.signaturesInProgress.size === 0) {
+      run();
+      return;
+    }
+    this.deferredStructMethodPasses.push({
+      run: run,
+      context: this.currentContext,
+    });
+  }
+
+  runDeferredStructMethodPasses() {
+    while (
+      this.signaturesInProgress.size === 0 &&
+      this.deferredStructMethodPasses.length > 0
+    ) {
+      const pass = this.deferredStructMethodPasses.shift()!;
+      this.withContext(
+        { context: pass.context, inAttemptExpr: null, inFunction: null },
+        pass.run
+      );
+    }
+  }
+
+  callsNotAllowedHere(sourceloc: SourceLoc) {
+    return new CompilerError(
+      "Function calls are not allowed here. Struct member default values, global constant initializers, and other compile-time contexts cannot contain function calls.",
+      sourceloc,
+      HazeErrorCode.FunctionCallsAreNotAllowedHereStructMember
+    );
+  }
+
+  // A function called outside a function (a struct member default, a global
+  // initializer) is an error callExpr reports once it knows the callee. The
+  // routes that find a function as the callee report it before elaborating
+  // the function: its body could otherwise be compiled in the middle of a
+  // declaration (a default of a struct reached in a parameter type).
+  rejectCallOutsideFunction(inference: Semantic.Inference, sourceloc: SourceLoc) {
+    if (
+      !this.inFunction &&
+      inference?.gonnaCallFunctionWithParameterValues !== undefined
+    ) {
+      throw this.callsNotAllowedHere(sourceloc);
+    }
   }
 
   elaborateFunctionSymbolDirectly(
@@ -12338,6 +12501,7 @@ export class SemanticElaborator {
   ) {
     const funcsym = this.sr.cc.symbolNodes.get(symbolId);
     assert(funcsym.variant === Collect.ENode.FunctionSymbol);
+    this.rejectCallOutsideFunction(inference, sourceloc);
     const paramPackTypes = this.prepareParameterPackTypes(
       funcsym.name,
       funcsym.parameters,
@@ -12656,6 +12820,7 @@ export class SemanticElaborator {
       if (collectedMethod.private) {
         this.assertMemberAccessible(exprTypeDef, name, sourceloc);
       }
+      this.rejectCallOutsideFunction(inference, sourceloc);
 
       let elaboratedStructCache = null as Semantic.StructDef | null;
       for (const [_, cache] of this.sr.elaboratedStructDatatypes) {

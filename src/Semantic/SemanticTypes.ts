@@ -1278,6 +1278,9 @@ export namespace Semantic {
       originalSharedInstance: Collect.NSSharedInstanceId;
       substitutionContext: Semantic.ElaborationContext;
       result: Semantic.TypeDefId;
+      // Whether elaborateNamespaceContents compiled what it holds (the
+      // top-level pass does, once); the namespace itself exists before.
+      contentsElaborated: boolean;
     }[];
     elaboratedEnumSymbols: EnumDefCache;
     elaboratedTypeAliasSymbols: AliasDefCache;
@@ -2175,6 +2178,10 @@ export namespace Semantic {
     sr.e.verifySymbolImports();
 
     sr.e.topLevelScope(cc.moduleScopeId);
+    // What a signature whose elaboration failed (an error something recovered
+    // from) left waiting, now that nothing is being built.
+    sr.e.runDeferredStructMethodPasses();
+    assert(sr.e.deferredStructMethodPasses.length === 0);
 
     // Structs reached only as another struct's member type never get their
     // method list built during the recursive elaboration above, which silently

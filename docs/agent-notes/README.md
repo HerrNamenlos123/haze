@@ -63,6 +63,7 @@ and against which commit it was verified; re-check a note against the code befor
 - [nocopy enforcement](nocopy-enforcement-holes.md) - H7180 everywhere, H7218 dangling-this closures
 - [Off-thread image/base64 pipeline](off-thread-image-pipeline.md) - worker-thread decode, async texture upload, GC rules
 - [Eager struct method elaboration](order-dependent-struct-method-elaboration.md) - build can depend on readdir order and project name
+- [Elaboration order independence](elaboration-order-independence.md) - declarations never compile definitions: namespace identity vs contents, signatures in progress, deferred struct method passes; HAZE_DIRECTORY_ORDER and the order test; generated C bytes still order-dependent
 - [Building in extra worktrees](parallel-worktree-builds.md) - reflink the gitignored build inputs
 - [Parameter pack spread](parameter-pack-spread.md) - ...pack desugars to pack[i]; capture rule and gotchas
 - [Pen and touch pointer model](pen-touch-pointer-model.md) - sdl -> app -> ui_components edges, capture, barrel button

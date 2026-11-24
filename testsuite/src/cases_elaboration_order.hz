@@ -1,0 +1,304 @@
+// ============================================================================
+// REGRESSION TEST: what a program means never depends on the order its
+// declarations (or files) are elaborated in. Found 2026-11-24: the signature
+// of an overload was cached with no parameters before its parameter types
+// were elaborated, and elaborating a parameter type could compile function
+// bodies (the whole contents of a namespace named in the type, or every
+// method of a struct reached there first). A body calling that overload set
+// then saw the overload with no parameters and silently chose another one,
+// or none. In the stdlib this failed `sys.printStacktrace` with H7015
+// whenever sync.hz was read before system.hz (src/Semantic/Elaborate.ts:
+// elaborateNamespace, elaborateFunctionSignature, the struct method pass).
+// Every case is written in both declaration orders.
+// ============================================================================
+
+namespace cases_elaboration_order {
+
+    export fn register(s: mut testsuite.Suite) {
+
+        // ── a parameter type names a member of another namespace ────────────
+
+        s.run(
+            "elaboration order: a parameter type names a namespace whose function calls the overload",
+            """
+namespace a {
+    export fn show(x: b.Thing): str { return "thing"; }
+    export fn show<T>(x: T): str { return "generic"; }
+}
+namespace b {
+    export struct Thing { v: int = 1; }
+    export fn useIt(): str { return a.show(Thing {}); }
+}
+fn main(): int {
+    fmt.println(b.useIt());
+    fmt.println(a.show(b.Thing {}));
+    return 0;
+}
+""",
+            "thing\nthing\n"
+        );
+
+        s.run(
+            "elaboration order: a parameter type names a namespace whose function calls the overload, namespace first",
+            """
+namespace b {
+    export struct Thing { v: int = 1; }
+    export fn useIt(): str { return a.show(Thing {}); }
+}
+namespace a {
+    export fn show(x: b.Thing): str { return "thing"; }
+    export fn show<T>(x: T): str { return "generic"; }
+}
+fn main(): int {
+    fmt.println(b.useIt());
+    fmt.println(a.show(b.Thing {}));
+    return 0;
+}
+""",
+            "thing\nthing\n"
+        );
+
+        // The stdlib's shape: one namespace in two blocks (fmt in print.hz and
+        // system.hz), the overload in the second block.
+        s.run(
+            "elaboration order: the overload in a second block of its namespace",
+            """
+namespace a {
+    export fn show<T>(x: T): str { return "generic"; }
+}
+namespace b {
+    export struct Thing { v: int = 1; }
+    export fn useIt(): str { return a.show(Thing {}); }
+}
+namespace a {
+    export fn show(x: b.Thing): str { return "thing"; }
+}
+fn main(): int {
+    fmt.println(b.useIt());
+    return 0;
+}
+""",
+            "thing\n"
+        );
+
+        // Without a fallback the overload set had no candidate at all.
+        s.run(
+            "elaboration order: a namespace in a parameter type, no generic overload",
+            """
+namespace a {
+    export fn show(x: b.Thing): str { return "thing"; }
+    export fn show(x: int): str { return "int"; }
+}
+namespace b {
+    export struct Thing { v: int = 1; }
+    export fn useIt(): str { return a.show(Thing {}) + " " + a.show(1); }
+}
+fn main(): int {
+    fmt.println(b.useIt());
+    return 0;
+}
+""",
+            "thing int\n"
+        );
+
+        s.run(
+            "elaboration order: a nested namespace in a parameter type",
+            """
+namespace a {
+    export fn show(x: b.c.Thing): str { return "thing"; }
+    export fn show<T>(x: T): str { return "generic"; }
+}
+namespace b {
+    namespace c {
+        export struct Thing { v: int = 1; }
+        export fn useIt(): str { return a.show(Thing {}); }
+    }
+}
+fn main(): int {
+    fmt.println(b.c.useIt());
+    return 0;
+}
+""",
+            "thing\n"
+        );
+
+        // ── a parameter type is a struct whose method calls the overload ────
+
+        s.run(
+            "elaboration order: a parameter type is a struct whose method calls the overload",
+            """
+fn describe(s: Box2): str { return "box"; }
+fn describe<T>(x: T): str { return "generic"; }
+struct Box2 {
+    v: int = 1;
+    fn name(): str { return describe(Box2 {}); }
+}
+fn main(): int {
+    let b = Box2 {};
+    fmt.println(b.name());
+    fmt.println(describe(b));
+    return 0;
+}
+""",
+            "box\nbox\n"
+        );
+
+        s.run(
+            "elaboration order: a parameter type is a struct whose method calls the overload, struct first",
+            """
+struct Box2 {
+    v: int = 1;
+    fn name(): str { return describe(Box2 {}); }
+}
+fn describe(s: Box2): str { return "box"; }
+fn describe<T>(x: T): str { return "generic"; }
+fn main(): int {
+    let b = Box2 {};
+    fmt.println(b.name());
+    fmt.println(describe(b));
+    return 0;
+}
+""",
+            "box\nbox\n"
+        );
+
+        s.run(
+            "elaboration order: a struct in a parameter type, no generic overload",
+            """
+fn describe(s: Box2): str { return "box"; }
+fn describe(x: int): str { return "int"; }
+struct Box2 {
+    v: int = 1;
+    fn name(): str { return describe(Box2 {}) + " " + describe(1); }
+}
+fn main(): int {
+    let b = Box2 {};
+    fmt.println(b.name());
+    return 0;
+}
+""",
+            "box int\n"
+        );
+
+        // A struct reached in a return type, its method calling the function
+        // being declared, and an operator of it used right after.
+        s.run(
+            "elaboration order: a struct in a return type, its methods and operators",
+            """
+fn make(v: int): Pair { return Pair { a: v, b: v }; }
+fn make(): str { return "none"; }
+struct Pair {
+    a: int;
+    b: int;
+    fn twice(): Pair { return make(this.a * 2); }
+    fn operator==(other: Pair): bool { return this.a == other.a && this.b == other.b; }
+}
+fn main(): int {
+    let p = make(2);
+    fmt.println(f"{p.twice().a} {p == make(2)} {make()}");
+    return 0;
+}
+""",
+            "4 true none\n"
+        );
+
+        // ── a struct member default with a call is rejected, not run ────────
+
+        s.compileFails(
+            "elaboration order: a call in a member default of a struct in a parameter type",
+            """
+fn describe(s: A): str { return "a"; }
+fn describe<T>(x: T): str { return "generic"; }
+fn zero(): A { return A { v: 0, tag: "z" }; }
+fn name(): str { return describe(zero()); }
+struct A {
+    v: int = 1;
+    tag: str = name();
+}
+fn main(): int {
+    let a = A {};
+    fmt.println(a.tag);
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.FunctionCallsAreNotAllowedHereStructMember)]
+        );
+
+        s.compileFails(
+            "elaboration order: a call in a member default of a struct in a parameter type, struct first",
+            """
+struct A {
+    v: int = 1;
+    tag: str = name();
+}
+fn name(): str { return describe(zero()); }
+fn zero(): A { return A { v: 0, tag: "z" }; }
+fn describe(s: A): str { return "a"; }
+fn describe<T>(x: T): str { return "generic"; }
+fn main(): int {
+    let a = A {};
+    fmt.println(a.tag);
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.FunctionCallsAreNotAllowedHereStructMember)]
+        );
+
+        s.compileFails(
+            "elaboration order: a namespace function called in a member default of a struct in a parameter type",
+            """
+fn describe(s: A): str { return "a"; }
+fn describe<T>(x: T): str { return "generic"; }
+namespace ns { export fn name(): str { return describe(zero()); } }
+fn zero(): A { return A { v: 0, tag: "z" }; }
+struct A {
+    v: int = 1;
+    tag: str = ns.name();
+}
+fn main(): int {
+    let a = A {};
+    fmt.println(a.tag);
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.FunctionCallsAreNotAllowedHereStructMember)]
+        );
+
+        s.compileFails(
+            "elaboration order: a static method called in a member default of a struct in a parameter type",
+            """
+fn describe(s: A): str { return "a"; }
+fn describe<T>(x: T): str { return "generic"; }
+struct Maker { static fn make(): str { return describe(zero()); } }
+fn zero(): A { return A { v: 0, tag: "z" }; }
+struct A {
+    v: int = 1;
+    tag: str = Maker.make();
+}
+fn main(): int {
+    let a = A {};
+    fmt.println(a.tag);
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.FunctionCallsAreNotAllowedHereStructMember)]
+        );
+
+        // ── every namespace is still compiled, also one nothing names ───────
+
+        s.compileFails(
+            "elaboration order: a namespace nothing refers to is still compiled",
+            """
+namespace unused {
+    namespace inner {
+        fn broken(): int { return nope; }
+    }
+}
+fn main(): int {
+    return 0;
+}
+""",
+            [testsuite.mustHave(errorcodes.Code.SymbolWasNotDeclaredThisScope)]
+        );
+    }
+}

@@ -21,6 +21,7 @@ import fg from "fast-glob";
 import which from "which";
 import { version } from "../../package.json";
 import { generateCode } from "../Codegen/CodeGenerator";
+import { listDirectoryForCollection } from "./DirectoryOrder";
 import {
   checkFile,
   checkFiles,
@@ -1199,7 +1200,7 @@ export class ModuleCompiler {
 
   async collectDirectory(dirpath: string, collectionMode: ECollectionMode) {
     await this.ensurePluginHost();
-    for (const file of readdirSync(dirpath)) {
+    for (const file of listDirectoryForCollection(dirpath)) {
       if (file === "__haze__") {
         continue;
       }

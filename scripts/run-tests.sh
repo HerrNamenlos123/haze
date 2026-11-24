@@ -37,6 +37,11 @@ echo "==> Checking incremental builds"
 bun test src/ModuleCompiler/FileStamps.test.ts src/ModuleCompiler/ModuleBuildCache.test.ts \
   src/shared/Workspace.test.ts scripts/incremental-build.test.ts
 
+# A build means the same in every order the file system lists the sources
+# in: the standard library and a small app, built in several orders.
+echo "==> Checking that builds do not depend on directory order"
+bun test scripts/directory-order.test.ts
+
 # Which files the parser equivalence check at the end reads.
 echo "==> Checking the parser equivalence file set"
 bun test scripts/parser-equivalence-files.test.ts
