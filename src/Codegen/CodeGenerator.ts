@@ -32,6 +32,13 @@ const REGEX_BRIDGE = "regex";
 const CONTEXT_POINTER_TYPE = "hzstd_context_t*";
 const CONTEXT_PARAMETER = "__hz_ctx";
 
+// The C names of a block (emitStorageBlock): `__hz_tl_*` and HZSTD_TL_FIELD
+// for the task-local one, `__hz_tg_*` and HZSTD_TG_FIELD for the per-thread
+// one.
+function blockStoragePrefix(storage: Lowered.BlockStorage): "tl" | "tg" {
+  return storage === "task" ? "tl" : "tg";
+}
+
 function makeUnionMappingName(from: Lowered.TypeUseId, to: Lowered.TypeUseId) {
   return `_H_Union_Mapping_${from}_to_${to}_`;
 }
@@ -1114,7 +1121,8 @@ class CodeGenerator {
       }
     }
 
-    this.emitTaskLocalBlock();
+    this.emitStorageBlock(this.lr.loweredTaskLocals, "task");
+    this.emitStorageBlock(this.lr.loweredThreadGlobals, "thread");
 
     for (const mapping of this.lr.loweredUnionMappings) {
       this.out.function_declarations.writeLine(
@@ -1498,26 +1506,36 @@ class CodeGenerator {
   private loopStackrefMarks: number[] = [];
   private labelStackrefMarks = new Map<string, number>();
   private stackrefSlotCounter = 0;
-  // This module's task-local block (docs/async-decisions.md TL-1, TL-2): a C
-  // struct of its `tasklocal let` variables, their initial values as the
-  // block's initial image (C518), and the descriptor hzstd finds the block by.
-  // File-local: only this module's code reaches its task-locals. The layout
+  // This module's blocks of variables the context reaches: the task-local
+  // block (docs/async-decisions.md TL-1, TL-2) of its `tasklocal let`
+  // variables, and the per-thread block (S5-12, the same scheme in a second
+  // index space) of its module-level `let` variables. Each is a C struct of
+  // the variables, their initial values as the block's initial image (C518),
+  // and the descriptor hzstd finds the block by. File-local: only this
+  // module's code reaches them; another module calls its functions, which
+  // find their own blocks, so no module knows another's layout. The layout
   // fingerprint (with the module name the key for hot reload, TL-10) covers
   // the field names and their layouts (layoutSignature), and the block's size
   // and alignment.
-  private emitTaskLocalBlock() {
-    if (this.lr.loweredTaskLocals.length === 0) {
+  private emitStorageBlock(
+    statements: Lowered.StatementId[],
+    storage: Lowered.BlockStorage
+  ) {
+    if (statements.length === 0) {
       return;
     }
+    const prefix = blockStoragePrefix(storage);
     const fields: string[] = [];
     const signature: string[] = [];
     const initializers: string[] = [];
-    for (const statementId of this.lr.loweredTaskLocals) {
+    for (const statementId of statements) {
       const statement = this.lr.statementNodes.get(statementId);
       assert(statement.variant === Lowered.ENode.VariableStatement);
       const name = this.mangleName(statement.name);
       fields.push(`${this.mangleTypeUse(statement.type)} ${name};`);
-      signature.push(`${name}:${this.layoutSignature(statement.type, new Set())};`);
+      signature.push(
+        `${name}:${this.layoutSignature(statement.type, new Set())};`
+      );
       if (statement.value) {
         this.inGlobalScope = true;
         let value = this.emitExpr(statement.value).out.get();
@@ -1538,13 +1556,15 @@ class CodeGenerator {
       this.config.version,
       this.config.id
     );
+    const block = `__hz_${prefix}_block_t`;
+    const initial = `__hz_${prefix}_initial`;
     const out = this.out.global_variables;
-    out.writeLine(`typedef struct { ${layout} } __hz_tl_block_t;`);
+    out.writeLine(`typedef struct { ${layout} } ${block};`);
     out.writeLine(
-      `static const __hz_tl_block_t __hz_tl_initial = { ${initializers.length > 0 ? initializers.join(", ") : "0"} };`
+      `static const ${block} ${initial} = { ${initializers.length > 0 ? initializers.join(", ") : "0"} };`
     );
     out.writeLine(
-      `static hzstd_tl_desc_t __hz_tl_desc = { .abi_version = HZSTD_TL_ABI_VERSION, .align = (uint32_t)_Alignof(__hz_tl_block_t), .size = sizeof(__hz_tl_block_t), .initial = &__hz_tl_initial, .module = ${JSON.stringify(module)}, .fingerprint = UINT64_C(0x${hash.toString(16)}) ^ ((uint64_t)sizeof(__hz_tl_block_t) << 32) ^ (uint64_t)_Alignof(__hz_tl_block_t) };`
+      `static hzstd_tl_desc_t __hz_${prefix}_desc = { .abi_version = HZSTD_TL_ABI_VERSION, .align = (uint32_t)_Alignof(${block}), .size = sizeof(${block}), .initial = &${initial}, .module = ${JSON.stringify(module)}, .fingerprint = UINT64_C(0x${hash.toString(16)}) ^ ((uint64_t)sizeof(${block}) << 32) ^ (uint64_t)_Alignof(${block}) };`
     );
   }
 
@@ -2495,11 +2515,12 @@ class CodeGenerator {
       }
 
       case Lowered.ENode.SymbolValueExpr: {
-        if (expr.taskLocal) {
-          // The field of this module's block in the task the current context
-          // runs (emitTaskLocalBlock).
+        if (expr.storage !== undefined) {
+          // The field of this module's block in the task or thread the
+          // current context runs (emitStorageBlock).
+          const prefix = blockStoragePrefix(expr.storage);
           outWriter.write(
-            `HZSTD_TL_FIELD(__hz_ctx, __hz_tl_desc, __hz_tl_block_t, ${this.mangleName(expr.name)})`
+            `HZSTD_${prefix.toUpperCase()}_FIELD(__hz_ctx, __hz_${prefix}_desc, __hz_${prefix}_block_t, ${this.mangleName(expr.name)})`
           );
         } else {
           outWriter.write(this.mangleName(expr.name));

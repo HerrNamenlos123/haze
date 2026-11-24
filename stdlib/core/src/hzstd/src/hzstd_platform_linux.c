@@ -309,6 +309,37 @@ static hzstd_panic_type_t panic_type = hzstd_panic_type_unknown;
 static hzstd_panic_recovery_frame_t *panic_recovery_target = NULL;
 static atomic_int panic_in_progress = 0;
 static panic_mode_t panic_mode = PANIC_MODE_CRASH;
+// Who holds the gate (pthread_self), and whether its report ends the process.
+static _Atomic uintptr_t panic_gate_owner = 0;
+static atomic_bool panic_terminal = false;
+
+// Claims the gate for a request of this thread (docs/async-decisions.md
+// S5-R5). While another thread's report is in progress, this one waits for
+// it: a panic recovered on one thread never parks another. A report that ends
+// the process, or one of this very thread (a fault inside the panic path),
+// parks this thread for good. Async-signal-safe (the fault handler claims it).
+static void hzstd_panic_gate_claim(void)
+{
+  uintptr_t self = (uintptr_t)pthread_self();
+  for (;;) {
+    int expected = 0;
+    if (atomic_compare_exchange_strong(&panic_in_progress, &expected, 1)) {
+      atomic_store(&panic_gate_owner, self);
+      return;
+    }
+    if (atomic_load(&panic_terminal) || atomic_load(&panic_gate_owner) == self) {
+      hzstd_block_thread_forever();
+    }
+    struct timespec pause = { .tv_sec = 0, .tv_nsec = 50000 };
+    nanosleep(&pause, NULL);
+  }
+}
+
+static void hzstd_panic_gate_release(void)
+{
+  atomic_store(&panic_gate_owner, 0);
+  atomic_store(&panic_in_progress, 0);
+}
 
 // panic_trigger  : panicking thread → worker (start building)
 // panic_response : worker → panicking thread (done; longjmp or return)
@@ -361,10 +392,9 @@ static hzstd_raw_report_t *hzstd_panic_report_for(const hzstd_panic_recovery_fra
 //     capacity (HZSTD_RAW_REPORT_FRAMES).
 // Either failure mode, left unhandled, means this worker thread never
 // finishes: unlike an ordinary thread, it has nowhere to recover to if it
-// crashes outright -- its own signal handler would see panic_in_progress
-// already claimed (by the very panic it's supposed to be reporting) and just
-// park it forever, silently, exactly like hzstd_panic_handler does for any
-// second thread that faults while a panic is already in flight. The
+// crashes outright -- its own signal handler would find the gate claimed
+// (by the very panic it's supposed to be reporting) and wait for it forever,
+// silently, since that panic waits for this worker. The
 // crash-recovery half mirrors hzstd_profiling_safe_get_proc_name_by_ip in
 // hzstd_profiling.c, just widened to cover the whole unwind loop instead of
 // only the symbol-name lookup.
@@ -527,11 +557,7 @@ static void hzstd_panic_handler(int sig, siginfo_t *si, void *ucontext)
     bool overflow = sig == SIGSEGV && stack != NULL && fiber_stack_guard_contains(stack, si->si_addr);
     hzstd_fail_while_world_stopped(overflow ? "Stack overflow" : (sig == SIGFPE ? "Arithmetic error" : "Segmentation Fault"));
   }
-  int expected = 0;
-  if (!atomic_compare_exchange_strong(&panic_in_progress, &expected, 1)) {
-    // Another thread already claimed the panic slot.
-    hzstd_block_thread_forever();
-  }
+  hzstd_panic_gate_claim();
 
   memcpy(&panic_context, ucontext, sizeof(unw_context_t));
 
@@ -617,6 +643,9 @@ static void hzstd_panic_handler(int sig, siginfo_t *si, void *ucontext)
   hzstd_panic_recovery_frame_t *localRecoveryTarget = panic_recovery_target;
   panic_report = hzstd_panic_report_for(localRecoveryTarget);
 
+  if (localRecoveryTarget == NULL) {
+    atomic_store(&panic_terminal, true);
+  }
   // Hand off to worker.
   hzstd_trigger_semaphore(panic_trigger);
 
@@ -650,7 +679,7 @@ static void hzstd_panic_handler(int sig, siginfo_t *si, void *ucontext)
   // (e.g. a crash inside a recovery frame's own cleanup handler) that used
   // to be possible when the worker released this instead, before this
   // thread had actually finished reading panic_recovery_target.
-  atomic_store(&panic_in_progress, 0);
+  hzstd_panic_gate_release();
 
   HZSTD_LONGJMP(localRecoveryTarget->recovery_point, 1);
   // Unreachable — longjmp never returns.
@@ -802,11 +831,7 @@ _Noreturn void hzstd_panic_with_stacktrace(hzstd_str_t msg, hzstd_int_t skip_n_f
     text[length] = '\0';
     hzstd_fail_while_world_stopped(text);
   }
-  int expected = 0;
-  if (!atomic_compare_exchange_strong(&panic_in_progress, &expected, 1)) {
-    // Another panic is already in flight; park this thread.
-    hzstd_block_thread_forever();
-  }
+  hzstd_panic_gate_claim();
 
   unw_getcontext(&panic_context);
   store_panic_reason(msg);
@@ -819,6 +844,9 @@ _Noreturn void hzstd_panic_with_stacktrace(hzstd_str_t msg, hzstd_int_t skip_n_f
   hzstd_panic_recovery_frame_t *localRecoveryTarget = panic_recovery_target;
   panic_report = hzstd_panic_report_for(localRecoveryTarget);
 
+  if (localRecoveryTarget == NULL) {
+    atomic_store(&panic_terminal, true);
+  }
   hzstd_trigger_semaphore(panic_trigger);
 
   if (localRecoveryTarget == NULL) {
@@ -828,7 +856,7 @@ _Noreturn void hzstd_panic_with_stacktrace(hzstd_str_t msg, hzstd_int_t skip_n_f
   hzstd_wait_for_semaphore(panic_response);
 
   localRecoveryTarget->report_sequence = panic_report->sequence;
-  atomic_store(&panic_in_progress, 0);
+  hzstd_panic_gate_release();
   HZSTD_LONGJMP(localRecoveryTarget->recovery_point, 1);
   __builtin_unreachable();
 }
@@ -847,10 +875,7 @@ hzstd_stacktrace_t hzstd_build_stacktrace(int skip_n_frames)
     hzstd_panic("A stack trace can only be built on a thread Haze runs tasks on");
   }
   // Serialise with the panic gate.
-  int expected = 0;
-  while (!atomic_compare_exchange_weak(&panic_in_progress, &expected, 1)) {
-    expected = 0;
-  }
+  hzstd_panic_gate_claim();
 
   unw_getcontext(&panic_context);
   store_panic_reason(HZSTD_STRING_FROM_CSTR(""));
@@ -862,7 +887,7 @@ hzstd_stacktrace_t hzstd_build_stacktrace(int skip_n_frames)
 
   hzstd_trigger_semaphore(panic_trigger);
   hzstd_wait_for_semaphore(panic_response);
-  atomic_store(&panic_in_progress, 0);
+  hzstd_panic_gate_release();
 
   // Into GC memory for Haze, after the gate: an allocation here may fail like
   // any other.

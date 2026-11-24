@@ -1247,6 +1247,15 @@ static void hzstd_gen_table_grow(hzstd_gen_table_t *t)
   t->cap = newCap;
 }
 
+void hzstd_gen_table_free(hzstd_gen_table_t *t)
+{
+  if (t->gens != hzstd_gen_table_initial) {
+    free(t->gens);
+  }
+  free(t->free_slots);
+  *t = (hzstd_gen_table_t) { 0 };
+}
+
 static void hzstd_gen_table_release(hzstd_gen_table_t *t, uint32_t slot)
 {
   t->gens[slot] = 0;
@@ -1373,91 +1382,127 @@ hzstd_context_settings_t hzstd_context_settings_default(void)
   };
 }
 
-// ── Task-local storage (docs/async-decisions.md TL-1 to TL-10) ───────────────
+// ── Task-local storage and per-thread globals (TL-1 to TL-10, S5-12) ────────
 //
-// The registry gives every module descriptor a process-wide index, starting at
+// A registry gives every module descriptor a process-wide index, starting at
 // 1 (slot 0 is never filled, so an unregistered descriptor always takes the
 // slow path), never reused. A descriptor with the module name and layout
 // fingerprint of one registered before (the same module, reloaded) gets that
 // one's index, and so the blocks tasks already have (TL-10). Registration is
-// rare (once per module), so a spin lock is all it needs; nothing else in
-// hzstd locks yet.
-static atomic_flag g_tl_registry_lock = ATOMIC_FLAG_INIT;
-static hzstd_tl_desc_t **g_tl_registry = NULL; // [index] = first descriptor of that index
-static size_t g_tl_registry_count = 0;         // the highest index handed out
-static size_t g_tl_registry_capacity = 0;
+// rare (once per module), so a spin lock is all it needs. There are two, one
+// index space each: the task-local blocks of tasks, and the per-thread blocks
+// of threads (a module-level `let`), which work the same way.
+typedef struct {
+  atomic_flag lock;
+  hzstd_tl_desc_t **entries; // [index] = first descriptor of that index
+  size_t count;              // the highest index handed out
+  size_t capacity;
+  const char *what;          // the storage's name, in a panic
+} hzstd_block_registry_t;
 
-static size_t hzstd_tl_register(hzstd_tl_desc_t *desc)
+static hzstd_block_registry_t g_tl_registry = { .lock = ATOMIC_FLAG_INIT, .what = "task-local storage" };
+static hzstd_block_registry_t g_tg_registry = { .lock = ATOMIC_FLAG_INIT, .what = "per-thread storage" };
+
+static size_t hzstd_block_register(hzstd_block_registry_t *r, hzstd_tl_desc_t *desc)
 {
-  while (atomic_flag_test_and_set_explicit(&g_tl_registry_lock, memory_order_acquire)) {
+  while (atomic_flag_test_and_set_explicit(&r->lock, memory_order_acquire)) {
   }
   size_t index = atomic_load_explicit(&desc->index, memory_order_relaxed);
   if (index == 0) {
-    for (size_t i = 1; i <= g_tl_registry_count; i++) {
-      hzstd_tl_desc_t *known = g_tl_registry[i];
+    for (size_t i = 1; i <= r->count; i++) {
+      hzstd_tl_desc_t *known = r->entries[i];
       if (known->fingerprint == desc->fingerprint && strcmp(known->module, desc->module) == 0) {
         index = i;
         break;
       }
     }
     if (index == 0) {
-      index = ++g_tl_registry_count;
-      if (index >= g_tl_registry_capacity) {
-        size_t capacity = g_tl_registry_capacity == 0 ? 16 : g_tl_registry_capacity * 2;
+      index = ++r->count;
+      if (index >= r->capacity) {
+        size_t capacity = r->capacity == 0 ? 16 : r->capacity * 2;
         // Descriptors are static data, never collected: plain memory.
-        hzstd_tl_desc_t **grown = realloc(g_tl_registry, capacity * sizeof(*grown));
+        hzstd_tl_desc_t **grown = realloc(r->entries, capacity * sizeof(*grown));
         if (grown == NULL) {
-          hzstd_panic("Out of memory registering a module's task-local storage");
+          hzstd_panic_fmt("Out of memory registering a module's %s", r->what);
         }
-        g_tl_registry = grown;
-        g_tl_registry_capacity = capacity;
+        r->entries = grown;
+        r->capacity = capacity;
       }
-      g_tl_registry[index] = desc;
+      r->entries[index] = desc;
     }
     atomic_store_explicit(&desc->index, index, memory_order_release);
   }
-  atomic_flag_clear_explicit(&g_tl_registry_lock, memory_order_release);
+  atomic_flag_clear_explicit(&r->lock, memory_order_release);
   return index;
 }
 
-void *hzstd_tl_block_slow(hzstd_context_t *ctx, hzstd_tl_desc_t *desc)
+typedef struct {
+  size_t size;
+  const char *module;
+} hzstd_block_shape_t;
+
+// The size and module of the block with `index` (registered).
+static hzstd_block_shape_t hzstd_block_registered(hzstd_block_registry_t *r, size_t index)
+{
+  while (atomic_flag_test_and_set_explicit(&r->lock, memory_order_acquire)) {
+  }
+  hzstd_tl_desc_t *desc = r->entries[index];
+  hzstd_block_shape_t shape = { .size = desc->size, .module = desc->module };
+  atomic_flag_clear_explicit(&r->lock, memory_order_release);
+  return shape;
+}
+
+// The block of `desc` in a table of blocks (a task's or a thread's), made
+// from its initial image on first use (TL-5, C518).
+static void *hzstd_block_slow(hzstd_block_registry_t *r, hzstd_tl_desc_t *desc, void ***blocks, size_t *capacity)
 {
   // A library built by a compiler with another block ABI cannot be read
   // correctly: fail loudly, naming it (TL-4, C419).
   if (desc->abi_version != HZSTD_TL_ABI_VERSION) {
-    hzstd_panic_fmt("Module '%s' was built by a compiler whose task-local storage is incompatible with this program's runtime (version %u, the runtime's is %u): rebuild it with the same compiler",
-                    desc->module, (unsigned)desc->abi_version, (unsigned)HZSTD_TL_ABI_VERSION);
+    hzstd_panic_fmt("Module '%s' was built by a compiler whose %s is incompatible with this program's runtime (version %u, the runtime's is %u): rebuild it with the same compiler",
+                    desc->module, r->what, (unsigned)desc->abi_version, (unsigned)HZSTD_TL_ABI_VERSION);
   }
   // GC memory is aligned for every scalar type; a block that needs more
   // would be misaligned.
   if (desc->align > _Alignof(max_align_t)) {
-    hzstd_panic_fmt("Module '%s' has a task-local variable aligned to %u bytes, more than task-local storage supports", desc->module, (unsigned)desc->align);
+    hzstd_panic_fmt("Module '%s' has a variable aligned to %u bytes, more than %s supports", desc->module, (unsigned)desc->align, r->what);
   }
   size_t index = atomic_load_explicit(&desc->index, memory_order_acquire);
   if (index == 0) {
-    index = hzstd_tl_register(desc);
+    index = hzstd_block_register(r, desc);
   }
-  hzstd_task_t *task = ctx->task;
-  if (index >= task->tl_capacity) {
-    size_t capacity = task->tl_capacity == 0 ? 8 : task->tl_capacity;
-    while (capacity <= index) {
-      capacity *= 2;
+  if (index >= *capacity) {
+    size_t grown_capacity = *capacity == 0 ? 8 : *capacity;
+    while (grown_capacity <= index) {
+      grown_capacity *= 2;
     }
-    void **grown = hzstd_heap_allocate(capacity * sizeof(*grown), "hzstd task-local blocks");
-    if (task->tl_capacity > 0) {
-      memcpy(grown, task->tl_blocks, task->tl_capacity * sizeof(*grown));
+    void **grown = hzstd_heap_allocate(grown_capacity * sizeof(*grown), "hzstd storage blocks");
+    if (*capacity > 0) {
+      memcpy(grown, *blocks, *capacity * sizeof(*grown));
     }
-    task->tl_blocks = grown;
-    task->tl_capacity = capacity;
+    *blocks = grown;
+    *capacity = grown_capacity;
   }
-  void *block = task->tl_blocks[index];
+  void *block = (*blocks)[index];
   if (block == NULL) {
-    // Scanned: task-local variables hold references like any other value.
+    // Scanned: the variables hold references like any other value.
     block = hzstd_heap_allocate(desc->size == 0 ? 1 : desc->size, desc->module);
     memcpy(block, desc->initial, desc->size);
-    task->tl_blocks[index] = block;
+    (*blocks)[index] = block;
   }
   return block;
+}
+
+void *hzstd_tl_block_slow(hzstd_context_t *ctx, hzstd_tl_desc_t *desc)
+{
+  hzstd_task_t *task = ctx->task;
+  return hzstd_block_slow(&g_tl_registry, desc, &task->tl_blocks, &task->tl_capacity);
+}
+
+void *hzstd_tg_block_slow(hzstd_context_t *ctx, hzstd_tl_desc_t *desc)
+{
+  hzstd_thread_t *thread = ctx->thread;
+  return hzstd_block_slow(&g_tg_registry, desc, &thread->global_blocks, &thread->global_capacity);
 }
 
 hzstd_context_t hzstd_context_for_current_thread(void)

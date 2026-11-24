@@ -1,0 +1,786 @@
+// ============================================================================
+// Threads (stage 5 of docs/async-implementation-plan.md; Axiom C148, C236,
+// C237, C290 to C292, C479, C518, C572; docs/async-decisions.md S5-10 to
+// S5-14 and the S5-R items): thread.spawn, the end of a thread and of the
+// process, cross-thread wake-ups of futures, mutexes and flags, per-thread
+// globals, sys.exit and panics across threads, the stall warning and the
+// profiler with several threads.
+//
+// Compiling is the slow part of this harness, so each case bundles many
+// checks; the scenarios that end the process run as children of one program.
+// The contended cases run many rounds inside one program: a lost wake-up
+// leaves every thread waiting, which the runtime reports as a deadlock.
+// ============================================================================
+
+namespace cases_threads {
+
+    export fn register(s: mut testsuite.Suite) {
+
+        s.run(
+            "threads: spawn and join, many at once, and when a thread ends",
+            """
+struct Point {
+    x: int;
+    y: int;
+}
+
+// The lines of `text`, joined with '/'.
+fn lines(text: str): str {
+    let out = "";
+    for part in text.split("\\n") {
+        if out.length > 0 { out = out + "/"; }
+        out = out + part;
+    }
+    return out;
+}
+
+fn sumTo(n: int): int {
+    let s = 0;
+    for (let k = 0; k <= n; k++) { s += k; }
+    return s;
+}
+
+fn main(): int {
+    let args = sys.args();
+    // The main thread waits for every other thread before the process ends
+    // (C237); main's return value is the exit status.
+    if args.length > 1 && args[1] == "late" {
+        let t = thread.spawn(() => {
+            time.sleep(0.02);
+            fmt.println("thread done");
+            return 0;
+        });
+        fmt.println("main returns");
+        return 3;
+    }
+
+    // Results of several types, from threads of their own.
+    let a = thread.spawn(() => 40 + 2);
+    let b = thread.spawn(() => "text");
+    let c = thread.spawn(() => Point { x: 1, y: 2 });
+    let d = thread.spawn(() => {
+        let xs: mut []int = [];
+        for (let i = 0; i < 5; i++) { xs.push(i * i); }
+        return xs;
+    });
+    let ra = a.join();
+    let rb = b.join();
+    let rc = c.join();
+    let rd = d.join();
+    let line = "";
+    if ra is int { line = f"{line} {ra}"; }
+    if rb is str { line = f"{line} {rb}"; }
+    if rc is Point { line = f"{line} {rc.x},{rc.y}"; }
+    if rd is TaskError { line = f"{line} none"; } else { line = f"{line} {rd.length}:{rd[4]}"; }
+    fmt.println(f"types{line}");
+
+    // Every thread has its own id (never 1, never reused).
+    let mainId = sys.threadId();
+    let ida = thread.spawn(() => sys.threadId());
+    let idb = thread.spawn(() => sys.threadId());
+    let ia = ida.join();
+    let ib = idb.join();
+    let distinct = false;
+    if ia is int { if ib is int { distinct = ia != ib && ia != mainId && ib != mainId; } }
+    fmt.println(f"ids {mainId} {distinct}");
+
+    // Many threads at once.
+    let many: mut []Future<int> = [];
+    for (let i = 0; i < 32; i++) {
+        let k = i;
+        many.push(thread.spawn(() => sumTo(k)));
+    }
+    let results = sys.joinAll(many);
+    let total = 0;
+    for r in results { total += r; }
+    fmt.println(f"many {results.length} {results[31]} {total}");
+
+    // The thread's future completes when its body returns, while another
+    // task of that thread still runs (C572); that task's future is joined
+    // from here.
+    let release = sys.Flag();
+    let outer = thread.spawn(() => {
+        return task.spawn(() => {
+            release.wait();
+            return 7;
+        });
+    });
+    let inner = outer.join();
+    if inner is Future<int> {
+        let early = inner.isDone();
+        release.set();
+        let v = inner.join();
+        if v is int { fmt.println(f"body first {early} {v}"); }
+    }
+
+    // A task that keeps the thread alive runs to its end after the body
+    // returned; a background task does not keep it alive and is killed when
+    // the thread ends (C435, C437): one that ran, one that never did.
+    let kept = thread.spawn(() => {
+        return task.spawn(() => {
+            time.sleep(0.01);
+            return 5;
+        });
+    });
+    let started = thread.spawn(() => {
+        let bg = task.spawn(() => {
+            let never = Future<int>();
+            let r = never.join();
+            return 1;
+        }, { background: true });
+        sys.yield();
+        return bg;
+    });
+    let unstarted = thread.spawn(() => {
+        return task.spawn(() => 1, { background: true });
+    });
+    let rk = kept.join();
+    let rs = started.join();
+    let ru = unstarted.join();
+    let ends = "";
+    if rk is Future<int> {
+        let v = rk.join();
+        if v is int { ends = f"{ends} {v}"; }
+    }
+    if rs is Future<int> {
+        let v = rs.join();
+        if v is TaskError { ends = f"{ends} {v == TaskError.Killed ? "killed" : "neverran"}"; }
+    }
+    if ru is Future<int> {
+        let v = ru.join();
+        if v is TaskError { ends = f"{ends} {v == TaskError.Killed ? "killed" : "neverran"}"; }
+    }
+    fmt.println(f"ends{ends}");
+
+    let r = process.runCaptured(args[0], ["late"]);
+    fmt.println(f"late {r.exitCode} {lines(r.stdoutResult.trim())}");
+    return 0;
+}
+""",
+            "types 42 text 1,2 5:16\nids 1 true\nmany 32 496 5456\nbody first false 7\nends 5 killed neverran\nlate 3 main returns/thread done");
+
+        s.run(
+            "threads: mutexes, flags, lockWhen and futures under contention",
+            """
+fn spinFor(seconds: real) {
+    let start = time.now();
+    while time.now() - start < seconds {}
+}
+
+fn main(): int {
+    let m = sys.Mutex();
+
+    // A waiter whose condition fails lets go of the lock and starts waiting
+    // in one step (S5-11): the setter, waiting for the lock meanwhile, gets
+    // it then, and the end of its region is seen. Two steps would let the
+    // region end in between, unseen, and the waiter wait forever.
+    let x: mut ref Box<int> = { value: 0 };
+    let checks: mut ref Box<int> = { value: 0 };
+    let waiter = thread.spawn(() => {
+        m.waitUntil(() => {
+            checks.value = checks.value + 1;
+            if checks.value == 1 { spinFor(0.02); }
+            return x.value == 1;
+        });
+        return checks.value;
+    }, { stallWarning: false });
+    let setter = thread.spawn(() => {
+        time.sleep(0.005);
+        m.lock(() => { x.value = 1; });
+        return 0;
+    });
+    let rsetter = setter.join();
+    let rwaiter = waiter.join();
+    if rwaiter is int { fmt.println(f"seen after {rwaiter} checks"); }
+
+    // A counter under a mutex, from 8 threads at once; some lock regions
+    // suspend while the others wait.
+    let counter: mut ref Box<int> = { value: 0 };
+    let workers: mut []Future<int> = [];
+    for (let t = 0; t < 8; t++) {
+        workers.push(thread.spawn(() => {
+            for (let i = 0; i < 2000; i++) {
+                m.lock(() => {
+                    counter.value = counter.value + 1;
+                    if i % 250 == 0 { sys.yield(); }
+                });
+            }
+            return 0;
+        }, { stallWarning: false }));
+    }
+    let w = sys.joinAll(workers);
+    fmt.println(f"counter {counter.value}");
+
+    // One set() wakes the waiters of 6 threads, set before or after they wait.
+    let go = sys.Flag();
+    let woke: mut ref Box<int> = { value: 0 };
+    let waiters: mut []Future<int> = [];
+    for (let t = 0; t < 6; t++) {
+        waiters.push(thread.spawn(() => {
+            go.wait();
+            m.lock(() => { woke.value = woke.value + 1; });
+            return 0;
+        }));
+    }
+    time.sleep(0.005);
+    go.set();
+    let fw = sys.joinAll(waiters);
+    fmt.println(f"flag {woke.value}");
+
+    // lockWhen ping-pong between two threads: each round wakes the other, so
+    // one lost wake-up leaves both waiting (a deadlock panic).
+    let turn: mut ref Box<int> = { value: 0 };
+    let pongs: mut ref Box<int> = { value: 0 };
+    let ping = thread.spawn(() => {
+        for (let i = 0; i < 3000; i++) {
+            m.lockWhen(() => turn.value == 0, () => { turn.value = 1; });
+        }
+        return 0;
+    });
+    let pong = thread.spawn(() => {
+        for (let i = 0; i < 3000; i++) {
+            m.lockWhen(() => turn.value == 1, () => {
+                turn.value = 0;
+                pongs.value = pongs.value + 1;
+            });
+        }
+        return 0;
+    });
+    let pp: []Future<int> = [ping, pong];
+    let ppr = sys.joinAll(pp);
+    fmt.println(f"pingpong {pongs.value}");
+
+    // A work queue: the main thread produces, 4 threads consume with
+    // lockWhen until it is finished and empty.
+    let jobs: mut []int = [];
+    let finished: mut ref Box<bool> = { value: false };
+    let sum: mut ref Box<int> = { value: 0 };
+    let consumers: mut []Future<int> = [];
+    for (let t = 0; t < 4; t++) {
+        consumers.push(thread.spawn(() => {
+            let mine = 0;
+            let taken = 0;
+            while true {
+                let job = m.lockWhen(() => jobs.length > 0 || finished.value, () => {
+                    if jobs.length > 0 { return jobs.pop(); }
+                    return -1;
+                });
+                if job < 0 { break; }
+                mine += job;
+                taken++;
+            }
+            m.lock(() => { sum.value = sum.value + mine; });
+            return taken;
+        }));
+    }
+    for (let i = 1; i <= 4000; i++) {
+        let job = i;
+        m.lock(() => { jobs.push(job); });
+        if i % 500 == 0 { sys.yield(); }
+    }
+    m.lock(() => { finished.value = true; });
+    let taken = sys.joinAll(consumers);
+    let count = 0;
+    for t in taken { count += t; }
+    fmt.println(f"queue {count} {sum.value}");
+
+    // Futures made here, completed on one thread, joined on another, and a
+    // thread's future joined from a third thread.
+    let futures: mut []mut Future<int> = [];
+    for (let i = 0; i < 2000; i++) { futures.push(Future<int>()); }
+    let joiner = thread.spawn(() => {
+        let wrong = 0;
+        for (let i = 0; i < futures.length; i++) {
+            let r = futures[i].join();
+            if r is int { if r != i * 3 { wrong++; } } else { wrong++; }
+        }
+        return wrong;
+    });
+    let completer = thread.spawn(() => {
+        for (let i = 0; i < futures.length; i++) {
+            let f = futures[i];
+            f.complete(i * 3);
+            if i % 100 == 0 { sys.yield(); }
+        }
+        return 0;
+    });
+    let watcher = thread.spawn(() => {
+        let r = joiner.join();
+        if r is int { return r; }
+        return -1;
+    });
+    let rc = completer.join();
+    let rw = watcher.join();
+    if rw is int { fmt.println(f"futures wrong {rw}"); }
+    return 0;
+}
+""",
+            "seen after 2 checks\ncounter 16000\nflag 6\npingpong 3000\nqueue 4000 8002000\nfutures wrong 0");
+
+        // S5-14: a future's value is stored before the future is settled, so
+        // a join on another thread that sees it settled always finds the
+        // value. The joiner polls isDone and joins at once, as close behind
+        // the completion as it gets; a large value makes storing it take a
+        // while.
+        s.run(
+            "threads: a join never sees a settled future without its value",
+            """
+struct Big {
+    a: [64]int;
+    n: int;
+}
+
+fn main(): int {
+    let futures: mut []mut Future<Big> = [];
+    for (let i = 0; i < 20000; i++) { futures.push(Future<Big>()); }
+    let joiner = thread.spawn(() => {
+        let wrong = 0;
+        for (let i = 0; i < futures.length; i++) {
+            let f = futures[i];
+            while !f.isDone() {}
+            let r = f.join();
+            if r is Big { if r.n != i { wrong++; } } else { wrong++; }
+        }
+        return wrong;
+    }, { stallWarning: false });
+    let completer = thread.spawn(() => {
+        for (let i = 0; i < futures.length; i++) {
+            let f = futures[i];
+            let big = Big {
+                a: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                n: i,
+            };
+            f.complete(big);
+        }
+        return 0;
+    }, { stallWarning: false });
+    let rc = completer.join();
+    let rj = joiner.join();
+    if rj is int { fmt.println(f"wrong {rj}"); }
+    return 0;
+}
+""",
+            "wrong 0");
+
+        // Everything that ends the process, each in a child process: the
+        // parent prints the exit status, whether stderr names the cause, and
+        // what the child printed.
+        s.run(
+            "threads: sys.exit, panics and deadlocks across threads",
+            """
+fn spinFor(seconds: real) {
+    let start = time.now();
+    while time.now() - start < seconds {}
+}
+
+fn child(name: str): int {
+    // A lambda that always ends the process is noreturn: these depend on it.
+    let code: mut ref Box<int> = { value: name.length > 0 ? 7 : 0 };
+    // sys.exit on a thread (S5-13): every thread stops at its next switch,
+    // one that keeps yielding, one sleeping in its loop, and main waiting.
+    if name == "exit" {
+        let spinner = thread.spawn(() => {
+            while true { sys.yield(); }
+            return 0;
+        }, { stallWarning: false });
+        let sleeper = thread.spawn(() => {
+            time.sleep(100.0);
+            return 0;
+        });
+        let exiter = thread.spawn(() => {
+            time.sleep(0.01);
+            if code.value > 0 { sys.exit(code.value); }
+            return 0;
+        });
+        let never = Future<int>();
+        let r = never.join();
+        fmt.println("not reached");
+    }
+    // The first status is final: the second thread exits later, without a
+    // switch in between.
+    if name == "firstWins" {
+        let first = thread.spawn(() => {
+            if code.value > 0 { sys.exit(3); }
+            return 0;
+        });
+        let second = thread.spawn(() => {
+            spinFor(0.05);
+            if code.value > 0 { sys.exit(4); }
+            return 0;
+        }, { stallWarning: false });
+        let never = Future<int>();
+        let r = never.join();
+    }
+    // An uncaught panic on a thread ends the process with its trace (C227).
+    if name == "panic" {
+        let t = thread.spawn(() => {
+            if code.value > 0 { sys.panic("boom on a thread"); }
+            return 1;
+        });
+        let r = t.join();
+        fmt.println("not reached");
+    }
+    // Panics recovered on several threads at once: one waits for the other's
+    // report, none is lost.
+    if name == "recovered" {
+        let workers: mut []Future<int> = [];
+        for (let t = 0; t < 4; t++) {
+            workers.push(thread.spawn(() => {
+                let n = 0;
+                for (let i = 0; i < 100; i++) {
+                    n += attempt {
+                        if code.value > 0 { sys.panic("recovered on a thread"); }
+                        0
+                    } recover e { 1 };
+                }
+                return n;
+            }));
+        }
+        let all = sys.joinAll(workers);
+        let total = 0;
+        for n in all { total += n; }
+        fmt.println(f"{total}");
+    }
+    // Every task on every thread waits for something nothing can do.
+    if name == "deadlock" {
+        let t = thread.spawn(() => {
+            let never = Future<int>();
+            let r = never.join();
+            return 0;
+        });
+        let r = t.join();
+        fmt.println("not reached");
+    }
+    // A thread that is waited for but not deadlocked: the main thread waits
+    // for a future another thread completes after a sleep.
+    if name == "noDeadlock" {
+        let f = Future<int>();
+        let t = thread.spawn(() => {
+            time.sleep(0.02);
+            f.complete(9);
+            return 0;
+        });
+        let r = f.join();
+        if r is int { fmt.println(f"{r}"); }
+    }
+    return 0;
+}
+
+fn check(self: str, name: str, expect: str) {
+    let r = process.runCaptured(self, ["child", name]);
+    let out = r.stdoutResult.trim();
+    if out.length > 0 {
+        fmt.println(f"{name} {r.exitCode} {r.stderrResult.contains(expect)} {out}");
+    }
+    else {
+        fmt.println(f"{name} {r.exitCode} {r.stderrResult.contains(expect)}");
+    }
+}
+
+fn main(): int {
+    let args = sys.args();
+    if args.length > 2 && args[1] == "child" {
+        return child(args[2]);
+    }
+    let me = args[0];
+    check(me, "exit", "");
+    check(me, "firstWins", "");
+    check(me, "panic", "boom on a thread");
+    check(me, "recovered", "");
+    check(me, "deadlock", "deadlock: every task on every thread is waiting");
+    check(me, "noDeadlock", "");
+    return 0;
+}
+""",
+            "exit 7 true\nfirstWins 3 true\npanic 255 true\nrecovered 0 true 400\ndeadlock 255 true\nnoDeadlock 0 true 9");
+
+        // C290 to C292: a thread's stall is reported naming the thread, unless
+        // it was spawned with the warning off; stackSize sizes every task of
+        // the thread, and a bad one panics naming the option.
+        s.run(
+            "threads: stall warning on and off, stackSize",
+            """
+// Runs until the watchdog has measured `seconds` of this run (cases_tasks.hz
+// explains why on the watchdog's measure, not the wall clock).
+fn spinMeasured(seconds: real): int {
+    let start = time.now();
+    let n = 0;
+    while sys.timeSinceTaskSwitch() < seconds && time.now() - start < 10.0 { n++; }
+    return n;
+}
+
+// More than 400 bytes of stack per level.
+fn deep(n: int): int :: final {
+    let pad: [48]int = [n, n, n, n, n, n, n, n, n, n, n, n, n, n, n, n, n, n, n, n, n, n, n, n,
+                        n, n, n, n, n, n, n, n, n, n, n, n, n, n, n, n, n, n, n, n, n, n, n, n];
+    if n == 0 { return 0; }
+    return deep(n - 1) + pad[n % 48] - n + 1;
+}
+
+// The lines of `text`, joined with '/'.
+fn lines(text: str): str {
+    let out = "";
+    for part in text.split("\\n") {
+        if out.length > 0 { out = out + "/"; }
+        out = out + part;
+    }
+    return out;
+}
+
+fn child(name: str): int {
+    if name == "stallOn" {
+        let t = thread.spawn(() => spinMeasured(0.03));
+        let r = t.join();
+    }
+    if name == "stallOff" {
+        let t = thread.spawn(() => spinMeasured(0.03), { stallWarning: false });
+        let r = t.join();
+    }
+    // 40000 levels need about 18 MiB: more than the 8 MiB default.
+    if name == "deepWithStack" {
+        let t = thread.spawn(() => deep(40000), { stackSize: 64 * 1024 * 1024 });
+        let r = t.join();
+        if r is int { fmt.println(f"{r}"); }
+        // Every task of that thread gets it, not only the first.
+        let u = thread.spawn(() => {
+            let inner = task.spawn(() => deep(40000));
+            let v = inner.join();
+            if v is int { return v; }
+            return -1;
+        }, { stackSize: 64 * 1024 * 1024 });
+        let ru = u.join();
+        if ru is int { fmt.println(f"{ru}"); }
+    }
+    if name == "deepDefault" {
+        let t = thread.spawn(() => deep(40000));
+        let r = t.join();
+        fmt.println("not reached");
+    }
+    if name == "smallStack" {
+        let t = thread.spawn(() => 1, { stackSize: 1000 });
+        fmt.println("not reached");
+    }
+    if name == "hugeStack" {
+        let t = thread.spawn(() => 1, { stackSize: 4096 * 1024 * 1024 });
+        fmt.println("not reached");
+    }
+    return 0;
+}
+
+fn check(self: str, name: str, expect: str) {
+    let r = process.runCaptured(self, ["child", name]);
+    let out = r.stdoutResult.trim();
+    let warned = r.stderrResult.contains("without yielding");
+    if out.length > 0 {
+        fmt.println(f"{name} {r.exitCode} {r.stderrResult.contains(expect)} {warned} {lines(out)}");
+    }
+    else {
+        fmt.println(f"{name} {r.exitCode} {r.stderrResult.contains(expect)} {warned}");
+    }
+}
+
+fn main(): int {
+    let args = sys.args();
+    if args.length > 2 && args[1] == "child" {
+        return child(args[2]);
+    }
+    let me = args[0];
+    check(me, "stallOn", "without yielding (thread: 2)");
+    check(me, "stallOff", "");
+    check(me, "deepWithStack", "");
+    check(me, "deepDefault", "Stack overflow");
+    check(me, "smallStack", "the option stackSize must be between 65536 (64 KiB) and 1073741824 (1 GiB) bytes, not 1000");
+    check(me, "hugeStack", "not 4294967296");
+    return 0;
+}
+""",
+            "stallOn 0 true true\nstallOff 0 true false\ndeepWithStack 0 true false 40000/40000\ndeepDefault 255 true false\nsmallStack 255 true false\nhugeStack 255 true false");
+
+        // S5-12, C518: a module-level `let` exists once per thread: a new
+        // thread starts from the initial value, whatever the spawner wrote,
+        // and its writes stay on it. A `const` is one value for all.
+        s.run(
+            "threads: module-level let is per thread, from its initial value",
+            """
+let counter = 10;
+let label = "initial";
+let point: Point = Point { x: 1, y: 2 };
+const limit = 99;
+
+struct Point {
+    x: int;
+    y: int;
+}
+
+fn bump(): int {
+    counter += 1;
+    return counter;
+}
+
+fn main(): int {
+    counter = 100;
+    label = "main";
+    point.x = 50;
+    let t = thread.spawn(() => {
+        let first = f"{counter} {label} {point.x}";
+        counter += 5;
+        label = "thread";
+        point.y = 7;
+        return f"{first} -> {bump()} {label} {point.x},{point.y} {limit}";
+    });
+    let r = t.join();
+    if r is str { fmt.println(r); }
+    fmt.println(f"main {counter} {label} {point.x},{point.y} {limit}");
+    // Two threads at once, each counting on its own.
+    let a = thread.spawn(() => {
+        for (let i = 0; i < 1000; i++) { bump(); sys.yield(); }
+        return counter;
+    });
+    let b = thread.spawn(() => {
+        for (let i = 0; i < 500; i++) { bump(); sys.yield(); }
+        return counter;
+    });
+    let ab: []Future<int> = [a, b];
+    let both = sys.joinAll(ab);
+    fmt.println(f"own {both[0]} {both[1]} main {counter}");
+    // Tasks of one thread share its globals.
+    let shared = thread.spawn(() => {
+        let x = task.spawn(() => bump());
+        let y = x.join();
+        return bump();
+    });
+    let rs = shared.join();
+    if rs is int { fmt.println(f"tasks {rs}"); }
+    return 0;
+}
+""",
+            "10 initial 1 -> 16 thread 1,7 99\nmain 100 main 50,2 99\nown 1010 510 main 100\ntasks 12");
+
+        // Code outside a function runs on no thread: a global's initializer
+        // cannot read a per-thread variable, also not through a struct
+        // default (the same mistake and code as for a task-local, S5-R3).
+        s.compileFails(
+            "threads: a module-level let read in a global's initializer",
+            """
+let a: int = 1;
+let g: int = a + 1; // <- no thread's copy exists here
+fn main(): int { return g; }
+""",
+            [testsuite.exactCount(errorcodes.Code.TaskLocalOutsideFunction, 1)]);
+
+        s.compileFails(
+            "threads: a module-level let read by a struct default a global's initializer uses",
+            """
+let base: int = 1;
+struct S { x: int = base; }
+let g: S = S {}; // <- the default runs here, on no thread
+fn main(): int { return g.x; }
+""",
+            [testsuite.exactCount(errorcodes.Code.TaskLocalOutsideFunction, 1)]);
+
+        // A library's globals are its own block, found through its own
+        // descriptor: the importer never sees its layout. Called from two
+        // threads, the library counts per thread.
+        s.runWithModules(
+            "threads: a library module's globals are per thread too",
+            [
+                testsuite.TestModule {
+                    name: "counter",
+                    source: """
+let hits = 0;
+let seenNames = "";
+
+export fn hit(name: str): int {
+    hits += 1;
+    seenNames = seenNames.length > 0 ? seenNames + "," + name : name;
+    return hits;
+}
+
+export fn seen(): str {
+    return seenNames;
+}
+""",
+                },
+            ],
+            """
+import counter;
+
+let mine = 5;
+
+fn main(): int {
+    counter.hit("a");
+    counter.hit("b");
+    mine = 6;
+    let t = thread.spawn(() => {
+        let n = counter.hit("c");
+        return f"{n} {counter.seen()} {mine}";
+    });
+    let r = t.join();
+    if r is str { fmt.println(r); }
+    fmt.println(f"{counter.hit("d")} {counter.seen()} {mine}");
+    return 0;
+}
+""",
+            "1 c 5\n3 a,b,d 6");
+
+        // docs/profiler-timelines.md P-10: every Haze thread's runs are in
+        // the record, also of a thread that ended during the session, and a
+        // run still going on another thread when the session ends is closed.
+        s.run(
+            "threads: the profiler records every thread",
+            """
+fn main(): int {
+    let args = sys.args();
+    if args.length > 1 && args[1] == "child" {
+        let p = Profiler({ samplingRate: 0, memoryInstrumentation: false, memoryInstrumentationStacktraces: false });
+        let ended = thread.spawn(() => {
+            let a = task.spawn(() => {
+                sys.yield();
+                return 1;
+            });
+            let r = a.join();
+            return 2;
+        });
+        let re = ended.join();
+        let stop = sys.Flag();
+        let started = sys.Flag();
+        let busy = thread.spawn(() => {
+            started.set();
+            while !stop.isSet() {}
+            return 3;
+        }, { stallWarning: false });
+        started.wait();
+        let r = p.stop();
+        stop.set();
+        let rb = busy.join();
+        let has1 = false;
+        let has2 = false;
+        let has3 = false;
+        for t in r.threads {
+            if t.id == 1 { has1 = true; }
+            if t.id == 2 { has2 = true; }
+            if t.id == 3 { has3 = true; }
+        }
+        let tasksOf2 = 0;
+        for t in r.tasks { if t.thread == 2 { tasksOf2++; } }
+        let runsOf2 = 0;
+        let ends3 = "";
+        for e in r.schedEvents {
+            if e.thread == 2 && e.kind == 0 { runsOf2++; }
+            if e.thread == 3 && e.kind == 1 { ends3 = f"{ends3} {e.reason}"; }
+        }
+        fmt.println(f"RESULT threads {has1} {has2} {has3} {r.threads.length} tasks2 {tasksOf2} runs2 {runsOf2 >= 3} ends3{ends3}");
+        return 0;
+    }
+    let r = process.runCaptured(args[0], ["child"]);
+    for line in r.stdoutResult.split("\\n") {
+        if line.startsWith("RESULT ") { fmt.println(line); }
+    }
+    fmt.println(f"{r.exitCode}");
+    return 0;
+}
+""",
+            "RESULT threads true true true 3 tasks2 2 runs2 true ends3 5\n0");
+    }
+}

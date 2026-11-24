@@ -31,6 +31,7 @@
 
 #if !FIBER__WINDOWS
 #include <pthread.h>
+#include <sched.h>
 #include <signal.h>
 #include <sys/syscall.h>
 #include <unistd.h>
@@ -81,14 +82,30 @@ struct hzstd_sched_t {
   uint64_t wd_epoch; // the watchdog's own: the run it measures, since when,
   double wd_start;   // and the length of its next report
   double wd_next_report;
-  hzstd_task_t *ready_head; // the ready queue, oldest first
+  hzstd_task_t *ready_head; // the ready queue, oldest first; only this thread's
   hzstd_task_t *ready_tail;
   hzstd_task_t *live;       // every unfinished task (the registry)
   size_t pending;           // unfinished tasks that keep the thread alive
-  bool exiting;             // sys.exit ran on this thread: no task runs any more
+  // Set when sys.exit ran on any thread (S5-13): no task of this thread runs
+  // any more after its next switch. Written by other threads.
+  _Atomic bool stopping;
   hzstd_task_t *ended;      // the task that just ended; its stack goes back to the pool
   fiber_stack pool[HZSTD_TASK_STACK_POOL];
   size_t pool_len;
+  size_t stack_size;        // of every task of this thread (thread.spawn's stackSize)
+  bool stall_warning;       // false: the watchdog never warns about this thread
+  // Cross-thread wake-ups (S5-11): tasks of this thread that other threads
+  // readied, oldest first, linked through next_ready; drained into the ready
+  // queue only between tasks (hzstd_inbox_drain). The pusher holds the lock
+  // while it links the task and calls uv_async_send, which ends a uv_run of
+  // this thread. `wake` is unreferenced (it keeps no loop alive) except while
+  // the thread waits for nothing but other threads (hzstd_sched_idle_wait).
+  uv_mutex_t inbox_lock;
+  hzstd_task_t *_Atomic inbox_head;
+  hzstd_task_t *inbox_tail;
+  uv_async_t wake;
+  // Under g_hzstd_threads_lock: the thread waits for nothing but other threads.
+  bool idle;
   hzstd_sched_t *next; // g_hzstd_scheds
   uint64_t os_tid;     // the operating system's id of the thread
   // Where the panic worker writes the report of a panic on this thread that a
@@ -103,18 +120,35 @@ struct hzstd_sched_t {
   struct hzstd_trace_chunk_t *trace_tail;
   struct hzstd_trace_task_chunk_t *trace_tasks_head;
   struct hzstd_trace_task_chunk_t *trace_tasks_tail;
+  uint64_t trace_session;   // the session the record belongs to (0: none yet)
+  uint64_t trace_open_run;  // the task whose run in the record has not ended, 0 if none
+  uint64_t trace_begin_cpu; // its CPU clock when the session began (set by whoever began it)
+  _Atomic int trace_writing; // 1 while this thread writes its record (hzstd_trace_enter)
 };
 
+// The cores below are shared by every thread (S5-11): each has a lock, held
+// for every change of its state and its wait queues.
 struct hzstd_future_core_t {
-  hzstd_future_state_t state;
+  hzstd_core_lock_t lock;
+  _Atomic int state; // hzstd_future_state_t; isDone reads it without the lock
+  // complete() has begun: the value is being stored (S5-14). A second
+  // complete panics, a kill leaves the future to the completer.
+  bool claimed;
   hzstd_wait_queue_t waiters; // tasks suspended in hzstd_future_wait
 };
 
 // A sys.Mutex (stdlib/core/src/sync.hz; docs/async-decisions.md S4-*). Held by
 // at most one task at a time, any number of times by that one (C184), only for
 // the length of a callback (C178). GC memory, scanned: it holds tasks.
+//
+// Only the owner makes itself the owner or stops being it, so whether a task
+// holds the mutex needs no lock (the reentrancy check). `depth`, `locked_at`
+// and, while it is held, `poisoned` are the owner's: only its thread writes
+// them (a recovery or a kill releases a hold on the holder's thread). Every
+// other access holds the lock.
 struct hzstd_mutex_core_t {
-  hzstd_task_t *owner; // NULL while free
+  hzstd_core_lock_t lock;
+  hzstd_task_t *_Atomic owner; // NULL while free
   size_t depth;        // how many lock calls of the owner hold it
   bool poisoned;       // a panic or a kill left a lock region (C560): every take panics
   bool poisoned_by_kill;
@@ -126,19 +160,27 @@ struct hzstd_mutex_core_t {
 
 // A sys.Flag: set, cleared, waited for. GC memory, scanned.
 typedef struct {
-  bool set;
+  hzstd_core_lock_t lock;
+  _Atomic bool set;
   hzstd_wait_queue_t waiters; // tasks waiting for the next set()
 } hzstd_flag_core_t;
 
-// Every scheduler of the process; changes only under the allocator lock.
-// Schedulers are uncollectable GC memory (scanned: they hold the tasks).
+// Every scheduler of the process; changes only under the allocator lock (the
+// collector's hooks walk it with the world stopped) and the list lock
+// (g_hzstd_sched_list_lock, which every other walker holds). Schedulers are
+// uncollectable GC memory (scanned: they hold the tasks).
 static hzstd_sched_t *_Atomic g_hzstd_scheds = NULL;
+// Every walker of g_hzstd_scheds but the GC's hooks holds this lock (the
+// watchdog, an exit, the deadlock check, the profiler); a thread removes its
+// scheduler from the list holding it too, so nothing still reads one it frees.
+static uv_mutex_t g_hzstd_sched_list_lock;
 static GC_push_other_roots_proc g_hzstd_previous_push_other_roots = NULL;
 
 // ── The registry, under the allocator lock ───────────────────────────────────
 
 typedef enum {
   HZSTD_REGISTRY_ADD_SCHED,
+  HZSTD_REGISTRY_REMOVE_SCHED,
   HZSTD_REGISTRY_ADD_TASK,
   HZSTD_REGISTRY_ATTACH_STACK,
   HZSTD_REGISTRY_REMOVE_TASK,
@@ -165,8 +207,25 @@ static void *GC_CALLBACK hzstd_registry_apply(void *p)
   switch (c->op) {
   case HZSTD_REGISTRY_ADD_SCHED:
     s->next = atomic_load_explicit(&g_hzstd_scheds, memory_order_relaxed);
-    atomic_store_explicit(&g_hzstd_scheds, s, memory_order_release); // the watchdog reads it without the lock
+    atomic_store_explicit(&g_hzstd_scheds, s, memory_order_release); // readers outside the GC hold the list lock instead
     break;
+  case HZSTD_REGISTRY_REMOVE_SCHED: {
+    hzstd_sched_t *at = atomic_load_explicit(&g_hzstd_scheds, memory_order_relaxed);
+    if (at == s) {
+      atomic_store_explicit(&g_hzstd_scheds, s->next, memory_order_release);
+    }
+    else {
+      while (at != NULL && at->next != s) {
+        at = at->next;
+      }
+      if (at == NULL) {
+        hzstd_trap_ccstr("Internal Runtime Error: a scheduler that ended was not in the list");
+      }
+      at->next = s->next;
+    }
+    s->next = NULL;
+    break;
+  }
   case HZSTD_REGISTRY_ADD_TASK:
     t->prev_live = NULL;
     t->next_live = s->live;
@@ -341,7 +400,7 @@ static fiber_stack hzstd_stack_acquire(hzstd_sched_t *s)
     return s->pool[--s->pool_len];
   }
   fiber_stack stack;
-  int error = fiber_stack_create(&stack, HZSTD_TASK_STACK_SIZE, HZSTD_TASK_STACK_GUARD);
+  int error = fiber_stack_create(&stack, s->stack_size, HZSTD_TASK_STACK_GUARD);
   if (error != 0) {
     hzstd_panic_fmt("Out of memory: no stack for a new task (error %d)", error);
   }
@@ -387,13 +446,131 @@ static hzstd_task_t *hzstd_ready_pop(hzstd_sched_t *s)
   return t;
 }
 
+// ── Locks and cross-thread wake-ups (docs/async-decisions.md S5-11) ─────────
+//
+// A core lock guards a future, mutex or flag core and its wait queues. It is
+// held for the few instructions of a state change, and while the tasks the
+// change wakes are readied: a task of another thread goes into that thread's
+// inbox under it. So a task waiting in a queue is always in that queue or in
+// its thread's inbox under a lock, never between them, which is what lets a
+// thread that ends take its tasks out of every queue (hzstd_sched_kill_all).
+// The holder never suspends and never allocates, so the lock spins; after a
+// while a spinner gives its CPU away, in case the holder was preempted.
+
+static void hzstd_os_thread_yield(void)
+{
+#if FIBER__WINDOWS
+  SwitchToThread();
+#else
+  sched_yield();
+#endif
+}
+
+static void hzstd_core_lock(hzstd_core_lock_t *l)
+{
+  for (unsigned spins = 0;; spins++) {
+    if (atomic_load_explicit(&l->locked, memory_order_relaxed) == 0
+        && atomic_exchange_explicit(&l->locked, 1, memory_order_acquire) == 0) {
+      return;
+    }
+    if (spins >= 64) {
+      hzstd_os_thread_yield();
+    }
+    else {
+#if defined(__x86_64__) || defined(_M_X64)
+      __builtin_ia32_pause();
+#elif defined(__aarch64__)
+      __asm__ volatile("yield");
+#endif
+    }
+  }
+}
+
+static void hzstd_core_unlock(hzstd_core_lock_t *l)
+{
+  atomic_store_explicit(&l->locked, 0, memory_order_release);
+}
+
+// Readies a task of another thread: into its inbox, and that thread's loop
+// woken. The inbox lock is held across uv_async_send, so a thread that ends
+// knows no pusher still touches its scheduler once it held that lock itself.
+static void hzstd_inbox_push(hzstd_sched_t *to, hzstd_task_t *t)
+{
+  uv_mutex_lock(&to->inbox_lock);
+  t->next_ready = NULL;
+  if (to->inbox_tail != NULL) {
+    to->inbox_tail->next_ready = t;
+  }
+  else {
+    atomic_store_explicit(&to->inbox_head, t, memory_order_release);
+  }
+  to->inbox_tail = t;
+  uv_async_send(&to->wake);
+  uv_mutex_unlock(&to->inbox_lock);
+}
+
+static bool hzstd_inbox_holds_tasks(hzstd_sched_t *s)
+{
+  return atomic_load_explicit(&s->inbox_head, memory_order_acquire) != NULL;
+}
+
+// Between tasks only (S5-11): a task another thread readied while it was
+// still on its way out (in its queue, not yet switched away) is resumed only
+// after it left, so it never runs twice.
+static void hzstd_inbox_drain(hzstd_sched_t *s)
+{
+  if (!hzstd_inbox_holds_tasks(s)) {
+    return;
+  }
+  uv_mutex_lock(&s->inbox_lock);
+  hzstd_task_t *t = atomic_load_explicit(&s->inbox_head, memory_order_relaxed);
+  atomic_store_explicit(&s->inbox_head, NULL, memory_order_relaxed);
+  s->inbox_tail = NULL;
+  uv_mutex_unlock(&s->inbox_lock);
+  while (t != NULL) {
+    hzstd_task_t *next = t->next_ready;
+    if (t->state != HZSTD_TASK_SUSPENDED || t->thread != s->thread) {
+      hzstd_panic("Internal Runtime Error: another thread readied a task that was not waiting on this one");
+    }
+    t->state = HZSTD_TASK_READY;
+    hzstd_ready_push(s, t);
+    t = next;
+  }
+}
+
+static void hzstd_inbox_wake(uv_async_t *handle)
+{
+  (void)handle; // the loop drains the inbox once uv_run returns
+}
+
+// Readies a suspended task that is in no queue any more, from `self`, the
+// calling thread: its own go into its ready queue, another thread's into that
+// thread's inbox. Only the task's own thread changes its state.
+static void hzstd_task_make_ready(hzstd_thread_t *self, hzstd_task_t *t)
+{
+  if (t->thread == self) {
+    t->state = HZSTD_TASK_READY;
+    hzstd_ready_push(self->sched, t);
+    return;
+  }
+  hzstd_inbox_push(t->thread->sched, t);
+}
+
 // ── Wait queues ──────────────────────────────────────────────────────────────
+//
+// Every function here but hzstd_wait_remove runs holding the queue's lock.
 
 static void hzstd_task_suspend(hzstd_context_t *ctx);
 
-// Puts the task at the end of `q`, suspended there for `reason` (an
-// hzstd_sched_run_end_t, which the profiler shows as why its run ended).
-static void hzstd_wait_push(hzstd_wait_queue_t *q, hzstd_task_t *t, uint32_t reason)
+static void hzstd_queue_init(hzstd_wait_queue_t *q, hzstd_core_lock_t *lock)
+{
+  q->head = NULL;
+  q->tail = NULL;
+  q->lock = lock;
+}
+
+// Links `t` at the end of `q`.
+static void hzstd_queue_append(hzstd_wait_queue_t *q, hzstd_task_t *t)
 {
   t->next_ready = NULL;
   if (q->tail != NULL) {
@@ -403,8 +580,15 @@ static void hzstd_wait_push(hzstd_wait_queue_t *q, hzstd_task_t *t, uint32_t rea
     q->head = t;
   }
   q->tail = t;
-  t->waiting_in = q;
-  t->wait_reason = reason;
+  atomic_store_explicit(&t->waiting_in, q, memory_order_relaxed);
+}
+
+// The running task goes to the end of `q`, suspended there for `reason` (an
+// hzstd_sched_run_end_t, which the profiler shows as why its run ended).
+static void hzstd_wait_push_self(hzstd_wait_queue_t *q, hzstd_task_t *t, uint32_t reason)
+{
+  hzstd_queue_append(q, t);
+  atomic_store_explicit(&t->wait_reason, reason, memory_order_relaxed);
   t->state = HZSTD_TASK_SUSPENDED;
 }
 
@@ -415,7 +599,9 @@ static hzstd_task_t *hzstd_wait_pop(hzstd_wait_queue_t *q)
   if (t == NULL) {
     return NULL;
   }
-  if (t->state != HZSTD_TASK_SUSPENDED || t->waiting_in != q) {
+  // Its state was written under this lock when it began to wait, and only it
+  // changes it again, after it left the queue.
+  if (t->state != HZSTD_TASK_SUSPENDED || atomic_load_explicit(&t->waiting_in, memory_order_relaxed) != q) {
     hzstd_panic("Internal Runtime Error: a task in a wait queue is not waiting in it");
   }
   q->head = t->next_ready;
@@ -423,53 +609,63 @@ static hzstd_task_t *hzstd_wait_pop(hzstd_wait_queue_t *q)
     q->tail = NULL;
   }
   t->next_ready = NULL;
-  t->waiting_in = NULL;
+  atomic_store_explicit(&t->waiting_in, NULL, memory_order_relaxed);
   return t;
 }
 
-static void hzstd_wait_ready(hzstd_task_t *t)
-{
-  t->state = HZSTD_TASK_READY;
-  hzstd_ready_push(t->thread->sched, t);
-}
-
 // Readies every task waiting in `q`, oldest first.
-static void hzstd_wait_ready_all(hzstd_wait_queue_t *q)
+static void hzstd_wait_ready_all(hzstd_thread_t *self, hzstd_wait_queue_t *q)
 {
   hzstd_task_t *t;
   while ((t = hzstd_wait_pop(q)) != NULL) {
-    hzstd_wait_ready(t);
+    hzstd_task_make_ready(self, t);
   }
 }
 
-// Takes a task that will never run again out of the queue it waits in.
+// Takes a task that will never run again out of the queue it waits in, on its
+// own thread, without holding any lock. Another thread may take it out (to
+// ready it) or move it to the core's other queue meanwhile: the queue is
+// looked up again under its lock.
 static void hzstd_wait_remove(hzstd_task_t *t)
 {
-  hzstd_wait_queue_t *q = t->waiting_in;
-  if (q == NULL) {
+  for (;;) {
+    hzstd_wait_queue_t *q = atomic_load_explicit(&t->waiting_in, memory_order_acquire);
+    if (q == NULL) {
+      return;
+    }
+    hzstd_core_lock(q->lock);
+    if (atomic_load_explicit(&t->waiting_in, memory_order_relaxed) != q) {
+      hzstd_core_unlock(q->lock);
+      continue;
+    }
+    hzstd_task_t **link = &q->head;
+    hzstd_task_t *previous = NULL;
+    while (*link != t) {
+      if (*link == NULL) {
+        hzstd_panic("Internal Runtime Error: a task is not in the wait queue it waits in");
+      }
+      previous = *link;
+      link = &(*link)->next_ready;
+    }
+    *link = t->next_ready;
+    if (q->tail == t) {
+      q->tail = previous;
+    }
+    t->next_ready = NULL;
+    atomic_store_explicit(&t->waiting_in, NULL, memory_order_relaxed);
+    hzstd_core_unlock(q->lock);
     return;
   }
-  hzstd_task_t **link = &q->head;
-  hzstd_task_t *previous = NULL;
-  while (*link != t) {
-    if (*link == NULL) {
-      hzstd_panic("Internal Runtime Error: a task is not in the wait queue it waits in");
-    }
-    previous = *link;
-    link = &(*link)->next_ready;
-  }
-  *link = t->next_ready;
-  if (q->tail == t) {
-    q->tail = previous;
-  }
-  t->next_ready = NULL;
-  t->waiting_in = NULL;
 }
 
-// Suspends the running task in `q` until something readies it.
+// Suspends the running task in `q` until something readies it. Called holding
+// q's lock: it lets go of it as the task starts waiting, before it switches
+// away (a thread readying it meanwhile only puts it into the inbox, which is
+// drained once it has left, hzstd_inbox_drain).
 static void hzstd_wait_in(hzstd_context_t *ctx, hzstd_wait_queue_t *q, uint32_t reason)
 {
-  hzstd_wait_push(q, ctx->task, reason);
+  hzstd_wait_push_self(q, ctx->task, reason);
+  hzstd_core_unlock(q->lock);
   hzstd_task_suspend(ctx);
 }
 
@@ -478,36 +674,72 @@ static void hzstd_wait_in(hzstd_context_t *ctx, hzstd_wait_queue_t *q, uint32_t 
 hzstd_future_core_t *hzstd_future_core_new(void)
 {
   // Scanned: it holds the waiting tasks.
-  return hzstd_heap_allocate(sizeof(hzstd_future_core_t), "hzstd_future_core_t");
+  hzstd_future_core_t *core = hzstd_heap_allocate(sizeof(hzstd_future_core_t), "hzstd_future_core_t");
+  hzstd_queue_init(&core->waiters, &core->lock);
+  return core;
 }
 
 hzstd_int_t hzstd_future_state(hzstd_future_core_t *core)
 {
-  return (hzstd_int_t)core->state;
+  return (hzstd_int_t)atomic_load_explicit(&core->state, memory_order_acquire);
 }
 
-static void hzstd_future_settle(hzstd_future_core_t *core, hzstd_future_state_t state)
+// Holding the core's lock.
+static void hzstd_future_settle_locked(hzstd_thread_t *self, hzstd_future_core_t *core, hzstd_future_state_t state)
 {
-  core->state = state;
-  hzstd_wait_ready_all(&core->waiters);
+  atomic_store_explicit(&core->state, (int)state, memory_order_release);
+  hzstd_wait_ready_all(self, &core->waiters);
 }
 
-void hzstd_future_complete(hzstd_context_t *ctx, hzstd_future_core_t *core)
+// complete(v), first step (S5-14): the future becomes the caller's to
+// complete, or it panics because it has (or is getting) its value (C444).
+void hzstd_future_claim(hzstd_context_t *ctx, hzstd_future_core_t *core)
 {
   (void)ctx;
-  if (core->state != HZSTD_FUTURE_PENDING) {
+  hzstd_core_lock(&core->lock);
+  if (core->claimed || atomic_load_explicit(&core->state, memory_order_relaxed) != HZSTD_FUTURE_PENDING) {
+    hzstd_core_unlock(&core->lock);
     hzstd_panic_fmt_n(1, "a future was completed twice: a future gets its value once");
   }
-  hzstd_future_settle(core, HZSTD_FUTURE_VALUE);
+  core->claimed = true;
+  hzstd_core_unlock(&core->lock);
+}
+
+// complete(v), last step: the value is stored; the future is settled and its
+// waiters readied. A join reads the value after it saw the state under this
+// lock, so it sees the value too.
+void hzstd_future_complete(hzstd_context_t *ctx, hzstd_future_core_t *core)
+{
+  hzstd_core_lock(&core->lock);
+  if (!core->claimed || atomic_load_explicit(&core->state, memory_order_relaxed) != HZSTD_FUTURE_PENDING) {
+    hzstd_core_unlock(&core->lock);
+    hzstd_panic("Internal Runtime Error: a future was completed that was not claimed for it");
+  }
+  hzstd_future_settle_locked(ctx->thread, core, HZSTD_FUTURE_VALUE);
+  hzstd_core_unlock(&core->lock);
+}
+
+// A killed task's future, unless a completer claimed it.
+static void hzstd_future_settle_killed(hzstd_thread_t *self, hzstd_future_core_t *core, hzstd_future_state_t state)
+{
+  hzstd_core_lock(&core->lock);
+  if (!core->claimed && atomic_load_explicit(&core->state, memory_order_relaxed) == HZSTD_FUTURE_PENDING) {
+    hzstd_future_settle_locked(self, core, state);
+  }
+  hzstd_core_unlock(&core->lock);
 }
 
 hzstd_int_t hzstd_future_wait(hzstd_context_t *ctx, hzstd_future_core_t *core)
 {
   hzstd_suspension_point(ctx);
-  while (core->state == HZSTD_FUTURE_PENDING) {
+  hzstd_core_lock(&core->lock);
+  while (atomic_load_explicit(&core->state, memory_order_relaxed) == HZSTD_FUTURE_PENDING) {
     hzstd_wait_in(ctx, &core->waiters, HZSTD_SCHED_RUN_JOIN);
+    hzstd_core_lock(&core->lock);
   }
-  return (hzstd_int_t)core->state;
+  hzstd_int_t state = atomic_load_explicit(&core->state, memory_order_relaxed);
+  hzstd_core_unlock(&core->lock);
+  return state;
 }
 
 // ── Suspension points and windows (sys.limitSuspensions, sys.traceSuspensions) ─
@@ -705,7 +937,10 @@ void hzstd_yield_after_slow(hzstd_context_t *ctx, hzstd_real_t seconds)
 
 hzstd_mutex_core_t *hzstd_mutex_core_new(void)
 {
-  return hzstd_heap_allocate(sizeof(hzstd_mutex_core_t), "hzstd_mutex_core_t");
+  hzstd_mutex_core_t *m = hzstd_heap_allocate(sizeof(hzstd_mutex_core_t), "hzstd_mutex_core_t");
+  hzstd_queue_init(&m->lockers, &m->lock);
+  hzstd_queue_init(&m->watchers, &m->lock);
+  return m;
 }
 
 // Makes room for one more hold. Called before anything of the mutex changes:
@@ -771,37 +1006,46 @@ static hzstd_mutex_core_t *hzstd_held_pop(hzstd_task_t *t)
   return m;
 }
 
-// Hands the mutex to the next task waiting for it, or leaves it free. With
-// `wake_watchers` (a lock region ended), every watcher queues for it first, to
-// re-check its condition. A poisoned mutex readies every waiter: each panics.
-static void hzstd_mutex_release(hzstd_mutex_core_t *m, bool wake_watchers)
+static hzstd_task_t *hzstd_mutex_owner(hzstd_mutex_core_t *m)
 {
-  m->owner = NULL;
+  return atomic_load_explicit(&m->owner, memory_order_relaxed);
+}
+
+// Holding the lock: hands the mutex to the next task waiting for it, or leaves
+// it free. With `wake_watchers` (a lock region ended), every watcher queues
+// for it first, to re-check its condition. A poisoned mutex readies every
+// waiter: each panics. `self` is the calling thread.
+static void hzstd_mutex_release(hzstd_thread_t *self, hzstd_mutex_core_t *m, bool wake_watchers)
+{
+  atomic_store_explicit(&m->owner, NULL, memory_order_relaxed);
   m->depth = 0;
   if (m->poisoned) {
-    hzstd_wait_ready_all(&m->lockers);
-    hzstd_wait_ready_all(&m->watchers);
+    hzstd_wait_ready_all(self, &m->lockers);
+    hzstd_wait_ready_all(self, &m->watchers);
     return;
   }
   if (wake_watchers) {
     hzstd_task_t *w;
     while ((w = hzstd_wait_pop(&m->watchers)) != NULL) {
-      hzstd_wait_push(&m->lockers, w, HZSTD_SCHED_RUN_LOCK);
+      hzstd_queue_append(&m->lockers, w);
+      atomic_store_explicit(&w->wait_reason, HZSTD_SCHED_RUN_LOCK, memory_order_relaxed);
     }
   }
   hzstd_task_t *next = hzstd_wait_pop(&m->lockers);
   if (next != NULL) {
     // Handed over: it holds the mutex from here on, before it runs again. If it
     // is killed before that, the kill gives it back (hzstd_task_kill).
-    m->owner = next;
+    atomic_store_explicit(&m->owner, next, memory_order_relaxed);
     m->depth = 1;
     next->handed_lock = m;
-    hzstd_wait_ready(next);
+    hzstd_task_make_ready(self, next);
   }
 }
 
 static _Noreturn void hzstd_mutex_panic_poisoned(hzstd_mutex_core_t *m)
 {
+  // Written once, before `poisoned` was set under the lock this task saw it
+  // under (or, for the owner, by its own thread): stable from then on.
   hzstd_source_location_t at = m->poisoned_at;
   const char *how = m->poisoned_by_kill ? "its task was killed inside the lock region" : "a panic left the lock region";
   if (at._filename.length > 0) {
@@ -819,12 +1063,17 @@ static _Noreturn void hzstd_mutex_panic_poisoned(hzstd_mutex_core_t *m)
 // Back from a wait for the lock: it was handed over, or the mutex was poisoned.
 static void hzstd_mutex_resumed(hzstd_task_t *t, hzstd_mutex_core_t *m)
 {
+  hzstd_core_lock(&m->lock);
   if (t->handed_lock == m) {
     t->handed_lock = NULL;
+    hzstd_core_unlock(&m->lock);
     hzstd_held_push(t, m);
     return;
   }
-  if (!m->poisoned || m->owner == t) {
+  bool poisoned = m->poisoned;
+  bool owned = hzstd_mutex_owner(m) == t;
+  hzstd_core_unlock(&m->lock);
+  if (!poisoned || owned) {
     hzstd_panic("Internal Runtime Error: a task waiting for a mutex resumed without it");
   }
   hzstd_mutex_panic_poisoned(m);
@@ -833,8 +1082,9 @@ static void hzstd_mutex_resumed(hzstd_task_t *t, hzstd_mutex_core_t *m)
 void hzstd_mutex_lock(hzstd_context_t *ctx, hzstd_mutex_core_t *m, hzstd_source_location_t where)
 {
   hzstd_task_t *t = ctx->task;
-  if (m->owner == t) {
-    // Reentrant (C184): it never waits, so it is no suspension point.
+  if (hzstd_mutex_owner(m) == t) {
+    // Reentrant (C184): it never waits, so it is no suspension point. All it
+    // touches is the owner's.
     if (m->poisoned) {
       hzstd_mutex_panic_poisoned(m);
     }
@@ -844,15 +1094,19 @@ void hzstd_mutex_lock(hzstd_context_t *ctx, hzstd_mutex_core_t *m, hzstd_source_
     return;
   }
   hzstd_suspension_point(ctx);
+  // Before the lock, which nothing that can fail runs under, and before
+  // waiting: the hold is recorded when the task resumes with the mutex handed
+  // over, where nothing may fail any more.
+  hzstd_held_reserve(t);
+  hzstd_core_lock(&m->lock);
   if (m->poisoned) {
+    hzstd_core_unlock(&m->lock);
     hzstd_mutex_panic_poisoned(m);
   }
-  // Before waiting too: the hold is recorded when the task resumes with the
-  // mutex handed over, where nothing may fail any more.
-  hzstd_held_reserve(t);
-  if (m->owner == NULL) {
-    m->owner = t;
+  if (hzstd_mutex_owner(m) == NULL) {
+    atomic_store_explicit(&m->owner, t, memory_order_relaxed);
     m->depth = 1;
+    hzstd_core_unlock(&m->lock);
     m->locked_at = where;
     hzstd_held_push(t, m);
     return;
@@ -865,32 +1119,37 @@ void hzstd_mutex_lock(hzstd_context_t *ctx, hzstd_mutex_core_t *m, hzstd_source_
 void hzstd_mutex_unlock(hzstd_context_t *ctx, hzstd_mutex_core_t *m)
 {
   hzstd_task_t *t = ctx->task;
-  if (m->owner != t || t->held_lock_count == 0 || hzstd_held_top(t) != m) {
+  if (hzstd_mutex_owner(m) != t || t->held_lock_count == 0 || hzstd_held_top(t) != m) {
     hzstd_panic("Internal Runtime Error: a mutex was let go of out of order");
   }
   hzstd_held_pop(t);
-  m->depth -= 1;
-  if (m->depth == 0) {
-    hzstd_mutex_release(m, true);
+  if (m->depth > 1) {
+    m->depth -= 1;
+    return;
   }
+  hzstd_core_lock(&m->lock);
+  hzstd_mutex_release(ctx->thread, m, true);
+  hzstd_core_unlock(&m->lock);
 }
 
 // lockWhen and waitUntil start here: a task that holds the mutex already
 // could only wait for a condition nothing can change while it waits.
 void hzstd_mutex_lock_when(hzstd_context_t *ctx, hzstd_mutex_core_t *m, hzstd_source_location_t where)
 {
-  if (m->owner == ctx->task) {
+  if (hzstd_mutex_owner(m) == ctx->task) {
     hzstd_panic_fmt_n(2, "lockWhen and waitUntil cannot wait on a mutex this task holds: nothing could change the condition while it waits");
   }
   hzstd_mutex_lock(ctx, m, where);
 }
 
 // The condition did not hold: lets go of the lock, waits until a lock region
-// of the mutex ends, and holds the lock again to re-check.
+// of the mutex ends, and holds the lock again to re-check. Letting go and
+// starting to wait are one step under the lock (S5-11): a region another
+// thread ends in between would otherwise wake the watchers without this task.
 void hzstd_mutex_wait_change(hzstd_context_t *ctx, hzstd_mutex_core_t *m)
 {
   hzstd_task_t *t = ctx->task;
-  if (m->owner != t || m->depth != 1 || hzstd_held_top(t) != m) {
+  if (hzstd_mutex_owner(m) != t || m->depth != 1 || hzstd_held_top(t) != m) {
     hzstd_panic("Internal Runtime Error: a condition wait without holding its mutex once");
   }
   // The condition itself poisoned it (a recovered panic in a reentrant lock):
@@ -900,26 +1159,32 @@ void hzstd_mutex_wait_change(hzstd_context_t *ctx, hzstd_mutex_core_t *m)
   }
   hzstd_source_location_t where = m->locked_at;
   hzstd_held_pop(t);
-  hzstd_mutex_release(m, false);
+  hzstd_core_lock(&m->lock);
+  hzstd_mutex_release(ctx->thread, m, false);
   hzstd_wait_in(ctx, &m->watchers, HZSTD_SCHED_RUN_CONDITION);
   hzstd_mutex_resumed(t, m);
   m->locked_at = where;
 }
 
-// Poisons and releases the holds above `count`, newest first (C340, C525).
-static void hzstd_held_locks_release_to(hzstd_task_t *t, size_t count, bool by_kill)
+// Poisons and releases the holds above `count`, newest first (C340, C525), on
+// the task's own thread `self`.
+static void hzstd_held_locks_release_to(hzstd_thread_t *self, hzstd_task_t *t, size_t count, bool by_kill)
 {
   while (t->held_lock_count > count) {
     hzstd_mutex_core_t *m = hzstd_held_pop(t);
+    hzstd_core_lock(&m->lock);
     if (!m->poisoned) {
-      m->poisoned = true;
       m->poisoned_by_kill = by_kill;
       m->poisoned_at = m->locked_at;
+      m->poisoned = true;
     }
-    m->depth -= 1;
-    if (m->depth == 0) {
-      hzstd_mutex_release(m, true);
+    if (m->depth > 1) {
+      m->depth -= 1;
     }
+    else {
+      hzstd_mutex_release(self, m, true);
+    }
+    hzstd_core_unlock(&m->lock);
   }
 }
 
@@ -929,33 +1194,36 @@ void hzstd_held_locks_restore(hzstd_context_t *ctx, size_t count)
   if (count > ctx->task->held_lock_count) {
     hzstd_panic("A panic recovery restored mutex holds that are not held");
   }
-  hzstd_held_locks_release_to(ctx->task, count, false);
+  hzstd_held_locks_release_to(ctx->thread, ctx->task, count, false);
 }
 
 // ── Flags (sys.Flag) ─────────────────────────────────────────────────────────
 
 void *hzstd_flag_core_new(void)
 {
-  return hzstd_heap_allocate(sizeof(hzstd_flag_core_t), "hzstd_flag_core_t");
+  hzstd_flag_core_t *f = hzstd_heap_allocate(sizeof(hzstd_flag_core_t), "hzstd_flag_core_t");
+  hzstd_queue_init(&f->waiters, &f->lock);
+  return f;
 }
 
 void hzstd_flag_set(hzstd_context_t *ctx, void *flag)
 {
-  (void)ctx;
   hzstd_flag_core_t *f = flag;
-  f->set = true;
-  hzstd_wait_ready_all(&f->waiters);
+  hzstd_core_lock(&f->lock);
+  atomic_store_explicit(&f->set, true, memory_order_release);
+  hzstd_wait_ready_all(ctx->thread, &f->waiters);
+  hzstd_core_unlock(&f->lock);
 }
 
 void hzstd_flag_clear(hzstd_context_t *ctx, void *flag)
 {
   (void)ctx;
-  ((hzstd_flag_core_t *)flag)->set = false;
+  atomic_store_explicit(&((hzstd_flag_core_t *)flag)->set, false, memory_order_release);
 }
 
 bool hzstd_flag_is_set(void *flag)
 {
-  return ((hzstd_flag_core_t *)flag)->set;
+  return atomic_load_explicit(&((hzstd_flag_core_t *)flag)->set, memory_order_acquire);
 }
 
 // Returns at once if the flag is set, else once a set() comes: every task
@@ -964,9 +1232,15 @@ void hzstd_flag_wait(hzstd_context_t *ctx, void *flag)
 {
   hzstd_flag_core_t *f = flag;
   hzstd_suspension_point(ctx);
-  if (!f->set) {
-    hzstd_wait_in(ctx, &f->waiters, HZSTD_SCHED_RUN_FLAG);
+  if (atomic_load_explicit(&f->set, memory_order_acquire)) {
+    return;
   }
+  hzstd_core_lock(&f->lock);
+  if (atomic_load_explicit(&f->set, memory_order_relaxed)) {
+    hzstd_core_unlock(&f->lock);
+    return;
+  }
+  hzstd_wait_in(ctx, &f->waiters, HZSTD_SCHED_RUN_FLAG);
 }
 
 // ── The profiler's record of the scheduler (docs/profiler-timelines.md) ────
@@ -977,6 +1251,15 @@ void hzstd_flag_wait(hzstd_context_t *ctx, void *flag)
 // sys.traceAllocations counts) and never a lock on the thread's own path. A
 // stall report comes from the watchdog's thread and goes to a list of its own
 // under a lock. Without a session this costs one relaxed load per event.
+//
+// Several threads (S5-R6): only a thread writes its own buffer. It joins a
+// session at its first event in it (hzstd_trace_enter): its old record goes,
+// the tasks it has are noted as known, and a task it was running when the
+// session began gets its run from the session's start. A thread that ends
+// during a session hands its record over (hzstd_trace_retire). The session's
+// end stops every writer by a handshake (`trace_writing`, Dekker with
+// g_hzstd_trace_on), so it reads quiescent buffers, closes the run every
+// other thread still has open, and merges them all.
 
 #define HZSTD_TRACE_CHUNK_EVENTS 1024
 #define HZSTD_TRACE_CHUNK_TASKS 256
@@ -1015,7 +1298,23 @@ typedef struct {
   hzstd_trace_event_t event;
 } hzstd_trace_foreign_event_t;
 
+// The record of a thread that ended during a session, until the session's end
+// takes it (under the list lock). Malloc memory.
+typedef struct hzstd_trace_retired_t {
+  struct hzstd_trace_retired_t *next;
+  uint64_t session;
+  uint64_t thread_id;
+  uint64_t os_tid;
+  hzstd_trace_chunk_t *head;
+  hzstd_trace_task_chunk_t *tasks_head;
+} hzstd_trace_retired_t;
+
 static _Atomic bool g_hzstd_trace_on = false;
+// Counts the sessions; a thread's record belongs to the one it joined.
+static _Atomic uint64_t g_hzstd_trace_session = 0;
+// When the session began: published by the session's counter.
+static double g_hzstd_trace_begin_time = 0.0;
+static hzstd_trace_retired_t *g_hzstd_trace_retired = NULL;
 static _Atomic uint64_t g_hzstd_next_task_id = 1;
 // Events another thread reports about a thread (the watchdog's stall
 // reports): rare, under a spin lock.
@@ -1025,6 +1324,7 @@ static size_t g_hzstd_trace_foreign_count = 0;
 static size_t g_hzstd_trace_foreign_capacity = 0;
 
 static uint64_t hzstd_this_thread_cpu_ticks(void);
+static uint64_t hzstd_sched_cpu_ticks(hzstd_sched_t *s);
 static double hzstd_watchdog_seconds_per_tick(void);
 
 static inline bool hzstd_sched_tracing(void)
@@ -1062,9 +1362,34 @@ static void hzstd_trace_reserve(hzstd_sched_t *s, size_t n)
 // GC_EVENT_START.
 #define HZSTD_TRACE_SPARE 8
 
+static void hzstd_trace_free_chunks(hzstd_trace_chunk_t *head, hzstd_trace_task_chunk_t *tasks_head)
+{
+  for (hzstd_trace_chunk_t *c = head; c != NULL;) {
+    hzstd_trace_chunk_t *next = c->next;
+    free(c);
+    c = next;
+  }
+  for (hzstd_trace_task_chunk_t *c = tasks_head; c != NULL;) {
+    hzstd_trace_task_chunk_t *next = c->next;
+    for (size_t i = 0; i < c->count; i++) {
+      free(c->tasks[i].file);
+    }
+    free(c);
+    c = next;
+  }
+}
+
+static void hzstd_trace_free(hzstd_sched_t *s)
+{
+  hzstd_trace_free_chunks(s->trace_head, s->trace_tasks_head);
+  s->trace_head = s->trace_tail = NULL;
+  s->trace_tasks_head = s->trace_tasks_tail = NULL;
+}
+
+// Writes one event into the thread's own buffer (inside hzstd_trace_enter).
 // `reserved`: the caller must not allocate (inside the collector); the spare
 // slots are its room.
-static void hzstd_trace_append(hzstd_sched_t *s, uint32_t kind, uint64_t task, uint32_t reason, uint64_t cpu, bool reserved)
+static void hzstd_trace_write(hzstd_sched_t *s, uint32_t kind, uint64_t task, uint32_t reason, uint64_t cpu, bool reserved, double time)
 {
   if (!reserved) {
     hzstd_trace_reserve(s, 1 + HZSTD_TRACE_SPARE);
@@ -1073,26 +1398,22 @@ static void hzstd_trace_append(hzstd_sched_t *s, uint32_t kind, uint64_t task, u
     hzstd_trap_ccstr("Internal Runtime Error: a scheduler event had no room reserved");
   }
   s->trace_tail->events[s->trace_tail->count++] = (hzstd_trace_event_t) {
-    .time = hzstd_time_now(),
+    .time = time,
     .cpu = cpu,
     .task = task,
     .kind = kind,
     .reason = reason,
   };
-}
-
-static void hzstd_trace_note(hzstd_sched_t *s, uint32_t kind, uint64_t task, uint32_t reason)
-{
-  if (hzstd_sched_tracing()) {
-    hzstd_trace_append(s, kind, task, reason, 0, false);
+  if (kind == HZSTD_SCHED_EVENT_RUN_BEGIN) {
+    s->trace_open_run = task;
+  }
+  else if (kind == HZSTD_SCHED_EVENT_RUN_END) {
+    s->trace_open_run = 0;
   }
 }
 
-static void hzstd_trace_note_spawn(hzstd_sched_t *s, const hzstd_task_t *t)
+static void hzstd_trace_write_task(hzstd_sched_t *s, const hzstd_task_t *t, bool known)
 {
-  if (!hzstd_sched_tracing()) {
-    return;
-  }
   if (s->trace_tasks_tail == NULL || s->trace_tasks_tail->count == HZSTD_TRACE_CHUNK_TASKS) {
     hzstd_trace_task_chunk_t *chunk = malloc(sizeof(hzstd_trace_task_chunk_t));
     if (chunk == NULL) {
@@ -1125,7 +1446,80 @@ static void hzstd_trace_note_spawn(hzstd_sched_t *s, const hzstd_task_t *t)
     .column = t->spawned_at._column,
     .background = t->background,
   };
-  hzstd_trace_append(s, HZSTD_SCHED_EVENT_SPAWN, t->id, 0, 0, false);
+  // Known before the session (reason 1): the event says when it became known,
+  // which is the session's start; the exporter keeps it out of the timeline.
+  hzstd_trace_write(s, HZSTD_SCHED_EVENT_SPAWN, t->id, known ? 1 : 0, 0, false, hzstd_time_now());
+}
+
+// The thread joins the session `session` (its first event in it).
+static void hzstd_trace_join(hzstd_sched_t *s, uint64_t session)
+{
+  hzstd_trace_free(s);
+  s->trace_session = session;
+  s->trace_open_run = 0;
+  hzstd_trace_reserve(s, HZSTD_TRACE_SPARE);
+  // The tasks that exist already: spawned before the session, they are known
+  // by id and spawn site all the same.
+  for (hzstd_task_t *t = s->live; t != NULL; t = t->next_live) {
+    hzstd_trace_write_task(s, t, true);
+  }
+  // A task running since before the session (no event of this thread came in
+  // between): its run in the session began with it.
+  hzstd_task_t *running = s->thread->current_task;
+  if (running != NULL) {
+    hzstd_trace_write(s, HZSTD_SCHED_EVENT_RUN_BEGIN, running->id, 0, s->trace_begin_cpu, false, g_hzstd_trace_begin_time);
+  }
+}
+
+// On the thread `s` runs on, before it writes: false if no session runs (or
+// the thread cannot join it here: `reserved`, inside the collector, where it
+// must not allocate). Pairs with hzstd_trace_leave.
+static bool hzstd_trace_enter(hzstd_sched_t *s, bool reserved)
+{
+  atomic_store_explicit(&s->trace_writing, 1, memory_order_seq_cst);
+  if (!atomic_load_explicit(&g_hzstd_trace_on, memory_order_seq_cst)) {
+    atomic_store_explicit(&s->trace_writing, 0, memory_order_release);
+    return false;
+  }
+  uint64_t session = atomic_load_explicit(&g_hzstd_trace_session, memory_order_acquire);
+  if (s->trace_session != session) {
+    if (reserved) {
+      atomic_store_explicit(&s->trace_writing, 0, memory_order_release);
+      return false;
+    }
+    hzstd_trace_join(s, session);
+  }
+  return true;
+}
+
+static void hzstd_trace_leave(hzstd_sched_t *s)
+{
+  atomic_store_explicit(&s->trace_writing, 0, memory_order_release);
+}
+
+static void hzstd_trace_append(hzstd_sched_t *s, uint32_t kind, uint64_t task, uint32_t reason, uint64_t cpu, bool reserved)
+{
+  if (!hzstd_trace_enter(s, reserved)) {
+    return;
+  }
+  hzstd_trace_write(s, kind, task, reason, cpu, reserved, hzstd_time_now());
+  hzstd_trace_leave(s);
+}
+
+static void hzstd_trace_note(hzstd_sched_t *s, uint32_t kind, uint64_t task, uint32_t reason)
+{
+  if (hzstd_sched_tracing()) {
+    hzstd_trace_append(s, kind, task, reason, 0, false);
+  }
+}
+
+static void hzstd_trace_note_spawn(hzstd_sched_t *s, const hzstd_task_t *t)
+{
+  if (!hzstd_sched_tracing() || !hzstd_trace_enter(s, false)) {
+    return;
+  }
+  hzstd_trace_write_task(s, t, false);
+  hzstd_trace_leave(s);
 }
 
 // From another thread (the watchdog): a stall report about the task `s` runs.
@@ -1152,62 +1546,60 @@ static void hzstd_trace_note_foreign(hzstd_sched_t *s, uint32_t kind, uint64_t t
   atomic_flag_clear_explicit(&g_hzstd_trace_foreign_lock, memory_order_release);
 }
 
-static void hzstd_trace_free(hzstd_sched_t *s)
+// A thread that ends hands its record of the running session over, under the
+// list lock (its own thread, so nothing writes it meanwhile).
+static void hzstd_trace_retire(hzstd_sched_t *s)
 {
-  for (hzstd_trace_chunk_t *c = s->trace_head; c != NULL;) {
-    hzstd_trace_chunk_t *next = c->next;
-    free(c);
-    c = next;
-  }
-  for (hzstd_trace_task_chunk_t *c = s->trace_tasks_head; c != NULL;) {
-    hzstd_trace_task_chunk_t *next = c->next;
-    for (size_t i = 0; i < c->count; i++) {
-      free(c->tasks[i].file);
+  if (s->trace_head != NULL && atomic_load(&g_hzstd_trace_on) && s->trace_session == atomic_load(&g_hzstd_trace_session)) {
+    hzstd_trace_retired_t *r = malloc(sizeof(hzstd_trace_retired_t));
+    if (r == NULL) {
+      hzstd_trap_ccstr("Out of memory recording the scheduler for the profiler");
     }
-    free(c);
-    c = next;
+    *r = (hzstd_trace_retired_t) {
+      .next = g_hzstd_trace_retired,
+      .session = s->trace_session,
+      .thread_id = s->thread->id,
+      .os_tid = s->os_tid,
+      .head = s->trace_head,
+      .tasks_head = s->trace_tasks_head,
+    };
+    g_hzstd_trace_retired = r;
+    s->trace_head = s->trace_tail = NULL;
+    s->trace_tasks_head = s->trace_tasks_tail = NULL;
   }
-  s->trace_head = s->trace_tail = NULL;
-  s->trace_tasks_head = s->trace_tasks_tail = NULL;
+  hzstd_trace_free(s);
 }
 
-// The running task's identity, for a task that ran before the session began.
-static void hzstd_trace_note_known(hzstd_sched_t *s, const hzstd_task_t *t);
-
-// Begins a session's record. On the thread that starts the session; every
-// other thread's (stage 5) needs a handover still.
+// Begins a session's record, on the thread that starts the session (in a
+// task). Every other thread joins at its next event.
 void hzstd_sched_trace_begin(void)
 {
-  for (hzstd_sched_t *s = atomic_load(&g_hzstd_scheds); s != NULL; s = s->next) {
-    hzstd_trace_free(s);
+  hzstd_sched_t *own = hzstd_current_thread->sched;
+  uv_mutex_lock(&g_hzstd_sched_list_lock);
+  for (hzstd_trace_retired_t *r = g_hzstd_trace_retired; r != NULL;) {
+    hzstd_trace_retired_t *next = r->next;
+    hzstd_trace_free_chunks(r->head, r->tasks_head);
+    free(r);
+    r = next;
   }
+  g_hzstd_trace_retired = NULL;
   while (atomic_flag_test_and_set_explicit(&g_hzstd_trace_foreign_lock, memory_order_acquire)) {
   }
   g_hzstd_trace_foreign_count = 0;
   atomic_flag_clear_explicit(&g_hzstd_trace_foreign_lock, memory_order_release);
+  // Each thread's CPU clock now, for a run it has going (hzstd_trace_join);
+  // published by the session's counter.
   for (hzstd_sched_t *s = atomic_load(&g_hzstd_scheds); s != NULL; s = s->next) {
-    hzstd_trace_reserve(s, HZSTD_TRACE_SPARE);
+    s->trace_begin_cpu = s == own ? hzstd_this_thread_cpu_ticks() : hzstd_sched_cpu_ticks(s);
   }
+  g_hzstd_trace_begin_time = hzstd_time_now();
+  atomic_fetch_add_explicit(&g_hzstd_trace_session, 1, memory_order_release);
   atomic_store(&g_hzstd_trace_on, true);
-  // The tasks that exist already: spawned before the session, they are known
-  // by id and spawn site all the same. The running one first.
-  for (hzstd_sched_t *s = atomic_load(&g_hzstd_scheds); s != NULL; s = s->next) {
-    for (hzstd_task_t *t = s->live; t != NULL; t = t->next_live) {
-      hzstd_trace_note_known(s, t);
-    }
-    hzstd_task_t *running = s->thread->current_task;
-    if (running != NULL) {
-      hzstd_trace_append(s, HZSTD_SCHED_EVENT_RUN_BEGIN, running->id, 0, hzstd_this_thread_cpu_ticks(), false);
-    }
+  uv_mutex_unlock(&g_hzstd_sched_list_lock);
+  // This thread joins now: its tasks are known from the start.
+  if (hzstd_trace_enter(own, false)) {
+    hzstd_trace_leave(own);
   }
-}
-
-static void hzstd_trace_note_known(hzstd_sched_t *s, const hzstd_task_t *t)
-{
-  hzstd_trace_note_spawn(s, t);
-  // Not spawned now: the event says when it became known, which is the
-  // session's start; the exporter keeps it out of the timeline.
-  s->trace_tail->events[s->trace_tail->count - 1].reason = 1;
 }
 
 static void hzstd_trace_export_into(hzstd_dynamic_array_t *events, const hzstd_trace_event_t *e, hzstd_int_t thread,
@@ -1226,18 +1618,92 @@ static void hzstd_trace_export_into(hzstd_dynamic_array_t *events, const hzstd_t
   HZSTD_DYNAMIC_ARRAY_PUSH(events, out);
 }
 
-// Ends the session's record and hands it out, times relative to `time_ref`
-// (hzstd_time_now() at the session's start). The running task's run is closed
-// at the end: it is still running.
-void hzstd_sched_trace_end(hzstd_profiling_result_t *result, double time_ref)
+// One thread's record into the result: its tasks, and its own events merged
+// in time order with the reports about it.
+static void hzstd_trace_export_thread(hzstd_profiling_result_t *result,
+                                      uint64_t thread_id,
+                                      uint64_t os_tid,
+                                      const hzstd_trace_chunk_t *head,
+                                      const hzstd_trace_task_chunk_t *tasks_head,
+                                      double time_ref,
+                                      double seconds_per_tick)
 {
-  for (hzstd_sched_t *s = atomic_load(&g_hzstd_scheds); s != NULL; s = s->next) {
-    hzstd_task_t *running = s->thread->current_task;
-    if (running != NULL) {
-      hzstd_trace_append(s, HZSTD_SCHED_EVENT_RUN_END, running->id, HZSTD_SCHED_RUN_SESSION, hzstd_this_thread_cpu_ticks(), false);
+  hzstd_allocator_t heap = hzstd_make_heap_allocator();
+  hzstd_int_t thread = (hzstd_int_t)thread_id;
+  hzstd_profiling_thread_t info = { .id = thread, .os_tid = (hzstd_int_t)os_tid };
+  HZSTD_DYNAMIC_ARRAY_PUSH(result->threads, info);
+  for (const hzstd_trace_task_chunk_t *c = tasks_head; c != NULL; c = c->next) {
+    for (size_t i = 0; i < c->count; i++) {
+      const hzstd_trace_task_t *t = &c->tasks[i];
+      hzstd_source_location_t at = { 0 };
+      if (t->file != NULL) {
+        at._filename = hzstd_str_from_cstr_dup(heap, t->file);
+        at._line = t->line;
+        at._column = t->column;
+      }
+      hzstd_profiling_task_t task = {
+        .id = (hzstd_int_t)t->id,
+        .parent = (hzstd_int_t)t->parent,
+        .thread = thread,
+        .spawned_at = at,
+        .background = t->background,
+      };
+      HZSTD_DYNAMIC_ARRAY_PUSH(result->tasks, task);
     }
   }
-  atomic_store(&g_hzstd_trace_on, false);
+  size_t foreign = 0;
+  for (const hzstd_trace_chunk_t *c = head; c != NULL; c = c->next) {
+    for (size_t i = 0; i < c->count; i++) {
+      const hzstd_trace_event_t *e = &c->events[i];
+      if (e->kind == HZSTD_SCHED_EVENT_SPAWN && e->reason == 1) {
+        continue; // known before the session: no spawn in it
+      }
+      for (; foreign < g_hzstd_trace_foreign_count; foreign++) {
+        const hzstd_trace_foreign_event_t *f = &g_hzstd_trace_foreign[foreign];
+        if (f->event.time > e->time) {
+          break;
+        }
+        if (f->os_tid == os_tid) {
+          hzstd_trace_export_into(result->schedEvents, &f->event, thread, time_ref, seconds_per_tick);
+        }
+      }
+      hzstd_trace_export_into(result->schedEvents, e, thread, time_ref, seconds_per_tick);
+    }
+  }
+  for (; foreign < g_hzstd_trace_foreign_count; foreign++) {
+    const hzstd_trace_foreign_event_t *f = &g_hzstd_trace_foreign[foreign];
+    if (f->os_tid == os_tid) {
+      hzstd_trace_export_into(result->schedEvents, &f->event, thread, time_ref, seconds_per_tick);
+    }
+  }
+}
+
+// Ends the session's record and hands it out, times relative to `time_ref`
+// (hzstd_time_now() at the session's start). A run still going is closed at
+// the end, on every thread.
+void hzstd_sched_trace_end(hzstd_profiling_result_t *result, double time_ref)
+{
+  hzstd_sched_t *own = hzstd_current_thread->sched;
+  hzstd_task_t *running = own->thread->current_task;
+  if (running != NULL) {
+    hzstd_trace_append(own, HZSTD_SCHED_EVENT_RUN_END, running->id, HZSTD_SCHED_RUN_SESSION, hzstd_this_thread_cpu_ticks(), false);
+  }
+  uv_mutex_lock(&g_hzstd_sched_list_lock);
+  uint64_t session = atomic_load(&g_hzstd_trace_session);
+  // Every writer stops: one that is writing now finishes first, every later
+  // one sees the session over.
+  atomic_store_explicit(&g_hzstd_trace_on, false, memory_order_seq_cst);
+  for (hzstd_sched_t *s = atomic_load(&g_hzstd_scheds); s != NULL; s = s->next) {
+    while (atomic_load_explicit(&s->trace_writing, memory_order_seq_cst) != 0) {
+      hzstd_os_thread_yield();
+    }
+  }
+  double end_time = hzstd_time_now();
+  for (hzstd_sched_t *s = atomic_load(&g_hzstd_scheds); s != NULL; s = s->next) {
+    if (s != own && s->trace_session == session && s->trace_open_run != 0) {
+      hzstd_trace_write(s, HZSTD_SCHED_EVENT_RUN_END, s->trace_open_run, HZSTD_SCHED_RUN_SESSION, hzstd_sched_cpu_ticks(s), false, end_time);
+    }
+  }
   // The watchdog may be appending a report it began before the session's end:
   // the list is the lock's until it is merged and emptied below.
   while (atomic_flag_test_and_set_explicit(&g_hzstd_trace_foreign_lock, memory_order_acquire)) {
@@ -1248,58 +1714,24 @@ void hzstd_sched_trace_end(hzstd_profiling_result_t *result, double time_ref)
   result->tasks = HZSTD_DYNAMIC_ARRAY_CREATE(heap, hzstd_profiling_task_t, 16, "hzstd_profiling_task_t");
   result->schedEvents = HZSTD_DYNAMIC_ARRAY_CREATE(heap, hzstd_profiling_sched_event_t, 256, "hzstd_profiling_sched_event_t");
   for (hzstd_sched_t *s = atomic_load(&g_hzstd_scheds); s != NULL; s = s->next) {
-    hzstd_int_t thread = (hzstd_int_t)s->thread->id;
-    hzstd_profiling_thread_t info = { .id = thread, .os_tid = (hzstd_int_t)s->os_tid };
-    HZSTD_DYNAMIC_ARRAY_PUSH(result->threads, info);
-    for (hzstd_trace_task_chunk_t *c = s->trace_tasks_head; c != NULL; c = c->next) {
-      for (size_t i = 0; i < c->count; i++) {
-        const hzstd_trace_task_t *t = &c->tasks[i];
-        hzstd_source_location_t at = { 0 };
-        if (t->file != NULL) {
-          at._filename = hzstd_str_from_cstr_dup(heap, t->file);
-          at._line = t->line;
-          at._column = t->column;
-        }
-        hzstd_profiling_task_t task = {
-          .id = (hzstd_int_t)t->id,
-          .parent = (hzstd_int_t)t->parent,
-          .thread = thread,
-          .spawned_at = at,
-          .background = t->background,
-        };
-        HZSTD_DYNAMIC_ARRAY_PUSH(result->tasks, task);
-      }
-    }
-    // The thread's own events and the reports about it, merged in time order.
-    size_t foreign = 0;
-    for (hzstd_trace_chunk_t *c = s->trace_head; c != NULL; c = c->next) {
-      for (size_t i = 0; i < c->count; i++) {
-        const hzstd_trace_event_t *e = &c->events[i];
-        if (e->kind == HZSTD_SCHED_EVENT_SPAWN && e->reason == 1) {
-          continue; // known before the session: no spawn in it
-        }
-        for (; foreign < g_hzstd_trace_foreign_count; foreign++) {
-          const hzstd_trace_foreign_event_t *f = &g_hzstd_trace_foreign[foreign];
-          if (f->event.time > e->time) {
-            break;
-          }
-          if (f->os_tid == s->os_tid) {
-            hzstd_trace_export_into(result->schedEvents, &f->event, thread, time_ref, seconds_per_tick);
-          }
-        }
-        hzstd_trace_export_into(result->schedEvents, e, thread, time_ref, seconds_per_tick);
-      }
-    }
-    for (; foreign < g_hzstd_trace_foreign_count; foreign++) {
-      const hzstd_trace_foreign_event_t *f = &g_hzstd_trace_foreign[foreign];
-      if (f->os_tid == s->os_tid) {
-        hzstd_trace_export_into(result->schedEvents, &f->event, thread, time_ref, seconds_per_tick);
-      }
+    if (s->trace_session == session) {
+      hzstd_trace_export_thread(result, s->thread->id, s->os_tid, s->trace_head, s->trace_tasks_head, time_ref, seconds_per_tick);
     }
     hzstd_trace_free(s);
   }
+  for (hzstd_trace_retired_t *r = g_hzstd_trace_retired; r != NULL;) {
+    hzstd_trace_retired_t *next = r->next;
+    if (r->session == session) {
+      hzstd_trace_export_thread(result, r->thread_id, r->os_tid, r->head, r->tasks_head, time_ref, seconds_per_tick);
+    }
+    hzstd_trace_free_chunks(r->head, r->tasks_head);
+    free(r);
+    r = next;
+  }
+  g_hzstd_trace_retired = NULL;
   g_hzstd_trace_foreign_count = 0;
   atomic_flag_clear_explicit(&g_hzstd_trace_foreign_lock, memory_order_release);
+  uv_mutex_unlock(&g_hzstd_sched_list_lock);
 }
 
 hzstd_raw_report_t *hzstd_thread_panic_report(void)
@@ -1321,14 +1753,17 @@ static uint32_t hzstd_trace_run_end_reason(const hzstd_task_t *t)
     return HZSTD_SCHED_RUN_YIELD;
   case HZSTD_TASK_DONE:
     return HZSTD_SCHED_RUN_END;
-  case HZSTD_TASK_SUSPENDED:
-    if (t->waiting_in != NULL) {
-      return t->wait_reason;
+  case HZSTD_TASK_SUSPENDED: {
+    // Not waiting_in: another thread may have readied the task already.
+    uint32_t reason = atomic_load_explicit(&t->wait_reason, memory_order_relaxed);
+    if (reason != 0) {
+      return reason;
     }
     if (t->sleep_timer != NULL) {
       return HZSTD_SCHED_RUN_SLEEP;
     }
     return HZSTD_SCHED_RUN_SUSPEND;
+  }
   default:
     hzstd_trap_ccstr("Internal Runtime Error: a run ended in a state a task cannot leave in");
   }
@@ -1354,6 +1789,7 @@ static void hzstd_task_suspend(hzstd_context_t *ctx)
   // Resumed (the README's rule: the current task is set on the resumed side).
   s->thread->current_task = t;
   t->state = HZSTD_TASK_RUNNING;
+  atomic_store_explicit(&t->wait_reason, 0, memory_order_relaxed);
   if (windows->depth > 0) {
     double away = hzstd_time_now() - left;
     for (size_t i = 0; i < windows->depth; i++) {
@@ -1449,19 +1885,18 @@ static void hzstd_task_copy_task_locals(hzstd_task_t *to, const hzstd_task_t *fr
     if (block == NULL) {
       continue;
     }
-    while (atomic_flag_test_and_set_explicit(&g_tl_registry_lock, memory_order_acquire)) {
-    }
-    size_t size = g_tl_registry[i]->size;
-    const char *module = g_tl_registry[i]->module;
-    atomic_flag_clear_explicit(&g_tl_registry_lock, memory_order_release);
-    void *copy = hzstd_heap_allocate(size == 0 ? 1 : size, module);
-    memcpy(copy, block, size);
+    hzstd_block_shape_t registered = hzstd_block_registered(&g_tl_registry, i);
+    void *copy = hzstd_heap_allocate(registered.size == 0 ? 1 : registered.size, registered.module);
+    memcpy(copy, block, registered.size);
     to->tl_blocks[i] = copy;
   }
 }
 
+// `inherit`: the task whose task-local values the new one copies (C285), NULL
+// for none; `parent_id`: the spawning task, for the profiler (0: the runtime).
 static hzstd_task_t *hzstd_sched_spawn(hzstd_sched_t *s,
-                                       const hzstd_task_t *parent,
+                                       const hzstd_task_t *inherit,
+                                       uint64_t parent_id,
                                        hzstd_context_settings_t settings,
                                        hzstd_task_entry_t entry,
                                        void *arg,
@@ -1480,15 +1915,18 @@ static hzstd_task_t *hzstd_sched_spawn(hzstd_sched_t *s,
   t->settings = settings;
   t->future = future;
   t->id = atomic_fetch_add_explicit(&g_hzstd_next_task_id, 1, memory_order_relaxed);
-  t->parent_id = parent != NULL ? parent->id : 0;
+  t->parent_id = parent_id;
   t->spawned_at = spawned_at;
-  hzstd_task_copy_task_locals(t, parent);
+  hzstd_task_copy_task_locals(t, inherit);
+  // Before it is in the registry: a thread that joins a profiling session
+  // here (its first event in it) notes the tasks in the registry as known,
+  // and this one is not known, it is spawned now.
+  hzstd_trace_note_spawn(s, t);
   hzstd_registry_change(HZSTD_REGISTRY_ADD_TASK, s, t, (fiber_stack) { 0 });
   if (!background) {
     s->pending++;
   }
   hzstd_ready_push(s, t);
-  hzstd_trace_note_spawn(s, t);
   return t;
 }
 
@@ -1500,29 +1938,29 @@ void hzstd_task_spawn(hzstd_context_t *ctx,
                       hzstd_source_location_t spawned_at)
 {
   // The new task's context is a copy of its creator's (C406).
-  hzstd_sched_spawn(ctx->thread->sched, ctx->task, ctx->settings, entry, arg, background, future, spawned_at);
+  hzstd_sched_spawn(ctx->thread->sched, ctx->task, ctx->task->id, ctx->settings, entry, arg, background, future, spawned_at);
 }
 
 // ── The loop and the end of a thread ─────────────────────────────────────────
 
 // A task that never gets to run again: what it holds of the thread's is given
 // back (its stack references die with its stack), and joining it reports why
-// it has no value (C438, C561).
+// it has no value (C438, C561). It waits in no queue any more and is not in
+// the inbox (hzstd_sched_kill_all).
 static void hzstd_task_kill(hzstd_sched_t *s, hzstd_task_t *t)
 {
   bool ran = t->state != HZSTD_TASK_NEW;
-  // Out of the queue it waits in: what it waits for must never ready a dead
-  // task.
-  hzstd_wait_remove(t);
   // A mutex handed over to it that it never got to run with: given back
   // as it was, nothing of it was touched.
   if (t->handed_lock != NULL) {
     hzstd_mutex_core_t *m = t->handed_lock;
     t->handed_lock = NULL;
-    hzstd_mutex_release(m, false);
+    hzstd_core_lock(&m->lock);
+    hzstd_mutex_release(s->thread, m, false);
+    hzstd_core_unlock(&m->lock);
   }
   // Every lock region it was inside: released, and poisoned (C525, C560).
-  hzstd_held_locks_release_to(t, 0, true);
+  hzstd_held_locks_release_to(s->thread, t, 0, true);
   if (t->sleep_timer != NULL) {
     hzstd_sleep_cancel(t);
   }
@@ -1535,30 +1973,149 @@ static void hzstd_task_kill(hzstd_sched_t *s, hzstd_task_t *t)
   if (t->stack.top != NULL) {
     hzstd_stack_release(s, &t->stack);
   }
-  if (t->future != NULL && t->future->state == HZSTD_FUTURE_PENDING) {
-    hzstd_future_settle(t->future, ran ? HZSTD_FUTURE_KILLED : HZSTD_FUTURE_NEVER_RAN);
+  if (t->future != NULL) {
+    hzstd_future_settle_killed(s->thread, t->future, ran ? HZSTD_FUTURE_KILLED : HZSTD_FUTURE_NEVER_RAN);
   }
+}
+
+// Kills every task the thread has left (C435, C437, C586). First every one of
+// them leaves the queue it waits in: from then on no other thread can ready
+// one (a task is readied only out of a queue, under its lock), and what other
+// threads readied before is in the inbox, drained next, so their effects (a
+// mutex handed over) are seen. Only then do the kills release anything.
+static void hzstd_sched_kill_all(hzstd_sched_t *s)
+{
+  for (hzstd_task_t *t = s->live; t != NULL; t = t->next_live) {
+    hzstd_wait_remove(t);
+  }
+  hzstd_inbox_drain(s);
+  while (s->live != NULL) {
+    hzstd_task_kill(s, s->live);
+  }
+  s->ready_head = NULL;
+  s->ready_tail = NULL;
+}
+
+// ── Threads of the process (S5-10, S5-11) ────────────────────────────────────
+//
+// g_hzstd_threads_live counts the threads whose scheduler may still run a
+// task or ready one of another thread: a thread from its spawn until it has
+// ended completely, the main thread until its loop has ended (and again while
+// its end hook runs). The main thread waits until it is 0 (C237).
+//
+// When is a thread unwakeable (S5-R2): when nothing on it is ready, its event
+// loop holds no work, its inbox is empty, and every other live thread is in
+// the same state. Then no code runs anywhere that could ready a task: a
+// deadlock, which panics. Such a thread is `idle`: it waits for nothing but
+// other threads. Whoever makes the last live thread idle checks this, under
+// the lock; a thread that ends wakes the idle ones, so they check again.
+
+static uv_mutex_t g_hzstd_threads_lock;
+static uv_cond_t g_hzstd_threads_ended;
+static size_t g_hzstd_threads_live = 0;
+static size_t g_hzstd_threads_idle = 0;
+
+static void hzstd_wake_every_thread(void)
+{
+  uv_mutex_lock(&g_hzstd_sched_list_lock);
+  for (hzstd_sched_t *s = atomic_load_explicit(&g_hzstd_scheds, memory_order_acquire); s != NULL; s = s->next) {
+    uv_async_send(&s->wake);
+  }
+  uv_mutex_unlock(&g_hzstd_sched_list_lock);
+}
+
+static bool hzstd_some_inbox_holds_tasks(void)
+{
+  bool any = false;
+  uv_mutex_lock(&g_hzstd_sched_list_lock);
+  for (hzstd_sched_t *s = atomic_load_explicit(&g_hzstd_scheds, memory_order_acquire); s != NULL && !any; s = s->next) {
+    any = hzstd_inbox_holds_tasks(s);
+  }
+  uv_mutex_unlock(&g_hzstd_sched_list_lock);
+  return any;
+}
+
+// One live thread less; the idle ones check whether they are deadlocked now,
+// and the main thread whether it can end.
+static void hzstd_threads_live_leave(void)
+{
+  uv_mutex_lock(&g_hzstd_threads_lock);
+  g_hzstd_threads_live--;
+  if (g_hzstd_threads_live == 0) {
+    uv_cond_broadcast(&g_hzstd_threads_ended);
+  }
+  bool idle_left = g_hzstd_threads_idle > 0;
+  uv_mutex_unlock(&g_hzstd_threads_lock);
+  if (idle_left) {
+    hzstd_wake_every_thread();
+  }
+}
+
+static void hzstd_threads_live_enter(void)
+{
+  uv_mutex_lock(&g_hzstd_threads_lock);
+  g_hzstd_threads_live++;
+  uv_mutex_unlock(&g_hzstd_threads_lock);
+}
+
+// Nothing on this thread is ready and its loop holds no work: only another
+// thread can wake it, through its inbox. Waits for that, unless no thread
+// could (S5-R2).
+static void hzstd_sched_idle_wait(hzstd_sched_t *s)
+{
+  uv_mutex_lock(&g_hzstd_threads_lock);
+  s->idle = true;
+  g_hzstd_threads_idle++;
+  if (g_hzstd_threads_idle == g_hzstd_threads_live && hzstd_exit_status() < 0 && !hzstd_some_inbox_holds_tasks()) {
+    bool alone = g_hzstd_threads_live == 1;
+    s->idle = false;
+    g_hzstd_threads_idle--;
+    uv_mutex_unlock(&g_hzstd_threads_lock);
+    if (alone) {
+      hzstd_panic("deadlock: every task on this thread is waiting, and nothing can ever wake one");
+    }
+    hzstd_panic("deadlock: every task on every thread is waiting, and nothing can ever wake one");
+  }
+  uv_mutex_unlock(&g_hzstd_threads_lock);
+  uv_ref((uv_handle_t *)&s->wake);
+  hzstd_trace_note(s, HZSTD_SCHED_EVENT_LOOP_BEGIN, 0, 1);
+  uv_run(&s->loop, UV_RUN_ONCE);
+  hzstd_trace_note(s, HZSTD_SCHED_EVENT_LOOP_END, 0, 1);
+  uv_unref((uv_handle_t *)&s->wake);
+  uv_mutex_lock(&g_hzstd_threads_lock);
+  s->idle = false;
+  g_hzstd_threads_idle--;
+  uv_mutex_unlock(&g_hzstd_threads_lock);
+}
+
+static bool hzstd_sched_stopping(hzstd_sched_t *s)
+{
+  return atomic_load_explicit(&s->stopping, memory_order_acquire);
 }
 
 // The scheduler loop (section 5.1). Every task that is ready now runs once,
 // then the event loop gets its turn: without waiting while tasks are ready,
 // waiting for the next event when none is (C243: a yield always goes back to
-// the event loop, so a task that keeps yielding never starves timers).
+// the event loop, so a task that keeps yielding never starves timers). What
+// other threads readied joins the ready queue at the top of each turn. The
+// loop ends once nothing keeps the thread alive (C236) or sys.exit stops it
+// (C586); the tasks left are killed then.
 static void hzstd_sched_loop(hzstd_sched_t *s)
 {
   for (;;) {
+    hzstd_inbox_drain(s);
     hzstd_task_t *last = s->ready_tail;
     hzstd_task_t *t;
-    while (last != NULL && s->pending > 0 && !s->exiting && (t = hzstd_ready_pop(s)) != NULL) {
+    while (last != NULL && s->pending > 0 && !hzstd_sched_stopping(s) && (t = hzstd_ready_pop(s)) != NULL) {
       hzstd_sched_run_task(s, t);
       if (t == last) {
         break;
       }
     }
-    if (s->pending == 0 || s->exiting) {
+    if (s->pending == 0 || hzstd_sched_stopping(s)) {
       break;
     }
-    if (s->ready_head != NULL) {
+    if (s->ready_head != NULL || hzstd_inbox_holds_tasks(s)) {
       if (uv_loop_alive(&s->loop)) {
         hzstd_trace_note(s, HZSTD_SCHED_EVENT_LOOP_BEGIN, 0, 0);
         uv_run(&s->loop, UV_RUN_NOWAIT);
@@ -1566,26 +2123,20 @@ static void hzstd_sched_loop(hzstd_sched_t *s)
       }
     }
     else if (uv_loop_alive(&s->loop)) {
+      // Waits for an event; another thread's wake-up ends the wait too.
       hzstd_trace_note(s, HZSTD_SCHED_EVENT_LOOP_BEGIN, 0, 1);
       uv_run(&s->loop, UV_RUN_ONCE);
       hzstd_trace_note(s, HZSTD_SCHED_EVENT_LOOP_END, 0, 1);
     }
     else {
-      // Every task that keeps the thread alive waits, and nothing that could
-      // ready one is left (no timer, no I/O; no other thread exists yet): it
-      // never would.
-      hzstd_panic("deadlock: every task on this thread is waiting, and nothing can ever wake one");
+      hzstd_sched_idle_wait(s);
     }
   }
   // Only background tasks are left (C435), or sys.exit stopped the thread
   // (C586): killed, never resumed (C437).
-  while (s->live != NULL) {
-    hzstd_task_kill(s, s->live);
-  }
-  s->ready_head = NULL;
-  s->ready_tail = NULL;
-  // The closes of the killed tasks' timers. Every handle belongs to a task,
-  // and the thread's tasks are gone.
+  hzstd_sched_kill_all(s);
+  // The closes of the killed tasks' timers. Every handle but the inbox's
+  // belongs to a task, and the thread's tasks are gone.
   uv_run(&s->loop, UV_RUN_NOWAIT);
   if (uv_loop_alive(&s->loop)) {
     hzstd_panic("a thread's event loop still holds work after its last task ended");
@@ -1998,6 +2549,9 @@ static void hzstd_watchdog_main(void)
   for (;;) {
     double seconds_per_tick = hzstd_watchdog_seconds_per_tick();
     bool running = false;
+    // Held for the walk, reports included: a thread does not end (and free
+    // its scheduler) while the watchdog looks at it or signals it.
+    uv_mutex_lock(&g_hzstd_sched_list_lock);
     for (hzstd_sched_t *s = atomic_load_explicit(&g_hzstd_scheds, memory_order_acquire); s != NULL; s = s->next) {
       uint64_t epoch = atomic_load_explicit(&s->run_epoch, memory_order_acquire);
       if ((epoch & 1) == 0) {
@@ -2026,7 +2580,9 @@ static void hzstd_watchdog_main(void)
       if (gate != INFINITY) {
         atomic_compare_exchange_strong_explicit(&s->thread->yield_gate, &gate, ran, memory_order_relaxed, memory_order_relaxed);
       }
-      bool due = ran > s->wd_next_report;
+      // A thread spawned with stallWarning: false is measured (yieldAfter,
+      // timeSinceTaskSwitch) but never reported (C290).
+      bool due = s->stall_warning && ran > s->wd_next_report;
       if (due) {
         // Dekker with hzstd_watchdog_wait_for_reports: announced before the
         // look at the epoch, so either the report sees the run end and is
@@ -2047,14 +2603,17 @@ static void hzstd_watchdog_main(void)
         atomic_store(&g_stall_report_busy, 0);
       }
     }
+    uv_mutex_unlock(&g_hzstd_sched_list_lock);
     if (!running) {
       // Dekker with hzstd_watchdog_switch_in: either a switch sees the flag
       // and wakes this thread, or the second look sees its odd epoch.
       atomic_store(&g_watchdog_sleeping, 1);
       bool any = false;
+      uv_mutex_lock(&g_hzstd_sched_list_lock);
       for (hzstd_sched_t *s = atomic_load(&g_hzstd_scheds); s != NULL; s = s->next) {
         any |= (atomic_load(&s->run_epoch) & 1) != 0;
       }
+      uv_mutex_unlock(&g_hzstd_sched_list_lock);
       if (!any) {
         hzstd_watchdog_wait_for_switch();
       }
@@ -2230,13 +2789,17 @@ hzstd_real_t hzstd_time_since_task_switch(hzstd_context_t *ctx)
 
 // ── Threads ──────────────────────────────────────────────────────────────────
 
-static void hzstd_sched_init_thread(hzstd_thread_t *thread)
+// The calling thread's scheduler: on the thread itself (its stack, its CPU
+// clock and its signal stack are found from inside it).
+static hzstd_sched_t *hzstd_sched_init_thread(hzstd_thread_t *thread, size_t stack_size, bool stall_warning)
 {
   // Uncollectable: never freed while the thread lives, and scanned, so the
   // tasks it holds stay alive.
   hzstd_sched_t *s = hzstd_uncollectable_allocate(sizeof(hzstd_sched_t));
   memset(s, 0, sizeof(*s));
   s->thread = thread;
+  s->stack_size = stack_size;
+  s->stall_warning = stall_warning;
   s->panic_report = malloc(sizeof(hzstd_raw_report_t));
   if (s->panic_report == NULL) {
     hzstd_panic("Out of memory creating a thread's panic report record");
@@ -2246,6 +2809,15 @@ static void hzstd_sched_init_thread(hzstd_thread_t *thread)
   if (rc != 0) {
     hzstd_panic_fmt("Could not create the thread's event loop: %s", uv_strerror(rc));
   }
+  rc = uv_mutex_init(&s->inbox_lock);
+  if (rc != 0) {
+    hzstd_panic_fmt("Could not create the thread's inbox lock: %s", uv_strerror(rc));
+  }
+  rc = uv_async_init(&s->loop, &s->wake, hzstd_inbox_wake);
+  if (rc != 0) {
+    hzstd_panic_fmt("Could not create the thread's wake-up handle: %s", uv_strerror(rc));
+  }
+  uv_unref((uv_handle_t *)&s->wake);
 #if FIBER__WINDOWS
   ULONG_PTR lo, hi;
   GetCurrentThreadStackLimits(&lo, &hi);
@@ -2279,13 +2851,22 @@ static void hzstd_sched_init_thread(hzstd_thread_t *thread)
   }
 #endif
   thread->sched = s;
+  // A thread that starts after sys.exit began stops at once, like the others
+  // (the exit sets the status before it stops every scheduler in the list).
+  uv_mutex_lock(&g_hzstd_sched_list_lock);
+  atomic_store_explicit(&s->stopping, hzstd_exit_status() >= 0, memory_order_release);
   hzstd_registry_change(HZSTD_REGISTRY_ADD_SCHED, s, NULL, (fiber_stack) { 0 });
+  uv_mutex_unlock(&g_hzstd_sched_list_lock);
+  return s;
 }
 
 // The main thread's scheduler, and the collector hooks, installed once
 // before the first scheduler exists (hzstd_initialize).
 static void hzstd_sched_initialize_main_thread(void)
 {
+  if (uv_mutex_init(&g_hzstd_threads_lock) != 0 || uv_cond_init(&g_hzstd_threads_ended) != 0 || uv_mutex_init(&g_hzstd_sched_list_lock) != 0) {
+    hzstd_panic("Could not create the locks of the process's threads");
+  }
   g_hzstd_previous_push_other_roots = GC_get_push_other_roots();
   GC_set_push_other_roots(hzstd_push_task_stacks);
   hzstd_clocks_initialize();
@@ -2296,9 +2877,151 @@ static void hzstd_sched_initialize_main_thread(void)
 #endif
   g_hzstd_previous_collection_event = GC_get_on_collection_event();
   GC_set_on_collection_event(hzstd_gc_event);
-  hzstd_sched_init_thread(hzstd_current_thread);
+  g_hzstd_threads_live = 1;
+  hzstd_sched_init_thread(hzstd_current_thread, HZSTD_TASK_STACK_SIZE, true);
   hzstd_stall_trace_initialize();
   hzstd_watchdog_start();
+}
+
+// ── thread.spawn (S5-10) ─────────────────────────────────────────────────────
+//
+// A new OS thread, registered with the collector (pthread_create is
+// GC_pthread_create in this translation unit, CreateThread GC_CreateThread),
+// with its own scheduler and event loop, a blank context (C479), and every
+// per-thread global at its initial value (C518: a thread's blocks are made on
+// first use). Its first task runs the body; the body's future completes when
+// it returns (C572), and the thread ends once nothing on it is pending (C236).
+
+// Bounds of thread.spawn's stackSize (S5-R4).
+#define HZSTD_STACK_SIZE_MIN ((hzstd_int_t)64 << 10)
+#define HZSTD_STACK_SIZE_MAX ((hzstd_int_t)1 << 30)
+
+// What the new thread starts from. Uncollectable (scanned): it holds the
+// body's argument and future until the thread's first task holds them.
+typedef struct {
+  hzstd_thread_t *thread;
+  hzstd_task_entry_t entry;
+  void *arg;
+  hzstd_future_core_t *future;
+  hzstd_source_location_t spawned_at;
+  uint64_t parent_id;
+  size_t stack_size;
+  bool stall_warning;
+} hzstd_thread_start_t;
+
+// Everything a thread that has ended owns is given back. Its tasks are gone
+// and out of every queue, so no other thread can push into its inbox; once
+// its scheduler is out of the list, none wakes it or reads it either.
+static void hzstd_thread_end(hzstd_sched_t *s)
+{
+  hzstd_thread_t *thread = s->thread;
+  uv_close((uv_handle_t *)&s->wake, NULL);
+  uv_run(&s->loop, UV_RUN_NOWAIT);
+  if (uv_loop_close(&s->loop) != 0) {
+    hzstd_panic("a thread's event loop could not be closed after its last task ended");
+  }
+  // Waits for a pusher that may still hold the lock (hzstd_inbox_push).
+  uv_mutex_lock(&s->inbox_lock);
+  uv_mutex_unlock(&s->inbox_lock);
+  uv_mutex_destroy(&s->inbox_lock);
+  uv_mutex_lock(&g_hzstd_sched_list_lock);
+  hzstd_trace_retire(s);
+  hzstd_registry_change(HZSTD_REGISTRY_REMOVE_SCHED, s, NULL, (fiber_stack) { 0 });
+  uv_mutex_unlock(&g_hzstd_sched_list_lock);
+  for (size_t i = 0; i < s->pool_len; i++) {
+    fiber_stack_destroy(&s->pool[i]);
+  }
+  free(s->panic_report);
+#if FIBER__WINDOWS
+  CloseHandle(s->handle);
+#endif
+  hzstd_gen_table_free(&thread->stackrefs);
+  hzstd_current_thread = NULL;
+  hzstd_uncollectable_free(s);
+  hzstd_uncollectable_free(thread);
+}
+
+static void hzstd_thread_run(hzstd_thread_start_t *start)
+{
+  // This thread's signal stack (the handlers themselves are the process's).
+  hzstd_setup_panic_handler();
+  hzstd_thread_t *thread = start->thread;
+  hzstd_current_thread = thread;
+  hzstd_sched_t *s = hzstd_sched_init_thread(thread, start->stack_size, start->stall_warning);
+  hzstd_sched_spawn(s, NULL, start->parent_id, hzstd_context_settings_default(), start->entry, start->arg, false, start->future, start->spawned_at);
+  hzstd_uncollectable_free(start);
+  hzstd_sched_loop(s);
+  hzstd_thread_end(s);
+  hzstd_threads_live_leave();
+}
+
+#if FIBER__WINDOWS
+static DWORD WINAPI hzstd_thread_main(LPVOID start)
+{
+  hzstd_thread_run(start);
+  return 0;
+}
+#else
+static void *hzstd_thread_main(void *start)
+{
+  hzstd_thread_run(start);
+  return NULL;
+}
+#endif
+
+void hzstd_thread_spawn(hzstd_context_t *ctx,
+                        hzstd_task_entry_t entry,
+                        void *arg,
+                        hzstd_future_core_t *future,
+                        bool stall_warning,
+                        bool has_stack_size,
+                        hzstd_int_t stack_size,
+                        hzstd_source_location_t spawned_at)
+{
+  if (has_stack_size && (stack_size < HZSTD_STACK_SIZE_MIN || stack_size > HZSTD_STACK_SIZE_MAX)) {
+    hzstd_panic_fmt_n(2,
+                      "thread.spawn: the option stackSize must be between %lld (64 KiB) and %lld (1 GiB) bytes, not %lld",
+                      (long long)HZSTD_STACK_SIZE_MIN,
+                      (long long)HZSTD_STACK_SIZE_MAX,
+                      (long long)stack_size);
+  }
+  hzstd_thread_start_t *start = hzstd_uncollectable_allocate(sizeof(hzstd_thread_start_t));
+  hzstd_thread_t *thread = hzstd_uncollectable_allocate(sizeof(hzstd_thread_t));
+  memset(thread, 0, sizeof(*thread));
+  thread->id = hzstd_next_thread_id();
+  thread->stackrefs = hzstd_gen_table_new();
+  *start = (hzstd_thread_start_t) {
+    .thread = thread,
+    .entry = entry,
+    .arg = arg,
+    .future = future,
+    .spawned_at = spawned_at,
+    .parent_id = ctx->task->id,
+    .stack_size = has_stack_size ? (size_t)stack_size : HZSTD_TASK_STACK_SIZE,
+    .stall_warning = stall_warning,
+  };
+  // Live from now: the main thread must not end before this one has.
+  hzstd_threads_live_enter();
+#if FIBER__WINDOWS
+  HANDLE handle = CreateThread(NULL, 0, hzstd_thread_main, start, 0, NULL);
+  bool started = handle != NULL;
+  if (started) {
+    CloseHandle(handle);
+  }
+#else
+  pthread_t pthread;
+  pthread_attr_t attr;
+  pthread_attr_init(&attr);
+  pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+  bool started = pthread_create(&pthread, &attr, hzstd_thread_main, start) == 0;
+  pthread_attr_destroy(&attr);
+#endif
+  if (!started) {
+    hzstd_threads_live_leave();
+    hzstd_uncollectable_free(thread);
+    hzstd_uncollectable_free(start);
+    hzstd_panic_n("thread.spawn: the operating system could not start another thread", 1);
+  }
 }
 
 // The fault handler's record of where it interrupted (section 8.3); NULL
@@ -2319,15 +3042,15 @@ const fiber_stack *hzstd_current_task_stack(void)
   return (task == NULL || task->stack.top == NULL) ? NULL : &task->stack;
 }
 
-// ── Ending the process (C521, C574, C576, C585 to C587) ─────────────────────
+// ── Ending the process (C521, C574, C576, C585 to C587; S5-13) ─────────────
 //
 // sys.exit(n) is a graceful exit: the status is recorded once and is final
 // (a later uncaught panic is printed but exits with it), the calling task
-// stops there, and its thread's scheduler stops every other task at its
-// suspension (they are all suspended or ready, C218): killed, never resumed.
-// Then the thread's last task runs (the profiling end hook) and the process
-// ends with the status. Threads are never interrupted from outside (C585);
-// other threads, once they exist, stop at their next suspension too.
+// stops there, and every scheduler is told to stop and woken: each stops at
+// its next switch and kills every task it has (they are all suspended or
+// ready there, C218), never resuming them. Threads are never interrupted from
+// outside (C585). The main thread waits for every other thread to end, runs
+// its last task (the profiling end hook), and the process ends with the status.
 
 static _Atomic int g_hzstd_exit_status = -1; // -1: no graceful exit started
 
@@ -2343,8 +3066,12 @@ _Noreturn void hzstd_task_exit(hzstd_context_t *ctx, hzstd_int_t status)
   }
   int expected = -1;
   atomic_compare_exchange_strong(&g_hzstd_exit_status, &expected, (int)status);
-  hzstd_sched_t *s = ctx->thread->sched;
-  s->exiting = true;
+  uv_mutex_lock(&g_hzstd_sched_list_lock);
+  for (hzstd_sched_t *s = atomic_load_explicit(&g_hzstd_scheds, memory_order_acquire); s != NULL; s = s->next) {
+    atomic_store_explicit(&s->stopping, true, memory_order_release);
+    uv_async_send(&s->wake);
+  }
+  uv_mutex_unlock(&g_hzstd_sched_list_lock);
   ctx->task->state = HZSTD_TASK_SUSPENDED; // readied by nothing: killed with the rest
   hzstd_task_suspend(ctx);
   hzstd_panic("a task resumed after sys.exit");
@@ -2386,13 +3113,22 @@ int32_t hzstd_sched_run_main(int32_t (*main_fn)(hzstd_context_t *ctx), void (*en
   call = (hzstd_main_call_t) { .main_fn = main_fn, .end_fn = end_fn, .exit_code = 0 };
   // `main` is a task like any other (C216); returning from it does not end
   // the thread while other tasks still keep it alive (C237).
-  hzstd_sched_spawn(s, NULL, hzstd_context_settings_default(), hzstd_main_task_entry, &call, false, NULL, (hzstd_source_location_t) { 0 });
+  hzstd_sched_spawn(s, NULL, 0, hzstd_context_settings_default(), hzstd_main_task_entry, &call, false, NULL, (hzstd_source_location_t) { 0 });
   hzstd_sched_loop(s);
+  // The process ends once every thread has (C237).
+  hzstd_threads_live_leave();
+  uv_mutex_lock(&g_hzstd_threads_lock);
+  while (g_hzstd_threads_live > 0) {
+    uv_cond_wait(&g_hzstd_threads_ended, &g_hzstd_threads_lock);
+  }
+  uv_mutex_unlock(&g_hzstd_threads_lock);
   if (end_fn != NULL) {
     // The thread's last task, also after sys.exit (a graceful exit).
-    s->exiting = false;
-    hzstd_sched_spawn(s, NULL, hzstd_context_settings_default(), hzstd_main_end_entry, &call, false, NULL, (hzstd_source_location_t) { 0 });
+    hzstd_threads_live_enter();
+    atomic_store_explicit(&s->stopping, false, memory_order_release);
+    hzstd_sched_spawn(s, NULL, 0, hzstd_context_settings_default(), hzstd_main_end_entry, &call, false, NULL, (hzstd_source_location_t) { 0 });
     hzstd_sched_loop(s);
+    hzstd_threads_live_leave();
   }
   hzstd_watchdog_wait_for_reports();
   int status = hzstd_exit_status();

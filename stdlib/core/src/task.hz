@@ -13,6 +13,7 @@ namespace ffi {
     // Exported: Future<T> is re-elaborated in every module that uses it.
     export extern C noemit fn hzstd_future_core_new(): cptr :: final;
     export extern C noemit fn hzstd_future_state(core: cptr): int :: final;
+    export extern C noemit fn hzstd_future_claim(ctx: cptr, core: cptr) :: final;
     export extern C noemit fn hzstd_future_complete(ctx: cptr, core: cptr) :: final;
     export extern C noemit fn hzstd_future_wait(ctx: cptr, core: cptr): int :: final;
     extern C noemit fn hzstd_task_yield(ctx: cptr) :: final;
@@ -68,18 +69,29 @@ export opaque ref struct Future<T> {
     // on a task's future (the task completes it when it returns), and the
     // first value stays.
     mut fn complete(value: T) {
-        // Settled first: it panics if the future is settled already. The
-        // tasks it readies run only once this task suspends, after the value
-        // is in place (one thread; a completion from another thread will
-        // need the value published before the state).
-        ffi.hzstd_future_complete(sys.contextPtr(), this.core);
-        this.result = Box<T> { value: value };
+        // The value is in place before the future is settled (S5-14): a
+        // join on another thread that sees it settled reads it. Boxed first,
+        // since that can fail (an allocation limit) and nothing has changed
+        // yet; the claim panics on a second complete before it overwrites the
+        // first value.
+        let done = Box<T> { value: value };
+        let ctx = sys.contextPtr();
+        ffi.hzstd_future_claim(ctx, this.core);
+        this.result = done;
+        ffi.hzstd_future_complete(ctx, this.core);
     }
 
     // Runs `body` as a new task that completes this future.
     mut fn _spawn(body: () => T, background: bool, location: SourceLocation) {
         let me = this;
         task._spawnThunk(task._Thunk { run: () => { me.complete(body()); } }, background, this.core, location);
+    }
+
+    // Runs `body` as the first task of a new thread that completes this
+    // future (thread.spawn).
+    mut fn _spawnOnThread(body: () => T, options: thread.SpawnOptions, location: SourceLocation) {
+        let me = this;
+        task._spawnThreadThunk(task._Thunk { run: () => { me.complete(body()); } }, options, this.core, location);
     }
 }
 
@@ -128,6 +140,23 @@ namespace task {
         let ctx = sys.contextPtr();
         do unsafe {
             __c__("hzstd_task_spawn((hzstd_context_t *)ctx, entry, (void *)thunk, background, (hzstd_future_core_t *)core, location);");
+        };
+    }
+
+    // The same for a new thread's first task (thread.spawn), which names its
+    // options.
+    export fn _spawnThreadThunk(thunk: _Thunk, options: thread.SpawnOptions, core: cptr, location: SourceLocation) {
+        let entry = __hz_task_run_thunk;
+        let ctx = sys.contextPtr();
+        let stallWarning = options.stallWarning;
+        let hasStackSize = false;
+        let stackSize = 0;
+        if let size = options.stackSize {
+            hasStackSize = true;
+            stackSize = size;
+        }
+        do unsafe {
+            __c__("hzstd_thread_spawn((hzstd_context_t *)ctx, entry, (void *)thunk, (hzstd_future_core_t *)core, stallWarning, hasStackSize, stackSize, location);");
         };
     }
 }

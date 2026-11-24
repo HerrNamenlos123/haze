@@ -1,31 +1,44 @@
+// ============================================================================
+// Threads (docs/async-runtime.md sections 2 and 5; Axiom C148, C236, C237,
+// C290 to C292, C479, C518, C572; docs/async-decisions.md S5-10). The runtime
+// side is hzstd_sched.c ("thread.spawn").
+//
+// A thread runs its own scheduler with its own tasks; a task never leaves its
+// thread (C220). The `thread` namespace holds only spawning; the tools threads
+// share with tasks (Future, sys.Mutex, sys.Flag) live where tasks find them.
+// ============================================================================
 
-// shared ref struct Shared<T> {
-//      mutex: Mutex;
-//      _data: T;
+namespace thread {
+    // How `spawn` starts a thread.
+    export struct SpawnOptions {
+        // Warn when a task of the thread runs more than 10 ms without
+        // yielding (C242). Turn it off for a thread that does long
+        // computations on purpose, so that nothing else waits behind them
+        // (C290); the main thread always warns (C291).
+        stallWarning: bool = true;
+        // Bytes of stack for every task of the thread, 64 KiB to 1 GiB;
+        // `none` gives each the default of 8 MiB. Meant for deep recursion.
+        stackSize: int | none = none;
+    }
 
-//     fn constructor() {
-//          static_assert(!T.isValue);
-//         return Shared<T> {
-
-//         };
-//     }
-
-    // fn get<U>(cb: (data: T) => U): U {
-    //     attempt {
-    //         mutex.lock();
-    //         let result = cb(this.data);
-    //         mutex.unlock();
-    //         return result;
-    //     }
-    //     recover e {
-    //         mutex.unlock();
-    //         sys.panic(e);
-    //     }
-    // }
-
-// struct Cache {
-//     path: str;
-//     count: int;
-// }
-
-// let data = Shared<Cache>();
+    // Runs `body` on a new thread and gives the future of its result: one
+    // type for tasks and threads (C387). The thread starts blank: a context
+    // with the standard library's defaults (C479) and every module-level
+    // `let` at its initial value (C518). `body` is its first task; the future
+    // completes when `body` returns, even while other tasks of that thread
+    // still run (C572). The thread ends once nothing on it keeps it alive
+    // (C236), and the program waits for every thread before it ends (C237).
+    // Meant for work that would keep a thread busy: give it its own.
+    //
+    //     let sum = thread.spawn(() => {
+    //         let total = 0;
+    //         for (let i = 0; i < 100000000; i++) { total += i; }
+    //         return total;
+    //     }, { stallWarning: false });
+    //     let r = sum.join();
+    export fn spawn<T>(body: () => T, options: SpawnOptions = SpawnOptions {}, location: SourceLocation = SourceLocation()): Future<T> {
+        let future = Future<T>();
+        future._spawnOnThread(body, options, location);
+        return future;
+    }
+}

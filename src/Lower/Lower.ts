@@ -153,10 +153,14 @@ export namespace Lowered {
     loweredTypeUses: Map<Semantic.TypeUseId, Lowered.TypeUseId>;
     loweredFunctions: Map<Semantic.SymbolId, Lowered.FunctionId>;
     loweredPointers: Map<Lowered.TypeUseId, Lowered.TypeDefId>;
+    // The module's C globals: `const`, `global` and `extern` ones.
     loweredGlobalVariables: Lowered.StatementId[];
     // The module's `tasklocal let` variables: the fields of its task-local
     // block, with their initial values (docs/async-decisions.md TL-1).
     loweredTaskLocals: Lowered.StatementId[];
+    // Its module-level `let` variables: the fields of its per-thread block,
+    // with their initial values (S5-12, the same scheme as TL-1).
+    loweredThreadGlobals: Lowered.StatementId[];
     loweredGlobalVariableSymbols: Map<Semantic.SymbolId, Lowered.StatementId>;
 
     loweredUnionMappings: TagMapping[];
@@ -400,13 +404,18 @@ export namespace Lowered {
     type: TypeUseId;
   };
 
+  // The blocks of module-level variables the context reaches (TL-1, S5-12).
+  export type BlockStorage = "task" | "thread";
+
   export type SymbolValueExpr = {
     variant: ENode.SymbolValueExpr;
     name: NameSet;
     type: TypeUseId;
-    // A `tasklocal let`: the name is its field in the module's task-local
-    // block, reached through the current context (HZSTD_TL_FIELD).
-    taskLocal?: true;
+    // A variable of a block the current context reaches: the name is its
+    // field in the module's task-local block (`tasklocal let`,
+    // HZSTD_TL_FIELD) or per-thread block (a module-level `let`,
+    // HZSTD_TG_FIELD).
+    storage?: BlockStorage;
   };
 
   export type ExprAssignmentExpr = {
@@ -1011,16 +1020,26 @@ function requireContext(
   }
 }
 
-// A `tasklocal let` lives in its module's task-local block; a `tasklocal
-// const` is a constant like `const` and gets none (TL-8).
-function isTaskLocalVariable(
+// Where a module-level variable lives when it is not one C global: a
+// `tasklocal let` in its module's task-local block (TL-1), a plain `let` in
+// its module's per-thread block (S5-12). Every `const` is a constant, one C
+// global (TL-8, S5-12: never written, so once per task or thread and once
+// per process cannot be told apart), and a `global` variable is one C
+// global, atomic or const (C199). null: a C global.
+function blockStorageOf(
   definition: Semantic.GlobalVariableDefinitionSymbol,
   variable: Semantic.VariableSymbol
-): boolean {
-  return (
-    definition.storage === EGlobalStorage.Task &&
-    variable.mutability !== EVariableMutability.Const
-  );
+): Lowered.BlockStorage | null {
+  if (variable.mutability === EVariableMutability.Const) {
+    return null;
+  }
+  if (definition.storage === EGlobalStorage.Task) {
+    return "task";
+  }
+  if (definition.storage === EGlobalStorage.Thread) {
+    return "thread";
+  }
+  return null;
 }
 
 // The `hzstd_context_t *` of the function being lowered: its own `__hz_ctx`
@@ -1680,15 +1699,19 @@ export function lowerExpr(
           assert(
             definition.variant === Semantic.ENode.GlobalVariableDefinitionSymbol
           );
-          if (isTaskLocalVariable(definition, symbol)) {
-            // A field of this module's block in the running task: reached
-            // through the context, so it exists only inside a function. User
-            // code can reach this (a global's initializer, a struct default
-            // one uses), so it is a diagnostic, not requireContext's internal
-            // error.
+          const storage = blockStorageOf(definition, symbol);
+          if (storage !== null) {
+            // A field of this module's block in the running task or thread:
+            // reached through the context, so it exists only inside a
+            // function. User code can reach this (a global's initializer, a
+            // struct default one uses), so it is a diagnostic, not
+            // requireContext's internal error. Both kinds share the code: the
+            // same mistake, a block read where no context exists (S5-R3).
             if (!lr.currentFunction) {
               throw new CompilerError(
-                `The task-local variable '${name}' exists once per task, and code outside a function runs in no task`,
+                storage === "task"
+                  ? `The task-local variable '${name}' exists once per task, and code outside a function runs in no task`
+                  : `The variable '${name}' exists once per thread, and code outside a function runs on no thread`,
                 expr.sourceloc,
                 HazeErrorCode.TaskLocalOutsideFunction
               );
@@ -1701,7 +1724,7 @@ export function lowerExpr(
                 wasMangled: wasMangled,
               },
               type: lowerTypeUse(lr, symbol.type),
-              taskLocal: true,
+              storage: storage,
             });
           }
         }
@@ -5812,10 +5835,15 @@ function lowerSymbol(lr: Lowered.Module, symbolId: Semantic.SymbolId) {
         flattened.length === 0,
         "Global variables cannot take multi line expressions, rewrite it as scope expression: "
       );
-      if (isTaskLocalVariable(symbol, variableSymbol)) {
+      const storage = blockStorageOf(symbol, variableSymbol);
+      if (storage !== null) {
         // Hoisting would make the field a pointer; nothing hoists a global.
         assert(!variableSymbol.requiresHoisting);
-        lr.loweredTaskLocals.push(pId);
+        if (storage === "task") {
+          lr.loweredTaskLocals.push(pId);
+        } else {
+          lr.loweredThreadGlobals.push(pId);
+        }
       } else {
         lr.loweredGlobalVariables.push(pId);
       }
@@ -6118,6 +6146,7 @@ export function LowerModule(sr: Semantic.Context): Lowered.Module {
     loweredPointers: new Map(),
     loweredGlobalVariables: [],
     loweredTaskLocals: [],
+    loweredThreadGlobals: [],
     loweredGlobalVariableSymbols: new Map(),
 
     loweredUnionMappings: [],

@@ -40,6 +40,7 @@ fn main(): int {
     cases_generic_struct_deduction.register(suite);
     cases_sync.register(suite);
     cases_elaboration_order.register(suite);
+    cases_threads.register(suite);
     cases_deferred_method_crash.register(suite);
     cases_reactive.register(suite);
     cases_foreach_reactive.register(suite);

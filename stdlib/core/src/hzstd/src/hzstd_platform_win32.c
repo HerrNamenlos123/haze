@@ -213,6 +213,36 @@ static hzstd_int_t panic_skip_n_frames = 0;
 static hzstd_panic_type_t panic_type = hzstd_panic_type_unknown;
 static hzstd_panic_recovery_frame_t* panic_recovery_target = NULL;
 static atomic_int panic_in_progress = 0;
+// Who holds the gate (its thread id), and whether its report ends the process.
+static _Atomic DWORD panic_gate_owner = 0;
+static atomic_bool panic_terminal = false;
+
+// Claims the gate for a request of this thread (docs/async-decisions.md
+// S5-R5). While another thread's report is in progress, this one waits for
+// it: a panic recovered on one thread never parks another. A report that ends
+// the process, or one of this very thread (a fault inside the panic path),
+// parks this thread for good.
+static void hzstd_panic_gate_claim(void)
+{
+  DWORD self = GetCurrentThreadId();
+  for (;;) {
+    int expected = 0;
+    if (atomic_compare_exchange_strong(&panic_in_progress, &expected, 1)) {
+      atomic_store(&panic_gate_owner, self);
+      return;
+    }
+    if (atomic_load(&panic_terminal) || atomic_load(&panic_gate_owner) == self) {
+      hzstd_block_thread_forever();
+    }
+    SwitchToThread();
+  }
+}
+
+static void hzstd_panic_gate_release(void)
+{
+  atomic_store(&panic_gate_owner, 0);
+  atomic_store(&panic_in_progress, 0);
+}
 
 typedef enum {
   PANIC_MODE_CRASH = 0,
@@ -449,10 +479,7 @@ LONG WINAPI VectoredHandler(PEXCEPTION_POINTERS ExceptionInfo)
     hzstd_fail_while_world_stopped(overflow ? "Stack overflow" : "Segmentation Fault");
   }
 
-  int expected = 0;
-  if (!atomic_compare_exchange_strong(&panic_in_progress, &expected, 1)) {
-    hzstd_block_thread_forever();
-  }
+  hzstd_panic_gate_claim();
 
   memcpy(&panic_context, ExceptionInfo->ContextRecord, sizeof(CONTEXT));
 
@@ -498,6 +525,9 @@ LONG WINAPI VectoredHandler(PEXCEPTION_POINTERS ExceptionInfo)
   hzstd_panic_recovery_frame_t *localRecoveryTarget = panic_recovery_target;
   panic_report = hzstd_panic_report_for(localRecoveryTarget);
 
+  if (localRecoveryTarget == NULL) {
+    atomic_store(&panic_terminal, true);
+  }
   hzstd_trigger_semaphore(panic_trigger);
 
   if (localRecoveryTarget == NULL) {
@@ -515,7 +545,7 @@ LONG WINAPI VectoredHandler(PEXCEPTION_POINTERS ExceptionInfo)
   // The report is in this thread's record; the recovery takes it from there
   // (hzstd_panic_adopt_report). Only now, with nothing more to read, the gate
   // opens.
-  atomic_store(&panic_in_progress, 0);
+  hzstd_panic_gate_release();
   HZSTD_LONGJMP(localRecoveryTarget->recovery_point, 1);
   // Unreachable.
   return EXCEPTION_CONTINUE_EXECUTION;
@@ -664,10 +694,7 @@ _Noreturn void hzstd_panic_with_stacktrace(hzstd_str_t msg, hzstd_int_t skip_n_f
     text[length] = '\0';
     hzstd_fail_while_world_stopped(text);
   }
-  int expected = 0;
-  if (!atomic_compare_exchange_strong(&panic_in_progress, &expected, 1)) {
-    hzstd_block_thread_forever();
-  }
+  hzstd_panic_gate_claim();
 
   RtlCaptureContext(&panic_context);
   store_panic_reason(msg);
@@ -678,6 +705,9 @@ _Noreturn void hzstd_panic_with_stacktrace(hzstd_str_t msg, hzstd_int_t skip_n_f
   hzstd_panic_recovery_frame_t *localRecoveryTarget = panic_recovery_target;
   panic_report = hzstd_panic_report_for(localRecoveryTarget);
 
+  if (localRecoveryTarget == NULL) {
+    atomic_store(&panic_terminal, true);
+  }
   hzstd_trigger_semaphore(panic_trigger);
 
   if (localRecoveryTarget == NULL) {
@@ -686,7 +716,7 @@ _Noreturn void hzstd_panic_with_stacktrace(hzstd_str_t msg, hzstd_int_t skip_n_f
 
   WaitForSingleObject(panic_response->handle, INFINITE);
 
-  atomic_store(&panic_in_progress, 0);
+  hzstd_panic_gate_release();
   HZSTD_LONGJMP(localRecoveryTarget->recovery_point, 1);
   __assume(0); /* MSVC/clang _Noreturn hint */
 }
@@ -701,10 +731,7 @@ hzstd_stacktrace_t hzstd_build_stacktrace(int skip_n_frames)
   if (own == NULL) {
     hzstd_panic("A stack trace can only be built on a thread Haze runs tasks on");
   }
-  int expected = 0;
-  while (!atomic_compare_exchange_weak(&panic_in_progress, &expected, 1)) {
-    expected = 0;
-  }
+  hzstd_panic_gate_claim();
 
   RtlCaptureContext(&panic_context);
   store_panic_reason(HZSTD_STRING_FROM_CSTR(""));
@@ -716,7 +743,7 @@ hzstd_stacktrace_t hzstd_build_stacktrace(int skip_n_frames)
 
   hzstd_trigger_semaphore(panic_trigger);
   WaitForSingleObject(panic_response->handle, INFINITE);
-  atomic_store(&panic_in_progress, 0);
+  hzstd_panic_gate_release();
 
   // Into GC memory for Haze, after the gate: an allocation here may fail like
   // any other.
@@ -741,17 +768,20 @@ void hzstd_setup_panic_handler(void)
       hzstd_trap_ccstr("Internal Runtime Error: Failed to start the panic handler thread");
     }
     CloseHandle(hWorker);
+    // Process-wide, like the worker: once. Every Haze thread calls this
+    // function (thread.spawn's too), and each registration would run the
+    // handler once more per exception.
+    PVOID handle = AddVectoredExceptionHandler(1, VectoredHandler);
+    if (handle == NULL) {
+      hzstd_trap_ccstr("Internal Runtime Error: Failed to register Vectored Exception Handler");
+    }
   }
 
-  // Reserve extra stack so the VEH handler has room to run after overflow.
+  // Per thread: reserve extra stack so the VEH handler has room to run after
+  // overflow.
   ULONG bytes = (ULONG)GUARANTEED_VEH_STACK_SIZE;
   if (!SetThreadStackGuarantee(&bytes)) {
     hzstd_trap_ccstr("Internal Runtime Error: Failed to set guaranteed VEH stack size");
-  }
-
-  PVOID handle = AddVectoredExceptionHandler(1, VectoredHandler);
-  if (handle == NULL) {
-    hzstd_trap_ccstr("Internal Runtime Error: Failed to register Vectored Exception Handler");
   }
 }
 

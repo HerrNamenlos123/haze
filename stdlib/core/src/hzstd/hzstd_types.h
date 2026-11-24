@@ -807,8 +807,11 @@ struct hzstd_context_t {
 // the compiler that built the module, found through the module's process-wide
 // index (never by offset, so a module another compiler built and modules loaded
 // later find theirs too). A module describes its block with a static
-// descriptor; `index` is 0 until hzstd registers it on first use.
-#define HZSTD_TL_ABI_VERSION 1u
+// descriptor; `index` is 0 until hzstd registers it on first use. A module's
+// per-thread block (its module-level `let` variables, S5-12) is described the
+// same way, indexed in a registry of its own. Version 2: the per-thread blocks
+// in hzstd_thread_t.
+#define HZSTD_TL_ABI_VERSION 2u
 typedef struct hzstd_tl_desc_t {
   uint32_t abi_version; // HZSTD_TL_ABI_VERSION of the compiler that built the module
   uint32_t align;
@@ -855,17 +858,33 @@ typedef enum {
 typedef struct hzstd_future_core_t hzstd_future_core_t;
 typedef struct hzstd_mutex_core_t hzstd_mutex_core_t;
 
+// The lock of a future, mutex or flag core (docs/async-decisions.md S5-11):
+// held for the few instructions of a state change, by any thread
+// (hzstd_sched.c, hzstd_core_lock).
+typedef struct {
+  _Atomic uint32_t locked;
+} hzstd_core_lock_t;
+
 // Tasks suspended until something readies them, oldest first, linked through
 // hzstd_task_t.next_ready. Every way to wait uses one: a future's waiters, a
 // mutex's lockers and condition waiters, a flag's waiters (hzstd_sched.c).
+// `lock` is its core's: every change of the queue, and of the waiting_in of a
+// task in it, happens holding it.
 typedef struct {
   hzstd_task_t *head;
   hzstd_task_t *tail;
+  hzstd_core_lock_t *lock;
 } hzstd_wait_queue_t;
 
 // How many mutex holds a task keeps inline before it needs an overflow array.
 #define HZSTD_HELD_LOCKS_INLINE 8
 struct hzstd_thread_t {
+  // The two fields generated code reads (S5-12, as hzstd_task_t's TL-4 pair):
+  // they stay first, in this order. global_blocks[i] is the per-thread block
+  // of the module with global index i, or NULL until that module's code first
+  // runs on this thread; GC memory, scanned.
+  void **global_blocks;
+  size_t global_capacity;
   uint64_t id; // process-unique, never reused; the main thread is 1
   // The task running on this thread, NULL while the scheduler runs. Set on the
   // resumed side of every switch (stdlib/core/src/fiber/README.md).
@@ -927,9 +946,13 @@ struct hzstd_task_t {
   hzstd_future_core_t *future;       // ends when the task ends
   // The wait queue it is in while suspended there (a future's waiters, a
   // mutex's lockers or condition waiters, a flag's waiters), and why: an
-  // hzstd_sched_run_end_t, HZSTD_SCHED_RUN_JOIN to HZSTD_SCHED_RUN_FLAG.
-  hzstd_wait_queue_t *waiting_in;
-  uint32_t wait_reason;
+  // hzstd_sched_run_end_t, HZSTD_SCHED_RUN_JOIN to HZSTD_SCHED_RUN_FLAG, or 0
+  // while it waits in no queue (the profiler's reason why the run ended).
+  // Both are written holding that queue's lock, possibly by another thread
+  // (which readies the task, or moves it from a mutex's watchers to its
+  // lockers), and waiting_in is read without it to find the queue.
+  hzstd_wait_queue_t *_Atomic waiting_in;
+  _Atomic uint32_t wait_reason;
   void *sleep_timer;                 // its uv_timer_t, if suspended in time.sleep
   // Identity, for the profiler (docs/profiler-timelines.md): process-unique,
   // never reused, the main task 1; the task that spawned it (0: the runtime)

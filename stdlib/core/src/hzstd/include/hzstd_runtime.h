@@ -45,10 +45,15 @@ void hzstd_task_yield(hzstd_context_t *ctx);
 // Suspends the calling task for `ms` milliseconds of the thread's event loop
 // (time.sleep, C301): a libuv timer readies it.
 void hzstd_task_sleep_ms(hzstd_context_t *ctx, uint64_t ms);
-// A future's shared core: its state and the tasks waiting for it.
+// A future's shared core: its state and the tasks waiting for it. Every
+// function here may be called from any thread (S5-11).
 hzstd_future_core_t *hzstd_future_core_new(void);
 hzstd_int_t hzstd_future_state(hzstd_future_core_t *core);
-// Settles a pending future with its value; panics if it is settled (C444).
+// Future.complete is three steps (S5-14): claim (panics if the future has or
+// is getting its value, C444), store the value, then complete, which settles
+// the future and readies its waiters; a join reads the value only after it
+// saw the future settled, so the value is there.
+void hzstd_future_claim(hzstd_context_t *ctx, hzstd_future_core_t *core);
 void hzstd_future_complete(hzstd_context_t *ctx, hzstd_future_core_t *core);
 // Suspends the calling task until the future is settled; returns its state.
 // A suspension point.
@@ -138,6 +143,23 @@ hzstd_real_t hzstd_time_since_task_switch(hzstd_context_t *ctx);
 
 // The id for a thread Haze starts: process-unique, never reused, from 2 on.
 uint64_t hzstd_next_thread_id(void);
+// Gives back what a thread's stackref table holds (its thread has ended).
+void hzstd_gen_table_free(hzstd_gen_table_t *table);
+
+// thread.spawn (S5-10): a new OS thread with its own scheduler, a blank
+// context and fresh per-thread globals, whose first task runs entry(its
+// context, arg) and completes `future` (the entry does). `stall_warning`
+// false: the watchdog never warns about it; `has_stack_size`: every task of
+// the thread gets `stack_size` bytes of stack (it panics outside 64 KiB to
+// 1 GiB, naming the option).
+void hzstd_thread_spawn(hzstd_context_t *ctx,
+                        hzstd_task_entry_t entry,
+                        void *arg,
+                        hzstd_future_core_t *future,
+                        bool stall_warning,
+                        bool has_stack_size,
+                        hzstd_int_t stack_size,
+                        hzstd_source_location_t spawned_at);
 
 // A context for the calling thread (C504): the runtime data of the thread and
 // the task running on it, with the default settings. The result is a value of
@@ -164,6 +186,27 @@ static inline void *hzstd_tl_block(hzstd_context_t *ctx, hzstd_tl_desc_t *desc)
 // A task-local variable as an lvalue: the field of its module's block.
 #define HZSTD_TL_FIELD(ctx, desc, block_type, field) \
   (((block_type *)hzstd_tl_block((ctx), &(desc)))->field)
+
+// A module's per-thread block (S5-12: its module-level `let` variables) on
+// the thread `ctx` runs on: the same two loads and checks, in the thread's
+// table (its own index space); the first access of a module on a thread
+// makes the block from its initial image (C518).
+void *hzstd_tg_block_slow(hzstd_context_t *ctx, hzstd_tl_desc_t *desc);
+static inline void *hzstd_tg_block(hzstd_context_t *ctx, hzstd_tl_desc_t *desc)
+{
+  size_t index = atomic_load_explicit(&desc->index, memory_order_relaxed);
+  hzstd_thread_t *thread = ctx->thread;
+  void *block;
+  if (index < thread->global_capacity && (block = thread->global_blocks[index]) != NULL) {
+    return block;
+  }
+  return hzstd_tg_block_slow(ctx, desc);
+}
+
+// A module-level `let` as an lvalue: the field of its module's block on the
+// running thread.
+#define HZSTD_TG_FIELD(ctx, desc, block_type, field) \
+  (((block_type *)hzstd_tg_block((ctx), &(desc)))->field)
 
 // What `sys.threadId()` is (C477): the process-unique id of the context's
 // thread. `ctx` is a `hzstd_context_t *`, passed as `void *` so Haze can hand
