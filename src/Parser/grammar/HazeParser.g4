@@ -180,6 +180,11 @@ typeExprModified
     // the callable synchronously inside the call and never retain it. Only
     // valid on parameter types; SymbolCollection strips it into a flag.
     | IMMEDIATE typeExprModified
+    // `atomic int` (a struct field's or a global's type), `atomic []T`, and
+    // `crossthread (x: T) => R` (docs/async-decisions.md S5-4, S5-6, S5-9).
+    // What they apply to is checked when the type is resolved.
+    | ATOMIC typeExprModified
+    | CROSSTHREAD typeExprModified
     | MUT typeExprModified
     | CONST typeExprModified
     // The array size is a general expression (a literal, a generic
@@ -217,8 +222,8 @@ structContentWithSourceloc
 
 structContent
     : structContentWithSourceloc                                                                            #StructContentWithSourcelocAlt
-    | metaAnnotation? priv=PRIVATE? variableMutabilitySpecifier? (id | TYPE) QUESTIONMARK? COLON typeExpr (EQUALS expr)? memberSeparator?          #StructMember
-    | metaAnnotation? priv=PRIVATE? variableMutabilitySpecifier? (id | TYPE) EQUALS expr memberSeparator?                                          #StructMemberInferred
+    | metaAnnotation? priv=PRIVATE? unsafeField=UNSAFE? variableMutabilitySpecifier? (id | TYPE) QUESTIONMARK? COLON typeExpr (EQUALS expr)? memberSeparator?          #StructMember
+    | metaAnnotation? priv=PRIVATE? unsafeField=UNSAFE? variableMutabilitySpecifier? (id | TYPE) EQUALS expr memberSeparator?                                          #StructMemberInferred
     | priv=PRIVATE? static=STATIC? methodModifier* FN comptime=COMPTIME? name=(RAW_ID | TYPE | OPERATORASSIGN | OPERATORREBIND | OPERATORPLUS | OPERATORMINUS | OPERATORMUL | OPERATORDIV | OPERATORMOD | OPERATORSUBSCRIPT | OPERATORAS | OPERATOREQ | OPERATORNEQ | OPERATORLT | OPERATORGT | OPERATORLTE | OPERATORGTE) (LANGLE generic+=id (COMMA generic+=id)* RANGLE)? LB params RB (COLON typeExpr)? requiresBlock? (funcbody | SEMI?)    #StructMethod
     | structDefinition                                                                                      #NestedStructDefinition
     | enumDefinition                                                                                      #NestedStructDefinition
@@ -247,6 +252,9 @@ structModifier
     | PLAIN
     | REF
     | NOCOPY
+    | ATOMIC
+    | CROSSTHREAD
+    | UNSAFE CROSSTHREAD
     ;
 
 structDefinition

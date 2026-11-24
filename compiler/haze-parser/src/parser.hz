@@ -1279,11 +1279,14 @@ ref struct Parser {
         // only by its text, so it stays usable as a plain identifier
         // (`config.immediate`) everywhere else.
         let isImmediate = k == TK.Ident && this.text(this.cur()) == "immediate";
-        if k == TK.Ref || k == TK.Stackref || k == TK.Mut || k == TK.Const || isImmediate {
+        if k == TK.Ref || k == TK.Stackref || k == TK.Mut || k == TK.Const || isImmediate
+           || k == TK.Atomic || k == TK.Crossthread {
             this.advance();
             let variant = "RefTypeExpr";
             if k == TK.Stackref { variant = "StackrefTypeExpr"; }
             else if isImmediate { variant = "ImmediateTypeExpr"; }
+            else if k == TK.Atomic { variant = "AtomicTypeExpr"; }
+            else if k == TK.Crossthread { variant = "CrossthreadTypeExpr"; }
             else if k == TK.Mut { variant = "MutTypeExpr"; }
             else if k == TK.Const { variant = "ConstTypeExpr"; }
 
@@ -2446,6 +2449,15 @@ ref struct Parser {
             if this.at(TK.Plain) { this.advance(); m.isPlain = true; continue; }
             if this.at(TK.Ref) { this.advance(); m.refByDefault = true; continue; }
             if this.at(TK.Nocopy) { this.advance(); m.isNocopy = true; continue; }
+            if this.at(TK.Atomic) { this.advance(); m.isAtomic = true; continue; }
+            if this.at(TK.Crossthread) { this.advance(); m.isCrossthread = true; continue; }
+            // `unsafe crossthread` is one modifier; a lone `unsafe` is none.
+            if this.at(TK.Unsafe) && this.peekKind(1) == TK.Crossthread {
+                this.advance();
+                this.advance();
+                m.isUnsafeCrossthread = true;
+                continue;
+            }
             break;
         }
         return m;
@@ -2936,6 +2948,9 @@ ref struct Parser {
         this.w.keyBool("plain", mods.isPlain);
         this.w.keyBool("refByDefault", mods.refByDefault);
         this.w.keyBool("nocopy", mods.isNocopy);
+        this.w.keyBool("atomic", mods.isAtomic);
+        this.w.keyBool("crossthread", mods.isCrossthread);
+        this.w.keyBool("unsafeCrossthread", mods.isUnsafeCrossthread);
         this.w.keyBool("pub", mods.isPub);
         // The generics' span ends with the struct: hoisted in at the end.
         let genericsAt = this.w.length();
@@ -3040,7 +3055,8 @@ ref struct Parser {
         if this.at(TK.Struct) || this.at(TK.Enum)
            || ((this.at(TK.Export) || this.at(TK.Extern) || this.at(TK.Pub)
                 || this.at(TK.Opaque) || this.at(TK.Plain) || this.at(TK.Noemit)
-                || this.at(TK.Ref) || this.at(TK.Nocopy))
+                || this.at(TK.Ref) || this.at(TK.Nocopy) || this.at(TK.Atomic)
+                || this.at(TK.Crossthread) || this.at(TK.Unsafe))
                && this.declAheadIsType()) {
             let isExport = this.accept(TK.Export);
             let mods = this.declModifiers();
@@ -3058,6 +3074,9 @@ ref struct Parser {
         // Methods: [private] [static] [mut|const|ref|stackref] fn name(...)
         let mods = Modifiers {};
         mods.isPrivate = this.accept(TK.Private);
+        // `unsafe` is a field modifier only (`private unsafe x: T`).
+        let unsafeTok = this.cur();
+        let isUnsafe = this.accept(TK.Unsafe);
         mods.isStatic = this.accept(TK.Static);
 
         // Method modifiers in any order before `fn`:
@@ -3072,6 +3091,12 @@ ref struct Parser {
             else if k == TK.Const { mods.methodMutability = 3; }
             else if k == TK.Ref { mods.methodReceiverStorage = 2; }
             else if k == TK.Stackref { mods.methodReceiverStorage = 3; }
+        }
+
+        if isUnsafe && (this.at(TK.Fn) || mods.isStatic || mods.methodMutability != 0
+                        || mods.methodReceiverStorage != 0) {
+            this.errorAt(unsafeTok, "'unsafe' is a field modifier: it cannot precede a method");
+            return;
         }
 
         if this.at(TK.Fn) {
@@ -3124,6 +3149,7 @@ ref struct Parser {
 
         this.w.keyBool("optional", isOptional);
         this.w.keyBool("private", mods.isPrivate);
+        this.w.keyBool("unsafe", isUnsafe);
         this.w.keyInt("mutability", mutability);
         this.writeAnnotations(annotationsAt);
         this.locHere(start);
@@ -3171,6 +3197,7 @@ ref struct Parser {
             else { this.w.nullValue(); }
             this.w.keyBool("optional", isOptional);
             this.w.keyBool("private", false);
+            this.w.keyBool("unsafe", false);
             // EVariableMutability.Default
             this.w.keyInt("mutability", 3);
             this.w.key("annotations");
@@ -3213,7 +3240,13 @@ ref struct Parser {
             let k = this.toks[i].kind;
             if k == TK.Struct || k == TK.Enum { return true; }
             if k == TK.Export || k == TK.Extern || k == TK.Pub || k == TK.Noemit
-               || k == TK.Opaque || k == TK.Plain || k == TK.Ref || k == TK.Nocopy {
+               || k == TK.Opaque || k == TK.Plain || k == TK.Ref || k == TK.Nocopy
+               || k == TK.Atomic || k == TK.Crossthread {
+                i++;
+                continue;
+            }
+            // `unsafe crossthread`: only `crossthread` makes it a modifier.
+            if k == TK.Unsafe && i + 1 < limit && this.toks[i + 1].kind == TK.Crossthread {
                 i++;
                 continue;
             }
@@ -3294,6 +3327,9 @@ export struct Modifiers {
     isPlain: bool = false;
     refByDefault: bool = false;
     isNocopy: bool = false;
+    isAtomic: bool = false;
+    isCrossthread: bool = false;
+    isUnsafeCrossthread: bool = false;
     isStatic: bool = false;
     isPrivate: bool = false;
     methodMutability: int = 0;   // 0 = unspecified, else EDatatypeMutability

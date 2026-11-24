@@ -264,6 +264,7 @@ export ref struct Lexer {
             if s.startsWith("noemit", start) { return TK.Noemit; }
             if s.startsWith("opaque", start) { return TK.Opaque; }
             if s.startsWith("global", start) { return TK.Global; }
+            if s.startsWith("atomic", start) { return TK.Atomic; }
             return TK.Ident;
         }
         if n == 7 {
@@ -292,6 +293,7 @@ export ref struct Lexer {
         if n == 11 {
             if s.startsWith("noreturn_if", start) { return TK.NoreturnIf; }
             if s.startsWith("nonclonable", start) { return TK.Nonclonable; }
+            if s.startsWith("crossthread", start) { return TK.Crossthread; }
             return TK.Ident;
         }
         if n == 16 {

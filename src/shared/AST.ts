@@ -697,6 +697,23 @@ export type ASTImmediateTypeExpr = {
   sourceloc: SourceLoc;
 };
 
+// `atomic T` (docs/async-decisions.md S5-6, S5-9): on a struct field's or a
+// global's type an atomic primitive (`atomic int`), anywhere an atomic dynamic
+// array (`atomic []T`). What T may be is checked when the type is resolved.
+export type ASTAtomicTypeExpr = {
+  variant: "AtomicTypeExpr";
+  type: ASTExpr;
+  sourceloc: SourceLoc;
+};
+
+// `crossthread (x: T) => R` (S5-4): a closure type only closures whose
+// environment, parameters and result cross threads convert to.
+export type ASTCrossthreadTypeExpr = {
+  variant: "CrossthreadTypeExpr";
+  type: ASTExpr;
+  sourceloc: SourceLoc;
+};
+
 export type ASTDynamicArrayTypeExpr = {
   variant: "DynamicArrayTypeExpr";
   type: ASTExpr;
@@ -804,6 +821,8 @@ export type ASTExpr =
   | ASTRefTypeExpr
   | ASTStackrefTypeExpr
   | ASTImmediateTypeExpr
+  | ASTAtomicTypeExpr
+  | ASTCrossthreadTypeExpr
   | ASTDynamicArrayTypeExpr
   | ASTStaticArrayTypeExpr
   | ASTNodiscardTypeExpr
@@ -877,6 +896,9 @@ export type ASTStructMemberDefinition = {
   // `private x: T` inside a struct: only code inside the struct's body may
   // name it. Always false in an anonymous struct type.
   private: boolean;
+  // `private unsafe x: T` in an atomic struct (S5-7): its type is not checked
+  // by the crossing rule. Always false in an anonymous struct type.
+  unsafe: boolean;
   mutability: EVariableMutability;
   annotations: ASTMetaAnnotationItem[];
   sourceloc: SourceLoc;
@@ -915,6 +937,12 @@ export type ASTStructDefinition = {
   refByDefault: boolean;
   // `nocopy struct`: no second binding of a value of this type may ever be created.
   nocopy: boolean;
+  // `atomic struct` (S5-7): every field atomic, const or unsafe; needs `ref`.
+  atomic: boolean;
+  // `crossthread struct` (S5-4): the compiler checks that it crosses threads.
+  crossthread: boolean;
+  // `unsafe crossthread struct` (S5-4): its author promises it crosses.
+  unsafeCrossthread: boolean;
   pub: boolean;
   generics: {
     name: string;

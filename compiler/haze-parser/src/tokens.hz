@@ -47,6 +47,8 @@ export enum TK {
     Private,
     Tasklocal,
     Global,
+    Atomic,
+    Crossthread,
     Struct,
     Nodiscard,
     Nonclonable,
@@ -213,6 +215,8 @@ export fn tokenName(k: TK): str {
     if k == TK.Private { return "private"; }
     if k == TK.Tasklocal { return "tasklocal"; }
     if k == TK.Global { return "global"; }
+    if k == TK.Atomic { return "atomic"; }
+    if k == TK.Crossthread { return "crossthread"; }
     if k == TK.Struct { return "struct"; }
     if k == TK.Nodiscard { return "nodiscard"; }
     if k == TK.Nonclonable { return "nonclonable"; }

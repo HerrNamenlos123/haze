@@ -815,6 +815,150 @@ describe("`tasklocal` and `global`, in both parsers", () => {
   });
 });
 
+type Stage5StructNode = {
+  variant: "StructDefinition";
+  name: string;
+  atomic: boolean;
+  crossthread: boolean;
+  unsafeCrossthread: boolean;
+  opaque: boolean;
+  refByDefault: boolean;
+  members: (MemberNode & { unsafe: boolean; type: unknown })[];
+  nestedStructs: Stage5StructNode[];
+};
+
+/** The variant chain of a type expression: `atomic []int` is AtomicTypeExpr, DynamicArrayTypeExpr, SymbolValueExpr. */
+function typeChain(type: unknown): string[] {
+  const chain: string[] = [];
+  let node = type as { variant: string; type?: unknown } | undefined;
+  while (node && typeof node === "object" && "variant" in node) {
+    chain.push(node.variant);
+    node = node.type as typeof node;
+  }
+  return chain;
+}
+
+describe("`atomic`, `crossthread` and `unsafe` (stage 5), in both parsers", () => {
+  useBothParsers();
+
+  const structs = async (source: string) =>
+    (await parseBoth(source)) as Stage5StructNode[];
+
+  test("struct modifiers in any order", async () => {
+    const s = await structs(
+      "atomic ref struct A {} ref atomic struct B {} crossthread struct C {} unsafe crossthread struct D {} opaque unsafe crossthread ref struct E {} export atomic opaque ref crossthread struct F {} struct G {}"
+    );
+    expect(
+      s.map((x) => [
+        x.name,
+        x.atomic,
+        x.crossthread,
+        x.unsafeCrossthread,
+        x.refByDefault,
+        x.opaque,
+      ])
+    ).toEqual([
+      ["A", true, false, false, true, false],
+      ["B", true, false, false, true, false],
+      ["C", false, true, false, false, false],
+      ["D", false, false, true, false, false],
+      ["E", false, false, true, true, true],
+      ["F", true, true, false, true, true],
+      ["G", false, false, false, false, false],
+    ]);
+  });
+
+  test("a nested struct with the modifiers, in a namespace", async () => {
+    const ast = (await parseBoth(
+      "namespace n { struct O { a: int; atomic ref struct I { n: atomic int; } unsafe crossthread struct U {} } }"
+    )) as { declarations: Stage5StructNode[] }[];
+    const o = ast[0].declarations[0];
+    expect(
+      o.nestedStructs.map((x) => [x.name, x.atomic, x.unsafeCrossthread])
+    ).toEqual([
+      ["I", true, false],
+      ["U", false, true],
+    ]);
+  });
+
+  test("`unsafe` on fields in every spelling", async () => {
+    const s = await structs(
+      "atomic opaque ref struct S { private unsafe a: int; private unsafe b: int = 3; private unsafe const c: int; private unsafe let d: int; private unsafe e = 3; unsafe f: int; private g: int; h: int; }"
+    );
+    expect(s[0].members.map((m) => [m.name, m.private, m.unsafe])).toEqual([
+      ["a", true, true],
+      ["b", true, true],
+      ["c", true, true],
+      ["d", true, true],
+      ["e", true, true],
+      ["f", false, true],
+      ["g", true, false],
+      ["h", false, false],
+    ]);
+    expect(s[0].members.map((m) => m.mutability)).toEqual([
+      3, 3, 1, 2, 3, 3, 3, 3,
+    ]);
+  });
+
+  test("an anonymous struct type has no unsafe members", async () => {
+    const ast = await parseBoth("type T = { a: int, b = 2 };");
+    const members =
+      JSON.stringify(ast, (_k, v) =>
+        typeof v === "bigint" ? String(v) : v
+      ).match(/"unsafe":(true|false)/g) ?? [];
+    expect(members).toEqual(['"unsafe":false', '"unsafe":false']);
+  });
+
+  test("atomic and crossthread type modifiers", async () => {
+    const s = await structs(
+      "struct S { a: atomic int; b: atomic []int; c: mut atomic []Job; d: atomic mut []int; e: crossthread (x: int) => str; f: crossthread () => none; g: []atomic int; h: atomic bool; }"
+    );
+    expect(s[0].members.map((m) => typeChain(m.type))).toEqual([
+      ["AtomicTypeExpr", "SymbolValueExpr"],
+      ["AtomicTypeExpr", "DynamicArrayTypeExpr", "SymbolValueExpr"],
+      [
+        "MutTypeExpr",
+        "AtomicTypeExpr",
+        "DynamicArrayTypeExpr",
+        "SymbolValueExpr",
+      ],
+      [
+        "AtomicTypeExpr",
+        "MutTypeExpr",
+        "DynamicArrayTypeExpr",
+        "SymbolValueExpr",
+      ],
+      ["CrossthreadTypeExpr", "CallableTypeExpr"],
+      ["CrossthreadTypeExpr", "CallableTypeExpr"],
+      ["DynamicArrayTypeExpr", "AtomicTypeExpr", "SymbolValueExpr"],
+      ["AtomicTypeExpr", "SymbolValueExpr"],
+    ]);
+  });
+
+  test("crossthread on parameters, results, aliases and with immediate", async () => {
+    await parseBoth(
+      "type Job = crossthread () => none; alias J2 = crossthread (x: int) => int; fn g(body: crossthread () => int, b: immediate crossthread () => int): crossthread () => int { return body; } global let n: atomic int = 0; let jobs: atomic []int = [];"
+    );
+  });
+
+  test("both are reserved words", async () => {
+    await rejectBothAny("fn f() { let atomic = 1; }");
+    await rejectBothAny("fn f() { let crossthread = 1; }");
+    await rejectBothAny("let atomic = 1;");
+    await rejectBothAny("struct S { crossthread: int; }");
+    await rejectBothAny("fn atomic() {}");
+  });
+
+  test("error: unsafe before a method, alone on a struct, or after private's place", async () => {
+    await rejectBothAny("struct S { private unsafe fn m() {} }");
+    await rejectBothAny("struct S { unsafe fn m() {} }");
+    await rejectBothAny("struct S { unsafe mut fn m() {} }");
+    await rejectBothAny("unsafe struct S {}");
+    await rejectBothAny("struct S { unsafe private a: int; }");
+    await rejectBothAny("crossthread unsafe struct S {}");
+  });
+});
+
 describe("`:: context` on an extern C function, in both parsers", () => {
   useBothParsers();
   const requiresOf = (ast: unknown) =>
