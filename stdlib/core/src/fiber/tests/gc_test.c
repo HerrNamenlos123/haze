@@ -139,7 +139,10 @@ static void GC_CALLBACK push_tasks(void)
       char *lo = NULL;
       char *live = t->live_sp;
       if (live != NULL && live >= (char *)task->stack.limit && live < (char *)task->stack.top) {
-        lo = live; /* the running task, found by address: correct even in the middle of a switch */
+        /* The running task, found by address: correct even in the middle of a switch. Read from
+           where another thread may (on Windows the sp can lie in the growth guard page). */
+        lo = fiber_readable_from(live, task->stack.top);
+        CHECK(lo != NULL);
         g_mid_switch += task->ctx.sp != NULL;
       }
       else if (task->ctx.sp != NULL && !g_negative_control) {

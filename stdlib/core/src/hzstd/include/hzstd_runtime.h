@@ -92,7 +92,7 @@ _Noreturn void hzstd_abort(void);
 // before any task runs (hzstd_stall_trace_initialize): the signal handler,
 // the copy buffer.
 void hzstd_stall_trace_initialize(void);
-bool hzstd_capture_stall_trace(hzstd_sched_t *s, hzstd_stacktrace_t *out);
+bool hzstd_capture_stall_trace(hzstd_sched_t *s, hzstd_raw_report_t *out);
 // sys.timeSinceTaskSwitch: the same measurement, in seconds.
 hzstd_real_t hzstd_time_since_task_switch(hzstd_context_t *ctx);
 
@@ -238,16 +238,17 @@ _Noreturn void hzstd_panic_bad_stackref(hzstd_thread_t *thread, hzstd_stackref_t
 //   // normal completion falls through here
 //   goto done;
 //   recover_label:
-//     // the task's panic_info holds the stacktrace, or NULL if not set
+//     // the task's panic_info holds the panic's report (GC memory)
 //     ...
 //   done:
 //
 // Design notes:
 // * HZSTD_SETJMP is used so that signal-mask is restored on Linux recovery.
 // * cleanup handlers are run on the recovery path only (defer-on-panic).
-// * the task's panic_info is set by the panic machinery
-//   before longjmping, so it is readable from the recover label even though
-//   the label is outside this macro's scope.
+// * the task's panic_info is set by the recovery's last step
+//   (hzstd_panic_adopt_report: the report copied from the thread's record into
+//   GC memory), so it is readable from the recover label even though the label
+//   is outside this macro's scope.
 
 // A plain block, deliberately NOT do{}while(0): a `break`/`continue` in the
 // body must bind to the enclosing Haze loop, not to the macro. The frame is
@@ -267,7 +268,6 @@ _Noreturn void hzstd_panic_bad_stackref(hzstd_thread_t *thread, hzstd_stackref_t
     else if (__hz_jmp_##id == 1) {                                                                                     \
       /* First: the allocation windows the longjmp left open are closed before anything can allocate. */             \
       hzstd_alloc_windows_restore(__hz_frame_##id->saved_alloc_window_depth);                                          \
-      /* the panic machinery already set the task's panic_info */                                                      \
       hzstd_panic_recovered(__hz_ctx);                                                                                 \
       /* The longjmp skipped every stackref scope exit between the panic site and here. */                             \
       hzstd_stackref_unwind_to(__hz_ctx, __hz_frame_##id->saved_stackref_count);                                       \
@@ -275,6 +275,8 @@ _Noreturn void hzstd_panic_bad_stackref(hzstd_thread_t *thread, hzstd_stackref_t
       hzstd_reactive_restore_state(__hz_ctx, &__hz_frame_##id->saved_reactive);                                        \
       hzstd_panic_recovery_frame_run_cleanup(__hz_frame_##id);                                                         \
       hzstd_pop_panic_recovery_frame(__hz_ctx);                                                                        \
+      /* Last: the report into GC memory, with the frame gone (a failure here goes to the next one out). */          \
+      hzstd_panic_adopt_report(__hz_ctx, __hz_frame_##id);                                                             \
       goto recovery_label;                                                                                             \
     }                                                                                                                  \
     else {                                                                                                             \
@@ -323,9 +325,38 @@ hzstd_stacktrace_t hzstd_build_stacktrace(int skip_n_frames);
 // Print only the "Stack trace:" section (no message/type header).
 void hzstd_print_stacktrace(hzstd_stacktrace_t st);
 
-// The same, without GC memory: for runtime threads that must allocate none
-// (the stall watchdog). The names it builds stay in malloc memory.
-void hzstd_print_stacktrace_without_gc(hzstd_stacktrace_t st);
+// ── Raw reports (hzstd_types.h) ─────────────────────────────────────────────
+void hzstd_raw_report_clear(hzstd_raw_report_t *report);
+// Appends a frame (names cut to what the text buffer still holds); false
+// once the report holds HZSTD_RAW_REPORT_FRAMES.
+bool hzstd_raw_report_add_frame(hzstd_raw_report_t *report,
+                                void *ip,
+                                const char *name,
+                                size_t name_length,
+                                const char *file,
+                                size_t file_length,
+                                hzstd_int_t line);
+void hzstd_raw_report_set_message(hzstd_raw_report_t *report, hzstd_str_t message);
+// GC copies, for Haze; on a thread that may allocate GC memory.
+hzstd_stacktrace_t hzstd_raw_report_to_stacktrace(const hzstd_raw_report_t *report);
+hzstd_panic_info_t hzstd_raw_report_to_panic_info(const hzstd_raw_report_t *report);
+// Printed to stderr without GC memory: the whole panic report, or only the
+// "Stack trace:" section.
+void hzstd_raw_report_print_panic(const hzstd_raw_report_t *report);
+void hzstd_raw_report_print_trace(const hzstd_raw_report_t *report);
+// Where a stalled task is (docs/async-runtime.md section 10): the frames from
+// the innermost one of the program or a library (not the standard library,
+// the runtime or the system) outwards, as a hash, and that frame's index
+// (its display name: hzstd_raw_report_display_name).
+uint64_t hzstd_raw_report_place(const hzstd_raw_report_t *report, size_t *place_frame);
+size_t hzstd_raw_report_display_name(const hzstd_raw_report_t *report, size_t frame, char *out, size_t capacity);
+// The current thread's report record: where a panic it can recover from is
+// written (its scheduler's), NULL on a thread without a scheduler.
+hzstd_raw_report_t *hzstd_thread_panic_report(void);
+// The last step of a recovery: the task takes the panic's report from its
+// thread's record into GC memory (task->panic_info), after the recovery
+// frame is popped, so a failure here goes to the next frame out.
+void hzstd_panic_adopt_report(hzstd_context_t *ctx, const hzstd_panic_recovery_frame_t *frame);
 
 // Stringify only the "Stack trace:" section (no message/type header).
 // Pass hzstd_make_heap_allocator() for a persistent result.
@@ -339,7 +370,6 @@ void hzstd_print_panic_info(hzstd_panic_info_t info);
 hzstd_str_t hzstd_stringify_panic_info(hzstd_allocator_t alloc, hzstd_panic_info_t info);
 
 // ── Internal: used by the worker thread ──────────────────────────────────────
-void hzstd_print_panic_report(hzstd_panic_info_t *info);
 
 // ── hzstd_trap_* — hard trap with no stacktrace ──────────────────────────────
 //

@@ -204,80 +204,40 @@ hzstd_regex_find_one_result_t hzstd_regex_find(hzstd_allocator_t allocator,
   return result;
 }
 
-// String builder for a replacement: malloc memory while it grows, one GC
-// string at the end (hzstd_regex_replace).
-typedef struct {
-  char *data;
-  size_t len;
-  size_t cap;
-} hzstd_sb_t;
-
-static void sb_init(hzstd_sb_t *sb) {
-  sb->data = NULL;
-  sb->len = 0;
-  sb->cap = 0;
-}
-
-static void sb_append(hzstd_sb_t *sb, const char *data, size_t len) {
-  if (sb->len + len + 1 > sb->cap) {
-    size_t new_cap = (sb->cap ? sb->cap * 2 : 64);
-    while (new_cap < sb->len + len + 1) {
-      new_cap *= 2;
-    }
-    sb->data = realloc(sb->data, new_cap);
-    if (!sb->data) {
-      hzstd_panic_fmt("System out of memory error while allocating buffer for "
-                      "Regex replacement");
-    }
-    sb->cap = new_cap;
-  }
-  memcpy(sb->data + sb->len, data, len);
-  sb->len += len;
-  sb->data[sb->len] = '\0';
-}
-
-hzstd_str_t hzstd_regex_replace(hzstd_regex_t regex, hzstd_str_t text,
-                                hzstd_str_t replacement) {
-  if (!regex.blob || !regex.blob->code) {
-    return text;
-  }
-
-  pcre2_code *code = (pcre2_code *)regex.blob->code;
-
+// One walk over every match of a replacement: with `out` NULL it only
+// measures the result, else it writes it there. The match data is pcre2's
+// (malloc memory), made and freed inside the walk.
+static size_t hzstd_regex_replace_walk(pcre2_code *code, hzstd_str_t text, hzstd_str_t replacement, char *out)
+{
   pcre2_match_data *md = pcre2_match_data_create_from_pattern(code, NULL);
-
-  hzstd_sb_t sb;
-  sb_init(&sb);
-
+  if (md == NULL) {
+    hzstd_panic("System out of memory error while matching a regex");
+  }
+  size_t length = 0;
   size_t offset = 0;
   size_t last_end = 0;
-
-  while (1) {
-    int rc = pcre2_match(code, (PCRE2_SPTR)text.data, text.length, offset, 0,
-                         md, NULL);
-
+  for (;;) {
+    int rc = pcre2_match(code, (PCRE2_SPTR)text.data, text.length, offset, 0, md, NULL);
     if (rc < 0) {
       break;
     }
-
     PCRE2_SIZE *ovec = pcre2_get_ovector_pointer(md);
     size_t start = (size_t)ovec[0];
     size_t end = (size_t)ovec[1];
-
-    // text before match
-    sb_append(&sb, text.data + last_end, start - last_end);
-
-    // replacement
-    sb_append(&sb, replacement.data, replacement.length);
-
+    // The text before the match, then the replacement.
+    if (out != NULL) {
+      memcpy(out + length, text.data + last_end, start - last_end);
+      memcpy(out + length + (start - last_end), replacement.data, replacement.length);
+    }
+    length += (start - last_end) + replacement.length;
     last_end = end;
     offset = end;
-
-    // Prevent infinite loop on zero-length matches
+    // A zero-length match moves on by one, or ends the walk at the end.
     if (start == end) {
       if (offset < text.length) {
         offset++;
-      } else {
+      }
+      else {
         break;
       }
     }
@@ -285,17 +245,29 @@ hzstd_str_t hzstd_regex_replace(hzstd_regex_t regex, hzstd_str_t text,
       break;
     }
   }
-
-  // trailing text
-  sb_append(&sb, text.data + last_end, text.length - last_end);
-
+  // The text after the last match.
+  if (out != NULL) {
+    memcpy(out + length, text.data + last_end, text.length - last_end);
+  }
+  length += text.length - last_end;
   pcre2_match_data_free(md);
+  return length;
+}
 
-  char *data = hzstd_heap_allocate_unscanned(sb.len + 1, "Regex replacement");
-  memcpy(data, sb.data, sb.len + 1);
-  free(sb.data);
-  hzstd_str_t result = {.data = data, .length = sb.len};
-  return result;
+// Measured first, then written into the one GC string: nothing of pcre2's is
+// held while that allocation happens (it can panic: a limit, out of memory).
+hzstd_str_t hzstd_regex_replace(hzstd_regex_t regex, hzstd_str_t text, hzstd_str_t replacement)
+{
+  if (!regex.blob || !regex.blob->code) {
+    return text;
+  }
+  pcre2_code *code = (pcre2_code *)regex.blob->code;
+  size_t length = hzstd_regex_replace_walk(code, text, replacement, NULL);
+  char *data = hzstd_heap_allocate_unscanned(length + 1, "Regex replacement");
+  size_t written = hzstd_regex_replace_walk(code, text, replacement, data);
+  hzstd_assert(written == length);
+  data[length] = '\0';
+  return (hzstd_str_t) { .data = data, .length = length };
 }
 
 HZSTD_DARRAY(hzstd_regex_find_match_t)

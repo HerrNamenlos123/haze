@@ -204,7 +204,9 @@ bool hzstd_run_on_worker_thread(void (*fn)(void* arg), void* arg)
 // The longjmp MUST happen on the panicking thread (not the worker) so that the
 // unwind reaches the correct setjmp point.
 
-static char panic_reason_buf[1024];
+// The message, as the panicking thread holds it: valid while the worker runs
+// (the panicking thread waits inside the panic function meanwhile), which
+// copies it into the report.
 static hzstd_str_t panic_reason;
 static CONTEXT panic_context;
 static hzstd_int_t panic_skip_n_frames = 0;
@@ -223,26 +225,44 @@ static panic_mode_t panic_mode = PANIC_MODE_CRASH;
 static hzstd_semaphore_t* panic_trigger;
 static hzstd_semaphore_t* panic_response;
 
-static hzstd_stacktrace_t panic_built_stacktrace; /* build-only mode result (value) */
-static hzstd_panic_info_t panic_info_storage; /* panic mode result (value)      */
+// Where the worker writes the report of the request it serves (hzstd_types.h,
+// raw reports): the requesting thread's own record when a task there takes
+// the report (a recovered panic, sys.buildStacktrace), else this one, which
+// the worker prints before the process ends.
+static hzstd_raw_report_t g_panic_terminal_report;
+static hzstd_raw_report_t *panic_report = NULL;
+
+// The record a panic on this thread is reported into: the thread's own when a
+// recovery frame will take it (one exists only in a task, on a thread with a
+// scheduler), else the worker's.
+static hzstd_raw_report_t *hzstd_panic_report_for(const hzstd_panic_recovery_frame_t *recovery)
+{
+  if (recovery == NULL) {
+    return &g_panic_terminal_report;
+  }
+  hzstd_raw_report_t *own = hzstd_thread_panic_report();
+  if (own == NULL) {
+    hzstd_trap_ccstr("Internal Runtime Error: a recovery frame on a thread without a scheduler");
+  }
+  return own;
+}
 
 // Guaranteed extra stack available inside the VEH handler.
 static int GUARANTEED_VEH_STACK_SIZE = 16384;
 
-// Copy msg into the static reason buffer (survives longjmp).
 static void store_panic_reason(hzstd_str_t msg)
 {
-  size_t len = msg.length < sizeof(panic_reason_buf) - 1 ? msg.length : sizeof(panic_reason_buf) - 1;
-  memcpy(panic_reason_buf, msg.data, len);
-  panic_reason_buf[len] = '\0';
-  panic_reason = (hzstd_str_t) { .data = panic_reason_buf, .length = len };
+  panic_reason = msg;
 }
 
 // ── Worker thread ─────────────────────────────────────────────────────────────
 //
-// Loops forever waiting for panic_trigger.  Builds a heap-allocated
-// hzstd_stacktrace_t using StackWalk64 on the captured CONTEXT, then either
-// signals panic_response (recovery) or prints & exits.
+// Loops forever waiting for panic_trigger. Walks the captured CONTEXT with
+// StackWalk64 into the requester's raw report (hzstd_types.h; nothing is
+// allocated: the panicking thread may hold the collector's or the heap's
+// lock), then either signals panic_response (recovery, build_only) or prints
+// and exits. The report never reaches Haze: a task that takes it copies it
+// into GC memory (hzstd_panic_adopt_report, hzstd_build_stacktrace).
 
 // Ends the process now, from any thread, without exit handlers: _exit takes
 // the CRT's exit lock, which the main thread holds while it runs atexit
@@ -283,13 +303,11 @@ static void hzstd_dbghelp_unlock(void)
   ReleaseSRWLockExclusive(&g_dbghelp_lock);
 }
 
-// Walks the stack `context` describes and names every frame, under the
-// dbghelp lock; repeated addresses share their frame's id (the printer folds
-// them). `read` serves the walk's memory reads (NULL: the process's own).
-static hzstd_dynamic_array_t *hzstd_walk_and_name(const CONTEXT *context,
-                                                  PREAD_PROCESS_MEMORY_ROUTINE64 read,
-                                                  hzstd_allocator_t allocator,
-                                                  size_t max_frames)
+// Walks the stack `context` describes into `report` and names every frame,
+// under the dbghelp lock, until the stack or the report ends; repeated
+// addresses share their frame's id (the printer folds them). `read` serves
+// the walk's memory reads (NULL: the process's own). Nothing is allocated.
+static void hzstd_walk_into_report(const CONTEXT *context, PREAD_PROCESS_MEMORY_ROUTINE64 read, hzstd_raw_report_t *report)
 {
   CONTEXT ctx;
   STACKFRAME64 sf;
@@ -313,93 +331,37 @@ static hzstd_dynamic_array_t *hzstd_walk_and_name(const CONTEXT *context,
   HANDLE hThread = GetCurrentProcess(); /* StackWalk64 accepts process handle here */
 
   hzstd_dbghelp_lock();
-
-  // Dry-run: count frames.
-  CONTEXT ctx2;
-  STACKFRAME64 sf2;
-  memcpy(&ctx2, &ctx, sizeof(ctx));
-  memcpy(&sf2, &sf, sizeof(sf));
-
-  size_t numberOfFrames = 0;
-  while (numberOfFrames < max_frames &&
-         StackWalk64(machineType, hProcess, hThread, &sf2, &ctx2, read, SymFunctionTableAccess64, SymGetModuleBase64, NULL)) {
-    numberOfFrames++;
-    if (sf2.AddrPC.Offset == 0) {
+  while (StackWalk64(machineType, hProcess, hThread, &sf, &ctx, read, SymFunctionTableAccess64, SymGetModuleBase64, NULL)) {
+    if (sf.AddrPC.Offset == 0) {
+      break;
+    }
+    const char *name = NULL;
+    size_t nameLength = 0;
+    DWORD64 displacement = 0;
+    char symbolBuffer[SYM_BUF_SIZE];
+    PSYMBOL_INFO pSym = (PSYMBOL_INFO)symbolBuffer;
+    pSym->SizeOfStruct = sizeof(SYMBOL_INFO);
+    pSym->MaxNameLen = MAX_SYM_NAME;
+    if (SymFromAddr(hProcess, sf.AddrPC.Offset, &displacement, pSym)) {
+      name = pSym->Name;
+      nameLength = strlen(pSym->Name);
+    }
+    const char *file = NULL;
+    size_t fileLength = 0;
+    hzstd_int_t line = 0;
+    IMAGEHLP_LINE64 lineInfo;
+    lineInfo.SizeOfStruct = sizeof(IMAGEHLP_LINE64);
+    DWORD lineDisp = 0;
+    if (SymGetLineFromAddr64(hProcess, sf.AddrPC.Offset, &lineDisp, &lineInfo)) {
+      file = lineInfo.FileName;
+      fileLength = strlen(lineInfo.FileName);
+      line = (hzstd_int_t)lineInfo.LineNumber;
+    }
+    if (!hzstd_raw_report_add_frame(report, (void *)sf.AddrPC.Offset, name, nameLength, file, fileLength, line)) {
       break;
     }
   }
-
-  // Re-copy for the real pass.
-  memcpy(&ctx2, &ctx, sizeof(ctx));
-  memcpy(&sf2, &sf, sizeof(sf));
-
-  size_t nextId = 1;
-  // Control struct and buffer both from `allocator`: a dynamic array grows its
-  // buffer in GC memory whatever allocator made it, and the callers here must
-  // not touch the collector (the stall watchdog runs under a limit of none;
-  // the panic worker may report a thread that holds the collector's lock).
-  // Sized to the frames counted above, so the pushes below never grow it.
-  // Not GC memory, so marked as storage the array does not own: anything
-  // that grows it later copies out instead of calling GC_realloc on it.
-  hzstd_dynamic_array_t *frameArray = hzstd_allocate(allocator, sizeof(hzstd_dynamic_array_t), "hzstd_dynamic_array_t");
-  *frameArray = (hzstd_dynamic_array_t) {
-    .buffer = numberOfFrames > 0 ? hzstd_allocate(allocator, numberOfFrames * sizeof(hzstd_stackframe_t), NULL) : NULL,
-    .elem_size = sizeof(hzstd_stackframe_t),
-    .size = 0,
-    .capacity = numberOfFrames,
-    .elementTypeName = "hzstd_stackframe_t",
-    .borrowed_buffer = true,
-  };
-
-  while (hzstd_dynamic_array_size(frameArray) < numberOfFrames &&
-         StackWalk64(machineType, hProcess, hThread, &sf2, &ctx2, read, SymFunctionTableAccess64, SymGetModuleBase64, NULL)) {
-    bool pushed = false;
-    for (size_t i = 0; i < hzstd_dynamic_array_size(frameArray); i++) {
-      hzstd_stackframe_t frame = HZSTD_DYNAMIC_ARRAY_GET(frameArray, hzstd_stackframe_t, i);
-      if (frame.instructionPointer == (hzstd_cptr_t)sf2.AddrPC.Offset) {
-        HZSTD_DYNAMIC_ARRAY_PUSH(frameArray, frame);
-        pushed = true;
-        break;
-      }
-    }
-
-    if (!pushed) {
-      hzstd_str_t name = HZSTD_STRING(NULL, 0);
-
-      DWORD64 displacement = 0;
-      char symbolBuffer[SYM_BUF_SIZE];
-      PSYMBOL_INFO pSym = (PSYMBOL_INFO)symbolBuffer;
-      pSym->SizeOfStruct = sizeof(SYMBOL_INFO);
-      pSym->MaxNameLen = MAX_SYM_NAME;
-      if (SymFromAddr(hProcess, sf2.AddrPC.Offset, &displacement, pSym)) {
-        name = hzstd_str_from_cstr_dup(allocator, pSym->Name);
-      }
-
-      hzstd_source_location_t sourceloc = { ._filename = HZSTD_STRING(NULL, 0), ._line = 0, ._column = 0 };
-      IMAGEHLP_LINE64 lineInfo;
-      lineInfo.SizeOfStruct = sizeof(IMAGEHLP_LINE64);
-      DWORD lineDisp = 0;
-      if (SymGetLineFromAddr64(hProcess, sf2.AddrPC.Offset, &lineDisp, &lineInfo)) {
-        sourceloc._filename = hzstd_str_from_cstr_dup(allocator, lineInfo.FileName);
-        sourceloc._line = (hzstd_int_t)lineInfo.LineNumber;
-      }
-
-      hzstd_stackframe_t fr = {
-        .id = nextId++,
-        .instructionPointer = (void*)sf2.AddrPC.Offset,
-        .name = name,
-        .sourceloc = sourceloc,
-      };
-      HZSTD_DYNAMIC_ARRAY_PUSH(frameArray, fr);
-    }
-
-    if (sf2.AddrPC.Offset == 0) {
-      break;
-    }
-  }
-
   hzstd_dbghelp_unlock();
-  return frameArray;
 }
 
 static DWORD WINAPI hzstd_panic_handler_thread(LPVOID _)
@@ -413,42 +375,33 @@ static DWORD WINAPI hzstd_panic_handler_thread(LPVOID _)
   for (;;) {
     hzstd_wait_for_semaphore(panic_trigger);
 
-    // Not GC memory: the panicking thread may hold the collector's lock (as
-    // hzstd_platform_linux.c's worker). Kept: a report is rare.
-    hzstd_allocator_t allocator = hzstd_make_non_gc_raw_malloc_allocator();
-
+    hzstd_raw_report_t *report = panic_report;
+    hzstd_raw_report_clear(report);
     // From a copy of the context: the panicking thread may still poll it.
-    hzstd_dynamic_array_t* frameArray = hzstd_walk_and_name(&panic_context, NULL, allocator, SIZE_MAX);
+    hzstd_walk_into_report(&panic_context, NULL, report);
+    report->skip_n_frames = panic_skip_n_frames;
 
     bool has_recovery = (panic_recovery_target != NULL);
     bool build_only = (panic_mode == PANIC_MODE_BUILD_ONLY);
 
     if (build_only) {
-      // Caller just wants frames: no message or type needed.
-      panic_built_stacktrace.frames = frameArray;
-      panic_built_stacktrace.skip_n_frames = panic_skip_n_frames;
-      atomic_store(&panic_in_progress, 0);
+      // Caller just wants frames: no message or type needed. The gate stays
+      // closed: the requester opens it once it has read its result (with the
+      // gate open here, a second requester could take this response).
       hzstd_trigger_semaphore(panic_response);
     }
     else {
-      // Panic path: heap-copy the reason string so it survives longjmp.
-      size_t reason_len = panic_reason.length;
-      char* reason_data = (char*)hzstd_allocate_unscanned(allocator, reason_len + 1, NULL);
-      memcpy(reason_data, panic_reason.data, reason_len);
-      reason_data[reason_len] = '\0';
-
-      panic_info_storage.stacktrace.frames = frameArray;
-      panic_info_storage.stacktrace.skip_n_frames = panic_skip_n_frames;
-      panic_info_storage.message = (hzstd_str_t) { .data = reason_data, .length = reason_len };
-      panic_info_storage.type = panic_type;
+      hzstd_raw_report_set_message(report, panic_reason);
+      report->type = panic_type;
 
       if (has_recovery) {
-        panic_recovery_target->_hz_panic_stacktrace = panic_info_storage;
-        atomic_store(&panic_in_progress, 0);
+        // The recovery checks it takes this report. The gate stays closed:
+        // the panicking thread opens it before its longjmp.
+        panic_recovery_target->report_sequence = report->sequence;
         hzstd_trigger_semaphore(panic_response);
       }
       else {
-        hzstd_print_panic_report(&panic_info_storage);
+        hzstd_raw_report_print_panic(report);
         fflush(stdout);
         fflush(stderr);
         // After a graceful exit started, its status is final (contract
@@ -540,10 +493,14 @@ LONG WINAPI VectoredHandler(PEXCEPTION_POINTERS ExceptionInfo)
   panic_skip_n_frames = 0;
   panic_recovery_target = (hzstd_panic_recovery_frame_count() > 0) ? hzstd_get_current_panic_recovery_frame() : NULL;
   panic_mode = PANIC_MODE_CRASH;
+  // Read back after the worker opened the gate: kept here, not re-read from
+  // the global another panic may set by then.
+  hzstd_panic_recovery_frame_t *localRecoveryTarget = panic_recovery_target;
+  panic_report = hzstd_panic_report_for(localRecoveryTarget);
 
   hzstd_trigger_semaphore(panic_trigger);
 
-  if (panic_recovery_target == NULL) {
+  if (localRecoveryTarget == NULL) {
     // Worker will print & _exit; park this thread.
     hzstd_block_thread_forever();
   }
@@ -555,11 +512,11 @@ LONG WINAPI VectoredHandler(PEXCEPTION_POINTERS ExceptionInfo)
   // (hzstd_panic_recovered): here, at the bottom of the stack, there is no
   // room for it. The longjmp runs in the stack guarantee.
 
-  // Hand the info to the task, so the recover: label can read it (the
-  // recovery frame exists, so this thread runs a task).
-  hzstd_current_task()->panic_info = panic_recovery_target->_hz_panic_stacktrace;
-
-  HZSTD_LONGJMP(panic_recovery_target->recovery_point, 1);
+  // The report is in this thread's record; the recovery takes it from there
+  // (hzstd_panic_adopt_report). Only now, with nothing more to read, the gate
+  // opens.
+  atomic_store(&panic_in_progress, 0);
+  HZSTD_LONGJMP(localRecoveryTarget->recovery_point, 1);
   // Unreachable.
   return EXCEPTION_CONTINUE_EXECUTION;
 }
@@ -585,7 +542,11 @@ _Noreturn static void hzstd_fail_while_world_stopped(const char *what)
 // stack (fiber.h swaps them per task).
 void hzstd_panic_recovered(hzstd_context_t *ctx)
 {
-  if (ctx->task->panic_info.type == hzstd_panic_type_stackoverflow && _resetstkoflw() == 0) {
+  (void)ctx;
+  // The panic is still in the thread's record (the task takes it last,
+  // hzstd_panic_adopt_report): its type says whether the guard was used up.
+  const hzstd_raw_report_t *report = hzstd_thread_panic_report();
+  if (report != NULL && report->type == hzstd_panic_type_stackoverflow && _resetstkoflw() == 0) {
     hzstd_trap_ccstr("Internal Runtime Error: the stack guard could not be re-armed after a stack overflow");
   }
 }
@@ -604,7 +565,6 @@ void hzstd_panic_recovered(hzstd_context_t *ctx)
 // on Linux stops after one frame (measured 2026-11-23).
 
 #define HZSTD_STALL_COPY_MAX ((size_t)256 << 10)
-#define HZSTD_STALL_MAX_FRAMES 64
 
 static char *g_stall_copy;          // the watchdog's own buffer, made before any task runs
 static uintptr_t g_stall_copy_lo;   // the copied range, in the stalled thread's stack
@@ -639,7 +599,7 @@ void hzstd_stall_trace_initialize(void)
   }
 }
 
-bool hzstd_capture_stall_trace(hzstd_sched_t *s, hzstd_stacktrace_t *out)
+bool hzstd_capture_stall_trace(hzstd_sched_t *s, hzstd_raw_report_t *out)
 {
   static CONTEXT context __attribute__((aligned(16)));
   memset(&context, 0, sizeof(context));
@@ -650,11 +610,12 @@ bool hzstd_capture_stall_trace(hzstd_sched_t *s, hzstd_stacktrace_t *out)
   // From here until ResumeThread: no lock, no allocation, no call into a
   // library that might take one.
   bool ok = GetThreadContext(s->handle, &context) != 0;
+  bool shapeless = false;
   if (ok) {
-    const char *sp = (const char *)(uintptr_t)context.Rsp;
+    char *sp = (char *)(uintptr_t)context.Rsp;
     hzstd_task_t *task = s->thread->current_task; // stable: the thread is stopped
-    const char *lo = NULL;
-    const char *hi = NULL;
+    char *lo = NULL;
+    char *hi = NULL;
     if (task != NULL && task->stack.top != NULL && hzstd_in_range(sp, task->stack.limit, task->stack.top)) {
       lo = task->stack.limit;
       hi = task->stack.top;
@@ -664,25 +625,30 @@ bool hzstd_capture_stall_trace(hzstd_sched_t *s, hzstd_stacktrace_t *out)
       hi = s->native_hi;
     }
     ok = lo != NULL;
-    if (ok) {
-      // [sp, hi) is committed: a stack is committed from its lowest touched
-      // page up.
-      size_t length = (size_t)(hi - sp) < HZSTD_STALL_COPY_MAX ? (size_t)(hi - sp) : HZSTD_STALL_COPY_MAX;
-      memcpy(g_stall_copy, sp, length);
-      g_stall_copy_lo = (uintptr_t)sp;
-      g_stall_copy_hi = (uintptr_t)sp + length;
+    // Copied from where another thread may read: the sp can lie in the
+    // stack's growth guard page, which only the stopped thread may touch
+    // (fiber.h). Reads below the copy fail, as for the rest of the stack.
+    char *from = ok ? fiber_readable_from(sp, hi) : NULL;
+    shapeless = ok && from == NULL;
+    if (from != NULL) {
+      size_t length = (size_t)(hi - from) < HZSTD_STALL_COPY_MAX ? (size_t)(hi - from) : HZSTD_STALL_COPY_MAX;
+      memcpy(g_stall_copy, from, length);
+      g_stall_copy_lo = (uintptr_t)from;
+      g_stall_copy_hi = (uintptr_t)from + length;
       g_stall_stack_lo = (uintptr_t)lo;
       g_stall_stack_hi = (uintptr_t)hi;
     }
+    ok = from != NULL;
   }
   ResumeThread(s->handle);
+  if (shapeless) {
+    hzstd_panic("the stall watchdog found a stopped thread's stack in no stack's shape");
+  }
   if (!ok) {
     return false;
   }
-  // Plain malloc memory, kept: a report is rare, and the watchdog allocates
-  // no GC memory.
-  out->frames = hzstd_walk_and_name(&context, hzstd_stall_read_memory, hzstd_make_non_gc_raw_malloc_allocator(), HZSTD_STALL_MAX_FRAMES);
-  out->skip_n_frames = 0;
+  hzstd_raw_report_clear(out);
+  hzstd_walk_into_report(&context, hzstd_stall_read_memory, out);
   return true;
 }
 
@@ -709,17 +675,19 @@ _Noreturn void hzstd_panic_with_stacktrace(hzstd_str_t msg, hzstd_int_t skip_n_f
   panic_type = hzstd_panic_type_user;
   panic_recovery_target = (hzstd_panic_recovery_frame_count() > 0) ? hzstd_get_current_panic_recovery_frame() : NULL;
   panic_mode = PANIC_MODE_CRASH;
+  hzstd_panic_recovery_frame_t *localRecoveryTarget = panic_recovery_target;
+  panic_report = hzstd_panic_report_for(localRecoveryTarget);
 
   hzstd_trigger_semaphore(panic_trigger);
 
-  if (panic_recovery_target == NULL) {
+  if (localRecoveryTarget == NULL) {
     hzstd_block_thread_forever();
   }
 
   WaitForSingleObject(panic_response->handle, INFINITE);
 
-  hzstd_current_task()->panic_info = panic_recovery_target->_hz_panic_stacktrace;
-  HZSTD_LONGJMP(panic_recovery_target->recovery_point, 1);
+  atomic_store(&panic_in_progress, 0);
+  HZSTD_LONGJMP(localRecoveryTarget->recovery_point, 1);
   __assume(0); /* MSVC/clang _Noreturn hint */
 }
 
@@ -727,6 +695,12 @@ _Noreturn void hzstd_panic_with_stacktrace(hzstd_str_t msg, hzstd_int_t skip_n_f
 
 hzstd_stacktrace_t hzstd_build_stacktrace(int skip_n_frames)
 {
+  // Written into this thread's own record, which the gate does not have to
+  // protect once the worker is done with it.
+  hzstd_raw_report_t *own = hzstd_thread_panic_report();
+  if (own == NULL) {
+    hzstd_panic("A stack trace can only be built on a thread Haze runs tasks on");
+  }
   int expected = 0;
   while (!atomic_compare_exchange_weak(&panic_in_progress, &expected, 1)) {
     expected = 0;
@@ -738,23 +712,36 @@ hzstd_stacktrace_t hzstd_build_stacktrace(int skip_n_frames)
   panic_type = hzstd_panic_type_unknown;
   panic_recovery_target = NULL;
   panic_mode = PANIC_MODE_BUILD_ONLY;
+  panic_report = own;
 
   hzstd_trigger_semaphore(panic_trigger);
   WaitForSingleObject(panic_response->handle, INFINITE);
+  atomic_store(&panic_in_progress, 0);
 
-  return panic_built_stacktrace;
+  // Into GC memory for Haze, after the gate: an allocation here may fail like
+  // any other.
+  return hzstd_raw_report_to_stacktrace(own);
 }
 
 // ── hzstd_setup_panic_handler ─────────────────────────────────────────────────
 
 void hzstd_setup_panic_handler(void)
 {
-  panic_trigger = hzstd_create_semaphore();
-  panic_response = hzstd_create_semaphore();
-  assert(panic_trigger && panic_response);
-
-  HANDLE hWorker = CreateThread(NULL, 0, hzstd_panic_handler_thread, NULL, 0, NULL);
-  (void)hWorker;
+  // One worker and one semaphore pair for the process, whichever threads call
+  // this (the profiler's threads do too): a second pair would orphan a panic
+  // in flight on the first, which then waits forever (as found on Linux).
+  static atomic_int g_panic_handler_worker_started = 0;
+  int expected = 0;
+  if (atomic_compare_exchange_strong(&g_panic_handler_worker_started, &expected, 1)) {
+    panic_trigger = hzstd_create_semaphore();
+    panic_response = hzstd_create_semaphore();
+    assert(panic_trigger && panic_response);
+    HANDLE hWorker = CreateThread(NULL, 0, hzstd_panic_handler_thread, NULL, 0, NULL);
+    if (hWorker == NULL) {
+      hzstd_trap_ccstr("Internal Runtime Error: Failed to start the panic handler thread");
+    }
+    CloseHandle(hWorker);
+  }
 
   // Reserve extra stack so the VEH handler has room to run after overflow.
   ULONG bytes = (ULONG)GUARANTEED_VEH_STACK_SIZE;

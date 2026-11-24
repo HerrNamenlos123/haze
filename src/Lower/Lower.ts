@@ -3597,8 +3597,9 @@ hzstd_slot_read(&__tmp_result, __slot, sizeof(__tmp_result));`,
           })[1]
         );
 
-        // Populate the PanicInfo variable from the TLS stacktrace set by the
-        // panic machinery before the longjmp.  Always non-NULL at this point.
+        // Populate the PanicInfo variable from the task's panic_info, which the
+        // recovery's last step (hzstd_panic_adopt_report) filled with a GC copy
+        // of the panic's report.
         enclosingBlockScope.statements.push(
           Lowered.addStatement(lr, {
             variant: Lowered.ENode.InlineCStatement,

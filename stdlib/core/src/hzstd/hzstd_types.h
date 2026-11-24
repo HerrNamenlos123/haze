@@ -569,6 +569,43 @@ typedef struct {
   hzstd_panic_type_t type;
 } hzstd_panic_info_t;
 
+// ── Raw reports (crash and stall reports) ───────────────────────────────────
+//
+// What the panic worker and the stall watchdog record of a stack. Those
+// threads must not touch the collector (a panicking thread may hold its lock;
+// the watchdog runs under an allocation limit of none), so a raw report is
+// plain values in fixed storage: no GC memory, no malloc, no pointer into
+// anything. It never reaches Haze code: a report a task receives (a recovered
+// panic, sys.buildStacktrace) is copied into GC memory by that task
+// (hzstd_raw_report_to_*) before Haze sees it. A name or file that does not
+// fit the text buffer is cut; a message that does not fit says so.
+#define HZSTD_RAW_REPORT_FRAMES 128
+#define HZSTD_RAW_REPORT_TEXT 65536
+#define HZSTD_RAW_REPORT_MESSAGE 4096
+
+typedef struct {
+  void *ip;
+  size_t id;            // the same address is the same frame (the printer folds repeats)
+  uint32_t name;        // offset into the report's text
+  uint32_t name_length; // 0: no name
+  uint32_t file;
+  uint32_t file_length; // 0: no source location
+  hzstd_int_t line;
+} hzstd_raw_frame_t;
+
+typedef struct {
+  uint64_t sequence; // counts the writes: a recovery checks that it gets its own
+  hzstd_raw_frame_t frames[HZSTD_RAW_REPORT_FRAMES];
+  size_t count;
+  size_t next_id;
+  hzstd_int_t skip_n_frames;
+  hzstd_panic_type_t type;
+  char message[HZSTD_RAW_REPORT_MESSAGE];
+  size_t message_length;
+  char text[HZSTD_RAW_REPORT_TEXT]; // the frames' names and files
+  size_t text_used;
+} hzstd_raw_report_t;
+
 // We use plain jmp_buf / setjmp / longjmp on all platforms.  On Linux the
 // signal mask is restored manually after longjmp (see hzstd_platform_linux.c)
 // so sigjmp_buf is not needed in this shared header.
@@ -625,7 +662,9 @@ typedef struct {
   size_t cleanup_count; /* total, inline + overflow */
   hzstd_dynamic_array_t *cleanup_overflow; /* entries [HZSTD_RECOVERY_INLINE_CLEANUPS..); NULL until needed */
   HZSTD_JMP_BUF recovery_point;
-  hzstd_panic_info_t _hz_panic_stacktrace; /* filled before longjmp */
+  // The sequence of the thread's raw report this recovery receives (set
+  // before the longjmp; hzstd_panic_adopt_report checks it).
+  uint64_t report_sequence;
   // How many stackref slots the task held when this frame was pushed (see
   // hzstd_gen_table_t). A panic longjmps over every scope exit between the
   // panic site and this frame, so the recovery path releases the task's slots

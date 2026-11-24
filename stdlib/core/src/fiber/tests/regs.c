@@ -185,6 +185,29 @@ __asm__(".text\n"
         ".size fiber_test_switch_at, .-fiber_test_switch_at\n"
 
         /*
+         * fiber_test_park_at(sp, hold, parked): moves the stack pointer to `sp` (aligned down to
+         * 16) without storing anything there, sets *parked = 1, waits while *hold != 0, and
+         * returns with the stack pointer restored. A thread parked here has its sp below
+         * everything it wrote, as when it is stopped between a prologue's stack adjustment and
+         * its first store. No unwind info: nothing unwinds through it.
+         */
+        ".p2align 4\n"
+        ".globl fiber_test_park_at\n"
+        ".type fiber_test_park_at,@function\n"
+        "fiber_test_park_at:\n"
+        "  andq $-16, %rdi\n"
+        "  movq %rsp, %rax\n"
+        "  movq %rdi, %rsp\n"
+        "  movq $1, (%rdx)\n"
+        "1:\n"
+        "  pause\n"
+        "  cmpq $0, (%rsi)\n"
+        "  jne 1b\n"
+        "  movq %rax, %rsp\n"
+        "  ret\n"
+        ".size fiber_test_park_at, .-fiber_test_park_at\n"
+
+        /*
          * fiber_test_switch_holding(from, to, loop, slot, key): the GC test's "only in
          * registers" case. Puts p = *slot ^ key into every callee-saved register, zeroes *slot,
          * switches with fiber_switch (repeatedly while a loop is given and not stopped), and after
@@ -447,6 +470,23 @@ __asm__(".text\n"
         "  addq $40, %rsp\n"
         "  popq %rcx\n"
         "  movq %rcx, %rsp\n"
+        "  ret\n"
+
+        /* fiber_test_park_at(sp, hold, parked): see the SysV version. rcx = sp, rdx = hold,
+           r8 = parked. No unwind info on purpose: nothing unwinds through it. */
+        ".def fiber_test_park_at; .scl 2; .type 32; .endef\n"
+        ".globl fiber_test_park_at\n"
+        ".p2align 4\n"
+        "fiber_test_park_at:\n"
+        "  andq $-16, %rcx\n"
+        "  movq %rsp, %rax\n"
+        "  movq %rcx, %rsp\n"
+        "  movq $1, (%r8)\n"
+        "1:\n"
+        "  pause\n"
+        "  cmpq $0, (%rdx)\n"
+        "  jne 1b\n"
+        "  movq %rax, %rsp\n"
         "  ret\n"
 
         /* fiber_test_switch_holding(from, to, loop, slot, key): see the SysV version. */
@@ -771,5 +811,20 @@ __asm__(".text\n" FT_FUNC_BEGIN("fiber_test_switch") FT_SEH(".seh_proc fiber_tes
         "  bl fiber__switch\n"
         "  ldp x9, x30, [sp], #16\n"
         "  mov sp, x9\n"
-        "  ret\n" FT_FUNC_END("fiber_test_switch_at"));
+        "  ret\n" FT_FUNC_END("fiber_test_switch_at")
+
+        /* fiber_test_park_at(sp, hold, parked): see the SysV version. x0 = sp, x1 = hold,
+           x2 = parked. */
+        FT_FUNC_BEGIN("fiber_test_park_at")
+        "  and x0, x0, #-16\n"
+        "  mov x9, sp\n"
+        "  mov sp, x0\n"
+        "  mov x10, #1\n"
+        "  str x10, [x2]\n"
+        "1:\n"
+        "  yield\n"
+        "  ldr x10, [x1]\n"
+        "  cbnz x10, 1b\n"
+        "  mov sp, x9\n"
+        "  ret\n" FT_FUNC_END("fiber_test_park_at"));
 #endif

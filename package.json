@@ -30,6 +30,7 @@
   "devDependencies": {
     "@biomejs/biome": "2.4.12",
     "@mermaid-js/mermaid-cli": "^11.4.2",
+    "@paulirish/trace_engine": "0.0.68",
     "@types/chalk": "^0.4.31",
     "@types/cli-progress": "^3.11.6",
     "@types/deep-equal": "^1.0.4",

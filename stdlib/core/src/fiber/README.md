@@ -49,6 +49,7 @@ The full contract of every function is in the header comments. In short:
 | `fiber_stack_destroy(s)` | Releases it. No context may be suspended or running on it. |
 | `fiber_stack_trim(s, keep)` | Gives the pages below `top - keep` back to the OS, keeps the reservation. Only for an idle stack, before `fiber_ctx_init`. |
 | `fiber_stack_guard_contains(s, addr)` | `addr` in `[base, limit)`: a fault there is an overflow of `s`. Async-signal-safe. |
+| `fiber_readable_from(sp, top)` | Where another thread may start reading a stack whose running context it stopped at `sp`. Linux: `sp`. Windows: above the growth guard page when `sp` lies in it. NULL if the memory is in no stack's shape. |
 | `fiber_ctx_init(ctx, s, entry, user)` | Prepares `entry(transfer, user)` on `s`. Inherits the caller's FP control state (and, on Windows, stack guarantee). Returns 0, or (Windows only) an OS error. |
 | `fiber_switch(from, to, transfer)` | Suspends into `from`, resumes `to`; returns the `transfer` of the switch that later resumes `from`. No syscalls. `from == to` returns at once. |
 | `fiber_exit(to, transfer)` | Ends the running context and resumes `to`. The ended context's stack may be reused at once. |
@@ -150,7 +151,12 @@ like `tests/gc_test.c`:
 * **Windows** (no corrector in BDWGC's win32 threads): when a thread's sp is on a task stack,
   BDWGC pushes the thread's whole committed stack and warns ("pushing everything"). Filter that
   warning with `GC_set_warn_proc`. The hook gets other threads' live sp with `GetThreadContext`
-  (they are suspended during marking), and its own from its frame. BDWGC finds the bottom of that
+  (they are suspended during marking), and its own from its frame. It pushes the running task
+  from `fiber_readable_from(live sp, top)`, never from the sp itself: a thread stopped between a
+  prologue's `sub rsp` and its first store has its sp in the growth guard page, and a read of
+  that page from another thread raises `STATUS_GUARD_PAGE_VIOLATION` there (seen 2026-11-23 in
+  hzstd's stall watchdog, about one run in 150). BDWGC's own win32 code knows the same case for
+  native stacks. BDWGC finds the bottom of that
   committed stack by walking down to its guard page, so every such thread needs a normal stack:
   never pass a commit size that fills the whole reservation (`CreateThread(NULL, 1 << 20, ...)`
   without `STACK_SIZE_PARAM_IS_A_RESERVATION` commits all of it and leaves no guard page; the walk
@@ -341,6 +347,7 @@ port.
 | `windows-exceptions` | (Windows) `longjmp` across 20 frames (RtlUnwindEx checks the TEB bounds). Under MSVC, `__try/__except` catches `RaiseException` and an access violation raised in a called function inside a task. Without `-fasync-exceptions`, clang catches only faults from calls in a `__try`. |
 | `windows-growth-in-switch` | (Windows) The switch's pushes grow the old stack through its guard page. |
 | `windows-normalize` | (Windows) After overflows, `fiber_ctx_init` restores the fresh layout. |
+| `readable-from` | A context parks its sp below everything it wrote (Windows: inside its growth guard page) and another thread reads its stack from `fiber_readable_from`, as a collector does (Windows: suspended, sp from `GetThreadContext`). The read finds a value the context wrote, never touches the guard page (a test handler names it), the guard page stays, and the stack grows afterwards. Mutant `win-readable-guard` (read from the sp) fails it. |
 
 The runner adds these checks:
 

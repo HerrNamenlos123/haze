@@ -600,7 +600,8 @@ Runtime: `stdlib/core/src/hzstd/src/hzstd_sched.c`; Haze API: `stdlib/core/src/t
   keep rbp at an offset, so the Linux frame-pointer walk stops after one frame (measured). The
   unwinder (`RtlLookupFunctionEntry`, dbghelp) can take the loader's or the heap's lock, which
   the stalled task may hold, so nothing of it runs while the task is suspended: `SuspendThread`,
-  `GetThreadContext`, a copy of its stack from rsp up (at most 256 KiB, into a buffer made before
+  `GetThreadContext`, a copy of its stack from rsp up (from `fiber_readable_from`, R-9; at most
+  256 KiB, into a buffer made before
   any task runs), `ResumeThread`. `StackWalk64` then walks the copy (its read callback serves the
   copied range, refuses the rest of that stack, reads code and unwind data as they are).
   Rejected: unwinding the live stack while suspended (deadlocks), relocating registers into the
@@ -677,8 +678,63 @@ interface exists for this; in hzstd prefer raw malloc over the GC whenever possi
   opened a scope before the window.
 - **A-10. The stall trace deduplication stays by stack hash** (section 10); its case looked at the
   clock every step, so most traces were caught inside `time.now()` and counted as another stack
-  (3 reports instead of 2 on Linux). The loops look at the clock every million steps. Which stall
-  identity is right for a loop that spends most of its time in a call is open (ledger).
+  (3 reports instead of 2 on Linux). The loops looked at the clock every million steps. Superseded by
+  R-7 (a stall's place), with the plain loop back in the test.
+
+## Crash and stall reports, and what Haze can reach (2026-11-23)
+
+The user's rules: memory Haze code can reach is GC memory, or built so that no reference to it can
+exist (access yields values); malloc memory never reaches Haze, has an owner that frees it, and shares
+no code with the managed structures; a dynamic array is GC memory by definition. f72b0247 and
+aed214a9 broke them: hand-built dynamic arrays in malloc memory for the Windows stall trace and panic
+worker, the panic info within reach of Haze through `recover e` (the Linux panic worker and
+`sys.buildStacktrace` did the same before). The user, on delegating the stall identity: "It must all
+make sense and be easy for users to understand what is going on."
+
+- **R-1. A raw report** (hzstd_types.h `hzstd_raw_report_t`): what the panic worker and the stall
+  watchdog record of a stack, plain values in fixed storage (128 frames, 64 KiB of names and files,
+  a 4 KiB message), no GC memory, no malloc, no pointer into anything. Its own code
+  (hzstd_runtime.c "Raw reports"): no dynamic array.
+- **R-2. Where it lives.** A panic a task can recover from, and `sys.buildStacktrace`, are reported
+  into the record of the thread's scheduler (malloc memory owned by the scheduler, made with it);
+  a crash nothing recovers from into the worker's own static record, printed from there; a stall
+  into the watchdog's static record.
+- **R-3. Haze gets GC copies only, made by the task.** The recovery copies the report into
+  `task->panic_info` as its last step, after the recovery frame is popped (a failure while copying,
+  out of memory or an allocation limit, goes to the next frame out instead of recovering into the
+  same frame again); `hzstd_build_stacktrace` copies after releasing the panic gate. The copy (about
+  2N+3 GC allocations for N frames) counts against an enclosing `sys.limitAllocations` like any of
+  the task's allocations (user, 2026-11-24). A sequence
+  number in the record, written into the recovery frame before the longjmp, is checked at the copy:
+  a defect that let another request write the record in between (a requester taking another one's
+  response, which the protocol now rules out) fails loud instead of handing out the wrong report.
+- **R-4. Printing without GC memory**: the printers work on plain frame lists (shared by GC and raw
+  reports; no array code), naming each frame into a fixed buffer for a raw report.
+- **R-5. A message is cut at the record's size and says so** (" (message cut)"); before, messages
+  were cut at 1023 bytes without a word.
+- **R-6. The panic message is a view** while the worker runs (the panicking thread waits inside the
+  panic function, its stack intact); the worker copies it into the report.
+- **R-7. Stall identity** (left to me by the user): a stall's place is the stack from the innermost
+  function mangled with a module outwards (`_HNHM...`: the program and every library outside core,
+  hzui and sdl included); core's (`_HN4time3nowEv`), the runtime's and the system's frames below
+  do not count. A loop caught inside a library call outside core is another place than one caught
+  in its own code: the stall shows wherever the program is (user, 2026-11-24). The trace is printed
+  once per place; a stall at a place seen before is one line naming it. Supersedes A-10's stack hash.
+- **R-8. One panic worker on Windows** however many threads call `hzstd_setup_panic_handler` (the
+  profiler's threads do): a second worker and semaphore pair orphaned a panic in flight, as Linux had
+  found. Windows also kept its recovery target only in the global another panic could set after the
+  worker opened the gate: now a local, and the worker writes the report's sequence before opening it.
+- **R-9. Another thread reads a stopped stack from `fiber_readable_from(sp, top)`** (fiber.h), never
+  from sp. On Windows a thread stopped between a prologue's `sub rsp` and its first store has its sp
+  in the growth guard page; a read of that page from another thread raises
+  STATUS_GUARD_PAGE_VIOLATION in the reader and leaves the stack without its growth guard. Seen as
+  the overflow case ending with 0x80000001 and no output: the stall watchdog's copy, 8 of 1100 runs
+  (0 of 1000 after); the GC push hook read the same way. The fiber library owns the stack's layout,
+  so the rule and its test live there (test `readable-from`, mutant `win-readable-guard`).
+- **R-10. Stall cases spin on the watchdog's own measure when they must warn**
+  (`sys.timeSinceTaskSwitch`, the CPU time a stall is judged by) and on the wall clock when they must
+  not: a wall-clock spin gets less CPU time than it lasts on a loaded machine (once per place under
+  ten busy loops: 38 of 60 runs failed before, 0 of 60 after).
 
 ## Tooling
 

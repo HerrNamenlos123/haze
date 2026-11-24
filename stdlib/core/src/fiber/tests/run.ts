@@ -1978,6 +1978,13 @@ const MUTANTS_LIST: Mutant[] = [
     edit: (l) => l.replace(/PAGE_READWRITE \| PAGE_GUARD/, "PAGE_READWRITE"),
     why: "no growth guard page",
   },
+  {
+    id: "win-readable-guard",
+    family: ["windows"],
+    edit: (l) => l.replace("return p;", "return sp;"),
+    focus: { test: "readable-from", expect: /touched the growth guard page/ },
+    why: "another thread reads a stopped context's stack from its sp, in the growth guard page",
+  },
   ...[
     "x19",
     "x20",

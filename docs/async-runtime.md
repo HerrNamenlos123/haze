@@ -543,7 +543,9 @@ Rejected: `GC_set_stackbottom` on every switch (needs the allocator lock per swi
 
 Windows (no corrector): BDWGC scans the whole committed native stack (conservative, correct); filter
 its per-collection warning with `GC_set_warn_proc`. The push hook reads the running task's sp with
-`GetThreadContext` (the thread is already suspended). Dead stack below sp and pooled stacks are never
+`GetThreadContext` (the thread is already suspended) and pushes it from `fiber_readable_from(sp, top)`:
+a thread stopped between a prologue's `sub rsp` and its first store has its sp in the growth guard
+page, which only that thread may touch (decisions R-9). Dead stack below sp and pooled stacks are never
 scanned.
 
 ### 8.2 libuv is not GC-aware
@@ -575,6 +577,18 @@ its lambda runs; `sys.limitAllocations({ count?, bytes? }, () => {...})` panics 
 allocation past a limit. Every GC allocation goes through one place in hzstd_memory.c; windows
 belong to the task (other tasks and threads never count), nest, and close when a panic unwinds
 past them. Decisions A-1 to A-10 in docs/async-decisions.md.
+
+### 8.5 Crash and stall reports
+
+Memory Haze code can reach is GC memory (the user's rule, 2026-11-23: a reference Haze keeps to memory
+the GC does not manage can dangle). The panic worker and the stall watchdog must not touch the
+collector (the panicking thread may hold its lock; the watchdog runs under an allocation limit of
+none), so they record a stack in a raw report (hzstd_types.h): plain values in fixed storage, never
+reachable from Haze. The report of a panic a task can recover from, and of `sys.buildStacktrace`, goes
+into the record of the thread's scheduler; the task copies it into its own GC memory (the recovery
+after its frame is popped, `hzstd_panic_adopt_report`; `hzstd_build_stacktrace` after the panic gate).
+A crash nothing recovers from is printed from the worker's own record. A message longer than the record
+holds (4 KiB) is cut and says so. Decisions R-1 to R-8 in docs/async-decisions.md.
 
 ---
 
@@ -617,13 +631,20 @@ switch path never reads a clock:
 * when no scheduler runs a task, the watchdog blocks on a futex without timeout: zero idle wakeups.
 
 **Report**: Linux `pthread_kill` with a dedicated real-time signal whose handler walks the frame
-pointers; Windows `SuspendThread` + `GetThreadContext` + a copy of the stack from rsp up +
+pointers; Windows `SuspendThread` + `GetThreadContext` + a copy of the stack from
+`fiber_readable_from(rsp, top)` up (decisions R-9) +
 `ResumeThread`, then `StackWalk64` over the copy (Win64 frames keep rbp at an offset, so frame
 pointers do not chain). Nothing that takes a lock runs while the thread is stopped; the names come
 after (decisions S3-23, S3-29, S3-30). A report in progress delays the process's end (S3-32).
 Windows CPU time: `QueryThreadCycleTime` counts at the TSC's rate, which the watchdog learns
 against QPC (S3-28).
-Deduplicated by stack hash. Message, roughly:
+A stall is reported once per place, the stack trace printed with it: a place is the stack from the
+innermost function mangled with a module outwards (`_HNHM...`: the program and every library
+outside core); frames of core, the runtime and the system below it do not count, so a loop is one
+place whichever core or runtime call the watchdog catches it in. A stall
+at a place seen before is one line naming it ("again in spinA() (its stack trace was printed
+before)"). The watchdog records the trace in a raw report (no GC memory, no malloc: see section 8.5).
+Message, roughly:
 
 ```
 warning: a task ran 14 ms without yielding (thread: main), so nothing else on this thread could run.

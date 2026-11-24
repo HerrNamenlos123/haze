@@ -25,6 +25,11 @@ void *fiber_test_switch(fiber_ctx *from, fiber_ctx *to, void *transfer, fiber_te
 void fiber_test_entry_probe(void *transfer, void *user);
 void fiber__trampoline(void); /* inside the implementation; tests check return addresses against it */
 void *fiber_test_switch_at(fiber_ctx *from, fiber_ctx *to, void *transfer, void *sp);
+/*
+ * Moves the stack pointer to `sp` (aligned down to 16) without storing anything there, sets
+ * *parked to 1, waits while *hold != 0, then returns with the stack pointer restored (regs.c).
+ */
+void fiber_test_park_at(void *sp, volatile long long *hold, volatile long long *parked);
 
 /*
  * The GC test's "only in registers" case (regs.c). With `loop` NULL it switches once (transfer

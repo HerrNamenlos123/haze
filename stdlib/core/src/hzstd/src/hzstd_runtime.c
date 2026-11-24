@@ -305,6 +305,57 @@ static hzstd_str_t loc_line_col(hzstd_str_t loc)
 // ── Display name
 // ──────────────────────────────────────────────────────────────
 
+static hzstd_str_t frame_display_name(hzstd_allocator_t alloc, hzstd_str_t raw);
+
+// Where the printers get a frame's display name from: an allocator that
+// keeps every name (GC printing), or a fixed buffer that holds one name at a
+// time (raw reports: printed by threads that must not touch the collector;
+// each name is used before the next is made).
+typedef struct {
+  hzstd_allocator_t alloc;
+  bool fixed;
+  char *buffer;
+  size_t capacity;
+  size_t used;
+} hzstd_frame_namer_t;
+
+static void *namer_fixed_allocate(void *ctx, size_t size, const char *dataType, int skip_n_frames)
+{
+  (void)dataType;
+  (void)skip_n_frames;
+  hzstd_frame_namer_t *namer = ctx;
+  size_t at = (namer->used + 15) & ~(size_t)15;
+  if (at > namer->capacity || size > namer->capacity - at) {
+    hzstd_trap_ccstr("Internal Runtime Error: a frame name did not fit the report's naming buffer");
+  }
+  namer->used = at + size;
+  return namer->buffer + at;
+}
+
+static hzstd_frame_namer_t namer_with_allocator(hzstd_allocator_t alloc)
+{
+  return (hzstd_frame_namer_t) { .alloc = alloc, .fixed = false };
+}
+
+static hzstd_frame_namer_t namer_with_buffer(char *buffer, size_t capacity)
+{
+  return (hzstd_frame_namer_t) { .fixed = true, .buffer = buffer, .capacity = capacity, .used = 0 };
+}
+
+static hzstd_str_t namer_display(hzstd_frame_namer_t *namer, hzstd_str_t raw)
+{
+  if (!namer->fixed) {
+    return frame_display_name(namer->alloc, raw);
+  }
+  namer->used = 0;
+  hzstd_allocator_t alloc = {
+    .allocate = namer_fixed_allocate,
+    .allocateUnscanned = namer_fixed_allocate,
+    .ctx = namer,
+  };
+  return frame_display_name(alloc, raw);
+}
+
 static hzstd_str_t frame_display_name(hzstd_allocator_t alloc, hzstd_str_t raw)
 {
   char *tmp = (char *)hzstd_allocate_unscanned(alloc, raw.length + 1, NULL);
@@ -390,16 +441,14 @@ static hzstd_str_t sbuf_finish(hzstd_sbuf_t *b)
 //
 // print_frames_to_stderr / sbuf_frames write only the "Stack trace:" section.
 
-static void print_frames_to_stderr(hzstd_allocator_t alloc, hzstd_dynamic_array_t *frames, hzstd_int_t skip_n_frames)
+static void print_frames_to_stderr(hzstd_frame_namer_t *namer, const hzstd_stackframe_t *frames, size_t n_frames, hzstd_int_t skip_n_frames)
 {
-  size_t n_frames = hzstd_dynamic_array_size(frames);
-
   fprintf(stderr, "\n" A_WHITE_B "Stack trace:" A_RESET "\n\n");
 
   size_t name_col = 0;
   for (size_t i = (size_t)skip_n_frames; i < n_frames; i++) {
-    hzstd_stackframe_t frame = HZSTD_DYNAMIC_ARRAY_GET(frames, hzstd_stackframe_t, i);
-    hzstd_str_t dn = frame_display_name(alloc, frame.name);
+    hzstd_stackframe_t frame = frames[i];
+    hzstd_str_t dn = namer_display(namer, frame.name);
     if (dn.length > name_col) {
       name_col = dn.length;
     }
@@ -411,15 +460,15 @@ static void print_frames_to_stderr(hzstd_allocator_t alloc, hzstd_dynamic_array_
 
   size_t vis_idx = 0;
   for (size_t i = (size_t)skip_n_frames; i < n_frames;) {
-    hzstd_stackframe_t frame = HZSTD_DYNAMIC_ARRAY_GET(frames, hzstd_stackframe_t, i);
+    hzstd_stackframe_t frame = frames[i];
 
     size_t max_L = (n_frames - i < 32) ? n_frames - i : 32;
     size_t cyc_len = 0, cyc_rep = 1;
     for (size_t L = 1; L <= max_L && i + 2 * L <= n_frames; L++) {
       bool match = true;
       for (size_t k = 0; k < L && match; k++) {
-        hzstd_stackframe_t a = HZSTD_DYNAMIC_ARRAY_GET(frames, hzstd_stackframe_t, i + k);
-        hzstd_stackframe_t b = HZSTD_DYNAMIC_ARRAY_GET(frames, hzstd_stackframe_t, i + L + k);
+        hzstd_stackframe_t a = frames[i + k];
+        hzstd_stackframe_t b = frames[i + L + k];
         if (a.id != b.id) {
           match = false;
         }
@@ -431,8 +480,8 @@ static void print_frames_to_stderr(hzstd_allocator_t alloc, hzstd_dynamic_array_
       while (i + cnt * L + L <= n_frames) {
         bool m2 = true;
         for (size_t k = 0; k < L && m2; k++) {
-          hzstd_stackframe_t a = HZSTD_DYNAMIC_ARRAY_GET(frames, hzstd_stackframe_t, i + k);
-          hzstd_stackframe_t b2 = HZSTD_DYNAMIC_ARRAY_GET(frames, hzstd_stackframe_t, i + cnt * L + k);
+          hzstd_stackframe_t a = frames[i + k];
+          hzstd_stackframe_t b2 = frames[i + cnt * L + k];
           if (a.id != b2.id) {
             m2 = false;
           }
@@ -457,8 +506,8 @@ static void print_frames_to_stderr(hzstd_allocator_t alloc, hzstd_dynamic_array_
               cyc_len,
               cyc_len == 1 ? "" : "s");
       for (size_t k = 0; k < cyc_len; k++) {
-        hzstd_stackframe_t fr = HZSTD_DYNAMIC_ARRAY_GET(frames, hzstd_stackframe_t, i + k);
-        hzstd_str_t dn = frame_display_name(alloc, fr.name);
+        hzstd_stackframe_t fr = frames[i + k];
+        hzstd_str_t dn = namer_display(namer, fr.name);
         fprintf(stderr, A_DIM "      ");
         fwrite(dn.data, 1, dn.length, stderr);
         fprintf(stderr, A_RESET "\n");
@@ -469,7 +518,7 @@ static void print_frames_to_stderr(hzstd_allocator_t alloc, hzstd_dynamic_array_
     }
 
     const char *sys = frame_system(frame.name);
-    hzstd_str_t dn = frame_display_name(alloc, frame.name);
+    hzstd_str_t dn = namer_display(namer, frame.name);
 
     fprintf(stderr, A_DIM " [%*zu] " A_RESET, idx_w, vis_idx);
     fprintf(stderr, sys ? A_DIM : A_WHITE);
@@ -621,30 +670,27 @@ sbuf_frames(hzstd_sbuf_t *b, hzstd_allocator_t scratch, hzstd_dynamic_array_t *f
 // ── Public API
 // ────────────────────────────────────────────────────────────────
 
-// Prints the full panic report: header + message + "at" location + frames.
-void hzstd_print_panic_info(hzstd_panic_info_t info)
+// The full panic report: header + message + "at" location + frames.
+static void print_panic_report(hzstd_frame_namer_t *namer,
+                               hzstd_str_t message,
+                               const hzstd_stackframe_t *frames,
+                               size_t n_frames,
+                               hzstd_int_t skip)
 {
-  hzstd_allocator_t alloc = hzstd_make_arena_allocator(HZSTD_ARENA_OPTIONS("Panic report"));
-
   hzstd_str_t loc_str = { .data = NULL, .length = 0 };
-  hzstd_str_t body = info.message;
-  bool has_loc = split_panic_message(info.message, &loc_str, &body);
+  hzstd_str_t body = message;
+  bool has_loc = split_panic_message(message, &loc_str, &body);
 
   fprintf(stderr, A_RED_B "\n[FATAL] Thread panicked\n" A_RESET "\n");
   fprintf(stderr, A_WHITE_B);
   fwrite(body.data, 1, body.length, stderr);
   fprintf(stderr, A_RESET "\n");
 
-  hzstd_dynamic_array_t *frames = info.stacktrace.frames;
-  size_t n_frames = hzstd_dynamic_array_size(frames);
-  hzstd_int_t skip = info.stacktrace.skip_n_frames;
-
   hzstd_stackframe_t first_user = { 0 };
   bool has_first_user = false;
   for (size_t i = (size_t)skip; i < n_frames; i++) {
-    hzstd_stackframe_t frame = HZSTD_DYNAMIC_ARRAY_GET(frames, hzstd_stackframe_t, i);
-    if (!frame_system(frame.name)) {
-      first_user = frame;
+    if (!frame_system(frames[i].name)) {
+      first_user = frames[i];
       has_first_user = true;
       break;
     }
@@ -656,34 +702,247 @@ void hzstd_print_panic_info(hzstd_panic_info_t info)
     fprintf(stderr, "\n" A_DIM "  at " A_RESET A_YELLOW_B);
     print_path_hyperlink(p, lc);
     fprintf(stderr, A_RESET "\n");
-    hzstd_str_t in_name = frame_display_name(alloc, first_user.name);
+    hzstd_str_t in_name = namer_display(namer, first_user.name);
     fprintf(stderr, A_DIM "     in " A_RESET A_WHITE);
     fwrite(in_name.data, 1, in_name.length, stderr);
     fprintf(stderr, A_RESET "\n");
   }
 
-  print_frames_to_stderr(alloc, frames, skip);
+  print_frames_to_stderr(namer, frames, n_frames, skip);
   fflush(stderr);
 }
 
-// Alias used by the panic worker thread.
-void hzstd_print_panic_report(hzstd_panic_info_t *info)
+// Prints the full panic report: header + message + "at" location + frames.
+void hzstd_print_panic_info(hzstd_panic_info_t info)
 {
-  hzstd_print_panic_info(*info);
+  hzstd_frame_namer_t namer = namer_with_allocator(hzstd_make_arena_allocator(HZSTD_ARENA_OPTIONS("Panic report")));
+  size_t n = hzstd_dynamic_array_size(info.stacktrace.frames);
+  print_panic_report(&namer,
+                     info.message,
+                     n > 0 ? (const hzstd_stackframe_t *)info.stacktrace.frames->buffer : NULL,
+                     n,
+                     info.stacktrace.skip_n_frames);
 }
 
 // Prints only the "Stack trace:" section (no message/type header).
 void hzstd_print_stacktrace(hzstd_stacktrace_t st)
 {
-  hzstd_allocator_t alloc = hzstd_make_arena_allocator(HZSTD_ARENA_OPTIONS("Stack trace print"));
-  print_frames_to_stderr(alloc, st.frames, st.skip_n_frames);
+  hzstd_frame_namer_t namer
+      = namer_with_allocator(hzstd_make_arena_allocator(HZSTD_ARENA_OPTIONS("Stack trace print")));
+  size_t n = hzstd_dynamic_array_size(st.frames);
+  print_frames_to_stderr(
+      &namer, n > 0 ? (const hzstd_stackframe_t *)st.frames->buffer : NULL, n, st.skip_n_frames);
   fflush(stderr);
 }
 
-void hzstd_print_stacktrace_without_gc(hzstd_stacktrace_t st)
+// ── Raw reports (hzstd_types.h) ──────────────────────────────────────────────
+
+void hzstd_raw_report_clear(hzstd_raw_report_t *report)
 {
-  print_frames_to_stderr(hzstd_make_non_gc_raw_malloc_allocator(), st.frames, st.skip_n_frames);
+  report->sequence += 1;
+  report->count = 0;
+  report->next_id = 1;
+  report->skip_n_frames = 0;
+  report->type = hzstd_panic_type_unknown;
+  report->message_length = 0;
+  report->text_used = 0;
+}
+
+// How many of the first `n` bytes of `data` (of `length`) to keep so that a cut
+// never splits a UTF-8 sequence: back to the start of the one it would split.
+static size_t utf8_cut(const char *data, size_t length, size_t n)
+{
+  if (n >= length) {
+    return length;
+  }
+  while (n > 0 && ((uint8_t)data[n] & 0xC0) == 0x80) {
+    n--;
+  }
+  return n;
+}
+
+// Copies `length` bytes into the text buffer, as many as fit; the offset and
+// the length kept.
+static void raw_report_text(hzstd_raw_report_t *report, const char *data, size_t length, uint32_t *offset, uint32_t *kept)
+{
+  size_t room = HZSTD_RAW_REPORT_TEXT - report->text_used;
+  size_t n = utf8_cut(data, length, length < room ? length : room);
+  if (n > 0) {
+    memcpy(report->text + report->text_used, data, n);
+  }
+  *offset = (uint32_t)report->text_used;
+  *kept = (uint32_t)n;
+  report->text_used += n;
+}
+
+bool hzstd_raw_report_add_frame(hzstd_raw_report_t *report,
+                                void *ip,
+                                const char *name,
+                                size_t name_length,
+                                const char *file,
+                                size_t file_length,
+                                hzstd_int_t line)
+{
+  if (report->count == HZSTD_RAW_REPORT_FRAMES) {
+    return false;
+  }
+  for (size_t i = 0; i < report->count; i++) {
+    if (report->frames[i].ip == ip) {
+      report->frames[report->count++] = report->frames[i];
+      return true;
+    }
+  }
+  hzstd_raw_frame_t *frame = &report->frames[report->count++];
+  frame->ip = ip;
+  frame->id = report->next_id++;
+  frame->line = line;
+  raw_report_text(report, name, name_length, &frame->name, &frame->name_length);
+  raw_report_text(report, file, file_length, &frame->file, &frame->file_length);
+  return true;
+}
+
+void hzstd_raw_report_set_message(hzstd_raw_report_t *report, hzstd_str_t message)
+{
+  static const char cut[] = " (message cut)";
+  size_t length = (size_t)message.length;
+  if (length < sizeof(report->message)) {
+    memcpy(report->message, message.data, length);
+    report->message_length = length;
+    return;
+  }
+  size_t kept = utf8_cut(message.data, length, sizeof(report->message) - sizeof(cut));
+  memcpy(report->message, message.data, kept);
+  memcpy(report->message + kept, cut, sizeof(cut) - 1);
+  report->message_length = kept + sizeof(cut) - 1;
+}
+
+static hzstd_str_t raw_report_str(const hzstd_raw_report_t *report, uint32_t offset, uint32_t length)
+{
+  return length == 0 ? HZSTD_STRING(NULL, 0) : HZSTD_STRING(report->text + offset, length);
+}
+
+// The report's frames as hzstd_stackframe_t values that point into its text:
+// for printing it, never kept.
+static size_t raw_report_views(const hzstd_raw_report_t *report, hzstd_stackframe_t *views)
+{
+  for (size_t i = 0; i < report->count; i++) {
+    const hzstd_raw_frame_t *f = &report->frames[i];
+    views[i] = (hzstd_stackframe_t) {
+      .id = f->id,
+      .instructionPointer = f->ip,
+      .name = raw_report_str(report, f->name, f->name_length),
+      .sourceloc = { ._filename = raw_report_str(report, f->file, f->file_length), ._line = f->line, ._column = 0 },
+    };
+  }
+  return report->count;
+}
+
+hzstd_stacktrace_t hzstd_raw_report_to_stacktrace(const hzstd_raw_report_t *report)
+{
+  hzstd_allocator_t heap = hzstd_make_heap_allocator();
+  hzstd_dynamic_array_t *frames
+      = HZSTD_DYNAMIC_ARRAY_CREATE(heap, hzstd_stackframe_t, report->count, "hzstd_stackframe_t");
+  for (size_t i = 0; i < report->count; i++) {
+    const hzstd_raw_frame_t *f = &report->frames[i];
+    hzstd_str_t name = raw_report_str(report, f->name, f->name_length);
+    hzstd_str_t file = raw_report_str(report, f->file, f->file_length);
+    hzstd_stackframe_t frame = {
+      .id = f->id,
+      .instructionPointer = f->ip,
+      .name = name.length > 0 ? hzstd_str_dup(name) : name,
+      .sourceloc = { ._filename = file.length > 0 ? hzstd_str_dup(file) : file, ._line = f->line, ._column = 0 },
+    };
+    HZSTD_DYNAMIC_ARRAY_PUSH(frames, frame);
+  }
+  return (hzstd_stacktrace_t) { .frames = frames, .skip_n_frames = report->skip_n_frames };
+}
+
+hzstd_panic_info_t hzstd_raw_report_to_panic_info(const hzstd_raw_report_t *report)
+{
+  return (hzstd_panic_info_t) {
+    .stacktrace = hzstd_raw_report_to_stacktrace(report),
+    .message = hzstd_str_dup(HZSTD_STRING(report->message, report->message_length)),
+    .type = report->type,
+  };
+}
+
+// The naming buffer of a raw print: one display name at a time.
+#define HZSTD_RAW_NAMING_BUFFER 65536
+
+void hzstd_raw_report_print_panic(const hzstd_raw_report_t *report)
+{
+  hzstd_stackframe_t views[HZSTD_RAW_REPORT_FRAMES];
+  char naming[HZSTD_RAW_NAMING_BUFFER];
+  hzstd_frame_namer_t namer = namer_with_buffer(naming, sizeof(naming));
+  size_t n = raw_report_views(report, views);
+  print_panic_report(&namer, HZSTD_STRING(report->message, report->message_length), views, n, report->skip_n_frames);
+}
+
+void hzstd_raw_report_print_trace(const hzstd_raw_report_t *report)
+{
+  hzstd_stackframe_t views[HZSTD_RAW_REPORT_FRAMES];
+  char naming[HZSTD_RAW_NAMING_BUFFER];
+  hzstd_frame_namer_t namer = namer_with_buffer(naming, sizeof(naming));
+  size_t n = raw_report_views(report, views);
+  print_frames_to_stderr(&namer, views, n, report->skip_n_frames);
   fflush(stderr);
+}
+
+// Code of the program or of a library: a function mangled with a module
+// (`_HNHM<module>...`). The standard library's own functions carry none
+// (`_HN4time3nowEv`), the runtime's and the system's are not Haze names.
+static bool raw_frame_is_place(const hzstd_raw_report_t *report, const hzstd_raw_frame_t *f)
+{
+  static const char module_code[] = "_HNHM";
+  return f->name_length >= sizeof(module_code) - 1
+      && memcmp(report->text + f->name, module_code, sizeof(module_code) - 1) == 0;
+}
+
+uint64_t hzstd_raw_report_place(const hzstd_raw_report_t *report, size_t *place_frame)
+{
+  size_t first = 0;
+  for (size_t i = 0; i < report->count; i++) {
+    if (raw_frame_is_place(report, &report->frames[i])) {
+      first = i;
+      break;
+    }
+  }
+  *place_frame = first;
+  uint64_t h = 1469598103934665603ull;
+  for (size_t i = first; i < report->count; i++) {
+    // By function, not instruction: a loop is caught at another instruction
+    // every time.
+    const hzstd_raw_frame_t *f = &report->frames[i];
+    for (uint32_t k = 0; k < f->name_length; k++) {
+      h = (h ^ (uint8_t)report->text[f->name + k]) * 1099511628211ull;
+    }
+    h = (h ^ 0xff) * 1099511628211ull;
+  }
+  return h;
+}
+
+size_t hzstd_raw_report_display_name(const hzstd_raw_report_t *report, size_t frame, char *out, size_t capacity)
+{
+  if (frame >= report->count || capacity == 0) {
+    return 0;
+  }
+  char naming[HZSTD_RAW_NAMING_BUFFER];
+  hzstd_frame_namer_t namer = namer_with_buffer(naming, sizeof(naming));
+  const hzstd_raw_frame_t *f = &report->frames[frame];
+  hzstd_str_t display = namer_display(&namer, raw_report_str(report, f->name, f->name_length));
+  size_t n = utf8_cut(display.data, (size_t)display.length, capacity - 1);
+  memcpy(out, display.data, n);
+  out[n] = '\0';
+  return n;
+}
+
+void hzstd_panic_adopt_report(hzstd_context_t *ctx, const hzstd_panic_recovery_frame_t *frame)
+{
+  const hzstd_raw_report_t *report = hzstd_thread_panic_report();
+  if (report == NULL || report->sequence != frame->report_sequence) {
+    hzstd_panic("Internal Runtime Error: a recovered panic's report was overwritten before the task took it");
+  }
+  ctx->task->panic_info = hzstd_raw_report_to_panic_info(report);
 }
 
 // Stringifies the full panic report (header + message + frames).
@@ -831,7 +1090,7 @@ hzstd_panic_recovery_frame_t *hzstd_push_panic_recovery_frame(hzstd_context_t *c
   // the pointer never outlives the storage it points at.
   frame->cleanup_count = 0;
   frame->cleanup_overflow = NULL;
-  memset(&frame->_hz_panic_stacktrace, 0, sizeof(frame->_hz_panic_stacktrace));
+  frame->report_sequence = 0;
   frame->saved_stackref_count = ctx->task->held_len;
   hzstd_reactive_save_state(ctx, &frame->saved_reactive);
   frame->saved_alloc_window_depth = ctx->task->alloc_windows.depth;

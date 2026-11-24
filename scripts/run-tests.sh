@@ -114,6 +114,19 @@ set -e
 echo "==> Checking parser equivalence (§8.3)"
 bun run scripts/parser-equivalence.ts --fresh-since "$GATE_START"
 
+# The profiler's trace as DevTools reads it: DevTools' own trace engine
+# (@paulirish/trace_engine, pinned) parses a real profile of a program with
+# tasks (docs/profiler-timelines.md). DevTools drops events that break its
+# nesting without a word, so only its own parser can tell.
+echo "==> Checking the profiler's trace in DevTools' trace engine"
+set +e
+bun test "$REPO_ROOT/scripts/profiler-trace.test.ts"
+trace_exit=$?
+set -e
+if [ "$exit_code" -eq 0 ]; then
+  exit_code=$trace_exit
+fi
+
 # hzstd's DWARF line-table reader against llvm-dwarfdump and llvm-symbolizer:
 # its unit tests, its fixtures, and every ELF executable this run has built
 # (the cases above included). After the suite, so they all exist.

@@ -138,6 +138,7 @@ fn main(): int {
     cases_alloc_windows.register(suite);
     cases_regex.register(suite);
     cases_profiler_timeline.register(suite);
+    cases_crash_reports.register(suite);
 
     return testsuite.runAll(config, suite);
 }

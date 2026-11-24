@@ -81,7 +81,6 @@ struct hzstd_sched_t {
   uint64_t wd_epoch; // the watchdog's own: the run it measures, since when,
   double wd_start;   // and the length of its next report
   double wd_next_report;
-  bool wd_reported; // whether this run's first report was printed
   hzstd_task_t *ready_head; // the ready queue, oldest first
   hzstd_task_t *ready_tail;
   hzstd_task_t *live;       // every unfinished task (the registry)
@@ -92,6 +91,12 @@ struct hzstd_sched_t {
   size_t pool_len;
   hzstd_sched_t *next; // g_hzstd_scheds
   uint64_t os_tid;     // the operating system's id of the thread
+  // Where the panic worker writes the report of a panic on this thread that a
+  // task can recover from, and of sys.buildStacktrace (hzstd_types.h, raw
+  // reports): malloc memory owned by the scheduler, never reachable from
+  // Haze. Made with the scheduler; a thread's scheduler lives as long as the
+  // thread (stage 5 frees it with the thread).
+  hzstd_raw_report_t *panic_report;
   // A profiling session's record of this thread (hzstd_sched_trace_*); only
   // this thread writes it while a session runs.
   struct hzstd_trace_chunk_t *trace_head;
@@ -253,7 +258,12 @@ static void GC_CALLBACK hzstd_push_task_stacks(void)
       char *lo = NULL;
       char *live = s->live_sp;
       if (live != NULL && hzstd_in_range(live, t->stack.limit, t->stack.top)) {
-        lo = live; // the running one, found by address
+        // The running one, found by address, read from where another thread
+        // may: on Windows its sp can lie in the growth guard page (fiber.h).
+        lo = fiber_readable_from(live, t->stack.top);
+        if (lo == NULL) {
+          hzstd_panic("the collector found a running task's stack in no stack's shape");
+        }
       }
       else if (t->fiber.sp != NULL) {
         lo = t->fiber.sp; // suspended
@@ -750,6 +760,12 @@ void hzstd_sched_trace_end(hzstd_profiling_result_t *result, double time_ref)
   }
   g_hzstd_trace_foreign_count = 0;
   atomic_flag_clear_explicit(&g_hzstd_trace_foreign_lock, memory_order_release);
+}
+
+hzstd_raw_report_t *hzstd_thread_panic_report(void)
+{
+  hzstd_thread_t *thread = hzstd_current_thread;
+  return thread != NULL && thread->sched != NULL ? thread->sched->panic_report : NULL;
 }
 
 double hzstd_cpu_seconds_per_tick(void)
@@ -1330,27 +1346,15 @@ static _Atomic int g_watchdog_sleeping = 0;
 // a lock the stalled task held, so it often finishes only after the stall.
 static _Atomic int g_stall_report_busy = 0;
 
-// Stacks already reported (section 10: deduplicated by stack hash), by a hash
-// of their functions' names; the watchdog's own.
+// Places already reported (section 10, hzstd_raw_report_place), by a hash of
+// their functions' names; the watchdog's own.
 #define HZSTD_STALL_SEEN_MAX 256
 static uint64_t g_stall_seen[HZSTD_STALL_SEEN_MAX];
 static size_t g_stall_seen_count = 0;
 
-static uint64_t hzstd_stall_stack_hash(hzstd_stacktrace_t st)
-{
-  uint64_t h = 1469598103934665603ull;
-  hzstd_dynamic_array_t *frames = st.frames;
-  for (size_t i = 0; frames != NULL && i < frames->size; i++) {
-    // By function, not instruction: a loop is caught at a different
-    // instruction every time.
-    hzstd_stackframe_t f = HZSTD_DYNAMIC_ARRAY_GET(frames, hzstd_stackframe_t, i);
-    for (hzstd_int_t k = 0; k < f.name.length; k++) {
-      h = (h ^ (uint8_t)f.name.data[k]) * 1099511628211ull;
-    }
-    h = (h ^ 0xff) * 1099511628211ull;
-  }
-  return h;
-}
+// The watchdog's record of a stalled task's stack: one at a time (the
+// watchdog is one thread), never reachable from Haze.
+static hzstd_raw_report_t g_stall_report;
 
 static bool hzstd_stall_seen_before(uint64_t hash)
 {
@@ -1365,26 +1369,28 @@ static bool hzstd_stall_seen_before(uint64_t hash)
   return false;
 }
 
-// A run's first report comes with the stack trace of where the task is, once
-// per stack (by the names of its functions); a later report of the same run,
-// at each doubling, is one line, and only if the first one was printed.
+// A run's first report names where the task is. The stack trace comes with
+// it the first time that place is seen; a stall at a place seen before is one
+// line naming it (docs/async-runtime.md section 10: a place is the stack from
+// the innermost function of the program or a library outwards, so a loop is
+// one place whichever library or runtime call it is caught in). A later
+// report of the same run, at each doubling, is one line.
 static void hzstd_stall_report(hzstd_sched_t *s, double ran, bool first)
 {
-  hzstd_stacktrace_t trace = { 0 };
   bool traced = false;
+  bool seen = false;
+  char place[256] = { 0 };
   if (first) {
     // For the profiler, before the report: naming the trace takes long, and
     // the run may end meanwhile.
     hzstd_task_t *running = s->thread->current_task;
     hzstd_trace_note_foreign(s, HZSTD_SCHED_EVENT_STALL, running != NULL ? running->id : 0, (uint32_t)(ran * 1000.0));
-    traced = hzstd_capture_stall_trace(s, &trace);
-    s->wd_reported = !(traced && hzstd_stall_seen_before(hzstd_stall_stack_hash(trace)));
-    if (!s->wd_reported) {
-      return;
+    traced = hzstd_capture_stall_trace(s, &g_stall_report);
+    if (traced) {
+      size_t place_frame = 0;
+      seen = hzstd_stall_seen_before(hzstd_raw_report_place(&g_stall_report, &place_frame));
+      hzstd_raw_report_display_name(&g_stall_report, place_frame, place, sizeof(place));
     }
-  }
-  else if (!s->wd_reported) {
-    return;
   }
   char name[32];
   if (s->thread->id == 1) {
@@ -1395,7 +1401,15 @@ static void hzstd_stall_report(hzstd_sched_t *s, double ran, bool first)
   }
   char text[512];
   int n;
-  if (first) {
+  if (first && seen) {
+    n = snprintf(text,
+                 sizeof(text),
+                 "warning: a task ran %.0f ms without yielding (thread: %s), again in %s (its stack trace was printed before).\n",
+                 ran * 1000.0,
+                 name,
+                 place[0] != '\0' ? place : "the same place");
+  }
+  else if (first) {
     n = snprintf(text,
                  sizeof(text),
                  "warning: a task ran %.0f ms without yielding (thread: %s), so nothing else on this thread could run.\n"
@@ -1411,9 +1425,8 @@ static void hzstd_stall_report(hzstd_sched_t *s, double ran, bool first)
   if (n > 0) {
     fwrite(text, 1, (size_t)n < sizeof(text) ? (size_t)n : sizeof(text) - 1, stderr);
   }
-  if (traced) {
-    // Kept, like the trace: a report is rare (once per stack).
-    hzstd_print_stacktrace_without_gc(trace);
+  if (traced && !seen) {
+    hzstd_raw_report_print_trace(&g_stall_report);
   }
   fflush(stderr);
 }
@@ -1657,6 +1670,11 @@ static void hzstd_sched_init_thread(hzstd_thread_t *thread)
   hzstd_sched_t *s = hzstd_uncollectable_allocate(sizeof(hzstd_sched_t));
   memset(s, 0, sizeof(*s));
   s->thread = thread;
+  s->panic_report = malloc(sizeof(hzstd_raw_report_t));
+  if (s->panic_report == NULL) {
+    hzstd_panic("Out of memory creating a thread's panic report record");
+  }
+  memset(s->panic_report, 0, sizeof(hzstd_raw_report_t));
   int rc = uv_loop_init(&s->loop);
   if (rc != 0) {
     hzstd_panic_fmt("Could not create the thread's event loop: %s", uv_strerror(rc));

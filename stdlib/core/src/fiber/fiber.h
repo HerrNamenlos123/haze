@@ -68,7 +68,10 @@
  * clears to->sp only after reading it, so a thread interrupted at any instruction of a switch
  * still has, for every context, either a correct ctx->sp or its live stack pointer on that
  * context's stack. A collector that scans "the running context from the interrupted sp, every
- * other context with ctx->sp != NULL from ctx->sp" therefore never misses a root.
+ * other context with ctx->sp != NULL from ctx->sp" therefore never misses a root. A thread that
+ * reads another thread's stopped stack starts at fiber_readable_from(interrupted sp, top), never
+ * at the sp itself: on Windows that sp can lie in the stack's growth guard page, which only the
+ * stack's own thread may touch.
  *
  * ---------------------------------------------------------------------------------------------
  * Stack layout
@@ -212,6 +215,26 @@ FIBER_API int fiber_stack_trim(fiber_stack *s, size_t keep);
  * EXCEPTION_STACK_OVERFLOW; an access violation inside the guard is an overflow too.
  */
 FIBER_API bool fiber_stack_guard_contains(const fiber_stack *s, const void *address);
+
+/*
+ * Where another thread may start reading a stack whose running context it has stopped (a
+ * collector, a sampler, a watchdog) with the stack pointer at `sp`. `top` is the top of that
+ * stack: fiber_stack.top for a context created here, the thread stack's start for the thread's
+ * own context. Every value the context may still use lies in [result, top), and all of it is
+ * readable. Returns NULL if `sp` is not below `top`, or (Windows) if the memory from `sp` up is
+ * in no stack's shape.
+ *
+ * Linux: `sp`. Pages nobody touched yet read as zero from any thread.
+ * Windows: the page at `sp` can still be the growth guard page: the context was stopped after
+ * moving its stack pointer down and before its first write below the committed part (the
+ * prologue of a frame smaller than a page has no probe). Only the stack's own thread may touch
+ * that page: its touch grows the stack, any other thread's raises STATUS_GUARD_PAGE_VIOLATION in
+ * that thread and leaves the stack without its growth guard. Nothing in a guard page was ever
+ * written, so the result is then the committed page above it. Asks the memory manager
+ * (VirtualQuery: system calls, no lock in the process), so it may run while the context's thread
+ * is suspended.
+ */
+FIBER_API void *fiber_readable_from(void *sp, void *top);
 
 /* The page size used for rounding (the OS page size). */
 FIBER_API size_t fiber_page_size(void);
@@ -1138,6 +1161,11 @@ FIBER_API int fiber_stack_trim(fiber_stack *s, size_t keep)
   return 0;
 }
 
+FIBER_API void *fiber_readable_from(void *sp, void *top)
+{
+  return (char *)sp < (char *)top ? sp : NULL;
+}
+
 #else /* Windows */
 
 FIBER_API size_t fiber_page_size(void)
@@ -1268,6 +1296,29 @@ FIBER_API int fiber_stack_trim(fiber_stack *s, size_t keep)
     return 0; /* nothing committed below what is kept */
   }
   return fiber__win_shape(s, keep_bottom);
+}
+
+FIBER_API void *fiber_readable_from(void *sp, void *top)
+{
+  char *p = (char *)sp;
+  char *end = (char *)top;
+  MEMORY_BASIC_INFORMATION mbi;
+  if (p >= end || VirtualQuery(p, &mbi, sizeof(mbi)) != sizeof(mbi)) {
+    return NULL;
+  }
+  if (mbi.State == MEM_COMMIT && (mbi.Protect & PAGE_GUARD) != 0) {
+    /* The growth guard: never written, so nothing in it is live. */
+    p = (char *)mbi.BaseAddress + mbi.RegionSize;
+    if (p >= end || VirtualQuery(p, &mbi, sizeof(mbi)) != sizeof(mbi)) {
+      return NULL;
+    }
+  }
+  /* From p up to top: committed read-write, one region (a stack is committed from its lowest
+     touched page up). */
+  if (mbi.State != MEM_COMMIT || mbi.Protect != PAGE_READWRITE || (char *)mbi.BaseAddress + mbi.RegionSize < end) {
+    return NULL;
+  }
+  return p; /* MUT win-readable-guard */
 }
 
 #endif /* Windows */

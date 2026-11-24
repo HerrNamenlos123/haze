@@ -2344,6 +2344,143 @@ static int run_death(const char *name)
   return 0;
 }
 
+/* ============================== reading a stopped stack ============================== */
+
+/*
+ * Another thread reads a stopped context's stack from fiber_readable_from(sp, top), as a
+ * collector, a sampler or a watchdog does. The context is parked with its stack pointer below
+ * everything it wrote, as when it is stopped between a prologue's stack adjustment and its first
+ * store; on Windows that is inside its growth guard page, which only its own thread may touch.
+ * The read covers what the context wrote, leaves the guard page alone, and the stack still grows.
+ */
+#define RF_MARKER 0x5EADB0A7C0FFEE11ull
+static fiber_ctx rf_main, rf_ctx;
+static fiber_stack rf_stack;
+static char *rf_park_sp;
+static volatile long long rf_hold, rf_parked;
+static volatile int rf_marker_found;
+#if FIBER__WINDOWS
+static HANDLE rf_parked_thread;
+static volatile DWORD rf_reader_tid;
+static LONG WINAPI rf_handler(EXCEPTION_POINTERS *info)
+{
+  if (info->ExceptionRecord->ExceptionCode == STATUS_GUARD_PAGE_VIOLATION && GetCurrentThreadId() == rf_reader_tid) {
+    ft_fail(__FILE__, __LINE__, "the reader touched the growth guard page at %p",
+            (void *)info->ExceptionRecord->ExceptionInformation[1]);
+  }
+  return EXCEPTION_CONTINUE_SEARCH;
+}
+static void rf_check_guard(const char *p, const char *when)
+{
+  MEMORY_BASIC_INFORMATION mbi;
+  CHECK(VirtualQuery(p, &mbi, sizeof(mbi)) == sizeof(mbi));
+  CHECKF(mbi.State == MEM_COMMIT && mbi.Protect == (PAGE_READWRITE | PAGE_GUARD),
+         "%s, the page at the stopped sp %p is not the growth guard page (protect %lx)", when, (void *)p, mbi.Protect);
+}
+#endif
+
+/* Not instrumented: the frames read hold ASan redzones. */
+__attribute__((no_sanitize_address)) static bool rf_find_marker(const char *from, const char *top)
+{
+  for (const volatile uint64_t *p = (const volatile uint64_t *)from; (const char *)(p + 1) <= top; p++) {
+    if (*p == RF_MARKER) {
+      return true;
+    }
+  }
+  return false;
+}
+
+static void rf_reader(void *arg)
+{
+  (void)arg;
+#if FIBER__WINDOWS
+  rf_reader_tid = GetCurrentThreadId();
+#endif
+  while (rf_parked == 0) {
+  }
+  char *sp = rf_park_sp;
+#if FIBER__WINDOWS
+  CHECK(SuspendThread(rf_parked_thread) != (DWORD)-1);
+  CONTEXT c;
+  memset(&c, 0, sizeof(c));
+  c.ContextFlags = CONTEXT_CONTROL;
+  CHECK(GetThreadContext(rf_parked_thread, &c));
+#if defined(FIBER_TARGET_WIN32_X64)
+  sp = (char *)(uintptr_t)c.Rsp;
+#else
+  sp = (char *)(uintptr_t)c.Sp;
+#endif
+  CHECKF(sp == rf_park_sp, "the stopped sp is %p, parked at %p", (void *)sp, (void *)rf_park_sp);
+  rf_check_guard(sp, "before the read");
+#endif
+  char *from = fiber_readable_from(sp, rf_stack.top);
+  CHECKF(from != NULL && from >= sp && from < (char *)rf_stack.top, "fiber_readable_from(%p) gave %p", (void *)sp,
+         (void *)from);
+#if FIBER__WINDOWS
+  CHECKF((size_t)(from - sp) < ft_page(), "the readable part starts %zu bytes above the sp", (size_t)(from - sp));
+#else
+  CHECK(from == sp);
+#endif
+  rf_marker_found = rf_find_marker(from, rf_stack.top);
+#if FIBER__WINDOWS
+  rf_check_guard(sp, "after the read");
+  CHECK(ResumeThread(rf_parked_thread) != (DWORD)-1);
+#endif
+  rf_hold = 0;
+}
+
+static FT_NOINLINE void rf_grow(void)
+{
+  char big[64 * 1024];
+  fiber_test_escape(big, sizeof(big), 1);
+}
+
+static void rf_entry(void *transfer, void *user)
+{
+  (void)transfer;
+  (void)user;
+  volatile uint64_t marker = RF_MARKER;
+#if FIBER__WINDOWS
+  rf_park_sp = (char *)ft_read_teb().stack_limit - 256; /* in the growth guard page, below everything written */
+#else
+  rf_park_sp = (char *)rf_stack.limit + 256; /* below everything written: pages nobody touched */
+#endif
+  fiber_test_park_at(rf_park_sp, &rf_hold, &rf_parked);
+  CHECK(marker == RF_MARKER);
+  rf_grow(); /* the stack grows below the parked sp */
+#if FIBER__WINDOWS
+  ft_teb after = ft_read_teb();
+  CHECKF((char *)after.stack_limit < rf_park_sp, "the stack did not grow below the parked sp");
+  ft_check_stack_limit(after.stack_limit, "after the read");
+#endif
+  fiber_exit(&rf_main, NULL);
+}
+
+static void test_readable_from(void)
+{
+  ft_stack(&rf_stack, 256 * 1024, 0);
+  CHECK(fiber_ctx_init(&rf_ctx, &rf_stack, rf_entry, NULL) == 0);
+  rf_hold = 1;
+  rf_parked = 0;
+  rf_marker_found = 0;
+#if FIBER__WINDOWS
+  CHECK(DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(), &rf_parked_thread, 0, FALSE,
+                        DUPLICATE_SAME_ACCESS));
+  void *handler = AddVectoredExceptionHandler(1, rf_handler);
+  CHECK(handler != NULL);
+#endif
+  ft_thread reader = ft_thread_create(rf_reader, NULL);
+  fiber_switch(&rf_main, &rf_ctx, NULL);
+  ft_thread_join(reader);
+  CHECKF(rf_marker_found, "the read did not cover a value the context wrote before it stopped");
+  CHECK(fiber_readable_from(rf_stack.top, rf_stack.top) == NULL);
+#if FIBER__WINDOWS
+  RemoveVectoredExceptionHandler(handler);
+  CloseHandle(rf_parked_thread);
+#endif
+  fiber_stack_destroy(&rf_stack);
+}
+
 /* ============================== main ============================== */
 
 typedef struct {
@@ -2372,6 +2509,7 @@ static const ft_test g_tests[] = {
     {"many-contexts", test_many_contexts},
     {"bench", test_bench},
     {"backtrace", test_backtrace},
+    {"readable-from", test_readable_from},
 #if (defined(FIBER_TARGET_LINUX_X64) || defined(FIBER_TARGET_WIN32_X64)) && !FT_ASAN
     {"gc-every-instruction", test_gc_every_instruction},
 #endif

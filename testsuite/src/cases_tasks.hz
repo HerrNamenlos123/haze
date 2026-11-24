@@ -445,7 +445,9 @@ fn main(): int {
         // C242: more than 10 ms of a task's own CPU time without a switch
         // warns, on stderr, naming the thread; runs below never do. The
         // watchdog measures every 5 ms, so the runs here stay well clear of
-        // the limit on either side.
+        // the limit on either side: the short ones on the wall clock (their
+        // CPU time is never more), the others until the watchdog measured
+        // them.
         s.run(
             "tasks: the stall warning fires when a task runs more than 10 ms without yielding",
             """
@@ -455,14 +457,24 @@ fn spin(seconds: real): int {
     while time.now() - start < seconds { n++; }
     return n;
 }
+// Runs until the watchdog has measured `seconds` of this run (its own CPU
+// time, what a stall is judged by), whatever the machine's load: a loop on
+// the wall clock gets less CPU time than it lasts on a busy machine. The
+// wall clock only bounds a watchdog that never measures.
+fn spinMeasured(seconds: real): int {
+    let start = time.now();
+    let n = 0;
+    while sys.timeSinceTaskSwitch() < seconds && time.now() - start < 10.0 { n++; }
+    return n;
+}
 fn main(): int {
     let args = sys.args();
     if args.length > 1 && args[1] == "long" {
-        let n = spin(0.06);
+        let n = spinMeasured(0.1);
         return 0;
     }
     if args.length > 1 && args[1] == "medium" {
-        let n = spin(0.03);
+        let n = spinMeasured(0.03);
         return 0;
     }
     if args.length > 1 && args[1] == "short" {
@@ -484,28 +496,27 @@ fn main(): int {
 """,
             "true true true true false 0 0");
 
-        // Section 10: a stall is reported with its trace once per stack (by
-        // the names of its functions); the same stack again stays quiet, a
-        // different one is reported. The loops look at the clock only every
-        // million steps: a trace caught inside time.now() is another stack, and
-        // checking it every step put most traces there.
+        // Section 10: a stall's trace is printed once per place (the stack
+        // from the innermost function of the program or a library outwards);
+        // a stall at a place seen before is one line naming it, a different
+        // place gets its trace. Each loop runs until the watchdog measured
+        // it (see spinMeasured in the case above) and looks at that measure
+        // every step, so the watchdog catches it inside
+        // sys.timeSinceTaskSwitch(), the runtime or the system as often as
+        // in its own code: all of it is the same place.
         s.run(
-            "tasks: a stall trace is printed once per stack",
+            "tasks: a stall trace is printed once per place, a repeat names it",
             """
 fn spinA(seconds: real): int {
     let start = time.now();
     let n = 0;
-    while time.now() - start < seconds {
-        for (let i = 0; i < 1000000; i++) { n++; }
-    }
+    while sys.timeSinceTaskSwitch() < seconds && time.now() - start < 10.0 { n++; }
     return n;
 }
 fn spinB(seconds: real): int {
     let start = time.now();
     let n = 0;
-    while time.now() - start < seconds {
-        for (let i = 0; i < 1000000; i++) { n++; }
-    }
+    while sys.timeSinceTaskSwitch() < seconds && time.now() - start < 10.0 { n++; }
     return n;
 }
 fn main(): int {
@@ -519,12 +530,14 @@ fn main(): int {
         return 0;
     }
     let r = process.runCaptured(args[0], ["child"]);
-    let reports = r.stderrResult.split("It is currently at:").length - 1;
-    fmt.println(f"{r.exitCode} {reports} {r.stderrResult.contains("spinA")} {r.stderrResult.contains("spinB")}");
+    let e = r.stderrResult;
+    let reports = e.split("It is currently at:").length - 1;
+    let repeat = e.contains("again in spinA() (its stack trace was printed before)");
+    fmt.println(f"{r.exitCode} {reports} {e.contains("spinA")} {e.contains("spinB")} {repeat}");
     return 0;
 }
 """,
-            "0 2 true true");
+            "0 2 true true true");
 
         // The watchdog allocates no GC memory, also not to print a stall
         // trace: a stall inside a profiled window adds nothing to the
@@ -538,6 +551,16 @@ fn spin(seconds: real): int {
     while time.now() - start < seconds { n++; }
     return n;
 }
+// Runs until the watchdog has measured `seconds` of this run (its own CPU
+// time, what a stall is judged by), whatever the machine's load: a loop on
+// the wall clock gets less CPU time than it lasts on a busy machine. The
+// wall clock only bounds a watchdog that never measures.
+fn spinMeasured(seconds: real): int {
+    let start = time.now();
+    let n = 0;
+    while sys.timeSinceTaskSwitch() < seconds && time.now() - start < 10.0 { n++; }
+    return n;
+}
 fn main(): int {
     let args = sys.args();
     if args.length > 1 && args[1] == "child" {
@@ -549,7 +572,7 @@ fn main(): int {
         let calm = quiet.stop();
         sys.yield();
         let p = Profiler({ samplingRate: 0, memoryInstrumentation: true, memoryInstrumentationStacktraces: false });
-        let n = spin(0.06);
+        let n = spinMeasured(0.06);
         let r = p.stop();
         // The profiler reports on stdout: the difference goes out as the status.
         return r.memoryInstrumentationFrames.length - calm.memoryInstrumentationFrames.length;

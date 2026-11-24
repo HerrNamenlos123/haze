@@ -278,7 +278,7 @@ bool hzstd_run_on_worker_thread(void (*fn)(void *arg), void *arg)
 // INVARIANT: panic_in_progress must stay held for the *entire* round trip --
 // not just while the shared globals above are being written, but until the
 // original requester has finished reading whatever it needs back out of them
-// (panic_recovery_target, panic_built_stacktrace, panic_info_storage, ...).
+// (panic_recovery_target, panic_report, the report's sequence, ...).
 // That's why it's the three producers below (hzstd_panic_handler,
 // hzstd_panic_with_stacktrace, hzstd_build_stacktrace) that reset it, each
 // only after copying its result into a local -- never the worker. Releasing
@@ -299,9 +299,9 @@ typedef enum {
   PANIC_MODE_BUILD_ONLY = 1, /* always build & return, never exit  */
 } panic_mode_t;
 
-// Copied into a static buffer by the panicking thread so the string is valid
-// across the longjmp (stack-allocated messages would be gone after longjmp).
-static char panic_reason_buf[1024];
+// The message, as the panicking thread holds it: valid while the worker runs
+// (the panicking thread waits inside the panic function meanwhile), which
+// copies it into the report.
 static hzstd_str_t panic_reason;
 static unw_context_t panic_context;
 static hzstd_int_t panic_skip_n_frames = 0;
@@ -315,19 +315,33 @@ static panic_mode_t panic_mode = PANIC_MODE_CRASH;
 static hzstd_semaphore_t *panic_trigger;
 static hzstd_semaphore_t *panic_response;
 
-// Set by worker before signaling panic_response.
-static hzstd_stacktrace_t panic_built_stacktrace; /* build-only mode result (value) */
-static hzstd_panic_info_t panic_info_storage; /* panic mode result (value)      */
+// Where the worker writes the report of the request it serves (hzstd_types.h,
+// raw reports): the requesting thread's own record when a task there takes
+// the report (a recovered panic, sys.buildStacktrace), else this one, which
+// the worker prints before the process ends.
+static hzstd_raw_report_t g_panic_terminal_report;
+static hzstd_raw_report_t *panic_report = NULL;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-// Copy msg into the static reason buffer (so it survives longjmp).
 static void store_panic_reason(hzstd_str_t msg)
 {
-  size_t len = msg.length < sizeof(panic_reason_buf) - 1 ? msg.length : sizeof(panic_reason_buf) - 1;
-  memcpy(panic_reason_buf, msg.data, len);
-  panic_reason_buf[len] = '\0';
-  panic_reason = (hzstd_str_t) { .data = panic_reason_buf, .length = len };
+  panic_reason = msg;
+}
+
+// The record a panic on this thread is reported into: the thread's own when a
+// recovery frame will take it (one exists only in a task, on a thread with a
+// scheduler), else the worker's.
+static hzstd_raw_report_t *hzstd_panic_report_for(const hzstd_panic_recovery_frame_t *recovery)
+{
+  if (recovery == NULL) {
+    return &g_panic_terminal_report;
+  }
+  hzstd_raw_report_t *own = hzstd_thread_panic_report();
+  if (own == NULL) {
+    hzstd_trap_ccstr("Internal Runtime Error: a recovery frame on a thread without a scheduler");
+  }
+  return own;
 }
 
 // ── Crash-safe unwinding ──────────────────────────────────────────────────────
@@ -343,8 +357,8 @@ static void store_panic_reason(hzstd_str_t msg)
 //     runtime shader compiler is a common source of this) -- recovered via
 //     sigsetjmp/siglongjmp below;
 //   - corrupted/cyclic unwind info that never reaches a real end, causing
-//     unw_step to keep returning >0 forever -- bounded by capping the loop
-//     at HZSTD_PANIC_MAX_FRAMES.
+//     unw_step to keep returning >0 forever -- bounded by the report's
+//     capacity (HZSTD_RAW_REPORT_FRAMES).
 // Either failure mode, left unhandled, means this worker thread never
 // finishes: unlike an ordinary thread, it has nowhere to recover to if it
 // crashes outright -- its own signal handler would see panic_in_progress
@@ -354,8 +368,6 @@ static void store_panic_reason(hzstd_str_t msg)
 // crash-recovery half mirrors hzstd_profiling_safe_get_proc_name_by_ip in
 // hzstd_profiling.c, just widened to cover the whole unwind loop instead of
 // only the symbol-name lookup.
-#define HZSTD_PANIC_MAX_FRAMES 128
-
 static sigjmp_buf g_panic_unwind_recovery;
 
 static void hzstd_panic_unwind_crash_handler(int sig)
@@ -364,25 +376,13 @@ static void hzstd_panic_unwind_crash_handler(int sig)
   siglongjmp(g_panic_unwind_recovery, 1);
 }
 
-// Pushes one entry into an array whose capacity is always HZSTD_PANIC_MAX_FRAMES
-// (see hzstd_panic_build_frames), bypassing hzstd_dynamic_array_push entirely:
-// per hzstd_array.h, a dynamic array's backing buffer is *always* GC-heap
-// allocated/reallocated no matter which allocator its control struct was
-// created with, which is precisely the hazard this whole worker thread must
-// avoid (see hzstd_panic_handler_thread below).
-static void hzstd_panic_frame_array_push(hzstd_dynamic_array_t *arr, hzstd_stackframe_t frame)
-{
-  assert(arr->size < arr->capacity);
-  ((hzstd_stackframe_t *)arr->buffer)[arr->size++] = frame;
-}
-
-// Fills in an already-allocated, HZSTD_PANIC_MAX_FRAMES-capacity frameArray
-// by unwinding panic_context, stopping at whichever comes first: a real end
-// of stack, HZSTD_PANIC_MAX_FRAMES entries, or a crash/recovery partway
-// through -- in which case frameArray already holds every frame captured
+// Fills the report by unwinding panic_context, stopping at whichever comes
+// first: a real end of stack, a full report, or a crash/recovery partway
+// through -- in which case the report already holds every frame captured
 // before that happened, which is exactly what's reported (a truncated real
-// trace beats no trace at all).
-static void hzstd_panic_build_frames(hzstd_allocator_t allocator, hzstd_dynamic_array_t *frameArray)
+// trace beats no trace at all). Names go into the report's own text: nothing
+// is allocated.
+static void hzstd_panic_build_frames(hzstd_raw_report_t *report)
 {
   struct sigaction newAction, oldSegvAction, oldBusAction;
   memset(&newAction, 0, sizeof(newAction));
@@ -392,46 +392,24 @@ static void hzstd_panic_build_frames(hzstd_allocator_t allocator, hzstd_dynamic_
   sigaction(SIGBUS, &newAction, &oldBusAction);
 
   if (sigsetjmp(g_panic_unwind_recovery, 1) == 0) {
-    size_t nextId = 1;
     unw_cursor_t cursor;
     unw_init_local2(&cursor, &panic_context, UNW_INIT_SIGNAL_FRAME);
     do {
-      if (frameArray->size >= frameArray->capacity) {
-        break;
-      }
-
       unw_word_t pc;
       unw_get_reg(&cursor, UNW_REG_IP, &pc);
-
-      bool pushed = false;
-      for (size_t i = 0; i < frameArray->size; i++) {
-        hzstd_stackframe_t frame = HZSTD_DYNAMIC_ARRAY_GET(frameArray, hzstd_stackframe_t, i);
-        if (frame.instructionPointer == (hzstd_cptr_t)pc) {
-          hzstd_panic_frame_array_push(frameArray, frame);
-          pushed = true;
-          break;
-        }
+      char name[4096];
+      size_t length = 0;
+      unw_word_t offset;
+      int named = unw_get_proc_name(&cursor, name, sizeof(name), &offset);
+      if (named == 0 || named == -UNW_ENOMEM) { // -UNW_ENOMEM: cut to the buffer, still a name
+        length = strnlen(name, sizeof(name) - 1);
       }
-
-      if (!pushed) {
-        int maxNameLen = 4096;
-        hzstd_str_t name = HZSTD_STRING(hzstd_allocate_unscanned(allocator, maxNameLen, NULL), 0);
-        unw_word_t offset;
-        if (unw_get_proc_name(&cursor, (char *)name.data, maxNameLen, &offset) == 0) {
-          name.length = strlen(name.data);
-        }
-
-        hzstd_stackframe_t fr = {
-          .id = nextId++,
-          .instructionPointer = (void *)pc,
-          .name = name,
-          .sourceloc = { ._filename = HZSTD_STRING(NULL, 0), ._line = 0, ._column = 0 },
-        };
-        hzstd_panic_frame_array_push(frameArray, fr);
+      if (!hzstd_raw_report_add_frame(report, (void *)pc, name, length, NULL, 0, 0)) {
+        break;
       }
     } while (unw_step(&cursor) > 0);
   }
-  // else: recovered from a crash partway through -- frameArray already holds
+  // else: recovered from a crash partway through -- the report already holds
   // whatever was captured before that, which is all that's needed here.
 
   sigaction(SIGSEGV, &oldSegvAction, NULL);
@@ -444,16 +422,15 @@ static void hzstd_panic_build_frames(hzstd_allocator_t allocator, hzstd_dynamic_
 // captured unw_context_t, then either longjmps (via panic_response) or
 // prints and exits.
 //
-// Deliberately uses a plain malloc-backed allocator (hzstd_make_non_gc_raw_malloc_allocator,
-// plus the manual buffer construction below for the frame array specifically)
-// rather than the GC heap for everything it allocates here: the panicking
-// thread may have crashed while it was itself mid GC_malloc/GC_realloc,
-// holding BDWGC's allocator lock, and then permanently parked (see
-// hzstd_block_thread_forever below) without ever releasing it. Any GC_malloc
-// call from this thread would then block forever waiting on a lock nobody is
-// ever going to release again -- silently wedging the entire crash-reporting
-// path with no output at all. This mirrors the exact hazard documented (and
-// solved with its own non-GC ring buffer) in hzstd_profiling.c.
+// Allocates nothing at all, GC or malloc: the panicking thread may have
+// crashed while it was itself mid GC_malloc/GC_realloc or malloc, holding
+// that allocator's lock, and then permanently parked (see
+// hzstd_block_thread_forever below) without ever releasing it. An allocation
+// from this thread would then block forever waiting on a lock nobody is ever
+// going to release again -- silently wedging the entire crash-reporting path
+// with no output at all. The report goes into a raw report record
+// (hzstd_types.h), which never reaches Haze: a task that takes it copies it
+// into GC memory (hzstd_panic_adopt_report, hzstd_build_stacktrace).
 
 static void *hzstd_panic_handler_thread(void *_)
 {
@@ -462,69 +439,35 @@ static void *hzstd_panic_handler_thread(void *_)
   for (;;) {
     hzstd_wait_for_semaphore(panic_trigger);
 
-    // Never GC-backed -- see the big comment above this function.
-    hzstd_allocator_t allocator = hzstd_make_non_gc_raw_malloc_allocator();
-
-    // Build the frame array's control struct *and* its backing buffer by
-    // hand instead of via hzstd_dynamic_array_create/HZSTD_DYNAMIC_ARRAY_PUSH:
-    // per hzstd_array.h, a dynamic array's buffer is always GC-heap allocated
-    // regardless of which allocator its control struct was created with, so
-    // going through the normal API here would silently reintroduce the exact
-    // GC_malloc hazard this whole function exists to avoid. Fixed capacity
-    // (HZSTD_PANIC_MAX_FRAMES) allocated once, up front -- see
-    // hzstd_panic_build_frames for why this no longer needs an initial
-    // dry-run pass to size it exactly.
-    hzstd_dynamic_array_t *frameArray = hzstd_allocate(allocator, sizeof(hzstd_dynamic_array_t), "hzstd_dynamic_array_t");
-    frameArray->buffer = hzstd_allocate(allocator, HZSTD_PANIC_MAX_FRAMES * sizeof(hzstd_stackframe_t), NULL);
-    frameArray->elem_size = sizeof(hzstd_stackframe_t);
-    frameArray->size = 0;
-    frameArray->capacity = HZSTD_PANIC_MAX_FRAMES;
-    // Hand-built means every field has to be set here explicitly -- these two
-    // are only ever read on a growth path this array never takes (capacity is
-    // fixed above and hzstd_panic_frame_array_push never grows), but leaving
-    // them as whatever the allocator handed back would make that a silent
-    // trap for anyone who later does grow it.
-    frameArray->elementTypeName = "hzstd_stackframe_t";
-    frameArray->borrowed_buffer = false;
-
-    hzstd_panic_build_frames(allocator, frameArray);
+    hzstd_raw_report_t *report = panic_report;
+    hzstd_raw_report_clear(report);
+    hzstd_panic_build_frames(report);
+    report->skip_n_frames = panic_skip_n_frames;
 
     bool has_recovery = (panic_recovery_target != NULL);
     bool build_only = (panic_mode == PANIC_MODE_BUILD_ONLY);
 
     if (build_only) {
-      // Caller just wants frames — no message or type needed.
-      panic_built_stacktrace.frames = frameArray;
-      panic_built_stacktrace.skip_n_frames = panic_skip_n_frames;
+      // Caller just wants frames -- no message or type needed.
       // panic_in_progress is deliberately NOT reset here -- see the
       // INVARIANT comment above this function. hzstd_build_stacktrace
-      // releases it itself, once it's copied panic_built_stacktrace out.
+      // releases it itself.
       hzstd_trigger_semaphore(panic_response);
     }
     else {
-      // Panic path — heap-copy the reason string so it survives longjmp.
-      size_t reason_len = panic_reason.length;
-      char *reason_data = (char *)hzstd_allocate_unscanned(allocator, reason_len + 1, NULL);
-      memcpy(reason_data, panic_reason.data, reason_len);
-      reason_data[reason_len] = '\0';
-
-      panic_info_storage.stacktrace.frames = frameArray;
-      panic_info_storage.stacktrace.skip_n_frames = panic_skip_n_frames;
-      panic_info_storage.message = (hzstd_str_t) { .data = reason_data, .length = reason_len };
-      panic_info_storage.type = panic_type;
-
+      hzstd_raw_report_set_message(report, panic_reason);
+      report->type = panic_type;
       if (has_recovery) {
-        panic_recovery_target->_hz_panic_stacktrace = panic_info_storage;
         // panic_in_progress is deliberately NOT reset here -- see the
         // INVARIANT comment above this function. The panicking thread
         // (hzstd_panic_handler / hzstd_panic_with_stacktrace) releases it
-        // itself, once it's copied panic_recovery_target's result out.
+        // itself, once it has read what it needs.
         hzstd_trigger_semaphore(panic_response);
       }
       else {
         // Terminal path -- the process is exiting, so there's no requester
         // left to release panic_in_progress, and none is needed.
-        hzstd_print_panic_report(&panic_info_storage);
+        hzstd_raw_report_print_panic(report);
         fflush(stdout);
         fflush(stderr);
         // After a graceful exit started, its status is final (contract
@@ -550,7 +493,7 @@ _Noreturn static void hzstd_fail_while_world_stopped(const char *what)
 
 // ── Signal handler ────────────────────────────────────────────────────────────
 //
-// Runs on the alt-stack (8 KB).  Deliberately minimal: copy the CPU context
+// Runs on the alt-stack (64 KiB, see hzstd_setup_panic_handler).  Deliberately minimal: copy the CPU context
 // (ucontext) into the global, set the reason string, then hand off to the
 // worker and wait.  After the worker finishes (recovery case) we unblock
 // SIGSEGV manually (since we used plain longjmp, not siglongjmp) and jump.
@@ -672,6 +615,7 @@ static void hzstd_panic_handler(int sig, siginfo_t *si, void *ucontext)
   // function releases it below, but this is what makes that invariant
   // actually load-bearing rather than merely documented.
   hzstd_panic_recovery_frame_t *localRecoveryTarget = panic_recovery_target;
+  panic_report = hzstd_panic_report_for(localRecoveryTarget);
 
   // Hand off to worker.
   hzstd_trigger_semaphore(panic_trigger);
@@ -694,9 +638,9 @@ static void hzstd_panic_handler(int sig, siginfo_t *si, void *ucontext)
   sigaddset(&unblock, SIGSEGV);
   sigprocmask(SIG_UNBLOCK, &unblock, NULL);
 
-  // Hand the info to the task, so the recover: label can read it (the
-  // recovery frame exists, so this thread runs a task).
-  hzstd_current_task()->panic_info = localRecoveryTarget->_hz_panic_stacktrace;
+  // The report is in this thread's record; the recovery takes it from there
+  // (hzstd_panic_adopt_report), and checks it is this one.
+  localRecoveryTarget->report_sequence = panic_report->sequence;
   // Back on the interrupted stack after the jump: nothing to record any more.
   hzstd_sched_note_interrupted_sp(NULL);
 
@@ -756,6 +700,29 @@ static void hzstd_stall_signal_handler(int sig, siginfo_t *si, void *ucontext)
   uintptr_t hi = stack != NULL ? (uintptr_t)stack->top : 0;
   int count = 0;
   g_stall_ips[count++] = pc;
+#if defined(__x86_64__)
+  // Caught before the interrupted function set up its frame, or after it took
+  // it down, rbp is still its caller's: the walk below would skip the caller
+  // (whose return address is on the stack, not at [rbp+8]). The instruction
+  // at pc tells (code memory, readable without a lock): at entry
+  // (endbr64, push rbp) and at ret the return address is at [rsp], after push
+  // rbp (at mov rbp,rsp) at [rsp+8].
+  uintptr_t sp = (uintptr_t)uc->uc_mcontext.gregs[REG_RSP];
+  const uint8_t *code = (const uint8_t *)pc;
+  int slot = -1;
+  if (code[0] == 0x55 || code[0] == 0xc3 || (code[0] == 0xf3 && code[1] == 0x0f && code[2] == 0x1e && code[3] == 0xfa)) {
+    slot = 0;
+  }
+  else if (code[0] == 0x48 && code[1] == 0x89 && code[2] == 0xe5) {
+    slot = 1;
+  }
+  if (slot >= 0 && sp >= lo && sp + (size_t)(slot + 1) * sizeof(uintptr_t) <= hi && (sp & (sizeof(uintptr_t) - 1)) == 0) {
+    uintptr_t ret = ((const uintptr_t *)sp)[slot];
+    if (ret != 0) {
+      g_stall_ips[count++] = ret - 1;
+    }
+  }
+#endif
   while (count < HZSTD_STALL_MAX_FRAMES && fp >= lo && fp + 2 * sizeof(uintptr_t) <= hi && (fp & (sizeof(uintptr_t) - 1)) == 0) {
     uintptr_t next = ((const uintptr_t *)fp)[0];
     uintptr_t ret = ((const uintptr_t *)fp)[1];
@@ -785,9 +752,9 @@ void hzstd_stall_trace_initialize(void)
 }
 
 // The stalled thread's stack trace, on the watchdog's thread: the handler's
-// walk, named here (plain malloc memory, kept: a report is rare). False if
-// the thread did not answer within 100 ms.
-bool hzstd_capture_stall_trace(hzstd_sched_t *s, hzstd_stacktrace_t *out)
+// walk, named here into the report (nothing allocated). False if the thread
+// did not answer within 100 ms.
+bool hzstd_capture_stall_trace(hzstd_sched_t *s, hzstd_raw_report_t *out)
 {
   atomic_store(&g_stall_trace_ready, 0);
   if (pthread_kill(s->pthread, HZSTD_STALL_SIGNAL) != 0) {
@@ -801,42 +768,19 @@ bool hzstd_capture_stall_trace(hzstd_sched_t *s, hzstd_stacktrace_t *out)
     return false;
   }
   int count = atomic_load(&g_stall_ip_count);
-  hzstd_allocator_t allocator = hzstd_make_non_gc_raw_malloc_allocator();
-  hzstd_dynamic_array_t *frames = hzstd_allocate(allocator, sizeof(hzstd_dynamic_array_t), "hzstd_dynamic_array_t");
-  frames->buffer = hzstd_allocate(allocator, (size_t)count * sizeof(hzstd_stackframe_t), NULL);
-  frames->elem_size = sizeof(hzstd_stackframe_t);
-  frames->size = 0;
-  frames->capacity = (size_t)count;
-  frames->elementTypeName = "hzstd_stackframe_t";
-  frames->borrowed_buffer = false;
-  size_t next_id = 1;
+  hzstd_raw_report_clear(out);
   for (int i = 0; i < count; i++) {
-    // The same address is the same frame (the printer folds repeats by id).
-    size_t id = 0;
-    for (int k = 0; k < i && id == 0; k++) {
-      if (g_stall_ips[k] == g_stall_ips[i]) {
-        id = ((hzstd_stackframe_t *)frames->buffer)[k].id;
-      }
-    }
-    if (id == 0) {
-      id = next_id++;
-    }
-    int max_name = 512;
-    char *name = hzstd_allocate_unscanned(allocator, (size_t)max_name, NULL);
-    unw_word_t offset;
+    char name[512];
     size_t length = 0;
-    if (unw_get_proc_name_by_ip(unw_local_addr_space, (unw_word_t)g_stall_ips[i], name, (size_t)max_name, &offset, NULL) == 0) {
-      length = strlen(name);
+    unw_word_t offset;
+    int named = unw_get_proc_name_by_ip(unw_local_addr_space, (unw_word_t)g_stall_ips[i], name, sizeof(name), &offset, NULL);
+    if (named == 0 || named == -UNW_ENOMEM) { // -UNW_ENOMEM: cut to the buffer, still a name
+      length = strnlen(name, sizeof(name) - 1);
     }
-    hzstd_stackframe_t frame = {
-      .id = id,
-      .instructionPointer = (void *)g_stall_ips[i],
-      .name = HZSTD_STRING(name, length),
-      .sourceloc = { ._filename = HZSTD_STRING(NULL, 0), ._line = 0, ._column = 0 },
-    };
-    ((hzstd_stackframe_t *)frames->buffer)[frames->size++] = frame;
+    if (!hzstd_raw_report_add_frame(out, (void *)g_stall_ips[i], name, length, NULL, 0, 0)) {
+      break;
+    }
   }
-  *out = (hzstd_stacktrace_t) { .frames = frames, .skip_n_frames = 0 };
   return true;
 }
 
@@ -873,6 +817,7 @@ _Noreturn void hzstd_panic_with_stacktrace(hzstd_str_t msg, hzstd_int_t skip_n_f
   // See hzstd_panic_handler's matching local -- captured now, read back
   // below, only released after that read (not by the worker).
   hzstd_panic_recovery_frame_t *localRecoveryTarget = panic_recovery_target;
+  panic_report = hzstd_panic_report_for(localRecoveryTarget);
 
   hzstd_trigger_semaphore(panic_trigger);
 
@@ -882,7 +827,7 @@ _Noreturn void hzstd_panic_with_stacktrace(hzstd_str_t msg, hzstd_int_t skip_n_f
 
   hzstd_wait_for_semaphore(panic_response);
 
-  hzstd_current_task()->panic_info = localRecoveryTarget->_hz_panic_stacktrace;
+  localRecoveryTarget->report_sequence = panic_report->sequence;
   atomic_store(&panic_in_progress, 0);
   HZSTD_LONGJMP(localRecoveryTarget->recovery_point, 1);
   __builtin_unreachable();
@@ -895,6 +840,12 @@ _Noreturn void hzstd_panic_with_stacktrace(hzstd_str_t msg, hzstd_int_t skip_n_f
 
 hzstd_stacktrace_t hzstd_build_stacktrace(int skip_n_frames)
 {
+  // Written into this thread's own record, which the gate does not have to
+  // protect once the worker is done with it.
+  hzstd_raw_report_t *own = hzstd_thread_panic_report();
+  if (own == NULL) {
+    hzstd_panic("A stack trace can only be built on a thread Haze runs tasks on");
+  }
   // Serialise with the panic gate.
   int expected = 0;
   while (!atomic_compare_exchange_weak(&panic_in_progress, &expected, 1)) {
@@ -907,16 +858,15 @@ hzstd_stacktrace_t hzstd_build_stacktrace(int skip_n_frames)
   panic_type = hzstd_panic_type_unknown;
   panic_recovery_target = NULL;
   panic_mode = PANIC_MODE_BUILD_ONLY;
+  panic_report = own;
 
   hzstd_trigger_semaphore(panic_trigger);
   hzstd_wait_for_semaphore(panic_response);
-
-  // Copy out before releasing the gate -- not "return panic_built_stacktrace"
-  // directly, which would read the global after giving up exclusive access
-  // to it. See the INVARIANT comment above hzstd_panic_handler_thread.
-  hzstd_stacktrace_t result = panic_built_stacktrace;
   atomic_store(&panic_in_progress, 0);
-  return result;
+
+  // Into GC memory for Haze, after the gate: an allocation here may fail like
+  // any other.
+  return hzstd_raw_report_to_stacktrace(own);
 }
 
 // Walking the current thread's own stack once, synchronously, before the
@@ -1009,7 +959,7 @@ void hzstd_setup_panic_handler(void)
 
   // panic_trigger/panic_response and the single dedicated worker thread that
   // services them are process-wide singleton state (see the big DESIGN
-  // comment above panic_reason_buf) -- exactly one of each must ever exist,
+  // comment above panic_reason) -- exactly one of each must ever exist,
   // not one per thread. But hzstd_setup_panic_handler() itself is called by
   // *every* thread in this runtime at startup (see the comment on
   // hzstd_panic_prewarm_unwind_cache just above), and until this guard

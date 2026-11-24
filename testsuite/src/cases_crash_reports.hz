@@ -1,0 +1,105 @@
+// ============================================================================
+// Crash and stall reports reach Haze only as GC memory (the reachability
+// rule): the panic worker and the stall watchdog record a stack in a raw
+// report (plain values, never reachable from Haze), and a task that receives
+// one (a recovered panic, sys.buildStacktrace) copies it into its own GC
+// memory. A report survives the thread's record being written again.
+// ============================================================================
+
+namespace cases_crash_reports {
+
+    export fn register(s: mut testsuite.Suite) {
+        s.run(
+            "crash reports: a recovered panic's report is the recovering task's own GC memory",
+            """
+ref struct Kept { info: sys.PanicInfo | none = none; }
+fn names(kept: Kept): str {
+    let text = "";
+    let info = kept.info;
+    if info is sys.PanicInfo {
+        for frame in info.stacktrace.frames { text = f"{text}{frame.name};"; }
+    }
+    return text;
+}
+// Deeper, through other functions: the second report fills the thread's
+// record with other names at other places.
+fn secondFailureAt(depth: int, boom: bool): int :: final {
+    if depth == 0 {
+        if boom { sys.panic("second failure"); }
+        return 0;
+    }
+    return secondFailureAt(depth - 1, boom) + 1;
+}
+fn main(): int {
+    let boom = sys.args().length > 0;
+    let kept = Kept {};
+    // A task's first attempt block makes its recovery frame list: here,
+    // before the window, which then counts only the report.
+    let warm = attempt { 0 } recover e { 1 };
+    let stats = sys.traceAllocations(() => {
+        let r = attempt { if boom { sys.panic("first failure"); } 0 } recover e {
+            kept.info = e;
+            1
+        };
+    });
+    // A second panic writes this thread's record again: the first report is
+    // the task's copy (names and message), untouched by it.
+    let before = names(kept);
+    let again = attempt { secondFailureAt(6, boom) } recover e { -1 };
+    let after = names(kept);
+    let info = kept.info;
+    if info is sys.PanicInfo {
+        fmt.println(f"{stats.count >= 2} {info.message} {before.length > 0} {before == after} {again}");
+    }
+    return 0;
+}
+""",
+            "true first failure true true -1");
+
+        s.run(
+            "crash reports: sys.buildStacktrace gives the calling task's own GC memory",
+            """
+fn main(): int {
+    let stats = sys.traceAllocations(() => { let st = sys.buildStacktrace(); });
+    let st = sys.buildStacktrace();
+    let found = false;
+    for frame in st.frames {
+        if frame.name.contains("main") { found = true; }
+    }
+    fmt.println(f"{stats.count >= 2} {found}");
+    return 0;
+}
+""",
+            "true true");
+
+        s.run(
+            "crash reports: a message longer than the report holds is cut, and says so",
+            """
+fn main(): int {
+    let boom = sys.args().length > 0;
+    let text = "";
+    for (let i = 0; i < 500; i++) { text = f"{text}0123456789"; }
+    let message = attempt { if boom { sys.panic(text); } "" } recover e { e.message };
+    fmt.println(f"{message.length} {message.startsWith("0123456789")} {message.endsWith(" (message cut)")}");
+    return 0;
+}
+""",
+            "4095 true true");
+
+        // A cut never splits a UTF-8 sequence: a message of two-byte
+        // characters is cut at a character's start.
+        s.run(
+            "crash reports: a message cut never splits a character",
+            """
+fn main(): int {
+    let boom = sys.args().length > 0;
+    let text = "";
+    for (let i = 0; i < 3000; i++) { text = f"{text}é"; }
+    let message = attempt { if boom { sys.panic(text); } "" } recover e { e.message };
+    fmt.println(f"{message.length} {message.startsWith("é")} {message.endsWith("é (message cut)")}");
+    return 0;
+}
+""",
+            "4094 true true");
+    }
+}
