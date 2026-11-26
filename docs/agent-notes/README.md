@@ -84,7 +84,7 @@ and against which commit it was verified; re-check a note against the code befor
 - [Vault tree order](vault-tree-order-tsk-rules.md) - folders, dates, numeric German collation, byte-order ties
 - [Wayland hide needs sync](wayland-hide-needs-sync.md) - SDL_HideWindow only queues; SyncWindow after
 - [Never present unmapped](wayland-never-present-unmapped.md) - framework rule; on Wayland show first
-- [wgpu vsync and locks](wgpu-vsync-blocking-and-threading.md) - acquire blocks, fence lock coupling on v27/v29
+- [wgpu vsync and locks](wgpu-vsync-blocking-and-threading.md) - acquire blocks; v27/v29 couple submits to it; v30: present blocks submits, poll(wait) and configure stall everything, surface-texture release locks the surface
 - [Remembered window state](window-state-remembering.md) - storage, placement rule, SDL patch, gaps
 - [Windows apps: console program, detached console](windows-gui-subsystem-no-console.md) - every [app] links console + detached manifest; why not /SUBSYSTEM:WINDOWS
 - [Windows command-line limit](windows-command-line-limit.md) - compile/link args go through a response file (cmd.exe caps 8191 chars); --rsp-quoting=windows
