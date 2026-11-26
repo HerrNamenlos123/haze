@@ -525,7 +525,12 @@ void hzstd_release_idle_memory()
 // on, so a str viewing the middle of a chunk keeps that chunk alive after the
 // arena itself is gone.
 
-#define HZSTD_ARENA_ALIGNMENT (alignof(max_align_t))
+// Every arena allocation is aligned to 16 bytes on every platform, so sizes
+// and offsets are the same everywhere: as the GC's own blocks are (bdwgc's
+// granule is two pointers), and at least what max_align_t needs (16 on Linux
+// x86-64, 8 on Windows).
+#define HZSTD_ARENA_ALIGNMENT ((size_t)16)
+_Static_assert(HZSTD_ARENA_ALIGNMENT >= alignof(max_align_t), "arena alignment below max_align_t");
 
 static size_t hzstd_arena_round_up(size_t size)
 {
@@ -630,7 +635,7 @@ static hzstd_arena_chunk_t *hzstd_arena_new_chunk(hzstd_arena_t *arena,
   else {
     // Header and data in one scanned block. The header size is a multiple of
     // the alignment, so the data stays aligned.
-    _Static_assert(sizeof(hzstd_arena_chunk_t) % alignof(max_align_t) == 0, "arena chunk header breaks alignment");
+    _Static_assert(sizeof(hzstd_arena_chunk_t) % HZSTD_ARENA_ALIGNMENT == 0, "arena chunk header breaks alignment");
     unsigned char *both = hz_gc_malloc(sizeof(hzstd_arena_chunk_t) + capacity);
     header = (hzstd_arena_chunk_t *)both;
     block = both ? both + sizeof(hzstd_arena_chunk_t) : NULL;

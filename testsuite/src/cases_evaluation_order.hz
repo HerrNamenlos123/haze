@@ -1,0 +1,80 @@
+// ============================================================================
+// KNOWN ISSUE: Haze evaluates left to right, but its C output does not say so.
+//
+// A Haze call, an f-string and a binary operator compile to one C call or one
+// C expression, and C leaves the order in which a call's arguments and an
+// operator's operands are evaluated unspecified. Clang on Windows (MS x64 ABI)
+// evaluates them last to first, on Linux first to last, so a side effect in
+// one argument happens before or after one in the next depending on the
+// platform (measured 2026-11-23: `ba` for the first three lines below on
+// Windows). Struct and array literals come out left to right with clang, but
+// C does not promise that either (initializer lists are indeterminately
+// sequenced). The fix is in the compiler: evaluate operands into temporaries
+// in source order. Until then the case is marked as a known failure on
+// Windows; it passes on Linux by luck.
+// ============================================================================
+
+namespace cases_evaluation_order {
+
+    export fn register(s: mut testsuite.Suite) {
+
+        s.run(
+            "evaluation order: call arguments, f-string parts, operands and literals run left to right",
+            """
+ref struct Log {
+    items: mut []str = [];
+}
+
+fn mark(l: mut Log, tag: str, v: int): int {
+    l.items.push(tag);
+    return v;
+}
+
+fn take(l: mut Log): str {
+    let s = "";
+    for x in l.items {
+        s = s + x;
+    }
+    l.items = [];
+    return s;
+}
+
+fn two(a: int, b: int): int {
+    return a * 10 + b;
+}
+
+struct P {
+    a: int;
+    b: int;
+}
+
+fn main(): int {
+    let l = Log {};
+
+    let r1 = two(mark(l, "a", 1), mark(l, "b", 2));
+    fmt.println(f"call arguments: {take(l)} ({r1})");
+
+    let s = f"{mark(l, "a", 1)} {mark(l, "b", 2)}";
+    fmt.println(f"f-string parts: {take(l)} ({s})");
+
+    let d = mark(l, "a", 5) - mark(l, "b", 3);
+    fmt.println(f"binary operator: {take(l)} ({d})");
+
+    let p = P { a: mark(l, "a", 1), b: mark(l, "b", 2) };
+    fmt.println(f"struct literal: {take(l)} ({p.a}{p.b})");
+
+    let arr: []int = [mark(l, "a", 1), mark(l, "b", 2)];
+    fmt.println(f"array literal: {take(l)} ({arr[0]}{arr[1]})");
+    return 0;
+}
+""",
+            """
+call arguments: ab (12)
+f-string parts: ab (1 2)
+binary operator: ab (2)
+struct literal: ab (12)
+array literal: ab (12)
+""");
+        s.knownFailure(sys.Platform.Win32, "C leaves argument and operand order unspecified; the compiler does not sequence them yet");
+    }
+}

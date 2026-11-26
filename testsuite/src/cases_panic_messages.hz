@@ -1,0 +1,46 @@
+// ============================================================================
+// REGRESSION TEST: a formatted runtime panic says what happened.
+//
+// hzstd_panic_fmt and hzstd_assert_fmt_n handed their va_list to the variadic
+// hzstd_panic_fmt_n, which started a va_list of its own over it: the message
+// was formatted from the va_list object instead of the arguments, so every
+// number in it was garbage ("array index out of range [140734587472656] with
+// length 140734587472704"), on every platform.
+// ============================================================================
+
+namespace cases_panic_messages {
+
+    export fn register(s: mut testsuite.Suite) {
+
+        s.run(
+            "panic messages: a formatted panic carries its arguments",
+            """
+fn main(): int {
+    let items: []int = [1, 2, 3];
+    let index = 5;
+    let ofArray = attempt {
+        let x = items[index];
+        f"no panic, got {x}"
+    } recover e {
+        e.message
+    };
+    fmt.println(ofArray);
+
+    let text = "abc";
+    let at = 7;
+    let ofString = attempt {
+        let b = text[at];
+        f"no panic, got {b}"
+    } recover e {
+        e.message
+    };
+    fmt.println(ofString);
+    return 0;
+}
+""",
+            """
+array index out of range [5] with length 3
+string byte access index out of range [7] with length 3
+""");
+    }
+}

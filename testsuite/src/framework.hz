@@ -106,6 +106,15 @@ namespace testsuite {
         // successful build; on CompileFailure it checks the errors emitted
         // by the expected failure.
         diagnosticChecks: []ErrorCheck = [];
+        // On this platform the case is known to fail (see Suite.knownFailure):
+        // a failure is reported as XFAIL and does not fail the run, a pass is
+        // reported as XPASS and does, so a stale mark cannot outlive the fix.
+        knownFailureOn: sys.Platform = sys.Platform.Unknown;
+        knownFailureReason: str = "";
+        // The only platform the case is built and run on (see Suite.onlyOn);
+        // Unknown means every platform.
+        onlyOn: sys.Platform = sys.Platform.Unknown;
+        onlyOnReason: str = "";
     }
 
     // Batching guidance: every case here pays for its own full compile (and,
@@ -135,7 +144,7 @@ namespace testsuite {
     }
 
     export ref struct Suite {
-        cases: mut []TestCase = [];
+        cases: mut []mut TestCase = [];
 
         // Must compile. Never executed.
         mut fn compileOk(name: str, source: str) {
@@ -194,6 +203,26 @@ namespace testsuite {
                 expect: ExpectKind.CompileFailure,
                 diagnosticChecks: checks,
             });
+        }
+
+        // ── Platform marks, for the case registered last ────────────────────
+        //
+        // knownFailure: what the case checks is not implemented on `platform`
+        // yet. The case still runs there; its failure is expected and named by
+        // `reason`, and its passing fails the run until the mark is removed.
+        mut fn knownFailure(platform: sys.Platform, reason: str) {
+            assert(this.cases.length > 0, "knownFailure marks the case registered last, and there is none");
+            this.cases[this.cases.length - 1].knownFailureOn = platform;
+            this.cases[this.cases.length - 1].knownFailureReason = reason;
+        }
+
+        // onlyOn: what the case checks exists only on `platform` (a Linux
+        // filesystem object, a desktop specification). Elsewhere the case is
+        // neither built nor run.
+        mut fn onlyOn(platform: sys.Platform, reason: str) {
+            assert(this.cases.length > 0, "onlyOn marks the case registered last, and there is none");
+            this.cases[this.cases.length - 1].onlyOn = platform;
+            this.cases[this.cases.length - 1].onlyOnReason = reason;
         }
 
         // ── Multi-module variants ───────────────────────────────────────────
@@ -553,14 +582,19 @@ namespace testsuite {
         }
 
         // HAZE_TEST_FILTER (a regex) runs only the cases whose name matches it (for
-        // targeted runs while working; the gate sets no filter). A skipped
-        // case keeps its index, so every case keeps its work directory.
+        // targeted runs while working; the gate sets no filter).
         let filter = env.get("HAZE_TEST_FILTER");
+        let platform = sys.platform();
         let passed = 0;
         let failed = 0;
+        let expectedFailures = 0;
+        let skipped = 0;
         let selected = 0;
         let index = 0;
         for tc in suite.cases {
+            // The index names the case's files, so it counts the cases a filter
+            // or the platform leaves out too: a case keeps its number on every
+            // platform and under every filter.
             let caseIndex = index;
             index = index + 1;
             if filter {
@@ -573,9 +607,28 @@ namespace testsuite {
                 }
             }
             selected = selected + 1;
-            let result = runOne(config, caseIndex, tc);
 
-            if result.passed {
+            if tc.onlyOn != sys.Platform.Unknown && tc.onlyOn != platform {
+                skipped = skipped + 1;
+                fmt.println(f"[SKIP] {tc.name} ({tc.onlyOnReason})");
+                continue;
+            }
+
+            let result = runOne(config, caseIndex, tc);
+            let known = tc.knownFailureOn != sys.Platform.Unknown && tc.knownFailureOn == platform;
+
+            if known {
+                if result.passed {
+                    failed = failed + 1;
+                    fmt.println(f"[XPASS] {result.name}");
+                    fmt.println(f"marked as a known failure here ({tc.knownFailureReason}), but it passed: remove the mark");
+                }
+                else {
+                    expectedFailures = expectedFailures + 1;
+                    fmt.println(f"[XFAIL] {result.name} ({tc.knownFailureReason})");
+                }
+            }
+            else if result.passed {
                 passed = passed + 1;
                 fmt.println(f"[PASS] {result.name}");
             }
@@ -587,7 +640,7 @@ namespace testsuite {
         }
 
         fmt.println("");
-        fmt.println(f"{passed} passed, {failed} failed, {selected} total");
+        fmt.println(f"{passed} passed, {failed} failed, {expectedFailures} known failures, {skipped} skipped, {selected} total");
 
         if failed > 0 {
             return 1;

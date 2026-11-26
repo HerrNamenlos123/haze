@@ -110,6 +110,7 @@ import {
   SyntaxError,
 } from "../shared/Errors";
 import { HazeErrorCode } from "../shared/ErrorCodes";
+import { normalizeLineEndings } from "../shared/Text";
 import { HazeLexer } from "./grammar/autogen/HazeLexer";
 import {
   type AdditiveContext,
@@ -338,12 +339,16 @@ export namespace Parser {
    * `antlr` is only ever reached by an explicit `--parser antlr`: an
    * unavailable native parser is a hard error rather than a silent, slower and
    * differently-behaving fallback (see nativeParserAvailable).
+   *
+   * Source is text, so its line endings are normalized first (CRLF and a lone
+   * CR become LF, see normalizeLineEndings): both parsers only ever see LF.
    */
   export function parseTextToAST(
     config: ModuleConfig,
-    text: string,
+    source: string,
     filename: string
   ) {
+    const text = normalizeLineEndings(source);
     const mode = getParserMode();
 
     if (mode === "antlr") {
@@ -375,9 +380,10 @@ export namespace Parser {
    */
   export async function parseTextToASTAsync(
     config: ModuleConfig,
-    text: string,
+    source: string,
     filename: string
   ): Promise<ASTRoot> {
+    const text = normalizeLineEndings(source);
     const mode = getParserMode();
 
     if (mode === "antlr") {

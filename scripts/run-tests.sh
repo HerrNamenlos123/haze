@@ -56,6 +56,11 @@ bun test scripts/tasklocal-fingerprint.test.ts
 echo "==> Checking haze.toml validation"
 bun test src/shared/Config.test.ts
 
+# Every Win32 call in the repo's own C is the UTF-16 variant; a source scan, so
+# it runs on every platform.
+echo "==> Checking that no ANSI Win32 call is written in the repo's C"
+bun test scripts/no-ansi-win32.test.ts
+
 export HAZE_STDLIB_DIR="$REPO_ROOT/dist/stdlib"
 export HAZE_TEST_BINARY="$REPO_ROOT/dist/haze"
 export HAZE_TEST_WORKDIR="$REPO_ROOT/testsuite/.work"

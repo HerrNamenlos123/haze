@@ -1070,10 +1070,9 @@ typedef struct {
   hzstd_str_t message;
 } hzstd_fs_error_t;
 
-// Options controlling overwrite behavior, symlink handling, and error skipping.
+// Options controlling overwrite behavior and error skipping.
 typedef struct hzstd_fs_copy_options {
   bool overwrite; // true = overwrite existing files, false = fail if exists
-  bool follow_symlinks; // true = follow symlinks, false = copy symlinks as-is
   bool skip_errors; // true = skip files that cannot be copied, false = fail
 } hzstd_fs_copy_options_t;
 

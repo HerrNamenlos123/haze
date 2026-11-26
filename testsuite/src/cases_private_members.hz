@@ -24,7 +24,7 @@
 
 namespace cases_private_members {
 
-    fn failsWith(name: str, source: str, code: errorcodes.Code): testsuite.TestCase {
+    fn failsWith(name: str, source: str, code: errorcodes.Code): mut testsuite.TestCase {
         return testsuite.TestCase {
             name: name,
             source: source,
@@ -36,7 +36,7 @@ namespace cases_private_members {
         };
     }
 
-    fn failsAt(name: str, source: str): testsuite.TestCase {
+    fn failsAt(name: str, source: str): mut testsuite.TestCase {
         return failsWith(name, source, errorcodes.Code.PrivateMemberAccess);
     }
 
