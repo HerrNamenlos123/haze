@@ -5,6 +5,7 @@ authenticate with `claude setup-token` tokens through `apiKeyHelper` and therefo
 `/login` session. This library is the only code that probes the API, writes `usage.json` and
 writes Claude Code's usage cache entry. The switcher calls it; `claude-usage-sync`
 (`../usage-sync`) uses it on a machine without a switcher (not deployed yet, see "The VM");
+`claude-usage-probe` (`../usage-probe`) runs its tracker headless on agent-box (see there);
 the profile repo's `claude-usage` and `claude-usage-wait` only read `usage.json`.
 
 Verified 2026-11-04 against 3165b22f plus this change, with Claude Code 2.1.318 and the
@@ -173,6 +174,18 @@ building Haze for the VM is easy and fast. On 2026-11-04 it was not:
 
 The replacement means: build `usage-sync` for the VM, install it as the user service
 instead of the script, and delete the script.
+
+## agent-box
+
+agent-box (the server of the agent harness, profile repo `agent-box/`) has no switcher and no
+desktop; the harness switches accounts itself. `claude-usage-probe` keeps the switcher's state
+folder current there: it reads `tokens/<id>.token` (written by agent-box's setup.sh), runs
+`UsageTracker` with no active account and `otherIntervalMs` 60000 (agents use every account,
+so each is probed as often as the switcher probes its active one), feeds no Claude Code cache
+entry, and writes `share/usage.json` exactly as the switcher does. The tokens folder is read
+again every minute. `--once` probes every account once and exits (1 when none brought numbers).
+Checked 2026-11-26 with two invalid tokens: both probed 5 s apart, `auth` errors recorded,
+`active` null; an empty token file and a missing tokens folder stop it with exit code 2.
 
 ## Tests
 

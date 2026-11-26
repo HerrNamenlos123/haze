@@ -1,0 +1,153 @@
+import claude_usage
+
+// claude-usage-probe: the switcher's usage probe, for a machine without the
+// switcher (agent-box, where the agent harness switches accounts itself). It
+// probes every account that has a token in the switcher's state folder and
+// keeps that folder's share/usage.json current: the same file, in the same
+// format, that the switcher writes on the desktop, so its readers (the
+// harness, claude-usage) work the same on both. No account is active here,
+// since agents use them all: every account is probed at the interval the
+// switcher gives its active one.
+//
+//   claude-usage-probe          run until stopped (agent-box runs it as a service)
+//   claude-usage-probe --once   probe every account once, write usage.json, exit
+//                               (exit code 1 when no account brought numbers)
+//
+// Tokens: <state folder>/tokens/<id>.token, one per account (agent-box's
+// setup.sh writes them). The folder is read again every minute, so an added
+// or removed token needs no restart.
+
+const TOKEN_RESCAN_SECONDS = 60.0;
+const PROBE_INTERVAL_MS = 60000;
+
+// The tokens in `dir`: `<id>.token` holds the token of account `id`. An
+// unreadable folder or token is an error, never "no accounts".
+fn readTokens(dir: str): Result<[]claude_usage.AccountToken, str> {
+    let entries = fs.listDir(dir);
+    if !entries {
+        return Result<[]claude_usage.AccountToken, str>.Err(f"{dir}: {entries}");
+    }
+    let list: []fs.DirEntry = entries;
+    let tokens: []claude_usage.AccountToken = [];
+    for entry in list {
+        if !entry.isFile || !entry.name.endsWith(".token") {
+            continue;
+        }
+        let path = entry.path();
+        let read = fs.readText(path);
+        if !read {
+            return Result<[]claude_usage.AccountToken, str>.Err(f"{path}: {read}");
+        }
+        let text: str = read;
+        let token = text.trim();
+        if token.length == 0 {
+            return Result<[]claude_usage.AccountToken, str>.Err(f"{path} is empty");
+        }
+        let id = entry.name.slice(0, entry.name.length - ".token".length);
+        tokens.push(claude_usage.AccountToken { id: id, token: token });
+    }
+    return Result<[]claude_usage.AccountToken, str>.Ok(tokens);
+}
+
+// True once every account was attempted and no probe runs.
+fn roundDone(tracker: claude_usage.UsageTracker, tokens: []claude_usage.AccountToken): bool {
+    for t in tokens {
+        if tracker.isProbing(t.id) {
+            return false;
+        }
+        let attempted = false;
+        if let a = tracker.usage(t.id) {
+            if let at = a.attemptedAtMs {
+                attempted = true;
+            }
+        }
+        if !attempted {
+            return false;
+        }
+    }
+    return true;
+}
+
+// True when at least one account's last probe brought numbers.
+fn anyNumbers(tracker: claude_usage.UsageTracker, tokens: []claude_usage.AccountToken): bool {
+    for t in tokens {
+        if let a = tracker.usage(t.id) {
+            if let at = a.probedAtMs {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+fn main(): int {
+    let once = false;
+    for arg in sys.args() {
+        if arg == "--once" {
+            once = true;
+        }
+    }
+    let state = sys.stateDirectory(claude_usage.switcherAppId());
+    let usage = claude_usage.usageFilePath();
+    if !state || !usage {
+        fmt.println("claude-usage-probe: no state folder (HOME or XDG_STATE_HOME)");
+        return 2;
+    }
+    let stateDir: str = state;
+    let usagePath: str = usage;
+    let tokensDir = f"{stateDir}/tokens";
+
+    // The cache entry is Claude Code's on a desktop; nothing here reads it.
+    let tracker: mut claude_usage.UsageTracker = claude_usage.UsageTracker(usagePath, none, claude_usage.TrackerSettings { otherIntervalMs: PROBE_INTERVAL_MS });
+    let read = readTokens(tokensDir);
+    if !read {
+        fmt.println(f"claude-usage-probe: {read}");
+        return 2;
+    }
+    let tokens: []claude_usage.AccountToken = read;
+    tracker.setAccounts(tokens, none);
+    fmt.println(f"claude-usage-probe: {tokens.length} account(s) in {tokensDir} -> {usagePath}");
+
+    let rescanAt: real = time.now() + TOKEN_RESCAN_SECONDS;
+    let lastProblem = "";
+    while true {
+        let nowMs = time.wallClockMs();
+        let mono: real = time.now();
+        tracker.tick(nowMs, mono);
+        // usage.json could not be written: said once, not at every tick.
+        if tracker.fileProblem != lastProblem {
+            lastProblem = tracker.fileProblem;
+            if lastProblem.length > 0 {
+                fmt.println(f"claude-usage-probe: {lastProblem}");
+            }
+        }
+        if once && roundDone(tracker, tokens) {
+            if anyNumbers(tracker, tokens) {
+                return 0;
+            }
+            return 1;
+        }
+        if !once && mono >= rescanAt {
+            rescanAt = mono + TOKEN_RESCAN_SECONDS;
+            let again = readTokens(tokensDir);
+            if !again {
+                // Keep probing the accounts it has; the problem stays visible.
+                fmt.println(f"claude-usage-probe: {again}");
+            }
+            else {
+                let fresh: []claude_usage.AccountToken = again;
+                tokens = fresh;
+                tracker.setAccounts(tokens, none);
+            }
+        }
+        let wait = tracker.nextWakeSeconds(nowMs, mono);
+        if !once && rescanAt - mono < wait {
+            wait = rescanAt - mono;
+        }
+        if wait < 0.05 {
+            wait = 0.05;
+        }
+        time.sleep(wait);
+    }
+    return 0;
+}
