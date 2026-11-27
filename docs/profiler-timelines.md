@@ -93,6 +93,11 @@ Allocations and samples stay as they are, per thread.
   (rings of different threads cannot be shared, measured 2026-11-26; agent note
   profiler-timelines), all within one locked-memory budget, so how to split that budget is still
   open; on Windows the stackwalker would walk each Haze thread in turn.
+  User decision 2026-11-27, whatever the mechanism: a session started from code (`Profiler`,
+  `profiling.profile`) samples only the thread that started it; with a flag in `Profiler.Args`
+  set, or when profiling comes from the environment (`HAZE_PROFILE`, `haze run --profile`), it
+  samples every thread, which is expected to cost more. Letting the kernel walk the stack
+  (frame-pointer call chains) is ruled out as not reliable. No mechanism is chosen yet.
 
 ## Tests
 

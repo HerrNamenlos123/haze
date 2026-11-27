@@ -33,3 +33,11 @@ Verified 2026-11-23 on branch async-runtime, in the commit that adds the schedul
   an inherited event cannot be mmapped (EINVAL). Every sampled thread needs its own event and ring,
   all charged to one locked-memory budget: `perf_event_mlock_kb` 516, then RLIMIT_MEMLOCK (8 MiB
   here). With `perf_event_paranoid` 2, per-CPU events for the whole system are refused.
+  Measured 2026-11-27 (16 CPUs, a C probe mapping 68 KiB rings until EPERM): one process locked
+  14892 KiB; a second process mapping at the same time got 8160 KiB. The part above
+  RLIMIT_MEMLOCK is shared by every process of the user, so two programs profiling at once split it.
+- The sampler copies the user stack into every sample (PERF_SAMPLE_STACK_USER, unwound with DWARF
+  afterwards): the per-sample size, not the event count, is what fills the budget
+  (hzstd_profiling_choose_stack_size). The signal-based sampler before it ran on the profiled
+  thread and was dropped for that (a signal mid read() gave foreign code short reads; comment at
+  "perf_event_open-based sampling" in hzstd_profiling.c).
