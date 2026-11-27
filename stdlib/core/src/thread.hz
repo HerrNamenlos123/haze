@@ -16,9 +16,6 @@ namespace thread {
         // computations on purpose, so that nothing else waits behind them
         // (C290); the main thread always warns (C291).
         stallWarning: bool = true;
-        // Bytes of stack for every task of the thread, 64 KiB to 1 GiB;
-        // `none` gives each the default of 8 MiB. Meant for deep recursion.
-        stackSize: int | none = none;
     }
 
     // Runs `body` on a new thread and gives the future of its result: one
@@ -28,6 +25,8 @@ namespace thread {
     // completes when `body` returns, even while other tasks of that thread
     // still run (C572). The thread ends once nothing on it keeps it alive
     // (C236), and the program waits for every thread before it ends (C237).
+    // `body` is crossthread: what it captures and what it returns must cross
+    // threads (values, const data, atomic data, futures of those; C148).
     // Meant for work that would keep a thread busy: give it its own.
     //
     //     let sum = thread.spawn(() => {
@@ -36,9 +35,15 @@ namespace thread {
     //         return total;
     //     }, { stallWarning: false });
     //     let r = sum.join();
-    export fn spawn<T>(body: () => T, options: SpawnOptions = SpawnOptions {}, location: SourceLocation = SourceLocation()): Future<T> {
+    export fn spawn<T>(body: crossthread () => T, options: SpawnOptions = SpawnOptions {}, location: SourceLocation = SourceLocation()): Future<T> {
         let future = Future<T>();
-        future._spawnOnThread(body, options, location);
+        // The closure the new thread runs is crossthread too, so no entry
+        // point runs anything on a new thread unchecked (S5-I2). When what
+        // `body` returns does not cross, this conversion is the one reported
+        // (its capture `me`), inside the standard library: an error in a
+        // generic's body comes before the caller's argument (ledger).
+        let me = future;
+        future._core().spawnThread(() => { me.complete(body()); }, options, location);
         return future;
     }
 }

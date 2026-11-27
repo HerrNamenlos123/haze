@@ -86,10 +86,13 @@ Allocations and samples stay as they are, per thread.
   high-resolution timer: at normal priority more busy threads than CPUs starved it (1 to 23 of 300
   samples in 0.3 s; 129 to 298 after).
 - **All Haze threads** (P-10): the record and the trace are per Haze thread (every scheduler, its
-  thread's track, its samples by thread id). The sampler samples the thread that started the
-  session, the only Haze thread today; sampling further threads, the handover of their records at
-  the session's end, and a thread that starts during a session come with stage 5 (threads), where
-  they can be tested.
+  thread's track, its samples by thread id). Since stage 5 every thread's runs are recorded, a
+  thread that starts during a session joins it, and one that ends hands its record over
+  (docs/async-decisions.md S5-R6). The sampler still samples only the thread that started the
+  session. Sampling further threads is not built: on Linux each needs its own perf event and ring
+  (rings of different threads cannot be shared, measured 2026-11-26; agent note
+  profiler-timelines), all within one locked-memory budget, so how to split that budget is still
+  open; on Windows the stackwalker would walk each Haze thread in turn.
 
 ## Tests
 

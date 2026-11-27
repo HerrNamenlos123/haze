@@ -19,8 +19,8 @@
 // wake-ups"). The process ends once every thread has ("Threads of the
 // process").
 //
-// Stacks come from fiber.h (8 MiB reserved unless thread.spawn's stackSize
-// says otherwise, 64 KiB guard, committed on first touch; section 7), reused
+// Stacks come from fiber.h (8 MiB reserved, 64 KiB guard, committed on first
+// touch; section 7), reused
 // through a small per-thread pool. A task gets its stack when it first runs,
 // so tasks that never run never reserve one.
 //
@@ -100,7 +100,6 @@ struct hzstd_sched_t {
   hzstd_task_t *ended;      // the task that just ended; its stack goes back to the pool
   fiber_stack pool[HZSTD_TASK_STACK_POOL];
   size_t pool_len;
-  size_t stack_size;        // of every task of this thread (thread.spawn's stackSize)
   bool stall_warning;       // false: the watchdog never warns about this thread
   // Cross-thread wake-ups (S5-11): tasks of this thread that other threads
   // readied, oldest first, linked through next_ready; drained into the ready
@@ -405,7 +404,7 @@ static fiber_stack hzstd_stack_acquire(hzstd_sched_t *s)
     return s->pool[--s->pool_len];
   }
   fiber_stack stack;
-  int error = fiber_stack_create(&stack, s->stack_size, HZSTD_TASK_STACK_GUARD);
+  int error = fiber_stack_create(&stack, HZSTD_TASK_STACK_SIZE, HZSTD_TASK_STACK_GUARD);
   if (error != 0) {
     hzstd_panic_fmt("Out of memory: no stack for a new task (error %d)", error);
   }
@@ -460,7 +459,8 @@ static hzstd_task_t *hzstd_ready_pop(hzstd_sched_t *s)
 // its thread's inbox under a lock, never between them, which is what lets a
 // thread that ends take its tasks out of every queue (hzstd_sched_kill_all).
 // The holder never suspends and never allocates, so the lock spins; after a
-// while a spinner gives its CPU away, in case the holder was preempted.
+// while a spinner gives its CPU away, in case the holder was preempted. The
+// atomic arena's lock is one too (hzstd_memory.c), held for a pointer bump.
 
 static void hzstd_os_thread_yield(void)
 {
@@ -471,7 +471,7 @@ static void hzstd_os_thread_yield(void)
 #endif
 }
 
-static void hzstd_core_lock(hzstd_core_lock_t *l)
+void hzstd_core_lock(hzstd_core_lock_t *l)
 {
   for (unsigned spins = 0;; spins++) {
     if (atomic_load_explicit(&l->locked, memory_order_relaxed) == 0
@@ -491,7 +491,7 @@ static void hzstd_core_lock(hzstd_core_lock_t *l)
   }
 }
 
-static void hzstd_core_unlock(hzstd_core_lock_t *l)
+void hzstd_core_unlock(hzstd_core_lock_t *l)
 {
   atomic_store_explicit(&l->locked, 0, memory_order_release);
 }
@@ -2804,14 +2804,13 @@ hzstd_real_t hzstd_time_since_task_switch(hzstd_context_t *ctx)
 
 // The calling thread's scheduler: on the thread itself (its stack, its CPU
 // clock and its signal stack are found from inside it).
-static hzstd_sched_t *hzstd_sched_init_thread(hzstd_thread_t *thread, size_t stack_size, bool stall_warning)
+static hzstd_sched_t *hzstd_sched_init_thread(hzstd_thread_t *thread, bool stall_warning)
 {
   // Uncollectable: never freed while the thread lives, and scanned, so the
   // tasks it holds stay alive.
   hzstd_sched_t *s = hzstd_uncollectable_allocate(sizeof(hzstd_sched_t));
   memset(s, 0, sizeof(*s));
   s->thread = thread;
-  s->stack_size = stack_size;
   s->stall_warning = stall_warning;
   s->panic_report = malloc(sizeof(hzstd_raw_report_t));
   if (s->panic_report == NULL) {
@@ -2891,7 +2890,7 @@ static void hzstd_sched_initialize_main_thread(void)
   g_hzstd_previous_collection_event = GC_get_on_collection_event();
   GC_set_on_collection_event(hzstd_gc_event);
   g_hzstd_threads_live = 1;
-  hzstd_sched_init_thread(hzstd_current_thread, HZSTD_TASK_STACK_SIZE, true);
+  hzstd_sched_init_thread(hzstd_current_thread, true);
   hzstd_stall_trace_initialize();
   hzstd_watchdog_start();
 }
@@ -2905,10 +2904,6 @@ static void hzstd_sched_initialize_main_thread(void)
 // first use). Its first task runs the body; the body's future completes when
 // it returns (C572), and the thread ends once nothing on it is pending (C236).
 
-// Bounds of thread.spawn's stackSize (S5-R4).
-#define HZSTD_STACK_SIZE_MIN ((hzstd_int_t)64 << 10)
-#define HZSTD_STACK_SIZE_MAX ((hzstd_int_t)1 << 30)
-
 // What the new thread starts from. Uncollectable (scanned): it holds the
 // body's argument and future until the thread's first task holds them.
 typedef struct {
@@ -2918,7 +2913,6 @@ typedef struct {
   hzstd_future_core_t *future;
   hzstd_source_location_t spawned_at;
   uint64_t parent_id;
-  size_t stack_size;
   bool stall_warning;
 } hzstd_thread_start_t;
 
@@ -2960,7 +2954,7 @@ static void hzstd_thread_run(hzstd_thread_start_t *start)
   hzstd_setup_panic_handler();
   hzstd_thread_t *thread = start->thread;
   hzstd_current_thread = thread;
-  hzstd_sched_t *s = hzstd_sched_init_thread(thread, start->stack_size, start->stall_warning);
+  hzstd_sched_t *s = hzstd_sched_init_thread(thread, start->stall_warning);
   hzstd_sched_spawn(s, NULL, start->parent_id, hzstd_context_settings_default(), start->entry, start->arg, false, start->future, start->spawned_at);
   hzstd_uncollectable_free(start);
   hzstd_sched_loop(s);
@@ -2987,17 +2981,8 @@ void hzstd_thread_spawn(hzstd_context_t *ctx,
                         void *arg,
                         hzstd_future_core_t *future,
                         bool stall_warning,
-                        bool has_stack_size,
-                        hzstd_int_t stack_size,
                         hzstd_source_location_t spawned_at)
 {
-  if (has_stack_size && (stack_size < HZSTD_STACK_SIZE_MIN || stack_size > HZSTD_STACK_SIZE_MAX)) {
-    hzstd_panic_fmt_n(2,
-                      "thread.spawn: the option stackSize must be between %lld (64 KiB) and %lld (1 GiB) bytes, not %lld",
-                      (long long)HZSTD_STACK_SIZE_MIN,
-                      (long long)HZSTD_STACK_SIZE_MAX,
-                      (long long)stack_size);
-  }
   hzstd_thread_start_t *start = hzstd_uncollectable_allocate(sizeof(hzstd_thread_start_t));
   hzstd_thread_t *thread = hzstd_uncollectable_allocate(sizeof(hzstd_thread_t));
   memset(thread, 0, sizeof(*thread));
@@ -3010,7 +2995,6 @@ void hzstd_thread_spawn(hzstd_context_t *ctx,
     .future = future,
     .spawned_at = spawned_at,
     .parent_id = ctx->task->id,
-    .stack_size = has_stack_size ? (size_t)stack_size : HZSTD_TASK_STACK_SIZE,
     .stall_warning = stall_warning,
   };
   // Live from now: the main thread must not end before this one has.

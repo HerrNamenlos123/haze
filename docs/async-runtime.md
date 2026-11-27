@@ -104,11 +104,13 @@ only where noted.
 * `task.spawn(() => { ... }, { background: false })` returns a `Future<T>` of the lambda's result
   (C250, C257). The only option: `background: true` marks the task as background work, which does not
   keep its thread alive (C304, C435).
-* `thread.spawn(() => { ... }, { stallWarning: true, stackSize })` returns a `Future<T>` that
-  completes when the lambda returns (C572). Options: `stallWarning` (default `true`; the warning names
-  this option, C290 to C292) and `stackSize` (the stack of every task of the thread instead of the
-  default 8 MiB; 64 KiB to 1 GiB, docs/async-decisions.md S5-R4). The new thread starts blank (C479,
-  C518). Logging to the parent (C514) is not part of the first implementation.
+* `thread.spawn(() => { ... }, { stallWarning: true })` returns a `Future<T>` that completes when
+  the lambda returns (C572). The lambda is a `crossthread () => T`: everything it captures and its
+  result must cross threads (C148, docs/async-decisions.md S5-2). The only option: `stallWarning`
+  (default `true`; the warning names this option, C290 to C292). There is no stack size option
+  (user, 2026-11-23): every task's stack reserves 8 MiB and commits pages as they are touched. The
+  new thread starts blank (C479, C518). Logging to the parent (C514) is not part of the first
+  implementation.
 * `Future<T>`: one type for tasks and threads (C387), roughly Java's API unless real use shows a need
   for something else: `join()` suspends only the joining task (C256) and returns a result whose error
   case covers a killed task and a function that never ran (C438, C561); it must be impossible to
@@ -215,7 +217,24 @@ hover shows (user, 2026-11-23).
   threads). A future crosses only if its value can (C600).
 * Unsafe form: `unsafe crossthread`. A wrapper around a C handle that is thread safe by itself (wgpu
   objects) is declared crossable unsafely; its author promises the thread safety (C171). Section
-  11.2 relies on it.
+  11.2 relies on it. `sys.Mutex`, `sys.Flag` and the future's core are declared so (S5-15).
+* Settings for a new thread (C482, C487, C488, C493 to C495): a user box belongs to its thread.
+  `AtomicTypeErasedBox<T>(value)` holds one atomic value (an atomic struct or array; anything else
+  fails to compile), never changes and crosses threads; each thread puts it into its own user box
+  (`context.userBox1 = sys.makeUserBox(box)`) to share the value. A plain `Arena` never leaves its
+  thread; `Alloc.atomicArena(options)` gives an `AtomicArena`, which locks every allocation, crosses
+  threads and passes as an `Allocator` like `Arena` does.
+
+  ```haze
+  let stats = Stats();                            // an atomic struct
+  let shared = AtomicTypeErasedBox<Stats>(stats);
+  let arena = Alloc.atomicArena();
+  let worker = thread.spawn(() => {
+      context.userBox1 = sys.makeUserBox(shared);
+      context.allocator = arena;                  // this thread allocates into it too
+      return work();
+  });
+  ```
 
 **Globals**
 * `let` / `const` at module level: once per thread (C196).
@@ -362,7 +381,7 @@ found like a task-local block (two loads and two checks inline) in the thread's 
 index space of its own; a thread's block is made from the module's initial image on its first
 access. Initializers are C constant expressions (`src/Semantic/Elaborate.ts` ~14829), so the image
 is constant: no initializer code runs, and reading a per-thread variable in one is an error
-(H7236). Revisit when C570 allows initializers to call functions.
+(H7250; H7236 for a task-local, S5-I5). Revisit when C570 allows initializers to call functions.
 
 User direction (2026-10-20):
 * Per-task globals live behind the context's runtime data, a fixed C type usable everywhere; task

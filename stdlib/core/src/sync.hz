@@ -36,7 +36,9 @@ namespace sys {
     //         let text = load(path);    // may suspend: no other task gets in
     //         cache.set(path, text);
     //     });
-    export opaque ref struct Mutex {
+    // `unsafe crossthread`: the C core takes its own lock for every change
+    // (docs/async-decisions.md S5-R1, S5-15), so a mutex crosses threads.
+    export opaque unsafe crossthread ref struct Mutex {
         private core: cptr;
 
         fn constructor(): mut Mutex {
@@ -113,7 +115,8 @@ namespace sys {
     //     let ready = sys.Flag();
     //     task.spawn(() => { load(); ready.set(); });
     //     ready.wait();
-    export opaque ref struct Flag {
+    // Crosses threads like Mutex (S5-15).
+    export opaque unsafe crossthread ref struct Flag {
         private core: cptr;
 
         fn constructor(): mut Flag {

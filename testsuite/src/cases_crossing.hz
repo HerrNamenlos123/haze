@@ -448,5 +448,134 @@ fn main(): int {
             testsuite.exactCount(errorcodes.Code.CannotCrossThreads, 1),
             testsuite.messageContains("its capture 'xs' is 'mut [](int)', a dynamic array that is neither atomic nor const"),
         ]);
+
+        // ── thread.spawn and the standard library's thread tools (S5-2,
+        // S5-5, S5-15) ────────────────────────────────────────────────────────
+        s.run("crossing: the standard library's thread tools", """
+ref struct Plain { v: int = 0; }
+atomic opaque ref struct Counter {
+    n: atomic int = 0;
+    fn constructor(): mut Counter { return Counter {}; }
+}
+type Mutex = sys.Mutex;
+type Flag = sys.Flag;
+type IntFuture = Future<int>;
+type PlainFuture = Future<Plain>;
+type CounterFuture = Future<Counter>;
+fn yes(b: bool): str { return b ? "y" : "n"; }
+
+fn main(): int {
+    // Mutex, Flag and the future's core cross by their author's promise; a
+    // future crosses exactly when its value does (C600).
+    fmt.println(f"{yes(Mutex.crossesThreads)}{yes(Flag.crossesThreads)}{yes(IntFuture.crossesThreads)}{yes(PlainFuture.crossesThreads)}{yes(CounterFuture.crossesThreads)}{yes(IntFuture.isAtomic)}");
+    // An atomic arena and an atomic box cross, their plain forms never (C488, C493, C495).
+    fmt.println(f"{yes(AtomicArena.crossesThreads)}{yes(Arena.crossesThreads)}{yes(AtomicTypeErasedBox.crossesThreads)}{yes(TypeErasedBox.crossesThreads)}");
+
+    // Everything a thread body may hold, all at once.
+    let m = sys.Mutex();
+    let f = sys.Flag();
+    let ready = Future<int>();
+    let c = Counter();
+    let xs: mut atomic []int = [];
+    let arena = Alloc.atomicArena();
+    let box = AtomicTypeErasedBox<Counter>(c);
+    let label = "label";
+    let t = thread.spawn(() => {
+        m.lock(() => { c.n += 1; });
+        xs.push(label.length);
+        f.set();
+        ready.complete(2);
+        let held = box.get<Counter>();
+        context.allocator = arena;
+        let s = f"{held.n}";
+        return s.length;
+    });
+    let r = t.join();
+    if r is int { fmt.println(f"{r} {c.n} {xs.length} {f.isSet()}"); }
+    return 0;
+}
+""", "yyynyy\nynyn\n1 1 1 true");
+
+        noCross(s, "crossing: thread.spawn checks its lambda's captures", """
+ref struct Plain { v: int = 0; }
+fn main(): int {
+    let p = Plain {};
+    let t = thread.spawn(() => p.v); // <- H7238
+    return 0;
+}
+""", ["its capture 'p' is", "a reference to a struct that is not atomic"]);
+
+        // Reported inside thread.spawn, at its own crossthread closure (its
+        // capture 'me', the future of the result), not at this call: an error
+        // in a generic's body comes before the caller's argument (ledger).
+        noCross(s, "crossing: thread.spawn checks its lambda's result", """
+fn main(): int {
+    let t = thread.spawn(() => {
+        let xs: mut []int = [1, 2];
+        return xs;
+    }); // <- H7238
+    return 0;
+}
+""", ["whose type argument is 'mut [](int)', a dynamic array that is neither atomic nor const"]);
+
+        noCross(s, "crossing: a future of data that does not cross stays on its thread", """
+ref struct Plain { v: int = 0; }
+fn main(): int {
+    let f = Future<Plain>();
+    let t = thread.spawn(() => { f.complete(Plain {}); return 0; }); // <- H7238
+    return 0;
+}
+""", ["its capture 'f' is"]);
+
+        noCross(s, "crossing: a plain arena never leaves its thread", """
+fn main(): int {
+    let arena = Alloc.arena();
+    let t = thread.spawn(() => {
+        context.allocator = arena;
+        return 0;
+    }); // <- H7238
+    return 0;
+}
+""", ["its capture 'arena' is 'Arena'"]);
+
+        // Review of the integration (2026-11-26): each of these compiled before
+        // its fix, and let safe code share plain data across threads.
+        s.compileFails("crossing: an atomic box holds only atomic values that cross", """
+ref struct Plain { v: int = 0; }
+fn main(): int {
+    let f = Future<Plain>();
+    let box = AtomicTypeErasedBox<Future<Plain>>(f); // <- static_assert: atomic, but does not cross
+    return 0;
+}
+""", [
+            testsuite.exactCount(errorcodes.Code.StaticAssertFailedWithMessage, 1),
+            testsuite.messageContains("An AtomicTypeErasedBox holds only atomic values that cross threads"),
+        ]);
+
+        noCross(s, "crossing: no entry point runs an unchecked closure on a new thread", """
+fn main(): int {
+    let xs: mut []int = [];
+    _FutureCore().spawnThread(() => { xs.push(1); }, thread.SpawnOptions {}, SourceLocation()); // <- H7238
+    return 0;
+}
+""", ["its capture 'xs' is 'mut [](int)', a dynamic array that is neither atomic nor const"]);
+
+        fails(s, "crossing: a future's core holds only a real core", """
+fn main(): int {
+    let c = _FutureCore { raw: sys.contextPtr() }; // <- H7118: opaque
+    return 0;
+}
+""", errorcodes.Code.StructMarkedAsOpaqueAndThereforeNoStruct, "_FutureCore");
+
+        s.compileFails("crossing: an atomic box holds only atomic values", """
+ref struct Plain { v: int = 0; }
+fn main(): int {
+    let box = AtomicTypeErasedBox<Plain>(Plain {}); // <- static_assert
+    return 0;
+}
+""", [
+            testsuite.exactCount(errorcodes.Code.StaticAssertFailedWithMessage, 1),
+            testsuite.messageContains("An AtomicTypeErasedBox holds only atomic values"),
+        ]);
     }
 }

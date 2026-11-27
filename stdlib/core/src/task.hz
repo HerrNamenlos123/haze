@@ -10,12 +10,13 @@
 // ============================================================================
 
 namespace ffi {
-    // Exported: Future<T> is re-elaborated in every module that uses it.
-    export extern C noemit fn hzstd_future_core_new(): cptr :: final;
-    export extern C noemit fn hzstd_future_state(core: cptr): int :: final;
-    export extern C noemit fn hzstd_future_claim(ctx: cptr, core: cptr) :: final;
-    export extern C noemit fn hzstd_future_complete(ctx: cptr, core: cptr) :: final;
-    export extern C noemit fn hzstd_future_wait(ctx: cptr, core: cptr): int :: final;
+    // Called only by _FutureCore's methods, compiled here: nothing else
+    // reaches a future's core.
+    extern C noemit fn hzstd_future_core_new(): cptr :: final;
+    extern C noemit fn hzstd_future_state(core: cptr): int :: final;
+    extern C noemit fn hzstd_future_claim(ctx: cptr, core: cptr) :: final;
+    extern C noemit fn hzstd_future_complete(ctx: cptr, core: cptr) :: final;
+    extern C noemit fn hzstd_future_wait(ctx: cptr, core: cptr): int :: final;
     extern C noemit fn hzstd_task_yield(ctx: cptr) :: final;
 }
 
@@ -28,24 +29,87 @@ export enum TaskError {
     NeverRan,
 }
 
+// The C side of a future (hzstd_future_core_t), and the only way to it. It
+// takes its own lock for every change and every wait (docs/async-decisions.md
+// S5-R1), so it crosses threads by its author's promise (S5-15). Opaque, so it
+// always holds a real core: no other pointer can be carried across threads in
+// it (S5-I1). Exported with its methods, which are compiled here: Future<T> is
+// re-elaborated in every module that uses it.
+export opaque unsafe crossthread struct _FutureCore {
+    private raw: cptr;
+
+    fn constructor(): _FutureCore {
+        return _FutureCore { raw: ffi.hzstd_future_core_new() };
+    }
+
+    // 0 while pending; then hzstd_future_state_t (1 done, 2 killed, 3 never ran).
+    fn state(): int {
+        return ffi.hzstd_future_state(this.raw);
+    }
+
+    // Suspends the calling task until the future is settled; its state.
+    fn wait(): int {
+        return ffi.hzstd_future_wait(sys.contextPtr(), this.raw);
+    }
+
+    // Claims the future for one completion; panics if it was claimed before.
+    fn claim() {
+        ffi.hzstd_future_claim(sys.contextPtr(), this.raw);
+    }
+
+    // Settles a claimed future and readies its waiters.
+    fn settle() {
+        ffi.hzstd_future_complete(sys.contextPtr(), this.raw);
+    }
+
+    // Runs `thunk` as a new task on this thread (task.spawn); the thunk
+    // completes the future.
+    fn spawnTask(thunk: task._Thunk, background: bool, location: SourceLocation) {
+        let entry = task.__hz_task_run_thunk;
+        let ctx = sys.contextPtr();
+        let core = this.raw;
+        do unsafe {
+            __c__("hzstd_task_spawn((hzstd_context_t *)ctx, entry, (void *)thunk, background, (hzstd_future_core_t *)core, location);");
+        };
+    }
+
+    // Runs `run` as the first task of a new thread (thread.spawn); `run`
+    // completes the future. Crossthread: whoever calls this, what `run`
+    // holds is checked (C148, S5-2).
+    fn spawnThread(run: crossthread () => none, options: thread.SpawnOptions, location: SourceLocation) {
+        let thunk = task._Thunk { run: run };
+        let entry = task.__hz_task_run_thunk;
+        let ctx = sys.contextPtr();
+        let core = this.raw;
+        let stallWarning = options.stallWarning;
+        do unsafe {
+            __c__("hzstd_thread_spawn((hzstd_context_t *)ctx, entry, (void *)thunk, (hzstd_future_core_t *)core, stallWarning, location);");
+        };
+    }
+}
+
 // The result of a task, or a value some code hands over later (C387): one
 // type for both. `join()` waits for it; `complete(v)` gives it its value,
 // once (C444). Meant to be passed to whoever needs the result: a future is a
-// reference, every copy is the same future.
-export opaque ref struct Future<T> {
-    private core: cptr;
-    private result: Box<T> | none = none;
+// reference, every copy is the same future. It crosses threads exactly when
+// its value does (C600).
+export atomic opaque ref struct Future<T> {
+    private const core: _FutureCore;
+    // Written once, by the `complete` that claimed the future, before the
+    // future is settled; read by `join` only once it is settled. The core's
+    // lock orders the two (S5-14, S5-R7): that is what `unsafe` promises.
+    private unsafe result: Box<T> | none = none;
 
     // A future that code completes with `complete(v)` (C443).
     fn constructor(): mut Future<T> {
-        return Future<T> { core: ffi.hzstd_future_core_new() };
+        return Future<T> { core: _FutureCore() };
     }
 
     // Suspends the calling task until the future is done (C256), and gives
     // its value, or why there is none: the error case must be handled
     // (C419), a task can be killed (C438) or never run (C561).
     fn join(): Result<T, TaskError> {
-        let state = ffi.hzstd_future_wait(sys.contextPtr(), this.core);
+        let state = this.core.wait();
         if state == 2 {
             return TaskError.Killed;
         }
@@ -61,7 +125,7 @@ export opaque ref struct Future<T> {
     // Whether the future is done: completed, or its task killed. Never
     // suspends; meant for polling from code that has other work to do.
     fn isDone(): bool {
-        return ffi.hzstd_future_state(this.core) != 0;
+        return this.core.state() != 0;
     }
 
     // Gives the future its value and readies every task waiting in `join`.
@@ -75,23 +139,23 @@ export opaque ref struct Future<T> {
         // yet; the claim panics on a second complete before it overwrites the
         // first value.
         let done = Box<T> { value: value };
-        let ctx = sys.contextPtr();
-        ffi.hzstd_future_claim(ctx, this.core);
+        this.core.claim();
         this.result = done;
-        ffi.hzstd_future_complete(ctx, this.core);
+        this.core.settle();
     }
 
     // Runs `body` as a new task that completes this future.
     mut fn _spawn(body: () => T, background: bool, location: SourceLocation) {
         let me = this;
-        task._spawnThunk(task._Thunk { run: () => { me.complete(body()); } }, background, this.core, location);
+        this.core.spawnTask(task._Thunk { run: () => { me.complete(body()); } }, background, location);
     }
 
-    // Runs `body` as the first task of a new thread that completes this
-    // future (thread.spawn).
-    mut fn _spawnOnThread(body: () => T, options: thread.SpawnOptions, location: SourceLocation) {
-        let me = this;
-        task._spawnThreadThunk(task._Thunk { run: () => { me.complete(body()); } }, options, this.core, location);
+    // The core, for thread.spawn, which builds the new thread's closure
+    // itself: a crossthread conversion in a method here would reject every
+    // Future<T> whose T stays on its thread (methods are elaborated for every
+    // instantiation, S5-I2).
+    fn _core(): _FutureCore {
+        return this.core;
     }
 }
 
@@ -115,15 +179,15 @@ namespace task {
     }
 
     // What a task runs, boxed so C holds it as one pointer. Internal: only
-    // Future._spawn makes one.
+    // Future._spawn and _FutureCore.spawnThread make one.
     export ref struct _Thunk {
         run: () => none;
     }
 
     // hzstd_task_entry_t: runs a _Thunk. An `extern C` function defined in
     // Haze, so it takes the task's context as its first C parameter (C401).
-    // Not exported: it takes any pointer for a _Thunk, so only _spawnThunk
-    // names it.
+    // Not exported: it takes any pointer for a _Thunk, so only _FutureCore's
+    // spawn methods name it.
     extern C fn __hz_task_run_thunk(thunk: cptr) {
         let box = do unsafe {
             let b: _Thunk = uninitialized;
@@ -131,33 +195,6 @@ namespace task {
             b
         };
         box.run();
-    }
-
-    // Not generic, so it is compiled here: Future._spawn is re-elaborated in
-    // the importing module, which cannot name the entry.
-    export fn _spawnThunk(thunk: _Thunk, background: bool, core: cptr, location: SourceLocation) {
-        let entry = __hz_task_run_thunk;
-        let ctx = sys.contextPtr();
-        do unsafe {
-            __c__("hzstd_task_spawn((hzstd_context_t *)ctx, entry, (void *)thunk, background, (hzstd_future_core_t *)core, location);");
-        };
-    }
-
-    // The same for a new thread's first task (thread.spawn), which names its
-    // options.
-    export fn _spawnThreadThunk(thunk: _Thunk, options: thread.SpawnOptions, core: cptr, location: SourceLocation) {
-        let entry = __hz_task_run_thunk;
-        let ctx = sys.contextPtr();
-        let stallWarning = options.stallWarning;
-        let hasStackSize = false;
-        let stackSize = 0;
-        if let size = options.stackSize {
-            hasStackSize = true;
-            stackSize = size;
-        }
-        do unsafe {
-            __c__("hzstd_thread_spawn((hzstd_context_t *)ctx, entry, (void *)thunk, (hzstd_future_core_t *)core, stallWarning, hasStackSize, stackSize, location);");
-        };
     }
 }
 

@@ -925,15 +925,15 @@ task-local storage (TL-1 to TL-7), `private` members (S0-17), the `tasklocal`/`g
 ### Threads (C148, C479, C518, C572, C604; contract sections 2 and 5)
 
 - **S5-10. `thread.spawn<T>(body: crossthread () => T, options: thread.SpawnOptions = {},
-  location)`: `Future<T>`.** Options `stallWarning: bool = true` and `stackSize: int | none` (the
-  stack size of every task of the new thread; the stall warning names its option, C290 to C292).
-  The new OS thread (registered with the GC) gets its own scheduler and loop, a blank context with
-  the stdlib defaults (C479), every per-thread global at its initial value (C518, S5-11); `body` is
-  its first task; the future completes when `body` returns, even while other tasks of that thread
-  still run (C572). The thread ends when nothing on it is pending (C236, C434); the process ends on
-  exit or when every thread has ended (C237): the main thread waits for the others before returning
-  the exit status. stdlib/core/src/thread.hz holds the `thread` namespace (its old commented-out
-  draft goes: superseded).
+  location)`: `Future<T>`.** The only option is `stallWarning: bool = true` (the stall warning names
+  it, C290 to C292); no stack size option (user, 2026-11-23, S5-R4). The new OS thread (registered
+  with the GC) gets its own scheduler and loop, a blank context with the stdlib defaults (C479),
+  every per-thread global at its initial value (C518, S5-11); `body` is its first task; the future
+  completes when `body` returns, even while other tasks of that thread still run (C572). The thread
+  ends when nothing on it is pending (C236, C434); the process ends on exit or when every thread has
+  ended (C237): the main thread waits for the others before returning the exit status.
+  stdlib/core/src/thread.hz holds the `thread` namespace (its old commented-out draft goes:
+  superseded).
 - **S5-11. Cross-thread wake-ups:** every scheduler has an inbox (a locked list of tasks to ready)
   and a `uv_async_t`; readying a task of another thread pushes it there and calls `uv_async_send`.
   A scheduler drains its inbox only between tasks, so a task readied by another thread before it
@@ -1013,11 +1013,10 @@ task-local storage (TL-1 to TL-7), `private` members (S0-17), the `tasklocal`/`g
   `let` too and is per thread now (the only one, filesystem.hz `_globalFilesystemContext`, is Haze
   state that is right per thread). Initializers stay C constant images: `let xs: mut []str = [];`
   at module level never compiled (a statement expression at file scope) and still does not.
-- **S5-R4. stackSize is 64 KiB to 1 GiB**, checked at the spawn in hzstd (the message names the
-  option and the bounds). 64 KiB: the Windows fiber minimum, room for hzstd's own frames and the
-  signal frames that run on a task stack (the stall signal, the collector's suspend signal).
-  1 GiB: against typos; a stack is reserved address space, committed on first touch. Every task of
-  the thread gets it (the thread's stack pool holds only that size).
+- **S5-R4. No stack size option** (user, 2026-11-23: it was only meant for small stacks, and with
+  8 MiB reserved per task and pages committed as they are touched it is not needed). The runtime
+  lane had built `stackSize` (64 KiB to 1 GiB, a stack pool per thread) against that decision; the
+  integration removed it again: every task of every thread gets the default stack.
 - **S5-R5. The panic gate waits for another thread's report.** A panic while another thread's
   recoverable panic was being reported parked the thread forever (red: 3 of 4 threads parked in
   `hzstd_block_thread_forever` from `hzstd_panic_with_stacktrace`). Now a request waits for the
@@ -1132,6 +1131,71 @@ task-local storage (TL-1 to TL-7), `private` members (S0-17), the `tasklocal`/`g
   found by the module test of cases_crossing.hz). The threading modifiers, `unsafe` and
   `atomic` fields are written too.
 
+### Integration (2026-11-26, lenovo-yoga; the user's go: "integrate stage 5 and remove stackSize")
+
+- **S5-I1. The future's core is an opaque `unsafe crossthread` value struct in a `private const`
+  field** (`_FutureCore`, task.hz), the result a `private unsafe` field (S5-15). An atomic struct's
+  field is atomic, const or unsafe (S5-7); a const field must cross, which the C core does by its
+  author's promise (it locks itself, S5-R1). Opaque with a private pointer, so it always holds a
+  real core: a public `raw: cptr` let any pointer cross in it (review, 2026-11-26). Its methods
+  (`state`, `wait`, `claim`, `settle`, `spawnTask`, `spawnThread`) are the only way to the core,
+  compiled once in stdlib/core; the `ffi.hzstd_future_*` functions are no longer exported.
+  Rejected: `private unsafe core: cptr` (unsafe promises access under the struct's mutex, which is
+  not what makes the core safe); a ref struct wrapper (one more allocation per future).
+- **S5-I2. Nothing runs on a new thread without a crossthread check.** `thread.spawn` takes
+  `crossthread () => T` and builds the closure the new thread runs (completing the future) itself,
+  passing it to `_FutureCore.spawnThread(run: crossthread () => none, ...)`, the one entry point.
+  A first version kept that closure plain inside a Future method: the review showed safe code
+  could call that method (or the exported thunk function) with any closure and share plain data
+  across threads. The closure cannot be built inside a Future method: methods are elaborated for
+  every instantiation, so the check rejected every `Future<T>` whose T stays on its thread (the
+  alias `Future<Plain>` alone failed). In thread.spawn it is checked per call. Cost: when what the
+  thread returns does not cross, the error is this closure's (its capture `me`, the future of the
+  result) inside the stdlib's import.hz, not at the caller's lambda: an error inside a generic
+  function's body is reported before the call's own argument (ledger). A capture that does not
+  cross is reported at the call.
+- **S5-I3. The atomic arena locks with the cores' spin lock, only to bump and to install a chunk**
+  (hzstd_memory.c "Atomic arena"). A chunk is made outside the lock, since making one can panic (an
+  allocation limit fires inside the allocation that crosses it, memory runs out) and a panic must
+  never leave the lock taken; a chunk made while another thread installed one with room is never
+  linked and becomes garbage. A made chunk always has its own header; the chain's inline first
+  header is filled (copied) only under the lock. Under contention a chunk sized for one state may be
+  installed in another, so chunk sizes follow the policy only approximately; the usage
+  (`bytes_in_use`) stays exact, and a chunk that lost the race still counts in allocation windows
+  and limits (it was allocated). The struct starts with its `hzstd_arena_t`, so the allocator's ctx
+  is an arena for either kind. Rejected: a mutex core like atomic arrays (every allocation would be
+  a suspension point, breaking suspension-free regions); a `uv_mutex_t` (needs a destructor, the
+  arena is GC memory); holding the lock across the chunk allocation.
+- **S5-I4. AtomicArena and AtomicTypeErasedBox are `opaque unsafe crossthread` structs with private
+  fields** (memory.hz). Opaque so the promise holds: a non-opaque AtomicArena could be built around
+  any allocator (a plain arena's included) and carry it across threads. AtomicTypeErasedBox has no
+  `set` (it never changes after it is made, so the promise needs no lock) and asserts at compile
+  time that T is atomic and crosses (`static_assert(T.isAtomic && T.crossesThreads)`; atomic alone
+  let `Future<Plain>` in, review); like TypeErasedBox it takes its type argument explicitly
+  (`AtomicTypeErasedBox<Stats>(stats)`: a generic constructor's argument is not deduced).
+  `Alloc.atomicArena(options)` makes one; `measure()` reads under the lock.
+- **S5-I5. A per-thread `let` read outside a function is H7250** (`ThreadGlobalOutsideFunction`),
+  H7236 is the task-local's again (S5-R3 left one code for both).
+- **S5-I6. Shared data in the tests and demos moved to what crosses**: counters to atomic structs,
+  arrays to atomic arrays, and a work queue to an atomic struct whose `private unsafe` fields are
+  touched only under its mutex (C172): an atomic array's every operation is a suspension point
+  (S5-9), so a `lockWhen` condition cannot read one; a mutex-guarded unsafe field it can. The
+  mutex field is `private` (any thread could store another mutex over a public one, review);
+  `const` is not possible, it would make the mutex itself const data (readonly fields: C554). A thread
+  returns an array it built only as an atomic array (a plain one never crosses, and only a literal
+  becomes atomic).
+- **S5-I7. Merge of main (0dfc0cf5):** the branch's raw-report stack walk on Windows stays and calls
+  dbghelp's `...W` functions, converting names into static UTF-8 buffers under the dbghelp lock
+  (nothing allocated); main's walk that built arrays is superseded. Windows CPU samples are relative
+  to `timelineRef` like everything else on the timeline. main's new cases follow the branch's rules
+  (S0-1: writes need `mut`).
+- **S5-I8. A method called on an atomic array's element gets the copy in a temporary**
+  (Lower.ts `isAtomicArrayElementRead`): the element is read as a copy, an rvalue, and
+  `arenas[r].measure()` or an `operator as` on it took its address, which C rejects (lane C's
+  lowering, found by the first-chunk race case). Only that intrinsic is matched: a call result in
+  general is no rvalue in C when it is a macro over storage (a stackref dereference), and a copy
+  there would make a `mut` method change the copy.
+
 ## Tooling
 
 - **G-1. The parser-equivalence sweep reads what the commit and the run decide** (user,
@@ -1155,6 +1219,11 @@ Haze symbol by its C name, so none names a module-level `let`, which is no C glo
 an initializer reading a `let` never compiled: it was a C error, now it is H7236). What changed in
 behaviour, for every program: every module-level `let` exists once per thread, and the process ends
 only once every thread has ended.
+
+**After the stage 5 integration:** `thread.spawn` takes `crossthread () => T`, so a thread body
+that captures or returns data that does not cross no longer compiles (H7238): nothing outside the
+testsuite, scripts/thread-stress.sh and examples/async spawned threads. `thread.SpawnOptions` has no
+`stackSize` (S5-R4). A per-thread `let` read outside a function is H7250 instead of H7236.
 
 **After stage 5, lane C:** `atomic` and `crossthread` are reserved words (nothing in the tree
 used them as names). `global let x: int` is H7247 instead of H7231. A compound assignment

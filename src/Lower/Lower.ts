@@ -1372,6 +1372,19 @@ type InstanceInfo = {
 };
 
 /** Whether a Semantic expression is an atomic array (`atomic []T`, S5-9). */
+// Whether `expr` is the copy of an atomic array's element, read under its
+// lock (the ArraySubscriptExpr lowering below): an rvalue, never storage.
+function isAtomicArrayElementRead(lr: Lowered.Module, expr: Lowered.Expression): boolean {
+  if (expr.variant !== Lowered.ENode.ExprCallExpr) {
+    return false;
+  }
+  const callee = lr.exprNodes.get(expr.expr);
+  return (
+    callee.variant === Lowered.ENode.SymbolValueExpr &&
+    callee.name.mangledName === "HZSTD_ATOMIC_ARRAY_GET"
+  );
+}
+
 function isAtomicArray(lr: Lowered.Module, arrayId: Semantic.ExprId): boolean {
   const array = lr.sr.exprNodes.get(arrayId);
   const def = lr.sr.typeDefNodes.get(
@@ -1947,15 +1960,20 @@ export function lowerExpr(
             // reached through the context, so it exists only inside a
             // function. User code can reach this (a global's initializer, a
             // struct default one uses), so it is a diagnostic, not
-            // requireContext's internal error. Both kinds share the code: the
-            // same mistake, a block read where no context exists (S5-R3).
+            // requireContext's internal error. One code per kind of storage
+            // (docs/async-decisions.md S5-I5).
             if (!lr.currentFunction) {
+              if (storage === "task") {
+                throw new CompilerError(
+                  `The task-local variable '${name}' exists once per task, and code outside a function runs in no task`,
+                  expr.sourceloc,
+                  HazeErrorCode.TaskLocalOutsideFunction
+                );
+              }
               throw new CompilerError(
-                storage === "task"
-                  ? `The task-local variable '${name}' exists once per task, and code outside a function runs in no task`
-                  : `The variable '${name}' exists once per thread, and code outside a function runs on no thread`,
+                `The variable '${name}' exists once per thread, and code outside a function runs on no thread`,
                 expr.sourceloc,
-                HazeErrorCode.TaskLocalOutsideFunction
+                HazeErrorCode.ThreadGlobalOutsideFunction
               );
             }
             return Lowered.addExpr(lr, {
@@ -2629,10 +2647,14 @@ export function lowerExpr(
         ) {
           loweredThisRoot = lr.exprNodes.get(loweredThisRoot.expr);
         }
+        // An element of an atomic array is read as a copy, which is an
+        // rvalue as well (HZSTD_ATOMIC_ARRAY_GET, S5-9): `arr[i].method()`
+        // and an `operator as` on it need the copy in a temp to point at.
         const thisNeedsHoisting =
           thisExpr.isTemporary ||
           (loweredThisRoot.variant === Lowered.ENode.UnionToValueCastExpr &&
-            loweredThisRoot.needsRefinementAssertion);
+            loweredThisRoot.needsRefinementAssertion) ||
+          isAtomicArrayElementRead(lr, loweredThisRoot);
         if (thisNeedsHoisting) {
           tempId = storeInTempVarAndGet(
             lr,

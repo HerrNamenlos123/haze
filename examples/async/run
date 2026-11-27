@@ -1,7 +1,8 @@
 #!/bin/bash
 # Builds the async demos with the repo's dev compiler and runs them.
 #   ./run            every demo, one after the other
-#   ./run mutex      one demo (mutex, condition, flag, join, limits, poison)
+#   ./run mutex      one demo (mutex, condition, flag, join, limits, poison,
+#                    cores, atomic, queue, share)
 set -e
 here="$(cd "$(dirname "$0")" && pwd)"
 root="$(cd "$here/../.." && pwd)"

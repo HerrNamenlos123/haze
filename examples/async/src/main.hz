@@ -1,7 +1,7 @@
-// Demos of tasks and their synchronization tools. `./run` runs every demo,
-// `./run <name>` one of them. Everything here runs on one thread: tasks take
-// turns, and switch only where they wait (time.sleep, join, lock, wait,
-// yield). Threads come with the next stage, with the same tools.
+// Demos of tasks, threads and their synchronization tools. `./run` runs every
+// demo, `./run <name>` one of them. Tasks of one thread take turns and switch
+// only where they wait (time.sleep, join, lock, wait, yield); threads run at
+// the same time, with the same tools (the demos from "cores" on).
 
 // Pretends to load something slow: suspends this task for `seconds`.
 fn load(name: str, seconds: real): str {
@@ -198,6 +198,168 @@ fn demoPoison() {
     fmt.println(f"  the next lock: {second}");
 }
 
+// ── Threads ──────────────────────────────────────────────────────────────────
+//
+// A thread runs its own tasks. Its lambda may capture and return only what
+// can cross threads (the compiler checks it): values, const data, atomic
+// data, and the tools that synchronize themselves (Mutex, Flag, Future,
+// AtomicArena, AtomicTypeErasedBox).
+
+// Shared counters: every field is atomic, so any thread may touch them.
+atomic opaque ref struct Counters {
+    exact: atomic int = 0;
+    racy: atomic int = 0;
+    fn constructor(): mut Counters { return Counters {}; }
+}
+
+fn isPrime(n: int): bool {
+    if n < 2 { return false; }
+    for (let d = 2; d * d <= n; d++) {
+        if n % d == 0 { return false; }
+    }
+    return true;
+}
+
+fn primesIn(low: int, high: int): int {
+    let count = 0;
+    for (let n = low; n < high; n++) {
+        if isPrime(n) { count++; }
+    }
+    return count;
+}
+
+// ── cores: the same work on one thread, then split over 8 ───────────────────
+
+fn demoCores() {
+    let limit = 3000000;
+    let started = time.now();
+    let alone = thread.spawn(() => primesIn(0, limit), { stallWarning: false }).join();
+    let oneThread = time.now() - started;
+
+    started = time.now();
+    let parts: mut []Future<int> = [];
+    let step = limit / 8;
+    for (let i = 0; i < 8; i++) {
+        let low = i * step;
+        let high = i == 7 ? limit : low + step;
+        parts.push(thread.spawn(() => primesIn(low, high), { stallWarning: false }));
+    }
+    let counts = sys.joinAll(parts);
+    let eight = time.now() - started;
+    let total = 0;
+    for c in counts { total += c; }
+    if alone is int {
+        fmt.println(f"  {alone} primes below {limit}: {(oneThread * 1000.0) as int} ms on one thread, {total} in {(eight * 1000.0) as int} ms on 8");
+    }
+}
+
+// ── atomic: counters several threads change at once ─────────────────────────
+
+fn demoAtomic() {
+    let c = Counters();
+    let workers: mut []Future<int> = [];
+    for (let t = 0; t < 4; t++) {
+        workers.push(thread.spawn(() => {
+            for (let i = 0; i < 100000; i++) {
+                c.exact += 1;          // one atomic step: never loses a count
+                c.racy = c.racy + 1;   // a read, then a write: allowed, but
+            }                          // another thread can write in between
+            return 0;
+        }, { stallWarning: false }));
+    }
+    let done = sys.joinAll(workers);
+    fmt.println(f"  += from 4 threads: {c.exact} of 400000; = x + 1: {c.racy} (lost updates are likely)");
+}
+
+// ── queue: a mutex-guarded queue feeding worker threads ─────────────────────
+
+// Its unsafe fields are touched only while its mutex is held: the promise
+// `unsafe` makes. A condition reads them without suspending.
+atomic opaque ref struct WorkQueue {
+    // Private: a mutex stored over this one would let two threads in at
+    // once, so only these methods can reach it (readonly fields: C554).
+    private lock: sys.Mutex;
+    private unsafe items: mut []int = [];
+    private unsafe closed: bool = false;
+
+    fn constructor(): mut WorkQueue { return WorkQueue { lock: sys.Mutex() }; }
+
+    mut fn push(job: int) {
+        let me = this;
+        this.lock.lock(() => { me.items.push(job); });
+    }
+
+    mut fn close() {
+        let me = this;
+        this.lock.lock(() => { me.closed = true; });
+    }
+
+    // The next job, waiting while there is none; -1 once closed and empty.
+    mut fn take(): int {
+        let me = this;
+        return this.lock.lockWhen(() => me.items.length > 0 || me.closed, () => {
+            if me.items.length > 0 { return me.items.pop(); }
+            return -1;
+        });
+    }
+}
+
+fn demoQueue() {
+    let queue = WorkQueue();
+    let workers: mut []Future<int> = [];
+    for (let t = 0; t < 4; t++) {
+        workers.push(thread.spawn(() => {
+            let primes = 0;
+            while true {
+                let job = queue.take();
+                if job < 0 { break; }
+                primes += primesIn(job * 1000, job * 1000 + 1000);
+            }
+            return primes;
+        }, { stallWarning: false }));
+    }
+    for (let job = 0; job < 400; job++) { queue.push(job); }
+    queue.close();
+    let found = sys.joinAll(workers);
+    let total = 0;
+    let line = "";
+    for f in found {
+        total += f;
+        line = f"{line} {f}";
+    }
+    fmt.println(f"  4 workers found{line}: {total} primes below 400000");
+}
+
+// ── share: settings for new threads, one by one ─────────────────────────────
+
+// Reads the shared counters from this thread's own user box.
+fn countHere(n: int) {
+    if let box = sys.userBoxValue<AtomicTypeErasedBox>(context.userBox1) {
+        let counters = box.get<mut Counters>();
+        counters.exact += n;
+    }
+}
+
+fn demoShare() {
+    // A new thread starts with a blank context (C479): what it should share
+    // is handed over explicitly. A user box belongs to its thread, so the
+    // value goes into an atomic box that each thread puts into its own.
+    let counters = Counters();
+    let shared = AtomicTypeErasedBox<mut Counters>(counters);
+    let arena = Alloc.atomicArena({ label: "shared" });
+    let workers: mut []Future<int> = [];
+    for (let t = 0; t < 3; t++) {
+        workers.push(thread.spawn(() => {
+            context.userBox1 = sys.makeUserBox(shared);
+            context.allocator = arena;    // the same arena on every thread
+            countHere(10);
+            return 0;
+        }));
+    }
+    let done = sys.joinAll(workers);
+    fmt.println(f"  3 threads counted {counters.exact} through their own user boxes");
+}
+
 fn main(): int {
     let args = sys.args();
     let only = args.length > 1 ? args[1] : "";
@@ -208,8 +370,12 @@ fn main(): int {
     if only == "" || only == "join" { fmt.println("join"); demoJoin(); ran = true; }
     if only == "" || only == "limits" { fmt.println("limits"); demoLimits(); ran = true; }
     if only == "" || only == "poison" { fmt.println("poison"); demoPoison(); ran = true; }
+    if only == "" || only == "cores" { fmt.println("cores"); demoCores(); ran = true; }
+    if only == "" || only == "atomic" { fmt.println("atomic"); demoAtomic(); ran = true; }
+    if only == "" || only == "queue" { fmt.println("queue"); demoQueue(); ran = true; }
+    if only == "" || only == "share" { fmt.println("share"); demoShare(); ran = true; }
     if !ran {
-        fmt.println(f"no demo named {only}: mutex, condition, flag, join, limits, poison");
+        fmt.println(f"no demo named {only}: mutex, condition, flag, join, limits, poison, cores, atomic, queue, share");
         return 1;
     }
     return 0;

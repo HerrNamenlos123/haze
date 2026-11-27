@@ -302,6 +302,7 @@ namespace errorcodes {
         GlobalLetNotAtomic = 7247,
         ConversionToOrFromAtomicArray = 7248,
         ReferenceIntoAtomicArray = 7249,
+        ThreadGlobalOutsideFunction = 7250,
         ThisDistroPackageManagerNotSupportedYetPlease = 8001,
         DeadCodeDetectedAndStripped = 9001,
         EmbeddedFileSizeMBExceeds50MB = 9002,

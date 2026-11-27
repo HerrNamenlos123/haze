@@ -24,4 +24,12 @@ Verified 2026-11-23 on branch async-runtime, in the commit that adds the schedul
 - Windows: `samplingRate: 0` means 100 Hz; Windows samples carry the thread's CPU time (Linux: -1).
 - The oracle test (scripts/profiler-trace.test.ts) imports `@paulirish/trace_engine`, not a
   dependency of the repository yet; bun ignores NODE_PATH, so run a copy of the test next to an
-  install of the package with REPO_ROOT pointed at the checkout.
+  install of the package with REPO_ROOT pointed at the checkout. On lenovo-yoga the main
+  checkout's node_modules holds 0.0.68 since 2026-11-24 (no package.json entry names it), so the
+  gate's oracle step passes there and in worktrees linking that node_modules, and fails to import
+  anywhere else (checked 2026-11-26).
+- Sampling more threads on Linux (measured 2026-11-26, kernel 6.19.14, a C probe): per-task perf
+  events of two threads cannot share a ring (`PERF_EVENT_IOC_SET_OUTPUT` with cpu -1: EINVAL), and
+  an inherited event cannot be mmapped (EINVAL). Every sampled thread needs its own event and ring,
+  all charged to one locked-memory budget: `perf_event_mlock_kb` 516, then RLIMIT_MEMLOCK (8 MiB
+  here). With `perf_event_paranoid` 2, per-CPU events for the whole system are refused.

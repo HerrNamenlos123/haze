@@ -141,6 +141,12 @@ bool hzstd_capture_stall_trace(hzstd_sched_t *s, hzstd_raw_report_t *out);
 // sys.timeSinceTaskSwitch: the same measurement, in seconds.
 hzstd_real_t hzstd_time_since_task_switch(hzstd_context_t *ctx);
 
+// The spin lock of the future, mutex and flag cores and the atomic arena
+// (hzstd_sched.c): held for a few instructions that never suspend and never
+// allocate, by any thread.
+void hzstd_core_lock(hzstd_core_lock_t *l);
+void hzstd_core_unlock(hzstd_core_lock_t *l);
+
 // The id for a thread Haze starts: process-unique, never reused, from 2 on.
 uint64_t hzstd_next_thread_id(void);
 // Gives back what a thread's stackref table holds (its thread has ended).
@@ -149,16 +155,12 @@ void hzstd_gen_table_free(hzstd_gen_table_t *table);
 // thread.spawn (S5-10): a new OS thread with its own scheduler, a blank
 // context and fresh per-thread globals, whose first task runs entry(its
 // context, arg) and completes `future` (the entry does). `stall_warning`
-// false: the watchdog never warns about it; `has_stack_size`: every task of
-// the thread gets `stack_size` bytes of stack (it panics outside 64 KiB to
-// 1 GiB, naming the option).
+// false: the watchdog never warns about it.
 void hzstd_thread_spawn(hzstd_context_t *ctx,
                         hzstd_task_entry_t entry,
                         void *arg,
                         hzstd_future_core_t *future,
                         bool stall_warning,
-                        bool has_stack_size,
-                        hzstd_int_t stack_size,
                         hzstd_source_location_t spawned_at);
 
 // A context for the calling thread (C504): the runtime data of the thread and

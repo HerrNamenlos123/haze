@@ -304,6 +304,7 @@ export enum HazeErrorCode {
   GlobalLetNotAtomic = 7247, // A 'global let' must hold an atomic type
   ConversionToOrFromAtomicArray = 7248, // Only an array literal converts to 'atomic []T', and 'atomic []T' never converts to '[]T'
   ReferenceIntoAtomicArray = 7249, // Nothing hands out a reference into an atomic array's storage
+  ThreadGlobalOutsideFunction = 7250, // A module-level 'let' exists once per thread: code outside a function runs on none
   ThisDistroPackageManagerNotSupportedYetPlease = 8001, // This Distro/Package Manager is not supported yet, please report
   DeadCodeDetectedAndStripped = 9001, // Dead code detected and stripped
   EmbeddedFileSizeMBExceeds50MB = 9002, // Embedded file size ( MB) exceeds 50 MB:

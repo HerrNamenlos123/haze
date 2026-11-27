@@ -2,6 +2,7 @@
 # Stress test of threads and cross-thread wake-ups (stage 5 of
 # docs/async-implementation-plan.md; docs/async-decisions.md S5-10 to S5-14):
 # several threads hammering mutexes, lockWhen queues, futures and flags,
+# atomic arrays and fields, one atomic arena,
 # poisoning across threads, recovered panics on every thread at once, threads
 # that start and end all the time (also while another thread wakes one of
 # their tasks), with collections in between. Each round
@@ -26,15 +27,63 @@ mkdir -p "$dir"
 cat > "$dir/thread_stress.hz" <<'HAZE'
 // Written by scripts/thread-stress.sh.
 
+// Shared state crosses threads only as atomic data (C147).
+atomic opaque ref struct Cell {
+    n: atomic int = 0;
+    fn constructor(): mut Cell { return Cell {}; }
+}
+
+// A bounded queue whose unsafe fields are touched only under its mutex (C172).
+atomic opaque ref struct Bounded {
+    private lock: sys.Mutex;
+    private unsafe items: mut []int = [];
+    private unsafe finished: int = 0;
+    const capacity: int = 16;
+
+    fn constructor(): mut Bounded { return Bounded { lock: sys.Mutex() }; }
+
+    // Waits while the queue is full.
+    mut fn push(job: int) {
+        let me = this;
+        this.lock.lockWhen(() => me.items.length < me.capacity, () => { me.items.push(job); });
+    }
+
+    mut fn producerDone() {
+        let me = this;
+        this.lock.lock(() => { me.finished += 1; });
+    }
+
+    // The next job, or -1 once every one of `producers` is done and the
+    // queue is empty.
+    mut fn take(producers: int): int {
+        let me = this;
+        return this.lock.lockWhen(() => me.items.length > 0 || me.finished == producers, () => {
+            if me.items.length > 0 { return me.items.pop(); }
+            return -1;
+        });
+    }
+}
+
+__c__("#define HZ_S_THREADS 6");
+__c__("#define HZ_S_BLOCKS 2000");
+__c__("static unsigned char *hz_s_blocks[HZ_S_THREADS][HZ_S_BLOCKS];");
+__c__("static size_t hz_s_size(hzstd_int_t i) { return i % 89 == 0 ? 5000 : (size_t)(1 + (i * 13) % 70); }");
+__c__("static hzstd_int_t hz_s_check(hzstd_int_t t) { hzstd_int_t bad = 0; for (hzstd_int_t i = 0; i < HZ_S_BLOCKS; i++) { size_t n = hz_s_size(i); for (size_t k = 0; k < n; k++) { if (hz_s_blocks[t][i][k] != (unsigned char)(t + 1)) { bad++; } } } return bad; }");
+__c__("static hzstd_int_t hz_s_fill(hzstd_allocator_t arena, hzstd_int_t t) { for (hzstd_int_t i = 0; i < HZ_S_BLOCKS; i++) { size_t n = hz_s_size(i); unsigned char *p = (i % 3 == 0) ? hzstd_allocate_unscanned(arena, n, NULL) : hzstd_allocate(arena, n, NULL); memset(p, (int)(t + 1), n); hz_s_blocks[t][i] = p; } return hz_s_check(t); }");
+__c__("static hzstd_int_t hz_s_expected(bool unscanned) { size_t sum = 0; for (hzstd_int_t i = 0; i < HZ_S_BLOCKS; i++) { if ((i % 3 == 0) == unscanned) { sum += (hz_s_size(i) + 15) & ~(size_t)15; } } return (hzstd_int_t)(sum * HZ_S_THREADS); }");
+extern C fn hz_s_fill(arena: Allocator, t: int): int :: final;
+extern C fn hz_s_check(t: int): int :: final;
+extern C fn hz_s_expected(unscanned: bool): int :: final;
+
 fn counterRound(threads: int, perThread: int): bool {
     let m = sys.Mutex();
-    let counter: mut ref Box<int> = { value: 0 };
+    let counter = Cell();
     let workers: mut []Future<int> = [];
     for (let t = 0; t < threads; t++) {
         workers.push(thread.spawn(() => {
             for (let i = 0; i < perThread; i++) {
                 m.lock(() => {
-                    counter.value = counter.value + 1;
+                    counter.n = counter.n + 1;
                     if i % 64 == 0 { sys.yield(); }
                 });
                 if i % 97 == 0 { sys.yield(); }
@@ -43,14 +92,14 @@ fn counterRound(threads: int, perThread: int): bool {
         }, { stallWarning: false }));
     }
     let r = sys.joinAll(workers);
-    return counter.value == threads * perThread;
+    return counter.n == threads * perThread;
 }
 
 // Thread t completes its futures; thread t + 1 joins them, as they come.
 fn futureRingRound(threads: int, perThread: int): bool {
-    let rings: mut []mut []mut Future<int> = [];
+    let rings: mut atomic []mut atomic []mut Future<int> = [];
     for (let t = 0; t < threads; t++) {
-        let ring: mut []mut Future<int> = [];
+        let ring: mut atomic []mut Future<int> = [];
         for (let k = 0; k < perThread; k++) { ring.push(Future<int>()); }
         rings.push(ring);
     }
@@ -65,7 +114,8 @@ fn futureRingRound(threads: int, perThread: int): bool {
             for (let k = 0; k < perThread; k++) {
                 let f = mine[k];
                 f.complete(me * 100000 + k);
-                let r = prev[k].join();
+                let p = prev[k];
+                let r = p.join();
                 if r is int { if r != before * 100000 + k { wrong++; } } else { wrong++; }
             }
             return wrong;
@@ -80,8 +130,8 @@ fn futureRingRound(threads: int, perThread: int): bool {
 // One set() wakes tasks on every thread; the flag is cleared and set again.
 fn flagRound(threads: int, waiters: int, pulses: int): bool {
     let m = sys.Mutex();
-    let woke: mut ref Box<int> = { value: 0 };
-    let flags: mut []mut sys.Flag = [];
+    let woke = Cell();
+    let flags: mut atomic []mut sys.Flag = [];
     for (let p = 0; p < pulses; p++) { flags.push(sys.Flag()); }
     let workers: mut []Future<int> = [];
     for (let t = 0; t < threads; t++) {
@@ -90,8 +140,9 @@ fn flagRound(threads: int, waiters: int, pulses: int): bool {
             for (let w = 0; w < waiters; w++) {
                 tasks.push(task.spawn(() => {
                     for (let p = 0; p < flags.length; p++) {
-                        flags[p].wait();
-                        m.lock(() => { woke.value = woke.value + 1; });
+                        let f = flags[p];
+                        f.wait();
+                        m.lock(() => { woke.n = woke.n + 1; });
                     }
                     return 0;
                 }));
@@ -106,23 +157,18 @@ fn flagRound(threads: int, waiters: int, pulses: int): bool {
         f.set();
     }
     let r = sys.joinAll(workers);
-    return woke.value == threads * waiters * pulses;
+    return woke.n == threads * waiters * pulses;
 }
 
 // A bounded queue between producer and consumer threads, lockWhen both ways.
 fn queueRound(producers: int, consumers: int, jobs: int): bool {
-    let m = sys.Mutex();
-    let queue: mut []int = [];
-    let finished: mut ref Box<int> = { value: 0 };
-    let sum: mut ref Box<int> = { value: 0 };
+    let queue = Bounded();
+    let sum = Cell();
     let all: mut []Future<int> = [];
     for (let p = 0; p < producers; p++) {
         all.push(thread.spawn(() => {
-            for (let k = 1; k <= jobs; k++) {
-                let job = k;
-                m.lockWhen(() => queue.length < 16, () => { queue.push(job); });
-            }
-            m.lock(() => { finished.value = finished.value + 1; });
+            for (let k = 1; k <= jobs; k++) { queue.push(k); }
+            queue.producerDone();
             return 0;
         }, { stallWarning: false }));
     }
@@ -130,28 +176,26 @@ fn queueRound(producers: int, consumers: int, jobs: int): bool {
         all.push(thread.spawn(() => {
             let mine = 0;
             while true {
-                let job = m.lockWhen(() => queue.length > 0 || finished.value == producers, () => {
-                    if queue.length > 0 { return queue.pop(); }
-                    return -1;
-                });
+                let job = queue.take(producers);
                 if job < 0 { break; }
                 mine += job;
             }
-            m.lock(() => { sum.value = sum.value + mine; });
+            sum.n += mine;
             return 0;
         }, { stallWarning: false }));
     }
     let r = sys.joinAll(all);
-    return sum.value == producers * jobs * (jobs + 1) / 2;
+    return sum.n == producers * jobs * (jobs + 1) / 2;
 }
 
 // A panic poisons a mutex on one thread; every other thread sees it poisoned.
 fn poisonRound(threads: int): bool {
     let m = sys.Mutex();
-    let code: mut ref Box<int> = { value: threads };
+    let code = Cell();
+    code.n = threads;
     let poisoner = thread.spawn(() => {
         return attempt {
-            m.lock(() => { if code.value > 0 { sys.panic("poison"); } });
+            m.lock(() => { if code.n > 0 { sys.panic("poison"); } });
             0
         } recover e { 1 };
     });
@@ -174,14 +218,15 @@ fn poisonRound(threads: int): bool {
 
 // Panics recovered on every thread at once.
 fn recoverRound(threads: int, each: int): bool {
-    let code: mut ref Box<int> = { value: each };
+    let code = Cell();
+    code.n = each;
     let workers: mut []Future<int> = [];
     for (let t = 0; t < threads; t++) {
         workers.push(thread.spawn(() => {
             let n = 0;
             for (let i = 0; i < each; i++) {
                 n += attempt {
-                    if code.value > 0 { sys.panic("recovered"); }
+                    if code.n > 0 { sys.panic("recovered"); }
                     0
                 } recover e { 1 };
             }
@@ -224,7 +269,7 @@ fn churnRound(count: int): bool {
 // A thread ends while another thread wakes its background task: the wake-up
 // and the end's kill meet in the flag's queue (the kill must see the push).
 fn wakeAtEndRound(count: int): bool {
-    let flags: mut []mut sys.Flag = [];
+    let flags: mut atomic []mut sys.Flag = [];
     for (let i = 0; i < count; i++) { flags.push(sys.Flag()); }
     let all: mut []Future<int> = [];
     for (let i = 0; i < count; i++) {
@@ -246,6 +291,54 @@ fn wakeAtEndRound(count: int): bool {
     return r.length == count;
 }
 
+// Atomic containers under contention: element updates, pushes and an
+// atomic field from every thread at once, then exact totals (C192).
+fn atomicRound(threads: int, perThread: int): bool {
+    let counts: mut atomic []int = [0, 0, 0, 0, 0, 0, 0, 0];
+    let log: mut atomic []int = [];
+    let total = Cell();
+    let workers: mut []Future<int> = [];
+    for (let t = 0; t < threads; t++) {
+        let me = t;
+        workers.push(thread.spawn(() => {
+            for (let i = 0; i < perThread; i++) {
+                counts[(i + me) % 8] += 1;
+                total.n += 1;
+                if i % 16 == 0 { log.push(me); }
+                if i % 101 == 0 { sys.yield(); }
+            }
+            return 0;
+        }, { stallWarning: false }));
+    }
+    let r = sys.joinAll(workers);
+    let sum = 0;
+    for c in counts { sum += c; }
+    let logged = 0;
+    for v in log { if v >= 0 && v < threads { logged++; } }
+    return sum == threads * perThread && total.n == threads * perThread && logged == threads * ((perThread + 15) / 16);
+}
+
+// Every thread allocates into one atomic arena with small chunks at once
+// (S5-5): no block handed out twice, the usage exact.
+fn arenaRound(): bool {
+    let small: ChunkPolicy = { firstBytes: 256, nextBytes: 1024, growth: 1.0 };
+    let arena = Alloc.atomicArena({ label: "stress", scanned: small, unscanned: small });
+    let workers: mut []Future<int> = [];
+    for (let t = 0; t < 6; t++) {
+        let id = t;
+        workers.push(thread.spawn(() => {
+            let a: Allocator = arena;
+            return hz_s_fill(a, id);
+        }, { stallWarning: false }));
+    }
+    let during = sys.joinAll(workers);
+    let bad = 0;
+    for b in during { bad += b; }
+    for (let t = 0; t < 6; t++) { bad += hz_s_check(t); }
+    let usage = arena.measure();
+    return bad == 0 && usage.scanned == hz_s_expected(false) && usage.unscanned == hz_s_expected(true);
+}
+
 fn main(): int {
     let args = sys.args();
     let seconds = 10;
@@ -264,6 +357,8 @@ fn main(): int {
         if !recoverRound(6, 40) { fmt.println(f"round {rounds}: recovered panics lost"); return 1; }
         if !churnRound(40) { fmt.println(f"round {rounds}: thread churn wrong"); return 1; }
         if !wakeAtEndRound(40) { fmt.println(f"round {rounds}: wake-up at a thread's end wrong"); return 1; }
+        if !atomicRound(6, 4000) { fmt.println(f"round {rounds}: atomic containers wrong"); return 1; }
+        if !arenaRound() { fmt.println(f"round {rounds}: atomic arena wrong"); return 1; }
         if rounds % 4 == 0 { sys.forceGc(); }
         rounds++;
     }

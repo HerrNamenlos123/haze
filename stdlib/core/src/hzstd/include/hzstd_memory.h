@@ -238,6 +238,11 @@ void *hzstd_allocate_unscanned_n(hzstd_allocator_t allocator, size_t size, const
 hzstd_allocator_t hzstd_make_heap_allocator();
 // A new arena. C callers pass HZSTD_ARENA_OPTIONS("label").
 hzstd_allocator_t hzstd_make_arena_allocator(hzstd_arena_options_t options);
+// A new atomic arena: several threads may allocate into it, each allocation
+// takes its lock (docs/async-decisions.md S5-5). Its usage, under the lock
+// (panics for any other allocator).
+hzstd_allocator_t hzstd_make_atomic_arena_allocator(hzstd_arena_options_t options);
+hzstd_arena_usage_t hzstd_atomic_arena_measure_allocator(hzstd_allocator_t allocator);
 
 // Plain malloc, deliberately outside the GC heap: never blocks on BDWGC's
 // allocator lock, unlike hzstd_make_heap_allocator(). Never freed by this

@@ -27,6 +27,8 @@ extern C noemit struct hzstd_arena_usage_t {
 
 extern C fn hzstd_make_arena_allocator(options: hzstd_arena_options_t): Allocator :: final;
 extern C fn hzstd_arena_measure_allocator(allocator: Allocator): hzstd_arena_usage_t :: final;
+extern C fn hzstd_make_atomic_arena_allocator(options: hzstd_arena_options_t): Allocator :: final;
+extern C fn hzstd_atomic_arena_measure_allocator(allocator: Allocator): hzstd_arena_usage_t :: final;
 
 // An arena hands out memory from big chunks and never frees anything by
 // itself: everything in it lives as long as anything still points into its
@@ -126,6 +128,43 @@ export struct Arena {
     }
 }
 
+// An arena several threads allocate into (C494, C495), from
+// Alloc.atomicArena(). Every allocation takes its lock, which never suspends
+// the task; so it crosses threads, while a plain Arena never leaves its thread
+// (C493). Otherwise it is an Arena: it passes as an Allocator, it can tell how
+// much it holds, and a copy is the same arena. Opaque, so its allocator is
+// always the locking one (it crosses by that promise, S5-I4).
+//
+//     let arena = Alloc.atomicArena({ label: "results" });
+//     let worker = thread.spawn(() => {
+//         context.allocator = arena;    // this thread allocates into it too
+//         return compute();
+//     });
+export opaque unsafe crossthread struct AtomicArena {
+    private allocator: Allocator;
+
+    fn constructor(options: ArenaOptions = {}): AtomicArena {
+        return AtomicArena {
+            allocator: hzstd_make_atomic_arena_allocator(hzstd_arena_options_t {
+                label: options.label,
+                scanned: _arenaFfiPolicy(options.scanned),
+                unscanned: _arenaFfiPolicy(options.unscanned),
+            }),
+        };
+    }
+
+    fn operator as(): Allocator {
+        return this.allocator;
+    }
+
+    // The bytes in use, per chain (see Arena.measure), as the threads using
+    // it leave them at this moment.
+    fn measure(): ArenaUsage {
+        let usage = hzstd_atomic_arena_measure_allocator(this.allocator);
+        return ArenaUsage { scanned: usage.scanned, unscanned: usage.unscanned };
+    }
+}
+
 fn _arenaFfiPolicy(policy: ChunkPolicy): hzstd_arena_chunk_policy_t {
     return hzstd_arena_chunk_policy_t {
         first_bytes: policy.firstBytes,
@@ -138,6 +177,12 @@ fn _arenaFfiPolicy(policy: ChunkPolicy): hzstd_arena_chunk_policy_t {
 export namespace Alloc {
     export fn heap() {
         return hzstd_make_heap_allocator();
+    }
+
+    // A new atomic arena (AtomicArena), which several threads may allocate
+    // into; the same options and checks as arena().
+    export fn atomicArena(options: ArenaOptions = {}): AtomicArena {
+        return AtomicArena(options);
     }
 
     // A new arena. Panics on a policy that cannot work (a size below 1 byte,
@@ -1158,6 +1203,55 @@ export opaque struct TypeErasedBox {
         do unsafe {
             let handle = this._handle;
             let typedBox: mut ref Box<T> = uninitialized;
+            __c__("typedBox = handle;");
+            return typedBox.value;
+        };
+    }
+}
+
+// A type-erased box for sharing one value between threads (C488): it holds an
+// atomic value that crosses threads only (an atomic struct or array, which
+// synchronizes every access itself, whose type arguments cross: a Future<T>
+// only when T crosses; anything else fails to compile), never changes after
+// it is made, and crosses threads. A user box belongs to its thread (C487): put
+// this box into each thread's own user box to share the value there.
+//
+//     let stats = Stats();                       // an atomic struct
+//     let shared = AtomicTypeErasedBox<Stats>(stats);
+//     let worker = thread.spawn(() => {
+//         context.userBox1 = sys.makeUserBox(shared);
+//         return work();
+//     });
+//     // where it is needed, on that thread:
+//     // let box = sys.userBoxValue<AtomicTypeErasedBox>(context.userBox1);
+//     // if box { let s = box.get<Stats>(); ... }
+export opaque unsafe crossthread struct AtomicTypeErasedBox {
+    private handle: cptr;
+    private prettyTypeName: str;
+    private fingerprint: int;
+
+    fn constructor<T>(value: T) {
+        static_assert(T.isAtomic && T.crossesThreads, "An AtomicTypeErasedBox holds only atomic values that cross threads: an atomic struct or array whose type arguments cross");
+        do unsafe {
+            let box: ref Box<T> = { value: value };
+            let handle: cptr = uninitialized;
+            __c__("handle = box;");
+            return AtomicTypeErasedBox {
+                handle: handle,
+                prettyTypeName: T.prettyName,
+                fingerprint: T.fingerprint,
+            };
+        };
+    }
+
+    // The value, which must have been stored as a T (see TypeErasedBox.get).
+    fn get<T>(): T {
+        if (this.fingerprint != T.fingerprint) {
+            sys.panic(f"Invalid Atomic Type Erased Box access. Value was stored as \"{this.prettyTypeName}\", but it is tried to be accessed as \"{T.prettyName}\"");
+        }
+        do unsafe {
+            let handle = this.handle;
+            let typedBox: ref Box<T> = uninitialized;
             __c__("typedBox = handle;");
             return typedBox.value;
         };

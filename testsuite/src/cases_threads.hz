@@ -58,8 +58,9 @@ fn main(): int {
     let a = thread.spawn(() => 40 + 2);
     let b = thread.spawn(() => "text");
     let c = thread.spawn(() => Point { x: 1, y: 2 });
+    // An array a thread builds crosses back only as an atomic one.
     let d = thread.spawn(() => {
-        let xs: mut []int = [];
+        let xs: mut atomic []int = [];
         for (let i = 0; i < 5; i++) { xs.push(i * i); }
         return xs;
     });
@@ -162,6 +163,41 @@ fn main(): int {
         s.run(
             "threads: mutexes, flags, lockWhen and futures under contention",
             """
+// Shared state crosses threads only as atomic data (C147).
+atomic opaque ref struct Cell {
+    n: atomic int = 0;
+    fn constructor(): mut Cell { return Cell {}; }
+}
+
+// Jobs guarded by a mutex: the unsafe fields are touched only while it is
+// held (C172).
+atomic opaque ref struct Jobs {
+    private lock: sys.Mutex;
+    private unsafe items: mut []int = [];
+    private unsafe finished: bool = false;
+
+    fn constructor(): mut Jobs { return Jobs { lock: sys.Mutex() }; }
+
+    mut fn push(job: int) {
+        let me = this;
+        this.lock.lock(() => { me.items.push(job); });
+    }
+
+    mut fn finish() {
+        let me = this;
+        this.lock.lock(() => { me.finished = true; });
+    }
+
+    // The next job, or -1 once the queue is finished and empty.
+    mut fn take(): int {
+        let me = this;
+        return this.lock.lockWhen(() => me.items.length > 0 || me.finished, () => {
+            if me.items.length > 0 { return me.items.pop(); }
+            return -1;
+        });
+    }
+}
+
 fn spinFor(seconds: real) {
     let start = time.now();
     while time.now() - start < seconds {}
@@ -174,19 +210,19 @@ fn main(): int {
     // in one step (S5-11): the setter, waiting for the lock meanwhile, gets
     // it then, and the end of its region is seen. Two steps would let the
     // region end in between, unseen, and the waiter wait forever.
-    let x: mut ref Box<int> = { value: 0 };
-    let checks: mut ref Box<int> = { value: 0 };
+    let x = Cell();
+    let checks = Cell();
     let waiter = thread.spawn(() => {
         m.waitUntil(() => {
-            checks.value = checks.value + 1;
-            if checks.value == 1 { spinFor(0.02); }
-            return x.value == 1;
+            checks.n += 1;
+            if checks.n == 1 { spinFor(0.02); }
+            return x.n == 1;
         });
-        return checks.value;
+        return checks.n;
     }, { stallWarning: false });
     let setter = thread.spawn(() => {
         time.sleep(0.005);
-        m.lock(() => { x.value = 1; });
+        m.lock(() => { x.n = 1; });
         return 0;
     });
     let rsetter = setter.join();
@@ -194,14 +230,15 @@ fn main(): int {
     if rwaiter is int { fmt.println(f"seen after {rwaiter} checks"); }
 
     // A counter under a mutex, from 8 threads at once; some lock regions
-    // suspend while the others wait.
-    let counter: mut ref Box<int> = { value: 0 };
+    // suspend while the others wait. Read and write are two atomic steps:
+    // only the mutex makes the count exact.
+    let counter = Cell();
     let workers: mut []Future<int> = [];
     for (let t = 0; t < 8; t++) {
         workers.push(thread.spawn(() => {
             for (let i = 0; i < 2000; i++) {
                 m.lock(() => {
-                    counter.value = counter.value + 1;
+                    counter.n = counter.n + 1;
                     if i % 250 == 0 { sys.yield(); }
                 });
             }
@@ -209,89 +246,86 @@ fn main(): int {
         }, { stallWarning: false }));
     }
     let w = sys.joinAll(workers);
-    fmt.println(f"counter {counter.value}");
+    fmt.println(f"counter {counter.n}");
 
     // One set() wakes the waiters of 6 threads, set before or after they wait.
     let go = sys.Flag();
-    let woke: mut ref Box<int> = { value: 0 };
+    let woke = Cell();
     let waiters: mut []Future<int> = [];
     for (let t = 0; t < 6; t++) {
         waiters.push(thread.spawn(() => {
             go.wait();
-            m.lock(() => { woke.value = woke.value + 1; });
+            m.lock(() => { woke.n = woke.n + 1; });
             return 0;
         }));
     }
     time.sleep(0.005);
     go.set();
     let fw = sys.joinAll(waiters);
-    fmt.println(f"flag {woke.value}");
+    fmt.println(f"flag {woke.n}");
 
     // lockWhen ping-pong between two threads: each round wakes the other, so
     // one lost wake-up leaves both waiting (a deadlock panic).
-    let turn: mut ref Box<int> = { value: 0 };
-    let pongs: mut ref Box<int> = { value: 0 };
+    let turn = Cell();
+    let pongs = Cell();
     let ping = thread.spawn(() => {
         for (let i = 0; i < 3000; i++) {
-            m.lockWhen(() => turn.value == 0, () => { turn.value = 1; });
+            m.lockWhen(() => turn.n == 0, () => { turn.n = 1; });
         }
         return 0;
     });
     let pong = thread.spawn(() => {
         for (let i = 0; i < 3000; i++) {
-            m.lockWhen(() => turn.value == 1, () => {
-                turn.value = 0;
-                pongs.value = pongs.value + 1;
+            m.lockWhen(() => turn.n == 1, () => {
+                turn.n = 0;
+                pongs.n = pongs.n + 1;
             });
         }
         return 0;
     });
     let pp: []Future<int> = [ping, pong];
     let ppr = sys.joinAll(pp);
-    fmt.println(f"pingpong {pongs.value}");
+    fmt.println(f"pingpong {pongs.n}");
 
     // A work queue: the main thread produces, 4 threads consume with
-    // lockWhen until it is finished and empty.
-    let jobs: mut []int = [];
-    let finished: mut ref Box<bool> = { value: false };
-    let sum: mut ref Box<int> = { value: 0 };
+    // lockWhen until it is finished and empty. Its fields are touched only
+    // under its mutex (C172), so a condition reads them without suspending.
+    let jobs = Jobs();
+    let sum = Cell();
     let consumers: mut []Future<int> = [];
     for (let t = 0; t < 4; t++) {
         consumers.push(thread.spawn(() => {
             let mine = 0;
             let taken = 0;
             while true {
-                let job = m.lockWhen(() => jobs.length > 0 || finished.value, () => {
-                    if jobs.length > 0 { return jobs.pop(); }
-                    return -1;
-                });
+                let job = jobs.take();
                 if job < 0 { break; }
                 mine += job;
                 taken++;
             }
-            m.lock(() => { sum.value = sum.value + mine; });
+            m.lock(() => { sum.n = sum.n + mine; });
             return taken;
         }));
     }
     for (let i = 1; i <= 4000; i++) {
-        let job = i;
-        m.lock(() => { jobs.push(job); });
+        jobs.push(i);
         if i % 500 == 0 { sys.yield(); }
     }
-    m.lock(() => { finished.value = true; });
+    jobs.finish();
     let taken = sys.joinAll(consumers);
     let count = 0;
     for t in taken { count += t; }
-    fmt.println(f"queue {count} {sum.value}");
+    fmt.println(f"queue {count} {sum.n}");
 
     // Futures made here, completed on one thread, joined on another, and a
     // thread's future joined from a third thread.
-    let futures: mut []mut Future<int> = [];
+    let futures: mut atomic []mut Future<int> = [];
     for (let i = 0; i < 2000; i++) { futures.push(Future<int>()); }
     let joiner = thread.spawn(() => {
         let wrong = 0;
         for (let i = 0; i < futures.length; i++) {
-            let r = futures[i].join();
+            let f = futures[i];
+            let r = f.join();
             if r is int { if r != i * 3 { wrong++; } } else { wrong++; }
         }
         return wrong;
@@ -331,7 +365,7 @@ struct Big {
 }
 
 fn main(): int {
-    let futures: mut []mut Future<Big> = [];
+    let futures: mut atomic []mut Future<Big> = [];
     for (let i = 0; i < 20000; i++) { futures.push(Future<Big>()); }
     let joiner = thread.spawn(() => {
         let wrong = 0;
@@ -371,6 +405,12 @@ fn main(): int {
             """
 __c__("static hzstd_stackref_t main_ref;\nstatic hzstd_int_t main_value = 5;");
 
+// Shared state crosses threads only as atomic data (C147).
+atomic opaque ref struct Cell {
+    n: atomic int = 0;
+    fn constructor(): mut Cell { return Cell {}; }
+}
+
 fn spinFor(seconds: real) {
     let start = time.now();
     while time.now() - start < seconds {}
@@ -378,7 +418,8 @@ fn spinFor(seconds: real) {
 
 fn child(name: str): int {
     // A lambda that always ends the process is noreturn: these depend on it.
-    let code: mut ref Box<int> = { value: name.length > 0 ? 7 : 0 };
+    let code = Cell();
+    code.n = name.length > 0 ? 7 : 0;
     // sys.exit on a thread (S5-13): every thread stops at its next switch,
     // one that keeps yielding, one sleeping in its loop, and main waiting.
     if name == "exit" {
@@ -392,7 +433,7 @@ fn child(name: str): int {
         });
         let exiter = thread.spawn(() => {
             time.sleep(0.01);
-            if code.value > 0 { sys.exit(code.value); }
+            if code.n > 0 { sys.exit(code.n); }
             return 0;
         });
         let never = Future<int>();
@@ -403,12 +444,12 @@ fn child(name: str): int {
     // switch in between.
     if name == "firstWins" {
         let first = thread.spawn(() => {
-            if code.value > 0 { sys.exit(3); }
+            if code.n > 0 { sys.exit(3); }
             return 0;
         });
         let second = thread.spawn(() => {
             spinFor(0.05);
-            if code.value > 0 { sys.exit(4); }
+            if code.n > 0 { sys.exit(4); }
             return 0;
         }, { stallWarning: false });
         let never = Future<int>();
@@ -417,7 +458,7 @@ fn child(name: str): int {
     // An uncaught panic on a thread ends the process with its trace (C227).
     if name == "panic" {
         let t = thread.spawn(() => {
-            if code.value > 0 { sys.panic("boom on a thread"); }
+            if code.n > 0 { sys.panic("boom on a thread"); }
             return 1;
         });
         let r = t.join();
@@ -432,7 +473,7 @@ fn child(name: str): int {
                 let n = 0;
                 for (let i = 0; i < 100; i++) {
                     n += attempt {
-                        if code.value > 0 { sys.panic("recovered on a thread"); }
+                        if code.n > 0 { sys.panic("recovered on a thread"); }
                         0
                     } recover e { 1 };
                 }
@@ -516,10 +557,11 @@ fn main(): int {
             "exit 7 true\nfirstWins 3 true\npanic 255 true\nrecovered 0 true 400\ndeadlock 255 true\nnoDeadlock 0 true 9\nstackrefOnThread 255 true 5");
 
         // C290 to C292: a thread's stall is reported naming the thread, unless
-        // it was spawned with the warning off; stackSize sizes every task of
-        // the thread, and a bad one panics naming the option.
+        // it was spawned with the warning off. A stack overflow on a thread
+        // ends the process with its report, as on the main thread (C227);
+        // every task has the default stack (no stack size option, S5-R4).
         s.run(
-            "threads: stall warning on and off, stackSize",
+            "threads: stall warning on and off, a stack overflow on a thread",
             """
 // Runs until the watchdog has measured `seconds` of this run (cases_tasks.hz
 // explains why on the watchdog's measure, not the wall clock).
@@ -557,33 +599,10 @@ fn child(name: str): int {
         let t = thread.spawn(() => spinMeasured(0.03), { stallWarning: false });
         let r = t.join();
     }
-    // 40000 levels need about 18 MiB: more than the 8 MiB default. (Without
-    // the warning: in a sanitizer build they take longer than 10 ms.)
-    if name == "deepWithStack" {
-        let t = thread.spawn(() => deep(40000), { stackSize: 64 * 1024 * 1024, stallWarning: false });
-        let r = t.join();
-        if r is int { fmt.println(f"{r}"); }
-        // Every task of that thread gets it, not only the first.
-        let u = thread.spawn(() => {
-            let inner = task.spawn(() => deep(40000));
-            let v = inner.join();
-            if v is int { return v; }
-            return -1;
-        }, { stackSize: 64 * 1024 * 1024, stallWarning: false });
-        let ru = u.join();
-        if ru is int { fmt.println(f"{ru}"); }
-    }
+    // 40000 levels need about 18 MiB: more than the 8 MiB every task gets.
     if name == "deepDefault" {
         let t = thread.spawn(() => deep(40000));
         let r = t.join();
-        fmt.println("not reached");
-    }
-    if name == "smallStack" {
-        let t = thread.spawn(() => 1, { stackSize: 1000 });
-        fmt.println("not reached");
-    }
-    if name == "hugeStack" {
-        let t = thread.spawn(() => 1, { stackSize: 4096 * 1024 * 1024 });
         fmt.println("not reached");
     }
     return 0;
@@ -609,14 +628,159 @@ fn main(): int {
     let me = args[0];
     check(me, "stallOn", "without yielding (thread: 2)");
     check(me, "stallOff", "");
-    check(me, "deepWithStack", "");
     check(me, "deepDefault", "Stack overflow");
-    check(me, "smallStack", "the option stackSize must be between 65536 (64 KiB) and 1073741824 (1 GiB) bytes, not 1000");
-    check(me, "hugeStack", "not 4294967296");
     return 0;
 }
 """,
-            "stallOn 0 true true\nstallOff 0 true false\ndeepWithStack 0 true false 40000/40000\ndeepDefault 255 true false\nsmallStack 255 true false\nhugeStack 255 true false");
+            "stallOn 0 true true\nstallOff 0 true false\ndeepDefault 255 true false");
+
+        // S5-5, C488, C495: one atomic arena that 8 threads allocate into at
+        // once, with small chunks so that chunks are made and installed all
+        // the time, and some blocks big enough for a chunk of their own. Each
+        // block is filled with its thread's mark and checked: an allocation
+        // handed out twice shows as a foreign mark. The usage is exact. An
+        // atomic struct reaches every thread through an AtomicTypeErasedBox
+        // in that thread's own user box.
+        s.run(
+            "threads: an atomic arena and an atomic box, shared by several threads",
+            """
+__c__("#define HZ_T_THREADS 8");
+__c__("#define HZ_T_BLOCKS 3000");
+__c__("static unsigned char *hz_t_blocks[HZ_T_THREADS][HZ_T_BLOCKS];");
+__c__("static size_t hz_t_size(hzstd_int_t i) { return i % 97 == 0 ? 3000 : (size_t)(8 + (i * 7) % 57); }");
+__c__("static hzstd_int_t hz_t_check(hzstd_int_t t) { hzstd_int_t bad = 0; for (hzstd_int_t i = 0; i < HZ_T_BLOCKS; i++) { size_t n = hz_t_size(i); for (size_t k = 0; k < n; k++) { if (hz_t_blocks[t][i][k] != (unsigned char)(t + 1)) { bad++; } } } return bad; }");
+__c__("static hzstd_int_t hz_t_fill(hzstd_allocator_t arena, hzstd_int_t t) { for (hzstd_int_t i = 0; i < HZ_T_BLOCKS; i++) { size_t n = hz_t_size(i); unsigned char *p = (i & 1) ? hzstd_allocate_unscanned(arena, n, NULL) : hzstd_allocate(arena, n, NULL); memset(p, (int)(t + 1), n); hz_t_blocks[t][i] = p; } return hz_t_check(t); }");
+__c__("static hzstd_int_t hz_t_expected(bool unscanned) { size_t sum = 0; for (hzstd_int_t i = 0; i < HZ_T_BLOCKS; i++) { if ((i & 1) == (unscanned ? 1 : 0)) { sum += (hz_t_size(i) + 15) & ~(size_t)15; } } return (hzstd_int_t)(sum * HZ_T_THREADS); }");
+extern C fn hz_t_fill(arena: Allocator, t: int): int :: final;
+extern C fn hz_t_check(t: int): int :: final;
+extern C fn hz_t_expected(unscanned: bool): int :: final;
+
+atomic opaque ref struct Stats {
+    hits: atomic int = 0;
+    fn constructor(): mut Stats { return Stats {}; }
+}
+
+atomic opaque ref struct Other {
+    n: atomic int = 0;
+    fn constructor(): mut Other { return Other {}; }
+}
+
+// Counts into the Stats this thread's user box holds.
+fn record(n: int) {
+    if let box = sys.userBoxValue<AtomicTypeErasedBox>(context.userBox1) {
+        let stats = box.get<mut Stats>();
+        stats.hits += n;
+    }
+}
+
+fn main(): int {
+    let small: ChunkPolicy = { firstBytes: 512, nextBytes: 2048, growth: 1.0 };
+    let arena = Alloc.atomicArena({ label: "shared", scanned: small, unscanned: small });
+    let stats = Stats();
+    let shared = AtomicTypeErasedBox<mut Stats>(stats);
+    context.userBox1 = sys.makeUserBox(shared);
+    let workers: mut []Future<int> = [];
+    for (let t = 0; t < 8; t++) {
+        let id = t;
+        workers.push(thread.spawn(() => {
+            context.userBox1 = sys.makeUserBox(shared);
+            for (let i = 0; i < 1000; i++) { record(1); }
+            let a: Allocator = arena;
+            return hz_t_fill(a, id);
+        }, { stallWarning: false }));
+    }
+    for (let i = 0; i < 1000; i++) { record(1); }
+    let during = sys.joinAll(workers);
+    let foreign = 0;
+    for b in during { foreign += b; }
+    let after = 0;
+    for (let t = 0; t < 8; t++) { after += hz_t_check(t); }
+    let usage = arena.measure();
+    fmt.println(f"foreign {foreign} {after}");
+    fmt.println(f"usage {usage.scanned == hz_t_expected(false)} {usage.unscanned == hz_t_expected(true)}");
+    fmt.println(f"hits {stats.hits}");
+    // Read back as another type, the box panics (it checks the fingerprint).
+    let wrong = attempt {
+        let o = shared.get<mut Other>();
+        "no panic"
+    } recover e { e.message.contains("Invalid Atomic Type Erased Box access") ? "panics" : e.message };
+    fmt.println(f"another type {wrong}");
+    return 0;
+}
+""",
+            "foreign 0 0\nusage true true\nhits 9000\nanother type panics");
+
+        // S5-I3: every thread makes its first allocation into a fresh atomic
+        // arena at the same moment, round after round, so threads race for
+        // the chain's first chunk (the inline header filled under the lock)
+        // and for every chunk after it; growth 2.0, and a first block bigger
+        // than the first chunk. Each block carries its thread's mark. The
+        // threads spin on an atomic round number instead of waiting: a wake-up
+        // reaches one thread after the other, too slowly to race.
+        s.run(
+            "threads: an atomic arena's first chunks, raced by every thread at once",
+            """
+__c__("#define HZ_R_THREADS 8");
+__c__("#define HZ_R_ROUNDS 200");
+__c__("#define HZ_R_PER 24");
+__c__("static unsigned char *hz_r_blocks[HZ_R_THREADS][HZ_R_ROUNDS][HZ_R_PER];");
+__c__("static size_t hz_r_size(hzstd_int_t t, hzstd_int_t i) { return i == 0 ? 300 : (size_t)(8 + (t * 31 + i * 7) % 50); }");
+__c__("static void hz_r_fill(hzstd_allocator_t arena, hzstd_int_t t, hzstd_int_t r) { for (hzstd_int_t i = 0; i < HZ_R_PER; i++) { size_t n = hz_r_size(t, i); unsigned char *p = (i & 1) ? hzstd_allocate_unscanned(arena, n, NULL) : hzstd_allocate(arena, n, NULL); memset(p, (int)(t + 1), n); hz_r_blocks[t][r][i] = p; } }");
+__c__("static hzstd_int_t hz_r_check(void) { hzstd_int_t bad = 0; for (hzstd_int_t t = 0; t < HZ_R_THREADS; t++) { for (hzstd_int_t r = 0; r < HZ_R_ROUNDS; r++) { for (hzstd_int_t i = 0; i < HZ_R_PER; i++) { size_t n = hz_r_size(t, i); for (size_t k = 0; k < n; k++) { if (hz_r_blocks[t][r][i][k] != (unsigned char)(t + 1)) { bad++; } } } } } return bad; }");
+// Walks one chain: it ends at its tail without a cycle, every chunk within its
+// capacity, the chunks' used bytes exactly what the chain counts (a chunk
+// dropped or a header overwritten in a race breaks one of these).
+__c__("static bool hz_r_chain_ok(hzstd_arena_chain_t *c) { if (!c->first.data) { return c->bytes_in_use == 0 && c->tail == NULL; } size_t used = 0; size_t steps = 0; hzstd_arena_chunk_t *last = NULL; for (hzstd_arena_chunk_t *k = &c->first; k; k = k->next_chunk) { if (++steps > 100000 || k->used > k->capacity) { return false; } used += k->used; last = k; } return last == c->tail && used == c->bytes_in_use; }");
+__c__("static bool hz_r_chains_ok(hzstd_allocator_t arena) { hzstd_arena_t *a = (hzstd_arena_t *)arena.ctx; return hz_r_chain_ok(&a->scanned) && hz_r_chain_ok(&a->unscanned); }");
+__c__("static hzstd_int_t hz_r_expected(bool unscanned) { size_t sum = 0; for (hzstd_int_t t = 0; t < HZ_R_THREADS; t++) { for (hzstd_int_t i = 0; i < HZ_R_PER; i++) { if ((i & 1) == (unscanned ? 1 : 0)) { sum += (hz_r_size(t, i) + 15) & ~(size_t)15; } } } return (hzstd_int_t)sum; }");
+extern C fn hz_r_fill(arena: Allocator, t: int, r: int) :: final;
+extern C fn hz_r_check(): int :: final;
+extern C fn hz_r_expected(unscanned: bool): int :: final;
+extern C fn hz_r_chains_ok(arena: Allocator): bool :: final;
+
+atomic opaque ref struct Count {
+    n: atomic int = 0;
+    fn constructor(): mut Count { return Count {}; }
+}
+
+fn main(): int {
+    let policy: ChunkPolicy = { firstBytes: 64, nextBytes: 128, growth: 2.0, maxBytes: 4096 };
+    let arenas: mut atomic []AtomicArena = [];
+    for (let r = 0; r < 200; r++) {
+        arenas.push(Alloc.atomicArena({ scanned: policy, unscanned: policy }));
+    }
+    let arrived = Count();
+    let go = Count();
+    let workers: mut []Future<int> = [];
+    for (let t = 0; t < 8; t++) {
+        let id = t;
+        workers.push(thread.spawn(() => {
+            for (let r = 0; r < 200; r++) {
+                let a: Allocator = arenas[r];
+                arrived.n += 1;
+                while go.n <= r {}
+                hz_r_fill(a, id, r);
+            }
+            return 0;
+        }, { stallWarning: false }));
+    }
+    // Round r starts once every thread waits for it.
+    for (let r = 0; r < 200; r++) {
+        while arrived.n < 8 * (r + 1) { sys.yield(); }
+        go.n = r + 1;
+    }
+    let done = sys.joinAll(workers);
+    let exact = 0;
+    for (let r = 0; r < 200; r++) {
+        let usage = arenas[r].measure();
+        let a: Allocator = arenas[r];
+        if usage.scanned == hz_r_expected(false) && usage.unscanned == hz_r_expected(true) && hz_r_chains_ok(a) { exact++; }
+    }
+    fmt.println(f"foreign {hz_r_check()}, exact usage and intact chains in {exact} of 200 arenas");
+    return 0;
+}
+""",
+            "foreign 0, exact usage and intact chains in 200 of 200 arenas");
 
         // S5-12, C518: a module-level `let` exists once per thread: a new
         // thread starts from the initial value, whatever the spawner wrote,
@@ -688,7 +852,7 @@ let a: int = 1;
 let g: int = a + 1; // <- no thread's copy exists here
 fn main(): int { return g; }
 """,
-            [testsuite.exactCount(errorcodes.Code.TaskLocalOutsideFunction, 1)]);
+            [testsuite.exactCount(errorcodes.Code.ThreadGlobalOutsideFunction, 1)]);
 
         s.compileFails(
             "threads: a module-level let read by a struct default a global's initializer uses",
@@ -698,7 +862,7 @@ struct S { x: int = base; }
 let g: S = S {}; // <- the default runs here, on no thread
 fn main(): int { return g.x; }
 """,
-            [testsuite.exactCount(errorcodes.Code.TaskLocalOutsideFunction, 1)]);
+            [testsuite.exactCount(errorcodes.Code.ThreadGlobalOutsideFunction, 1)]);
 
         // A library's globals are its own block, found through its own
         // descriptor: the importer never sees its layout. Called from two
