@@ -119,6 +119,67 @@ hzstd_int_t hzstd_process_id(void)
   return (hzstd_int_t)GetCurrentProcessId();
 }
 
+// ── CPUs the program may use (sys.cpuCount) ─────────────────────────────────
+//
+// How many threads of the program can truly run in parallel, never a hardware
+// figure: the processors in the process's affinity, lowered by a hard CPU cap
+// of the job object it runs in, rounded up so that all of it can be used (1.5
+// CPUs count as 2). A cap is a share of every processor of the machine, in
+// hundredths of a percent. Read anew on every call (docs/async-decisions.md
+// S5-I9). Only the job the process is directly in is read: a cap on a job
+// around that one is not seen. Written from the documentation, never compiled
+// or run on Windows yet.
+hzstd_int_t hzstd_cpu_count(void)
+{
+  DWORD machine = GetActiveProcessorCount(ALL_PROCESSOR_GROUPS);
+  if (machine == 0) {
+    hzstd_panic_fmt("sys.cpuCount: GetActiveProcessorCount failed (error %lu)", GetLastError());
+  }
+  DWORD_PTR processMask = 0;
+  DWORD_PTR systemMask = 0;
+  if (!GetProcessAffinityMask(GetCurrentProcess(), &processMask, &systemMask)) {
+    hzstd_panic_fmt("sys.cpuCount: GetProcessAffinityMask failed (error %lu)", GetLastError());
+  }
+  // Both masks are 0 when the process has threads in several processor
+  // groups: then it may use every processor of the machine.
+  hzstd_int_t count = 0;
+  if (processMask == 0) {
+    count = (hzstd_int_t)machine;
+  }
+  else {
+    for (DWORD_PTR m = processMask; m != 0; m &= m - 1) {
+      count++;
+    }
+  }
+
+  BOOL inJob = FALSE;
+  if (!IsProcessInJob(GetCurrentProcess(), NULL, &inJob)) {
+    hzstd_panic_fmt("sys.cpuCount: IsProcessInJob failed (error %lu)", GetLastError());
+  }
+  JOBOBJECT_CPU_RATE_CONTROL_INFORMATION rate;
+  ZeroMemory(&rate, sizeof(rate));
+  if (inJob && !QueryInformationJobObject(NULL, JobObjectCpuRateControlInformation, &rate, sizeof(rate), NULL)) {
+    hzstd_panic_fmt("sys.cpuCount: QueryInformationJobObject failed (error %lu)", GetLastError());
+  }
+  if (inJob && (rate.ControlFlags & JOB_OBJECT_CPU_RATE_CONTROL_ENABLE)
+      && !(rate.ControlFlags & JOB_OBJECT_CPU_RATE_CONTROL_WEIGHT_BASED)) {
+    uint64_t cap = 0;
+    if (rate.ControlFlags & JOB_OBJECT_CPU_RATE_CONTROL_MIN_MAX_RATE) {
+      cap = rate.MaxRate;
+    }
+    else if (rate.ControlFlags & JOB_OBJECT_CPU_RATE_CONTROL_HARD_CAP) {
+      cap = rate.CpuRate;
+    }
+    if (cap > 0) {
+      hzstd_int_t limit = (hzstd_int_t)((cap * machine + 9999) / 10000);
+      if (limit < count) {
+        count = limit;
+      }
+    }
+  }
+  return count > 0 ? count : 1;
+}
+
 hzstd_int_t hzstd_arg_count(void)
 {
   if (hzstd_args_count < 0) {

@@ -1195,6 +1195,23 @@ task-local storage (TL-1 to TL-7), `private` members (S0-17), the `tasklocal`/`g
   lowering, found by the first-chunk race case). Only that intrinsic is matched: a call result in
   general is no rvalue in C when it is a macro over storage (a stackref dereference), and a copy
   there would make a `mut` method change the copy.
+- **S5-I9. `sys.cpuCount()` counts the CPUs the program may use, never the hardware's** (user,
+  2026-11-27: "the number of CPUs available in an abstract sense of executing code, i.e.
+  virtualized and limited as applicable", "how many cores you can use to get true parallelism";
+  no Axiom round, user). Linux: the CPUs of the calling thread's affinity (a cpuset is part of it),
+  lowered by the lowest CPU quota on its cgroup or any cgroup above it, v2 `cpu.max` and v1
+  `cpu.cfs_quota_us` over `cpu.cfs_period_us` alike, found through /proc/self/cgroup and
+  /proc/self/mountinfo (the first mount of a hierarchy that holds the cgroup). Windows: the
+  process's affinity (every processor when its threads span groups), lowered by a hard cap of the
+  job it is directly in (a job around that one is not read); written from the documentation,
+  never compiled. A quota is rounded up so that all of it gets used (1.5 CPUs count as 2: the
+  easiest rule that keeps every CPU of the quota busy). At least 1. Read anew on every call,
+  since affinity and quotas can change while a program runs; it costs a few file reads. A
+  quota file that is not there is no quota; any other failure to read one, or content the
+  kernel never writes, panics. Tests: the affinity limited to 3 CPUs, real quotas under
+  `systemd-run --user --scope -p CPUQuota=...` (no privileges; with Delegate=yes the case
+  makes a cgroup of its own below the scope), and made-up trees for v1, hybrid and container
+  layouts through `hzstd_cgroup_cpu_limit`, which takes the file paths.
 
 ## Tooling
 

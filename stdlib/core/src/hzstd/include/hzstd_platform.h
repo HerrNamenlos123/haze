@@ -62,6 +62,21 @@ hzstd_str_t hzstd_arg_at(hzstd_int_t index);
 // The operating system's id of this process (getpid / GetCurrentProcessId).
 hzstd_int_t hzstd_process_id(void);
 
+// How many threads of the program can truly run in parallel (sys.cpuCount):
+// the CPUs it may use now, after its affinity and any CPU quota of its
+// container (a cgroup on Linux, a job object on Windows), a quota rounded up.
+// Never a hardware figure; at least 1.
+hzstd_int_t hzstd_cpu_count(void);
+
+#if defined(HAZE_PLATFORM_LINUX)
+// The lowest CPU quota, in CPUs rounded up, on the cgroups `cgroupFile` (as
+// /proc/self/cgroup) names, found through `mountinfoFile` (as
+// /proc/self/mountinfo) with every mount point read below `root` ("" for the
+// real ones). False when none has a quota. Separate so that tests can hand it
+// a made-up tree.
+bool hzstd_cgroup_cpu_limit(const char *cgroupFile, const char *mountinfoFile, const char *root, hzstd_int_t *limit);
+#endif
+
 // ── The application ─────────────────────────────────────────────────────────
 //
 // The [app] appId from the program's haze.toml: the name the desktop knows the

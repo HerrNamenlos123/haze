@@ -2,7 +2,7 @@
 
 Where threads, the crossing rule and the atomic types live, how the standard library's thread tools cross, and the traps found building on them.
 
-Verified 2026-11-26 against the stage 5 integration commit on async-runtime (its parent: 910165bd).
+Verified 2026-11-27 against the sys.cpuCount commit on async-runtime (its parent: 2e502c7e).
 
 **Files:** `stdlib/core/src/thread.hz` (`thread.spawn`, `SpawnOptions`), `task.hz` (`Future<T>`, `_FutureCore`), `sync.hz` (`sys.Mutex`, `sys.Flag`), `memory.hz` (`AtomicArena`, `Alloc.atomicArena`, `AtomicTypeErasedBox`), `hzstd_sched.c` ("thread.spawn", cores and their spin lock `hzstd_core_lock`), `hzstd_memory.c` ("Atomic arena"), `src/Semantic/Crossing.ts` (the rule). Tests: `testsuite/src/cases_threads.hz`, `cases_crossing.hz`, `cases_atomic.hz`; stress: `scripts/thread-stress.sh` (not in the gate). Decisions: `docs/async-decisions.md` S5-*, S5-R*, S5-C*, S5-I*. Contract: `docs/async-runtime.md` section 2.
 
@@ -16,5 +16,6 @@ Verified 2026-11-26 against the stage 5 integration commit on async-runtime (its
 - `atomic` primitives (`n: atomic int`) are fields or globals only; `c.n = c.n + 1` is two atomic steps (a logical race, allowed), `c.n += 1` one.
 - The atomic arena locks only to bump and to install a chunk; chunks are made outside the lock (making one can panic). A plain arena's chunks go through `hzstd_arena_make_chunk` then `hzstd_arena_link_chunk`, the same steps as before the split. The struct starts with its `hzstd_arena_t`, so `(hzstd_arena_t *)allocator.ctx` reads either kind's chains.
 - Racing threads: a wake-up (Flag, future) reaches waiting threads one after the other, too slowly to make their next steps collide; a test that needs a race lets threads spin on an atomic field (the first-chunk case in cases_threads.hz). A race that only wastes or misplaces memory hands nothing out twice, so marks and usage miss it: check the chain itself (it ends at its tail, the chunks' used bytes add up).
+- `sys.cpuCount()` (system.hz, `hzstd_cpu_count` in each platform file): the calling thread's affinity, lowered by the lowest cgroup CPU quota (v2 and v1) on its cgroup or above, rounded up; Windows adds a job object's hard cap (S5-I9). `nproc` and `os.cpus()` ignore quotas: under `systemd-run --user --scope -p CPUQuota=150%` nproc says 16 here, cpuCount 2. Real quotas need no root: `systemd-run --user --scope -p Delegate=yes -p CPUQuota=...` (the cpu controller is delegated to user@.service here; the scope is removed when the command ends, sub-cgroups included). `hzstd_cgroup_cpu_limit` takes the /proc file paths and a root, so tests hand it made-up trees (cases_cpu_count.hz).
 - Every task of every thread has the default stack (8 MiB reserved, committed as touched): there is no stack size option (S5-R4).
 - Windows: the thread code is written from the Linux side and the win32 primitives, never compiled or run (no Windows machine in the stage 5 runs).

@@ -146,6 +146,7 @@ fn main(): int {
     cases_profiler_timeline.register(suite);
     cases_crash_reports.register(suite);
     cases_runtime_own_threads.register(suite);
+    cases_cpu_count.register(suite);
     cases_evaluation_order.register(suite);
     cases_fs_unicode_paths.register(suite);
     cases_panic_messages.register(suite);

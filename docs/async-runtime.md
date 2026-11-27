@@ -111,6 +111,12 @@ only where noted.
   (user, 2026-11-23): every task's stack reserves 8 MiB and commits pages as they are touched. The
   new thread starts blank (C479, C518). Logging to the parent (C514) is not part of the first
   implementation.
+* `sys.cpuCount(): int`: how many threads of the program can truly run in parallel (user,
+  2026-11-27). It counts the CPUs the program may use for running code, virtualized and limited as
+  applicable, specifically not a hardware figure: its affinity and its container's CPU quota (a
+  cgroup on Linux, a job object on Windows) lower it, a quota rounded up so that all of it gets
+  used (1.5 CPUs count as 2). At least 1, read anew on every call. Meant for spreading work over
+  threads (docs/async-decisions.md S5-I9).
 * `Future<T>`: one type for tasks and threads (C387), roughly Java's API unless real use shows a need
   for something else: `join()` suspends only the joining task (C256) and returns a result whose error
   case covers a killed task and a function that never ran (C438, C561); it must be impossible to

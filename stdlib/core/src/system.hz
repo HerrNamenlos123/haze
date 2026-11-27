@@ -213,6 +213,7 @@ namespace ffi {
     };
 
     extern C noemit fn hzstd_platform_runtime(): hzstd_platform_runtime_t :: final;
+    extern C noemit fn hzstd_cpu_count(): int :: final;
 
     export extern C noemit enum unscoped hzstd_panic_type_t {
         // WARNING: This must match with hzstd_platform.h!!!
@@ -282,6 +283,25 @@ namespace sys {
 
     export fn isWin32() {
         return sys.platform() == Platform.Win32;
+    }
+
+    // How many threads of this program can truly run in parallel: the CPUs
+    // it may use for running code right now. Not a hardware figure: what a
+    // virtual machine gives it, its CPU affinity and its container's CPU
+    // quota (a cgroup on Linux, a job object on Windows) all count, and a
+    // quota is rounded up so that all of it gets used (1.5 CPUs count as
+    // 2). At least 1. Read anew on every call, since those limits can change
+    // while the program runs. Meant for spreading work over threads: one
+    // thread per CPU keeps every CPU busy without threads waiting for one.
+    //
+    //     let n = sys.cpuCount();
+    //     let parts: mut []Future<int> = [];
+    //     for (let i = 0; i < n; i++) {
+    //         parts.push(thread.spawn(() => countPrimes(i, n), { stallWarning: false }));
+    //     }
+    //     let counts = sys.joinAll(parts);
+    export fn cpuCount(): int {
+        return ffi.hzstd_cpu_count();
     }
 }
 

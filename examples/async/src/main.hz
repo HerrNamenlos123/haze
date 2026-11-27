@@ -228,7 +228,7 @@ fn primesIn(low: int, high: int): int {
     return count;
 }
 
-// ── cores: the same work on one thread, then split over 8 ───────────────────
+// ── cores: the same work on one thread, then on one thread per CPU ──────────
 
 fn demoCores() {
     let limit = 3000000;
@@ -237,19 +237,20 @@ fn demoCores() {
     let oneThread = time.now() - started;
 
     started = time.now();
+    let cpus = sys.cpuCount();
     let parts: mut []Future<int> = [];
-    let step = limit / 8;
-    for (let i = 0; i < 8; i++) {
+    let step = limit / cpus;
+    for (let i = 0; i < cpus; i++) {
         let low = i * step;
-        let high = i == 7 ? limit : low + step;
+        let high = i == cpus - 1 ? limit : low + step;
         parts.push(thread.spawn(() => primesIn(low, high), { stallWarning: false }));
     }
     let counts = sys.joinAll(parts);
-    let eight = time.now() - started;
+    let split = time.now() - started;
     let total = 0;
     for c in counts { total += c; }
     if alone is int {
-        fmt.println(f"  {alone} primes below {limit}: {(oneThread * 1000.0) as int} ms on one thread, {total} in {(eight * 1000.0) as int} ms on 8");
+        fmt.println(f"  {alone} primes below {limit}: {(oneThread * 1000.0) as int} ms on one thread, {total} in {(split * 1000.0) as int} ms on {cpus}");
     }
 }
 

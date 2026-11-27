@@ -19,9 +19,11 @@
 #include <dlfcn.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <poll.h>
 #include <pthread.h>
 #include <spawn.h>
+#include <sys/syscall.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -183,6 +185,365 @@ static void hzstd_load_args_from_proc(void)
 hzstd_int_t hzstd_process_id(void)
 {
   return (hzstd_int_t)getpid();
+}
+
+// ── CPUs the program may use (sys.cpuCount) ─────────────────────────────────
+//
+// How many threads of the program can truly run in parallel, never a hardware
+// figure: the CPUs in the process's affinity (a cpuset's restriction is part
+// of it), lowered by the lowest CPU quota on the process's cgroup or any cgroup
+// above it, cgroup v2 (cpu.max) and v1 (cpu.cfs_quota_us over cpu.cfs_period_us)
+// alike. A quota is rounded up so that all of it can be used: 1.5 CPUs count
+// as 2. Read anew on every call: the affinity and the quotas can change while
+// the program runs (docs/async-decisions.md S5-I9). A cgroup file that is not
+// there is no quota; any other failure to read one, or content the kernel
+// never writes, panics.
+
+// The raw call needs no _GNU_SOURCE. It fails with EINVAL while the buffer is
+// smaller than the kernel's own CPU mask, so the buffer grows until it fits;
+// what it does not fill stays zero.
+static hzstd_int_t hzstd_affinity_cpu_count(void)
+{
+  for (size_t words = 16; words <= ((size_t)1 << 16); words *= 2) {
+    unsigned long *mask = calloc(words, sizeof(unsigned long));
+    if (!mask) {
+      hzstd_panic("sys.cpuCount: out of memory");
+    }
+    long written = syscall(SYS_sched_getaffinity, 0, words * sizeof(unsigned long), mask);
+    int err = errno;
+    if (written > 0) {
+      hzstd_int_t count = 0;
+      for (size_t i = 0; i < words; i++) {
+        count += __builtin_popcountl(mask[i]);
+      }
+      free(mask);
+      return count;
+    }
+    free(mask);
+    if (err != EINVAL) {
+      hzstd_panic_fmt("sys.cpuCount: sched_getaffinity failed: %s", strerror(err));
+    }
+  }
+  hzstd_panic("sys.cpuCount: the kernel's CPU mask is larger than 4 million CPUs");
+}
+
+// The whole file at `path`, NUL-terminated, in malloc memory the caller frees;
+// NULL when there is no such file.
+static char *hzstd_cgroup_read_file(const char *path)
+{
+  int fd = open(path, O_RDONLY | O_CLOEXEC);
+  if (fd < 0) {
+    if (errno == ENOENT || errno == ENOTDIR) {
+      return NULL;
+    }
+    hzstd_panic_fmt("sys.cpuCount: cannot open %s: %s", path, strerror(errno));
+  }
+  size_t cap = 4096;
+  size_t used = 0;
+  char *buf = malloc(cap);
+  if (!buf) {
+    hzstd_panic("sys.cpuCount: out of memory");
+  }
+  for (;;) {
+    if (used + 1 == cap) {
+      cap *= 2;
+      char *grown = realloc(buf, cap);
+      if (!grown) {
+        hzstd_panic("sys.cpuCount: out of memory");
+      }
+      buf = grown;
+    }
+    ssize_t n = read(fd, buf + used, cap - 1 - used);
+    if (n < 0) {
+      if (errno == EINTR) {
+        continue;
+      }
+      hzstd_panic_fmt("sys.cpuCount: cannot read %s: %s", path, strerror(errno));
+    }
+    if (n == 0) {
+      break;
+    }
+    used += (size_t)n;
+  }
+  close(fd);
+  buf[used] = 0;
+  return buf;
+}
+
+// Whether the comma-separated `list` holds `item` itself.
+static bool hzstd_cgroup_list_has(const char *list, size_t length, const char *item)
+{
+  size_t itemLength = strlen(item);
+  size_t start = 0;
+  for (size_t i = 0; i <= length; i++) {
+    if (i == length || list[i] == ',') {
+      if (i - start == itemLength && memcmp(list + start, item, itemLength) == 0) {
+        return true;
+      }
+      start = i + 1;
+    }
+  }
+  return false;
+}
+
+// A positive whole number of the kernel's, as in cpu.max; false for anything
+// else, "max" included.
+static bool hzstd_cgroup_parse_count(const char *text, size_t length, int64_t *out)
+{
+  if (length == 0 || length > 18) {
+    return false;
+  }
+  int64_t value = 0;
+  for (size_t i = 0; i < length; i++) {
+    if (text[i] < '0' || text[i] > '9') {
+      return false;
+    }
+    value = value * 10 + (text[i] - '0');
+  }
+  *out = value;
+  return value > 0;
+}
+
+// The text of `s` up to the first whitespace, and its length.
+static size_t hzstd_cgroup_word(const char *s)
+{
+  size_t n = 0;
+  while (s[n] != 0 && s[n] != ' ' && s[n] != '\t' && s[n] != '\n') {
+    n++;
+  }
+  return n;
+}
+
+// The CPUs one cgroup's quota allows, rounded up; false when it has none.
+static bool hzstd_cgroup_dir_limit(const char *dir, bool v2, hzstd_int_t *out)
+{
+  char path[PATH_MAX];
+  int64_t quota = 0;
+  int64_t period = 0;
+  if (v2) {
+    // "max <period>" or "<quota> <period>".
+    if (snprintf(path, sizeof(path), "%s/cpu.max", dir) >= (int)sizeof(path)) {
+      hzstd_panic_fmt("sys.cpuCount: cgroup path too long: %s", dir);
+    }
+    char *text = hzstd_cgroup_read_file(path);
+    if (!text) {
+      return false;
+    }
+    size_t first = hzstd_cgroup_word(text);
+    const char *second = text + first + (text[first] == ' ' ? 1 : 0);
+    size_t secondLength = hzstd_cgroup_word(second);
+    bool unlimited = first == 3 && memcmp(text, "max", 3) == 0;
+    bool valid = text[first] == ' ' && hzstd_cgroup_parse_count(second, secondLength, &period)
+        && (unlimited || hzstd_cgroup_parse_count(text, first, &quota));
+    if (!valid) {
+      hzstd_panic_fmt("sys.cpuCount: unexpected content in %s: %s", path, text);
+    }
+    free(text);
+    if (unlimited) {
+      return false;
+    }
+  }
+  else {
+    // cpu.cfs_quota_us is -1 without a quota; cpu.cfs_period_us is always there with it.
+    if (snprintf(path, sizeof(path), "%s/cpu.cfs_quota_us", dir) >= (int)sizeof(path)) {
+      hzstd_panic_fmt("sys.cpuCount: cgroup path too long: %s", dir);
+    }
+    char *text = hzstd_cgroup_read_file(path);
+    if (!text) {
+      return false;
+    }
+    size_t length = hzstd_cgroup_word(text);
+    bool unlimited = length == 2 && memcmp(text, "-1", 2) == 0;
+    if (!unlimited && !hzstd_cgroup_parse_count(text, length, &quota)) {
+      hzstd_panic_fmt("sys.cpuCount: unexpected content in %s: %s", path, text);
+    }
+    free(text);
+    if (unlimited) {
+      return false;
+    }
+    if (snprintf(path, sizeof(path), "%s/cpu.cfs_period_us", dir) >= (int)sizeof(path)) {
+      hzstd_panic_fmt("sys.cpuCount: cgroup path too long: %s", dir);
+    }
+    text = hzstd_cgroup_read_file(path);
+    if (!text || !hzstd_cgroup_parse_count(text, hzstd_cgroup_word(text), &period)) {
+      hzstd_panic_fmt("sys.cpuCount: %s holds no period for its quota", dir);
+    }
+    free(text);
+  }
+  *out = (hzstd_int_t)((quota + period - 1) / period);
+  return true;
+}
+
+// One mount of a cgroup hierarchy the process is in: whether the process's
+// cgroup lies in what is mounted (`mountRoot` of the hierarchy at
+// `mountPoint`, read below `root`), and if so in `*found` and `*out` the
+// lowest quota from that cgroup up to the mount point.
+static bool hzstd_cgroup_hierarchy_limit(const char *root, const char *mountPoint, const char *mountRoot,
+                                         const char *cgroup, bool v2, bool *found, hzstd_int_t *out)
+{
+  size_t rootLength = strcmp(mountRoot, "/") == 0 ? 0 : strlen(mountRoot);
+  if (strncmp(cgroup, mountRoot, rootLength) != 0 || (cgroup[rootLength] != 0 && cgroup[rootLength] != '/')) {
+    return false;
+  }
+  const char *below = cgroup + rootLength;
+  char dir[PATH_MAX];
+  int baseLength = snprintf(dir, sizeof(dir), "%s%s", root, mountPoint);
+  if (baseLength >= (int)sizeof(dir) || snprintf(dir, sizeof(dir), "%s%s%s", root, mountPoint, below) >= (int)sizeof(dir)) {
+    hzstd_panic_fmt("sys.cpuCount: cgroup path too long: %s%s", mountPoint, below);
+  }
+  size_t length = strlen(dir);
+  while (length > (size_t)baseLength && dir[length - 1] == '/') {
+    dir[--length] = 0;
+  }
+  *found = false;
+  for (;;) {
+    hzstd_int_t limit;
+    if (hzstd_cgroup_dir_limit(dir, v2, &limit) && (!*found || limit < *out)) {
+      *out = limit;
+      *found = true;
+    }
+    if (length <= (size_t)baseLength) {
+      break;
+    }
+    while (length > (size_t)baseLength && dir[length - 1] != '/') {
+      length--;
+    }
+    while (length > (size_t)baseLength && dir[length - 1] == '/') {
+      length--;
+    }
+    dir[length] = 0;
+  }
+  return true;
+}
+
+// Undoes mountinfo's octal escapes (a space is "\040") in place.
+static void hzstd_mountinfo_unescape(char *s)
+{
+  char *out = s;
+  for (char *in = s; *in != 0; in++) {
+    if (in[0] == '\\' && in[1] >= '0' && in[1] <= '7' && in[2] >= '0' && in[2] <= '7' && in[3] >= '0' && in[3] <= '7') {
+      *out++ = (char)(((in[1] - '0') << 6) | ((in[2] - '0') << 3) | (in[3] - '0'));
+      in += 3;
+    }
+    else {
+      *out++ = *in;
+    }
+  }
+  *out = 0;
+}
+
+bool hzstd_cgroup_cpu_limit(const char *cgroupFile, const char *mountinfoFile, const char *root, hzstd_int_t *limit)
+{
+  // The process's cgroup in each hierarchy: "0::<path>" in v2, and
+  // "<id>:<controllers>:<path>" in v1, where only the hierarchy with "cpu"
+  // among its controllers has quotas.
+  char *cgroups = hzstd_cgroup_read_file(cgroupFile);
+  if (!cgroups) {
+    return false;
+  }
+  const char *v2Path = NULL;
+  const char *v1Path = NULL;
+  for (char *line = cgroups; *line != 0;) {
+    char *end = strchr(line, '\n');
+    char *next = end ? end + 1 : line + strlen(line);
+    if (end) {
+      *end = 0;
+    }
+    char *first = strchr(line, ':');
+    char *second = first ? strchr(first + 1, ':') : NULL;
+    if (!second) {
+      hzstd_panic_fmt("sys.cpuCount: unexpected line in %s: %s", cgroupFile, line);
+    }
+    const char *controllers = first + 1;
+    size_t controllersLength = (size_t)(second - controllers);
+    if (controllersLength == 0 && !v2Path) {
+      v2Path = second + 1;
+    }
+    else if (controllersLength > 0 && !v1Path && hzstd_cgroup_list_has(controllers, controllersLength, "cpu")) {
+      v1Path = second + 1;
+    }
+    line = next;
+  }
+
+  // Where those hierarchies are mounted: per line "<id> <parent> <dev>
+  // <mount root> <mount point> <options> [optional fields] - <type> <source>
+  // <super options>".
+  bool found = false;
+  hzstd_int_t lowest = 0;
+  char *mounts = (v2Path || v1Path) ? hzstd_cgroup_read_file(mountinfoFile) : NULL;
+  bool v2Done = !v2Path;
+  bool v1Done = !v1Path;
+  for (char *line = mounts; line && *line != 0 && !(v2Done && v1Done);) {
+    char *end = strchr(line, '\n');
+    char *next = end ? end + 1 : line + strlen(line);
+    if (end) {
+      *end = 0;
+    }
+    char *fields[6] = { 0 };
+    char *cursor = line;
+    for (int i = 0; i < 6 && cursor; i++) {
+      fields[i] = cursor;
+      char *space = strchr(cursor, ' ');
+      if (space) {
+        *space = 0;
+      }
+      cursor = space ? space + 1 : NULL;
+    }
+    char *separator = cursor ? strstr(cursor, "- ") : NULL;
+    while (separator && separator != cursor && separator[-1] != ' ') {
+      separator = strstr(separator + 1, "- ");
+    }
+    if (!fields[5] || !separator) {
+      hzstd_panic_fmt("sys.cpuCount: unexpected line in %s", mountinfoFile);
+    }
+    char *type = separator + 2;
+    char *source = strchr(type, ' ');
+    char *superOptions = source ? strchr(source + 1, ' ') : NULL;
+    if (!superOptions) {
+      hzstd_panic_fmt("sys.cpuCount: unexpected line in %s", mountinfoFile);
+    }
+    *source = 0;
+    superOptions++;
+    bool isV2 = strcmp(type, "cgroup2") == 0;
+    bool isV1Cpu = strcmp(type, "cgroup") == 0 && hzstd_cgroup_list_has(superOptions, strlen(superOptions), "cpu");
+    if ((isV2 && !v2Done) || (isV1Cpu && !v1Done)) {
+      hzstd_mountinfo_unescape(fields[3]);
+      hzstd_mountinfo_unescape(fields[4]);
+      // A hierarchy can be mounted more than once, in parts: the first
+      // mount that holds the process's cgroup is read.
+      bool limited = false;
+      hzstd_int_t limit = 0;
+      if (hzstd_cgroup_hierarchy_limit(root, fields[4], fields[3], isV2 ? v2Path : v1Path, isV2, &limited, &limit)) {
+        if (limited && (!found || limit < lowest)) {
+          lowest = limit;
+          found = true;
+        }
+        if (isV2) {
+          v2Done = true;
+        }
+        else {
+          v1Done = true;
+        }
+      }
+    }
+    line = next;
+  }
+  free(mounts);
+  free(cgroups);
+  if (found) {
+    *limit = lowest;
+  }
+  return found;
+}
+
+hzstd_int_t hzstd_cpu_count(void)
+{
+  hzstd_int_t count = hzstd_affinity_cpu_count();
+  hzstd_int_t quota;
+  if (hzstd_cgroup_cpu_limit("/proc/self/cgroup", "/proc/self/mountinfo", "", &quota) && quota < count) {
+    count = quota;
+  }
+  return count > 0 ? count : 1;
 }
 
 hzstd_int_t hzstd_arg_count(void)
