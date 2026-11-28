@@ -110,11 +110,12 @@ function build(order: string) {
   };
 }
 
+/** The app's stdout, with Windows' text-mode CRLF line endings as LF. */
 function runApp() {
   const run = spawnSync(join(WORKSPACE, "order_probe", "bin", `order_probe${EXE}`), {
     encoding: "utf8",
   });
-  return run.stdout ?? "";
+  return (run.stdout ?? "").replace(/\r\n/g, "\n");
 }
 
 /** What the standard library's interface declares, whatever its order. */

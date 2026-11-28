@@ -6,7 +6,12 @@
 //   Windows panic worker used to be started without waiting for it, so its
 //   start-up allocation (1392 bytes) landed somewhere in the first moments of
 //   main, inside whatever window a program was counting with
-//   GC_get_total_bytes.
+//   GC_get_total_bytes. The stall watchdog's thread did the same (BDWGC's
+//   record of a thread is made on that thread). A race at startup, so a pass
+//   proves nothing alone: measured on Windows (2026-11-27) with the program
+//   started directly, 31 to 35 of 100 starts allocated before the fix, 0 of
+//   100 after. Started by another Haze program it almost never shows (0 of
+//   300), so the case is not run as children of itself.
 // - A Profiler session leaves no thread behind. The Windows profiler's two
 //   helper threads each set up the panic handler again, which made a new
 //   semaphore pair and a new panic worker every time: two threads that never

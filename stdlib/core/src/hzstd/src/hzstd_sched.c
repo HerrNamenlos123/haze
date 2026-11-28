@@ -2335,9 +2335,10 @@ static void hzstd_write_stderr_raw(const char *text, size_t length)
   WriteFile(GetStdHandle(STD_ERROR_HANDLE), text, (DWORD)length, &written, NULL);
 }
 
-static DWORD WINAPI hzstd_watchdog_thread(LPVOID unused);
+static DWORD WINAPI hzstd_watchdog_thread(LPVOID running);
 
-static void hzstd_watchdog_start(void)
+// Starts the watchdog's thread, which triggers `running` first thing.
+static void hzstd_watchdog_spawn(hzstd_semaphore_t *running)
 {
   g_watchdog_wake = CreateSemaphoreW(NULL, 0, LONG_MAX, NULL);
   g_watchdog_timer = CreateWaitableTimerExW(NULL, NULL, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
@@ -2346,7 +2347,7 @@ static void hzstd_watchdog_start(void)
   }
   // CreateThread is BDWGC's GC_CreateThread here: the watchdog is registered
   // with the collector like every thread hzstd starts.
-  HANDLE thread = CreateThread(NULL, 0, hzstd_watchdog_thread, NULL, 0, NULL);
+  HANDLE thread = CreateThread(NULL, 0, hzstd_watchdog_thread, running, 0, NULL);
   if (thread == NULL) {
     hzstd_panic("Could not start the stall watchdog");
   }
@@ -2442,9 +2443,10 @@ static void hzstd_write_stderr_raw(const char *text, size_t length)
   (void)written;
 }
 
-static void *hzstd_watchdog_thread(void *unused);
+static void *hzstd_watchdog_thread(void *running);
 
-static void hzstd_watchdog_start(void)
+// Starts the watchdog's thread, which triggers `running` first thing.
+static void hzstd_watchdog_spawn(hzstd_semaphore_t *running)
 {
   if (sem_init(&g_watchdog_wake, 0, 0) != 0) {
     hzstd_panic("Could not create the stall watchdog's semaphore");
@@ -2453,7 +2455,7 @@ static void hzstd_watchdog_start(void)
   pthread_attr_t attr;
   pthread_attr_init(&attr);
   pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
-  if (pthread_create(&thread, &attr, hzstd_watchdog_thread, NULL) != 0) {
+  if (pthread_create(&thread, &attr, hzstd_watchdog_thread, running) != 0) {
     hzstd_panic("Could not start the stall watchdog");
   }
   pthread_attr_destroy(&attr);
@@ -2638,20 +2640,35 @@ static void hzstd_watchdog_main(void)
 }
 
 #if FIBER__WINDOWS
-static DWORD WINAPI hzstd_watchdog_thread(LPVOID unused)
+static DWORD WINAPI hzstd_watchdog_thread(LPVOID running)
 {
-  (void)unused;
+  hzstd_trigger_semaphore((hzstd_semaphore_t *)running);
   hzstd_watchdog_main();
   return 0;
 }
 #else
-static void *hzstd_watchdog_thread(void *unused)
+static void *hzstd_watchdog_thread(void *running)
 {
-  (void)unused;
+  hzstd_trigger_semaphore((hzstd_semaphore_t *)running);
   hzstd_watchdog_main();
   return NULL;
 }
 #endif
+
+// The collector registers a thread it starts on that thread, before the body
+// runs, and the registration allocates on the GC heap (BDWGC's record of the
+// thread). Waiting for the body keeps that inside startup, out of anything
+// main measures, as hzstd_setup_panic_handler does for the panic worker.
+static void hzstd_watchdog_start(void)
+{
+  hzstd_semaphore_t *running = hzstd_create_semaphore();
+  if (running == NULL) {
+    hzstd_panic("Could not create the stall watchdog's start semaphore");
+  }
+  hzstd_watchdog_spawn(running);
+  hzstd_wait_for_semaphore(running);
+  hzstd_destroy_semaphore(running);
+}
 
 // Collections a thread runs are not its task's time (section 10): the
 // collector calls this on the collecting thread.

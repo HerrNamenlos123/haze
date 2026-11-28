@@ -1054,7 +1054,7 @@ task-local storage (TL-1 to TL-7), `private` members (S0-17), the `tasklocal`/`g
   per process: every Haze thread calls the function, and each registration ran the handler once
   more per exception) and its scheduler, then spawns the body as its first task with the default
   settings (C479). Windows: written from the existing win32 code (CreateThread is GC_CreateThread
-  there), not built or run (no Windows here).
+  there); built and run on Windows 2026-11-27 (W-1 to W-3 below).
 
 ### Lane C (compiler): decisions taken while building (2026-11-24)
 
@@ -1204,7 +1204,7 @@ task-local storage (TL-1 to TL-7), `private` members (S0-17), the `tasklocal`/`g
   /proc/self/mountinfo (the first mount of a hierarchy that holds the cgroup). Windows: the
   process's affinity (every processor when its threads span groups), lowered by a hard cap of the
   job it is directly in (a job around that one is not read); written from the documentation,
-  never compiled. A quota is rounded up so that all of it gets used (1.5 CPUs count as 2: the
+  built and run on Windows 2026-11-27 (the affinity and job-cap cases pass). A quota is rounded up so that all of it gets used (1.5 CPUs count as 2: the
   easiest rule that keeps every CPU of the quota busy). At least 1. Read anew on every call,
   since affinity and quotas can change while a program runs; it costs a few file reads. A
   quota file that is not there is no quota; any other failure to read one, or content the
@@ -1212,6 +1212,25 @@ task-local storage (TL-1 to TL-7), `private` members (S0-17), the `tasklocal`/`g
   `systemd-run --user --scope -p CPUQuota=...` (no privileges; with Delegate=yes the case
   makes a cgroup of its own below the scope), and made-up trees for v1, hybrid and container
   layouts through `hzstd_cgroup_cpu_limit`, which takes the file paths.
+
+### Windows verification (2026-11-27, tailoryoung; the user's go: "go, verify stages 4 and 5 on windows")
+
+- **W-1. Startup waits for the stall watchdog's thread** (`hzstd_watchdog_start`, both platforms).
+  BDWGC registers a thread it starts on that thread, before the body runs, and the registration
+  allocates on the GC heap (its record of the thread, 1392 bytes on Win64). Not waited for, it
+  landed in main's first moments: the idle case of cases_runtime_own_threads.hz failed in one of
+  two Windows gate runs, and 31 to 35 of 100 direct starts of that program allocated while idle;
+  0 of 100 with the wait. The watchdog's thread body triggers a semaphore first thing, the start
+  waits for it, as `hzstd_setup_panic_handler` does for the panic worker. The case stays one run
+  (a race detector): started as children of a Haze program the race almost never shows (0 of 300).
+  Linux built and run in WSL on the same tree: the gate 924 of 925 (the one failure, the cgroup quota
+  case, needs a systemd user bus that WSL sessions here do not have), thread-stress.sh exact.
+- **W-2. A bun test comparing a program's stdout turns CRLF into LF** (scripts/directory-order.test.ts):
+  Windows' text-mode stdout ends every line with CRLF, as framework.hz already handles.
+- **W-3. cases_threads.hz's library-globals case reads `counter.hit("d")` into a `let` before the
+  f-string**, as its thread half already did. In one f-string the two calls are arguments of one C
+  call, whose order C leaves open (right to left on Win64: the evaluation-order ledger entry,
+  cases_evaluation_order is its Windows XFAIL); the case is about per-thread globals.
 
 ## Tooling
 
